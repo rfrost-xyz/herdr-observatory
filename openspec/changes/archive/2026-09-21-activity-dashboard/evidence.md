@@ -18,4 +18,4 @@ Preview HTTP returned 200 at loopback. Browser opening was unavailable in this t
 
 ## Independent review
 
-Review of implementation 6aa4327 found two telemetry defects: unavailable Herdr was plotted as zero activity, and malformed optional GPU output could abort collection. Both are corrected with failure/recovery, chart-gap and malformed-GPU regression tests. Renewed review is pending. No programme register exists in this new repository.
+Review of implementation 6aa4327 found two telemetry defects: unavailable Herdr was plotted as zero activity, and malformed optional GPU output could abort collection. Both are corrected with failure/recovery, chart-gap and malformed-GPU regression tests. Renewed independent review of a0fa062 approved with no actionable findings. Implementation is in 6aa4327 and regression fixes in a0fa062; these commits cover every traceability row above. Hosted checks also passed for the initial implementation; final publication checks are reported separately in the PR. No programme register exists in this new repository.

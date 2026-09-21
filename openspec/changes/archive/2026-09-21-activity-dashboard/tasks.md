@@ -10,4 +10,4 @@
 
 ## 3. Acceptance
 - [x] 3.1 Run complete tests and strict OpenSpec validation; record requirement/scenario traceability.
-- [ ] 3.2 Complete independent adversarial review and remediate all findings before synchronisation and archive.
+- [x] 3.2 Complete independent adversarial review and remediate all findings before synchronisation and archive.
