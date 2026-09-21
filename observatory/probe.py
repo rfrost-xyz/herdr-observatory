@@ -42,7 +42,7 @@ def metrics():
         try:
             output = subprocess.run([gpu_bin, '--query-gpu=utilization.gpu,memory.used,memory.total', '--format=csv,noheader,nounits'], capture_output=True, text=True, timeout=2, check=True)
             rows = [list(map(float, line.split(','))) for line in output.stdout.splitlines()]
-            if rows:
+            if rows and all(len(row) == 3 for row in rows):
                 result['gpu'] = {'percent': sum(r[0] for r in rows) / len(rows), 'used': sum(r[1] for r in rows) * 1048576, 'total': sum(r[2] for r in rows) * 1048576}
         except (OSError, ValueError, subprocess.SubprocessError):
             pass

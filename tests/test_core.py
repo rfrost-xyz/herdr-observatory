@@ -127,3 +127,17 @@ class CoreTests(unittest.TestCase):
         raw['metrics'] = copy.deepcopy(RAW['metrics'])
         app.poll(HOST)
         self.assertTrue(app.snapshot()['hosts'][0]['online'])
+
+    def test_unavailable_herdr_and_transport_leave_unknown_trend(self):
+        raw = copy.deepcopy(RAW)
+        app = Observatory({'hosts': [HOST]}, collector=lambda h: raw)
+        app.poll(HOST)
+        raw['snapshot'] = None
+        app.poll(HOST)
+        self.assertIsNone(app.snapshot()['hosts'][0]['trend'][-1]['working'])
+        app.collector = lambda h: (_ for _ in ()).throw(OSError())
+        app.poll(HOST)
+        self.assertIsNone(app.snapshot()['hosts'][0]['trend'][-1]['working'])
+        app.collector = lambda h: copy.deepcopy(RAW)
+        app.poll(HOST)
+        self.assertEqual(app.snapshot()['hosts'][0]['trend'][-1]['working'], 1)

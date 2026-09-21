@@ -16,6 +16,20 @@ function meter(name, value, detail) {
   const width = Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 0;
   return `<div class="meter"><span>${name}</span><span class="bar"><i style="width:${width}%"></i></span><span class="meter-value">${escapeHtml(detail ?? pct(value))}</span></div>`;
 }
+function sparkSegments(trend) {
+  const segments = [];
+  let points = [];
+  trend.forEach((sample, index) => {
+    if (!Number.isFinite(sample.working)) {
+      if (points.length) segments.push(points.join(' '));
+      points = [];
+    } else {
+      points.push(`${index * 100 / Math.max(1, trend.length - 1)},${28 - Math.min(25, sample.working * 5)}`);
+    }
+  });
+  if (points.length) segments.push(points.join(' '));
+  return segments.map(points => `<polyline points="${points}"/>`).join('');
+}
 function render() {
   $('clock').textContent = new Date().toLocaleTimeString('en-GB');
   if (!state) { $('connection').textContent = failed ? 'DISCONNECTED' : 'CONNECTING'; return; }
@@ -48,8 +62,8 @@ function render() {
     if (!m) return `<article class="resource offline"><h3>${escapeHtml(h.label)}</h3><p class="resource-error">Telemetry unavailable</p><span class="resource-scope">${escapeHtml(ago(h.sampled_at))}</span></article>`;
     const memory = m.memory ? m.memory.used / m.memory.total * 100 : null;
     const disk = m.disk ? m.disk.used / m.disk.total * 100 : null;
-    const points = h.trend.map((p,i) => `${i * 100 / Math.max(1,h.trend.length - 1)},${28 - Math.min(25,p.working * 5)}`).join(' ');
-    return `<article class="resource"><h3>${escapeHtml(h.label)}</h3><div class="resource-scope">${escapeHtml(m.scope)} · ${escapeHtml(ago(h.sampled_at))}</div>${meter('CPU',m.cpu_percent)}${meter('RAM',memory,m.memory ? bytes(m.memory.used) : '—')}${meter('DISK',disk)}${meter('GPU',m.gpu?.percent,m.gpu ? pct(m.gpu.percent) : 'Unavailable')}<div class="resource-bottom"><span>↓ ${rate(m.rx_rate)}</span><span>↑ ${rate(m.tx_rate)}</span><span>${m.gpu ? `${bytes(m.gpu.used)} VRAM` : 'No GPU sample'}</span></div><svg class="spark" viewBox="0 0 100 30" preserveAspectRatio="none" role="img" aria-label="Recent working agent count, clipped at five"><polyline points="${points}"/></svg><span class="resource-scope">Working agents / last ${h.trend.length} samples</span></article>`;
+    const trace = sparkSegments(h.trend);
+    return `<article class="resource"><h3>${escapeHtml(h.label)}</h3><div class="resource-scope">${escapeHtml(m.scope)} · ${escapeHtml(ago(h.sampled_at))}</div>${meter('CPU',m.cpu_percent)}${meter('RAM',memory,m.memory ? bytes(m.memory.used) : '—')}${meter('DISK',disk)}${meter('GPU',m.gpu?.percent,m.gpu ? pct(m.gpu.percent) : 'Unavailable')}<div class="resource-bottom"><span>↓ ${rate(m.rx_rate)}</span><span>↑ ${rate(m.tx_rate)}</span><span>${m.gpu ? `${bytes(m.gpu.used)} VRAM` : 'No GPU sample'}</span></div><svg class="spark" viewBox="0 0 100 30" preserveAspectRatio="none" role="img" aria-label="Recent working agent count, clipped at five">${trace}</svg><span class="resource-scope">Working agents / last ${h.trend.length} samples · gaps = unavailable</span></article>`;
   }).join('');
   $('footer-status').textContent = state.profile === 'work' ? 'WORK PROFILE · Personal and unclassified agents excluded' : 'PERSONAL PROFILE · Work and personal projects visible';
 }

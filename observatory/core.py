@@ -181,13 +181,14 @@ class Observatory:
                 self.history = self.history[:100]
                 measured = rates(measured_raw, self.previous_metrics.get(host['id']))
                 self.previous_metrics[host['id']] = measured_raw
-                trend = (state['trend'] + [{'at': now, 'working': sum(a['status'] == 'working' for a in agents)}])[-60:]
+                trend = (state['trend'] + [{'at': now, 'working': None if error else sum(a['status'] == 'working' for a in agents)}])[-60:]
                 state.update(online=not bool(error), error='Herdr unavailable or incompatible' if error else None, sampled_at=now, agents=agents if not error else [], metrics=measured, trend=trend, version=clean(raw.get('snapshot', {}).get('version') if raw.get('snapshot') else None, 'unknown'))
                 if host['id'] == self.config.get('theme_host', self.config['hosts'][0]['id']):
                     self.palette = theme(raw.get('theme'))
         except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError):
             with self.lock:
-                self.hosts[host['id']].update(online=False, error='Collector unreachable or invalid response', agents=[], metrics=None)
+                state = self.hosts[host['id']]
+                state.update(online=False, error='Collector unreachable or invalid response', agents=[], metrics=None, trend=(state['trend'] + [{'at': now, 'working': None}])[-60:])
                 self.previous_metrics.pop(host['id'], None)
 
     def worker(self, host):

@@ -26,3 +26,9 @@ test('UI expires an old host even while HTTP remains available',()=>{
  assert.equal(h.get('working').textContent,0);
  assert.equal(h.get('category').hidden,true);
 });
+test('Unknown activity breaks the trace rather than plotting zero',()=>{
+ const h=harness();
+ const svg = h.run('sparkSegments([{working:2},{working:3},{working:null},{working:1},{working:2}])');
+ assert.equal((svg.match(/<polyline/g)||[]).length,2);
+ assert.ok(!svg.includes('50,28'));
+});
