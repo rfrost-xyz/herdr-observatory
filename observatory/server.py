@@ -2,20 +2,23 @@
 import argparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
-import gzip
 import signal
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
 from .core import Observatory
-from .effects import TextEffects, lines_for
+from .effects import lines_for
 import time
 
 WEB = Path(__file__).resolve().parent.parent / 'web'
 
+ASSETS = {'/': ('index.html','text/html'), '/app.js': ('app.js','text/javascript'),
+          '/style.css': ('style.css','text/css'), '/effects.mjs': ('effects.mjs','text/javascript'),
+          '/vendor/engine.mjs': ('vendor/engine.mjs','text/javascript'),
+          '/vendor/effects.wasm': ('vendor/effects.wasm','application/wasm')}
+
 
 def handler(observatory):
-    effects = TextEffects()
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             allowed = {f'localhost:{self.server.server_port}', f'127.0.0.1:{self.server.server_port}'}
@@ -24,37 +27,31 @@ def handler(observatory):
                 self.send_error(403)
                 return
             path = urlsplit(self.path).path
-            if path in ('/api/state','/api/text-frames'):
+            if path == '/api/state':
                 query = parse_qs(urlsplit(self.path).query)
-                previous = query.get('previous', [''])[0]
                 category = query.get('category', ['all'])[0]
                 try:
                     page = int(query.get('page', ['0'])[0])
                     hold = int(query.get('hold', ['10'])[0])
-                    if not 0 <= hold <= 300 or not 0 <= page <= 10000 or category not in ('all','work','personal') or previous not in ('','decrypt','vhstape','crumble'): raise ValueError()
+                    if not 0 <= hold <= 300 or not 0 <= page <= 10000 or category not in ('all','work','personal'): raise ValueError()
                 except ValueError:
                     self.send_error(400); return
                 state=observatory.snapshot()
-                if path == '/api/state':
-                    state['terminal_text']=lines_for(state,time.time(),page,category,hold)[1]
-                    content=json.dumps(state,allow_nan=False).encode()
-                else:
-                    content=gzip.compress(json.dumps(effects.snapshot(state,previous,page,category,hold),allow_nan=False).encode(),compresslevel=1)
+                state['terminal_text']=lines_for(state,time.time(),page,category,hold)[1]
+                content=json.dumps(state,allow_nan=False).encode()
                 kind='application/json'
-            elif path in ('/', '/app.js', '/style.css'):
-                name = {'/': 'index.html', '/app.js': 'app.js', '/style.css': 'style.css'}[path]
+            elif path in ASSETS:
+                name,kind = ASSETS[path]
                 content = (WEB / name).read_bytes()
-                kind = {'/': 'text/html', '/app.js': 'text/javascript', '/style.css': 'text/css'}[path]
             else:
                 self.send_error(404)
                 return
             self.send_response(200)
-            self.send_header('Content-Type', kind + '; charset=utf-8')
-            if path == '/api/text-frames': self.send_header('Content-Encoding', 'gzip')
+            self.send_header('Content-Type', kind if kind == 'application/wasm' else kind + '; charset=utf-8')
             self.send_header('Content-Length', str(len(content)))
             self.send_header('Cache-Control', 'no-store')
             self.send_header('X-Content-Type-Options', 'nosniff')
-            self.send_header('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+            self.send_header('Content-Security-Policy', "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
             self.end_headers()
             self.wfile.write(content)
 

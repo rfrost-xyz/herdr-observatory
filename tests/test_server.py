@@ -1,5 +1,4 @@
 import http.client
-import gzip
 from http.server import ThreadingHTTPServer
 import json
 import threading
@@ -52,10 +51,21 @@ class ServerTests(unittest.TestCase):
             self.assertIn("frame-ancestors 'none'", headers['Content-Security-Policy'])
             self.assertNotIn('Access-Control-Allow-Origin', headers)
 
-    def test_text_frames_preserve_work_boundary(self):
-        status,body,_ = self.request('/api/text-frames?profile=personal')
-        body=gzip.decompress(body)
+    def test_browser_assets_and_retired_endpoint(self):
+        status,body,headers=self.request('/vendor/effects.wasm')
+        self.assertEqual(status,200)
+        self.assertTrue(body.startswith(b'\x00asm'))
+        self.assertEqual(headers['Content-Type'],'application/wasm')
+        self.assertIn("'wasm-unsafe-eval'",headers['Content-Security-Policy'])
+        self.assertNotIn("'unsafe-eval'",headers['Content-Security-Policy'])
+        for path in ('/effects.mjs','/vendor/engine.mjs'):
+            self.assertEqual(self.request(path)[0],200)
+        for path in ('/api/text-frames','/vendor/../config.local.json','/vendor/manifest.json'):
+            self.assertEqual(self.request(path)[0],404)
+        self.assertEqual(self.request('/vendor/effects.wasm',{'Origin':'https://evil.test'})[0],403)
+
+    def test_terminal_text_preserves_work_boundary(self):
+        status,body,_=self.request('/api/state?profile=personal')
         self.assertEqual(status,200)
         self.assertNotIn(b'PRIVATE',body)
-        self.assertIn('frames',json.loads(body))
-        self.assertEqual(self.request('/api/text-frames',{'Origin':'https://evil.test'})[0],403)
+        self.assertIn('terminal_text',json.loads(body))

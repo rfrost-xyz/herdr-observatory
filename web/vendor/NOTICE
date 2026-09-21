@@ -15,4 +15,4 @@ vendored here; tools/parity/fetch_reference.sh clones it on demand.
 
 If you enjoy these effects, the credit belongs upstream.
 
-Observatory links ttfx at commit 54d21f046f22512b113056a1964077d7b7bf04cc.
+Browser artifacts retrieved from omarchy.org on 2026-09-21. See manifest.json for exact origin URLs and SHA-256 hashes. The site labels its JavaScript wrapper 0.3.2; the all-effects bundle URL is unversioned. These are pinned distribution artifacts, not a claimed reproducible source build.

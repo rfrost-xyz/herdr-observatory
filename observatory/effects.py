@@ -1,14 +1,6 @@
-"""Bounded ttfx library adapter; input is exclusively the server's filtered snapshot."""
+"""Filtered, bounded terminal layout shared by live and animated views."""
 import hashlib
-import io
-import os
-import re
-import subprocess
-import threading
 import time
-
-
-EFFECTS = ('decrypt', 'vhstape', 'crumble')
 
 def lines_for(state, now, page=0, category='all', hold=10):
     hosts=[h for h in state['hosts'] if h['online'] and isinstance(h.get('sampled_at'),(int,float)) and now-h['sampled_at'] < state['interval']+20]
@@ -41,57 +33,3 @@ def lines_for(state, now, page=0, category='all', hold=10):
     put(35,f'LIVE / FX HOLD {hold}s [LEFT -1s / RIGHT +1s] / sample {state["interval"]}s')
     key=hashlib.sha256(repr([(h['id'],h['sampled_at']) for h in hosts]).encode()+repr((page,category,hold,state.get('theme'))).encode()).hexdigest()[:20]
     return key if hosts else '', '\n'.join(rows)
-
-
-SGR = re.compile(r'\x1b\[(?:0|38;2;\d{1,3};\d{1,3};\d{1,3})m')
-
-def parse_frames(raw):
-    if len(raw)>128*1024*1024:raise ValueError('oversized frames')
-    stream=io.BytesIO(raw);frames=[]
-    while length:=stream.readline(12):
-        if length==b'END\n':
-            if stream.read(1) or not frames:raise ValueError('invalid completion')
-            return frames
-        size=int(length)
-        if not 0<=size<=262144 or len(frames)>=5000:raise ValueError('invalid frame size')
-        frame=stream.read(size)
-        if len(frame)!=size or stream.read(1)!=b'\n':raise ValueError('truncated frame')
-        decoded=frame.decode('utf-8');plain=SGR.sub('',decoded)
-        if any(ord(c)<32 and c!='\n' for c in plain):raise ValueError('unexpected terminal control')
-        if len(plain.splitlines())>36 or any(len(row)>120 for row in plain.splitlines()):raise ValueError('invalid frame dimensions')
-        frames.append(decoded)
-    raise ValueError('incomplete animation')
-
-
-class TextEffects:
-    def __init__(self):
-        self.lock = threading.Lock()
-        self.cached = None
-        self.last_attempt = 0
-
-    def snapshot(self, state, previous=None, page=0, category='all', hold=10):
-        now = time.time()
-        key, text = lines_for(state, now, page, category, hold)
-        sources = [{'id': h['id'], 'at': h['sampled_at']} for h in state['hosts'] if h['online'] and isinstance(h.get('sampled_at'), (int,float)) and now-h['sampled_at'] < state['interval']+20]
-        effect = EFFECTS[(EFFECTS.index(previous)+1)%len(EFFECTS)] if previous in EFFECTS else EFFECTS[0]
-        key = key + ':' + effect if key else ''
-        empty = {'key': key, 'text': text, 'frames': [], 'effect': 'plain', 'fps': 30, 'sources': sources}
-        if not key:
-            return empty
-        with self.lock:
-            if self.cached and self.cached['key'] == key:
-                return self.cached
-            if now-self.last_attempt < 1:
-                return empty
-            self.last_attempt = now
-            colours=(state.get('theme') or {}).get('colours') or {}
-            palette=[colours.get(k, fallback).lstrip('#') for k,fallback in [('accent','7aa2f7'),('foreground','c0caf5'),('green','9ece6a'),('yellow','e0af68')]]
-            try:
-                result = subprocess.run([os.environ.get('OBSERVATORY_TEXT_RENDERER', '/usr/local/bin/observatory-text'), effect, *palette],
-                    input=text.encode(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=15, check=True)
-                frames = parse_frames(result.stdout)
-                value = dict(empty, frames=frames, effect=effect)
-            except (OSError, subprocess.SubprocessError, ValueError, UnicodeError):
-                value = empty
-            self.cached = value
-            return value

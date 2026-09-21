@@ -1,0 +1,14 @@
+{
+  "retrieved": "2026-09-21",
+  "upstream": "https://github.com/omacom/ttfx",
+  "files": {
+    "engine.mjs": {
+      "url": "https://omarchy.org/ttfx/0.3.2/ttfx.js",
+      "sha256": "d64a52fd12b7d775a42afbe5525d4b6cf23e8a45435d9deed0cc2e7bd88559fe"
+    },
+    "effects.wasm": {
+      "url": "https://omarchy.org/ttfx/effects/all.wasm",
+      "sha256": "d43fc55e05699b38eb3f372f73055e55a789b46e9149e49cd0f24813653d2d1a"
+    }
+  }
+}

@@ -4,7 +4,7 @@ import subprocess
 import time
 import unittest
 from unittest.mock import patch
-from observatory.effects import lines_for, parse_frames, TextEffects
+from observatory.effects import lines_for
 
 class EffectsTests(unittest.TestCase):
     def state(self):
@@ -22,46 +22,9 @@ class EffectsTests(unittest.TestCase):
         self.assertNotIn('\x1b',text)
         self.assertLessEqual(len(text),4356)
 
-    def test_invalid_frames_rejected(self):
-        for raw in (b'5\na\n',b'3\n\x1bxx\n',b'9000\n',b'x\n',b'121\n'+b'a'*121+b'\n'):
-            with self.assertRaises(ValueError):parse_frames(raw)
-
-    def test_cache_and_plain_failure(self):
-        state=self.state();engine=TextEffects()
-        with patch('observatory.effects.subprocess.run',side_effect=OSError) as run:
-            result=engine.snapshot(state)
-            self.assertEqual(result['effect'],'plain')
-            self.assertIn('allowed',result['text'])
-            self.assertEqual(engine.snapshot(state),result)
-            self.assertEqual(run.call_count,1)
-
-    def test_actual_library_effects(self):
-        binary=os.environ.get('OBSERVATORY_TEXT_RENDERER')
-        if not binary or not Path(binary).exists():self.skipTest('ttfx adapter not configured')
-        for effect in ('decrypt','vhstape','crumble'):
-            result=subprocess.run([binary,effect],input=('\n'.join(('node WORKING rev=42 seq=17 '+str(i)+' '+'x'*90)[:100] for i in range(6))).encode(),capture_output=True,check=True,timeout=15)
-            frames=parse_frames(result.stdout)
-            self.assertGreater(len(frames),1)
-            self.assertLessEqual(len(frames),5000)
-            self.assertGreater(len(set(frames)),1)
-            self.assertTrue(result.stdout.endswith(b'END\n'))
-            self.assertTrue(any('\x1b[38;2;' in f for f in frames))
-
-    def test_timeout_falls_back_and_source_loss_invalidates_cache(self):
-        state=self.state();engine=TextEffects()
-        with patch('observatory.effects.subprocess.run',side_effect=subprocess.TimeoutExpired('renderer',2)):
-            self.assertEqual(engine.snapshot(state)['effect'],'plain')
-        state['hosts'][0]['online']=False
-        result=engine.snapshot(state)
-        self.assertEqual(result['key'],'')
-        self.assertEqual(result['frames'],[])
-        self.assertNotIn('allowed',result['text'])
-
-    def test_no_consecutive_effects_and_complete_stream_required(self):
+    def test_full_terminal_page_and_hold(self):
         state=self.state()
-        for previous,expected in [('decrypt','vhstape'),('vhstape','crumble'),('crumble','decrypt')]:
-            engine=TextEffects()
-            with patch('observatory.effects.subprocess.run',return_value=subprocess.CompletedProcess([],0,b'1\nx\nEND\n')) as run:
-                self.assertEqual(engine.snapshot(state,previous)['effect'],expected)
-                self.assertEqual(run.call_args.args[0][1],expected)
-        with self.assertRaises(ValueError):parse_frames(b'1\nx\n')
+        _,text=lines_for(state,time.time(),hold=11)
+        self.assertEqual(len(text.splitlines()),36)
+        for label in ('THREADS','CLI FEED','FX HOLD 11s','allowed'):
+            self.assertIn(label,text)

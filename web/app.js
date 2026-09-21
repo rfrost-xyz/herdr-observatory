@@ -92,45 +92,66 @@ function geometry(w,h) {
 }
 function filteredAgents(){return agents.filter(a=>category==='all'||snapshot?.profile==='work'||a.category===category);}
 function currentPage(now=Date.now()) {return (manualPage ?? Math.floor(now/15000))%Math.max(1,Math.ceil(filteredAgents().length/geometry(width,height).processRows));}
-let textFrames={key:'',frames:[],text:'',effect:'plain',fps:30}, framesBorn=0;
+let textFrames={text:'',sources:[]}, effectSession=null, effectFrame=null, effectLibrary=null, effectBag=[];
 let holdSeconds=10, holdElapsed=0, lastEffect='', animationIndex=-1, frameElapsed=0, loadingFrames=false;
 function framesCurrent() {return !disconnected && textFrames.sources?.length>0 && textFrames.sources.every(source=>previous.get(source.id)?.live);}
+function stopEffect() {effectSession?.free();effectSession=null;effectFrame=null;animationIndex=-1;holdElapsed=0;}
 async function refreshFrames() {
-  if(loadingFrames || paused || reduced.matches || disconnected || !snapshot || !snapshot.hosts.some(h=>previous.get(h.id)?.live))return;
+  if(loadingFrames || animationIndex>=0 || paused || reduced.matches || disconnected || !snapshot?.terminal_text || !snapshot.hosts.some(h=>previous.get(h.id)?.live))return;
   loadingFrames=true;
   try {
-    const response=await fetch(`/api/text-frames?previous=${lastEffect}&page=${currentPage()}&category=${category}&hold=${holdSeconds}`,{cache:'no-store',signal:AbortSignal.timeout(20000)});
-    if(!response.ok)throw new Error();
-    const next=await response.json();
-    if(!paused && !reduced.matches && !disconnected && next.frames.length && next.effect!==lastEffect){
-      textFrames=next;animationIndex=0;frameElapsed=-1000/(next.fps || 30);lastEffect=next.effect;framesBorn=performance.now();accessible();
-    }
-  } catch { /* Keep the live terminal readable on renderer failure. */ }
+    effectLibrary ??= await import('./effects.mjs').then(module=>module.loadEffects().then(lib=>({...lib,next:module.nextEffect})));
+    if(paused || reduced.matches || disconnected)return;
+    const effect=effectLibrary.next(effectLibrary.catalogue,effectBag,lastEffect);
+    textFrames={text:snapshot.terminal_text,sources:snapshot.hosts.filter(h=>previous.get(h.id)?.live).map(h=>({id:h.id}))};
+    if(!framesCurrent())return;
+    effectSession=effectLibrary.create(textFrames.text,effect,{...palette});
+    effectFrame=effectSession.next();
+    if(!effectFrame){stopEffect();return;}
+    animationIndex=0;frameElapsed=0;lastEffect=effect;accessible();
+  } catch {stopEffect(); /* Keep the live terminal readable on renderer failure. */}
   finally {loadingFrames=false;holdElapsed=0;}
 }
 function advanceEffects(delta) {
-  if(disconnected || (animationIndex>=0 && !framesCurrent())){animationIndex=-1;textFrames.frames=[];holdElapsed=0;return;}
+  if(disconnected || (animationIndex>=0 && !framesCurrent())){stopEffect();return;}
   if(paused || reduced.matches)return;
   if(animationIndex>=0){
     frameElapsed+=delta;
-    if(frameElapsed>=1000/(textFrames.fps || 30)){
-      frameElapsed-=1000/(textFrames.fps || 30);animationIndex++;
-      if(animationIndex>=textFrames.frames.length){animationIndex=-1;textFrames.frames=[];holdElapsed=0;}
+    if(frameElapsed>=1000/30){
+      frameElapsed-=1000/30;
+      try {const next=effectSession.next();if(next){effectFrame=next;animationIndex++;}else stopEffect();}
+      catch {stopEffect();}
     }
   }else if(!loadingFrames){holdElapsed+=delta;if(holdElapsed>=holdSeconds*1000)refreshFrames();}
 }
 function adjustHold(change){holdSeconds=Math.max(0,Math.min(300,holdSeconds+change));}
-function frameText() {return animationIndex>=0 && framesCurrent() && !reduced.matches?textFrames.frames[animationIndex]:textFrames.text;}
-function paintEffect(raw,x,y,cell,line) {
-  const token=/\x1b\[(0|38;2;(\d+);(\d+);(\d+))m/g;
-  let colour=palette.foreground,row=0,col=0,offset=0,match;
-  function put(text){for(const c of text){if(c==='\n'){row++;col=0;}else{ctx.fillStyle=colour;ctx.fillText(c,x+col*cell,y+row*line);col++;}}}
-  while((match=token.exec(raw))){put(raw.slice(offset,match.index));
-    if(match[1]==='0')colour=palette.foreground;
-    else {const rgb=match.slice(2,5).map(Number);if(rgb.every(v=>v===rgb[0])){const blend=[1,3,5].map(i=>Math.round(parseInt(palette.background.slice(i,i+2),16)*(1-rgb[0]/255)+parseInt(palette.foreground.slice(i,i+2),16)*rgb[0]/255));colour=`rgb(${blend.join(',')})`;}else colour=`rgb(${rgb.join(',')})`;}
-    offset=token.lastIndex;
+function themedColour(value, fallback) {
+  if(!(value>>>24))return fallback;
+  const rgb=[(value>>>16)&255,(value>>>8)&255,value&255];
+  // Keep native palette colours; map fixed upstream accents into the active theme.
+  const colours=[palette.blue,palette.cyan,palette.green,palette.yellow,palette.red,palette.foreground];
+  const candidates=colours.map(hex=>[1,3,5].map(i=>parseInt(hex.slice(i,i+2),16)));
+  const intensity=Math.max(...rgb)/255;
+  const norm=v=>{const max=Math.max(...v)||1;return v.map(c=>c/max);};
+  const target=norm(rgb);
+  let best=0,score=Infinity;
+  candidates.forEach((v,i)=>{const distance=norm(v).reduce((sum,c,j)=>sum+(c-target[j])**2,0);if(distance<score){score=distance;best=i;}});
+  if(score<0.0001)return `rgb(${rgb.join(',')})`;
+  return `rgb(${candidates[best].map(c=>Math.round(c*intensity)).join(',')})`;
+}
+function paintEffect(frame,x,y,cell,line) {
+  if(!frame)return;
+  for(let i=0;i<frame.symbols.length;i++){
+    const flag=frame.flags[i],symbol=frame.symbols[i];
+    if(flag&32)continue;
+    const px=x+(i%frame.width)*cell,py=y+Math.floor(i/frame.width)*line;
+    let fg=themedColour(frame.fg[i],palette.foreground),bg=themedColour(frame.bg[i],palette.background);
+    if(flag&16)[fg,bg]=[bg,fg];
+    if(bg!==palette.background){ctx.fillStyle=bg;ctx.fillRect(px,py,cell,line);}
+    if(symbol && symbol!==32){ctx.globalAlpha=flag&2?.55:1;ctx.fillStyle=fg;ctx.fillText(String.fromCodePoint(symbol),px,py);}
+    if(flag&8){ctx.fillStyle=fg;ctx.fillRect(px,py+line*.85,cell,1);}
   }
-  put(raw.slice(offset));
+  ctx.globalAlpha=1;
 }
 function draw(now) {
   if(!ctx)return;
@@ -140,7 +161,7 @@ function draw(now) {
   const cell=ctx.measureText('M').width, cols=Math.min(columns,Math.floor((width-margin*2)/cell));
   const playing=animationIndex>=0 && framesCurrent() && !reduced.matches;
   document.getElementById('controls').hidden=playing;
-  if(playing){paintEffect(frameText(),margin,margin,cell,line);return;}
+  if(playing){paintEffect(effectFrame,margin,margin,cell,line);return;}
   function text(value,row,tint=palette.foreground){ctx.fillStyle=tint;ctx.fillText(clean(value,cols),margin,margin+row*line);}
   function rule(row,label){const title='─ '+label+' ';text('├'+title+'─'.repeat(Math.max(0,cols-title.length-2))+'┤',row,palette.blue);}
   if(snapshot?.terminal_text && !disconnected && snapshot.hosts.every(h=>!h.online || previous.get(h.id)?.live)){
