@@ -76,7 +76,7 @@ function disconnect(now=Date.now()) {
   accessible();
 }
 function accessible() {
-  document.getElementById('transcript').textContent=[`HERDR OBSERVATORY / ${snapshot?.profile || 'connecting'} / ${disconnected?'disconnected':'sampled observations'}`,...agents.map(a=>`${clean(a.host)}/${clean(a.project)} ${statusKind(a.status)} ${clean(a.title)}`),...(typeof textFrames!=='undefined' && framesCurrent()?[textFrames.text]:[]),...records.map(r=>`${new Date(r.at).toISOString()} ${r.kind} ${r.text}`)].join('\n');
+  document.getElementById('transcript').textContent=[`HERDR OBSERVATORY / ${snapshot?.profile || 'connecting'} / ${disconnected?'disconnected':'sampled observations'}`,...agents.map(a=>`${clean(a.host)}/${clean(a.project)} ${statusKind(a.status)} ${clean(a.title)}`),...(typeof textFrames!=='undefined' && animationIndex>=0 && framesCurrent()?['Animated capture: '+textFrames.text]:[]),...records.map(r=>`${new Date(r.at).toISOString()} ${r.kind} ${r.text}`)].join('\n');
 }
 function resize() {
   width=innerWidth; height=innerHeight;
@@ -86,27 +86,51 @@ function resize() {
   draw(performance.now());
 }
 function geometry(w,h) {
-  const font=Math.max(10,Math.min(18,w/92,h/44));
-  const line=font*1.5, margin=Math.max(16,w*.025);
-  return {font,line,margin,columns:Math.floor((w-margin*2)/(font*.61)),processRows:Math.max(2,Math.min(12,Math.floor((h-margin*2)/line)-23)),logRows:6};
+  const margin=Math.max(16,w*.025),line=(h-margin*2)/36;
+  const font=Math.max(8,Math.min((w-margin*2)/(120*.61),line/1.4));
+  return {font,line,margin,columns:120,processRows:12,logRows:6};
 }
 function filteredAgents(){return agents.filter(a=>category==='all'||snapshot?.profile==='work'||a.category===category);}
 function currentPage(now=Date.now()) {return (manualPage ?? Math.floor(now/15000))%Math.max(1,Math.ceil(filteredAgents().length/geometry(width,height).processRows));}
-let textFrames={key:'',frames:[],text:'Awaiting fresh source observations.',effect:'plain',fps:30}, framesBorn=0;
+let textFrames={key:'',frames:[],text:'',effect:'plain',fps:30}, framesBorn=0;
+let holdSeconds=10, holdElapsed=0, lastEffect='', animationIndex=-1, frameElapsed=0, loadingFrames=false;
+function framesCurrent() {return !disconnected && textFrames.sources?.length>0 && textFrames.sources.every(source=>previous.get(source.id)?.live);}
 async function refreshFrames() {
+  if(loadingFrames || paused || reduced.matches || disconnected || !snapshot || !snapshot.hosts.some(h=>previous.get(h.id)?.live))return;
+  loadingFrames=true;
   try {
-    const response=await fetch('/api/text-frames',{cache:'no-store',signal:AbortSignal.timeout(5000)});
+    const response=await fetch(`/api/text-frames?previous=${lastEffect}&page=${currentPage()}&category=${category}&hold=${holdSeconds}`,{cache:'no-store',signal:AbortSignal.timeout(20000)});
     if(!response.ok)throw new Error();
     const next=await response.json();
-    if(next.key!==textFrames.key || next.effect!==textFrames.effect){textFrames=next;framesBorn=performance.now();accessible();}
-  } catch {textFrames={key:'',frames:[],text:'Text renderer unavailable; current state remains above.',effect:'plain',fps:30};accessible();}
-  setTimeout(refreshFrames,2000);
+    if(!paused && !reduced.matches && !disconnected && next.frames.length && next.effect!==lastEffect){
+      textFrames=next;animationIndex=0;frameElapsed=-1000/(next.fps || 30);lastEffect=next.effect;framesBorn=performance.now();accessible();
+    }
+  } catch { /* Keep the live terminal readable on renderer failure. */ }
+  finally {loadingFrames=false;holdElapsed=0;}
 }
-function framesCurrent(now=Date.now()) {return !disconnected && textFrames.sources?.length>0 && textFrames.sources.every(source=>previous.get(source.id)?.live && now/1000-source.at<snapshot.interval+20);}
-function frameText(now) {
-  if(!framesCurrent())return 'Source observations unavailable.';
-  const index=Math.floor((now-framesBorn)/1000*(textFrames.fps || 30));
-  return !paused && !reduced.matches && index>=0 && index<textFrames.frames.length?textFrames.frames[index]:textFrames.text;
+function advanceEffects(delta) {
+  if(disconnected || (animationIndex>=0 && !framesCurrent())){animationIndex=-1;textFrames.frames=[];holdElapsed=0;return;}
+  if(paused || reduced.matches)return;
+  if(animationIndex>=0){
+    frameElapsed+=delta;
+    if(frameElapsed>=1000/(textFrames.fps || 30)){
+      frameElapsed-=1000/(textFrames.fps || 30);animationIndex++;
+      if(animationIndex>=textFrames.frames.length){animationIndex=-1;textFrames.frames=[];holdElapsed=0;}
+    }
+  }else if(!loadingFrames){holdElapsed+=delta;if(holdElapsed>=holdSeconds*1000)refreshFrames();}
+}
+function adjustHold(change){holdSeconds=Math.max(0,Math.min(300,holdSeconds+change));}
+function frameText() {return animationIndex>=0 && framesCurrent() && !reduced.matches?textFrames.frames[animationIndex]:textFrames.text;}
+function paintEffect(raw,x,y,cell,line) {
+  const token=/\x1b\[(0|38;2;(\d+);(\d+);(\d+))m/g;
+  let colour=palette.foreground,row=0,col=0,offset=0,match;
+  function put(text){for(const c of text){if(c==='\n'){row++;col=0;}else{ctx.fillStyle=colour;ctx.fillText(c,x+col*cell,y+row*line);col++;}}}
+  while((match=token.exec(raw))){put(raw.slice(offset,match.index));
+    if(match[1]==='0')colour=palette.foreground;
+    else {const rgb=match.slice(2,5).map(Number);if(rgb.every(v=>v===rgb[0])){const blend=[1,3,5].map(i=>Math.round(parseInt(palette.background.slice(i,i+2),16)*(1-rgb[0]/255)+parseInt(palette.foreground.slice(i,i+2),16)*rgb[0]/255));colour=`rgb(${blend.join(',')})`;}else colour=`rgb(${rgb.join(',')})`;}
+    offset=token.lastIndex;
+  }
+  put(raw.slice(offset));
 }
 function draw(now) {
   if(!ctx)return;
@@ -114,8 +138,17 @@ function draw(now) {
   ctx.globalAlpha=1;ctx.fillStyle=palette.background;ctx.fillRect(0,0,width,height);
   ctx.font=`${font}px "DejaVu Sans Mono", "Cascadia Code", monospace`;ctx.textBaseline='top';
   const cell=ctx.measureText('M').width, cols=Math.min(columns,Math.floor((width-margin*2)/cell));
+  const playing=animationIndex>=0 && framesCurrent() && !reduced.matches;
+  document.getElementById('controls').hidden=playing;
+  if(playing){paintEffect(frameText(),margin,margin,cell,line);return;}
   function text(value,row,tint=palette.foreground){ctx.fillStyle=tint;ctx.fillText(clean(value,cols),margin,margin+row*line);}
   function rule(row,label){const title='─ '+label+' ';text('├'+title+'─'.repeat(Math.max(0,cols-title.length-2))+'┤',row,palette.blue);}
+  if(snapshot?.terminal_text && !disconnected && snapshot.hosts.every(h=>!h.online || previous.get(h.id)?.live)){
+    const rows=snapshot.terminal_text.split('\n');
+    rows[35]=`${paused?'FX PAUSED':reduced.matches?'REDUCED MOTION':'LIVE'} / FX HOLD ${holdSeconds}s [LEFT -1s / RIGHT +1s] / [PgUp PgDn] pages`;
+    for(let i=0;i<36;i++)text(rows[i] || '',i,/INPUT|OFFLINE/.test(rows[i])?palette.yellow:/WORKING/.test(rows[i])?palette.cyan:palette.foreground);
+    return;
+  }
   text('┌'+'─'.repeat(Math.max(0,cols-2))+'┐',0,palette.blue);
   text(`│ HERDR  /  ${clean(snapshot?.profile || 'CONNECTING').toUpperCase()}   ${disconnected?'DISCONNECTED':'READ ONLY'}   ${new Date().toLocaleTimeString('en-GB')}   theme:${clean(snapshot?.theme?.name)}`,1,palette.cyan);
   const hosts=snapshot?.hosts || [];
@@ -135,23 +168,23 @@ function draw(now) {
     text(`│ ${status.padEnd(9)} ${clean(a.host,14).padEnd(14)} ${clean(a.harness,12).padEnd(12)} ${clean(a.project,24)} / ${clean(a.title)}`,7+i,colour(statusKind(a.status)));
   }
   if(!shown.length)text(disconnected?'│ Connection lost — current thread state unavailable.':'│ No permitted threads in this view.',7,palette.yellow);
-  text(`│ ${category} / page ${filteredAgents().length?page+1:0}/${Math.ceil(filteredAgents().length/processRows)}  [← →] select + hold  [R] rotate  [C] category`,7+processRows,palette.blue);
-  const feedRow=Math.floor((height-margin*2)/line)-10;
+  text(`│ ${category} / page ${filteredAgents().length?page+1:0}/${Math.ceil(filteredAgents().length/processRows)}  [PgUp PgDn] pages  [R] rotate  [C] category`,7+processRows,palette.blue);
+  const feedRow=26;
   const event=records.filter(r=>!['SAMPLE','PANE','BOOT'].includes(r.kind)).at(-1);
   if(event)text(`│ ${new Date(event.at).toLocaleTimeString('en-GB')} ${event.kind} ${event.text}`,feedRow-1,colour(event.kind));
-  rule(feedRow,`CLI FEED / ttfx ${textFrames.effect} / sampled observations`);
+  rule(feedRow,`CLI FEED / sampled observations`);
   const valid=framesCurrent();
   const animate=!paused && !reduced.matches && valid;
-  const output=frameText(now);
+  const output=records.slice(-6).map(r=>`${new Date(r.at).toLocaleTimeString('en-GB')} ${r.kind} ${r.text}`).join('\n');
   const rows=String(output).split('\n');
   for(let i=0;i<6;i++)text('│ '+(rows[i] || ''),feedRow+1+i,palette.foreground);
   text(`│ observer@fleet:~$ follow${animate && Math.floor(now/550)%2?' ▌':''}`,feedRow+7,palette.green);
   text('└'+'─'.repeat(Math.max(0,cols-2))+'┘',feedRow+8,palette.blue);
-  text(`${paused?'FX PAUSED':reduced.matches?'REDUCED MOTION':'TTFX TEXT ENGINE'} / sample interval ${snapshot?.interval || '—'}s / no shell execution`,feedRow+9,palette.foreground);
+  text(`${paused?'FX PAUSED':reduced.matches?'REDUCED MOTION':'LIVE'} / FX HOLD ${holdSeconds}s [← −1s / → +1s] / sample ${snapshot?.interval || '—'}s`,feedRow+9,palette.foreground);
 }
-function frame(now) {if(!document.hidden && now-lastFrame>=33){drainFeed(now);draw(now);lastFrame=now;}requestAnimationFrame(frame);}
+function frame(now) {if(!document.hidden && now-lastFrame>=33){drainFeed(now);advanceEffects(Math.min(100,now-lastFrame));draw(now);lastFrame=now;}if(document.hidden)lastFrame=now;requestAnimationFrame(frame);}
 async function refresh() {
-  try {const response=await fetch('/api/state',{cache:'no-store',signal:AbortSignal.timeout(8000)});if(!response.ok)throw new Error();observe(await response.json());}
+  try {const response=await fetch(`/api/state?page=${currentPage()}&category=${category}&hold=${holdSeconds}`,{cache:'no-store',signal:AbortSignal.timeout(8000)});if(!response.ok)throw new Error();observe(await response.json());}
   catch {disconnect();}
   setTimeout(refresh,2000);
 }
@@ -159,7 +192,7 @@ function pause() {paused=!paused;document.getElementById('pause').setAttribute('
 async function fullscreen(){try{if(document.fullscreenElement)await document.exitFullscreen();else await document.documentElement.requestFullscreen();}catch{record('INFO','Use browser fullscreen (F11)',Date.now(),false);}}
  document.getElementById('pause').addEventListener('click',pause);
 document.getElementById('fullscreen').addEventListener('click',fullscreen);
-addEventListener('keydown',event=>{if(event.target?.tagName==='BUTTON')return;if(event.code==='Space'){event.preventDefault();pause();}if(event.key==='f')fullscreen();if(event.key==='ArrowRight')manualPage=currentPage()+1;if(event.key==='ArrowLeft')manualPage=Math.max(0,currentPage()-1);if(event.key==='r')manualPage=null;if(event.key==='c' && snapshot?.profile==='personal'){category=['all','work','personal'][(['all','work','personal'].indexOf(category)+1)%3];manualPage=0;}});
+addEventListener('keydown',event=>{if(event.target?.tagName==='BUTTON' && event.code==='Space')return;if(event.code==='Space'){event.preventDefault();pause();}if(event.key==='f')fullscreen();if(event.key==='ArrowRight'){event.preventDefault();adjustHold(1);}if(event.key==='ArrowLeft'){event.preventDefault();adjustHold(-1);}if(event.key==='PageDown')manualPage=currentPage()+1;if(event.key==='PageUp')manualPage=Math.max(0,currentPage()-1);if(event.key==='r')manualPage=null;if(event.key==='c' && snapshot?.profile==='personal'){category=['all','work','personal'][(['all','work','personal'].indexOf(category)+1)%3];manualPage=0;}});
 addEventListener('resize',resize);
 setInterval(()=>{if(received && Date.now()-received>12000)disconnect();if(!disconnected)reconcile();},1000);
-resize();requestAnimationFrame(frame);refresh();refreshFrames();
+resize();requestAnimationFrame(frame);refresh();

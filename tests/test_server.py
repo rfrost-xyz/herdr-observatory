@@ -1,4 +1,5 @@
 import http.client
+import gzip
 from http.server import ThreadingHTTPServer
 import json
 import threading
@@ -53,6 +54,7 @@ class ServerTests(unittest.TestCase):
 
     def test_text_frames_preserve_work_boundary(self):
         status,body,_ = self.request('/api/text-frames?profile=personal')
+        body=gzip.decompress(body)
         self.assertEqual(status,200)
         self.assertNotIn(b'PRIVATE',body)
         self.assertIn('frames',json.loads(body))

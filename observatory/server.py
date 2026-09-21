@@ -2,12 +2,14 @@
 import argparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import gzip
 import signal
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, parse_qs
 
 from .core import Observatory
-from .effects import TextEffects
+from .effects import TextEffects, lines_for
+import time
 
 WEB = Path(__file__).resolve().parent.parent / 'web'
 
@@ -22,12 +24,23 @@ def handler(observatory):
                 self.send_error(403)
                 return
             path = urlsplit(self.path).path
-            if path == '/api/state':
-                content = json.dumps(observatory.snapshot(), allow_nan=False).encode()
-                kind = 'application/json'
-            elif path == '/api/text-frames':
-                content = json.dumps(effects.snapshot(observatory.snapshot()), allow_nan=False).encode()
-                kind = 'application/json'
+            if path in ('/api/state','/api/text-frames'):
+                query = parse_qs(urlsplit(self.path).query)
+                previous = query.get('previous', [''])[0]
+                category = query.get('category', ['all'])[0]
+                try:
+                    page = int(query.get('page', ['0'])[0])
+                    hold = int(query.get('hold', ['10'])[0])
+                    if not 0 <= hold <= 300 or not 0 <= page <= 10000 or category not in ('all','work','personal') or previous not in ('','decrypt','vhstape','crumble'): raise ValueError()
+                except ValueError:
+                    self.send_error(400); return
+                state=observatory.snapshot()
+                if path == '/api/state':
+                    state['terminal_text']=lines_for(state,time.time(),page,category,hold)[1]
+                    content=json.dumps(state,allow_nan=False).encode()
+                else:
+                    content=gzip.compress(json.dumps(effects.snapshot(state,previous,page,category,hold),allow_nan=False).encode(),compresslevel=1)
+                kind='application/json'
             elif path in ('/', '/app.js', '/style.css'):
                 name = {'/': 'index.html', '/app.js': 'app.js', '/style.css': 'style.css'}[path]
                 content = (WEB / name).read_bytes()
@@ -37,6 +50,7 @@ def handler(observatory):
                 return
             self.send_response(200)
             self.send_header('Content-Type', kind + '; charset=utf-8')
+            if path == '/api/text-frames': self.send_header('Content-Encoding', 'gzip')
             self.send_header('Content-Length', str(len(content)))
             self.send_header('Cache-Control', 'no-store')
             self.send_header('X-Content-Type-Options', 'nosniff')

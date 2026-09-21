@@ -37,7 +37,7 @@ cp config.example.json config.local.json
 python -m observatory --config config.local.json --profile personal
 ```
 
-Open **http://127.0.0.1:8789**. Use F or F11 for fullscreen. The rendered terminal fits one 16:9 screen. Pane pages rotate every 15 seconds; Left/Right selects a page and holds it, R resumes rotation. C cycles All/Work/Personal on the Personal display. Space pauses visual effects. Collection continues while effects are paused. Ctrl+C stops a foreground server.
+Open **http://127.0.0.1:8789**. Use F or F11 for fullscreen. The rendered terminal fits one 16:9 screen. Pane pages rotate every 15 seconds; Page Up/Down selects a page and holds it, R resumes rotation. C cycles All/Work/Personal on the Personal display. Space pauses visual effects. Left/Right changes the hold between effects in one-second increments (default 10 seconds; range 0–300). Collection continues while effects are paused. Ctrl+C stops a foreground server.
 
 For a work display:
 
@@ -129,7 +129,7 @@ The PowerShell launcher opens the display; the independently running container s
 
 ## Technical display and what the numbers mean
 
-The display is a character-cell TUI: current thread states stay fixed and clear above a separate CLI feed. The feed uses the actual [ttfx](https://github.com/omacom/ttfx) Rust library (`decrypt`, `vhstape`, `crumble`), pinned by commit and Cargo.lock. There are no decorative circles or background geometry. The library animates permitted sampled observations; it does not read shell output. Pause and reduced motion show the original text immediately.
+The display is an unbranded character-cell TUI. Whole-terminal coloured text effects animate a permitted snapshot, including the header, sources, threads and feed. Each effect plays through its final frame, then the latest live TUI remains visible for the configured hold. The next effect is different. Colours follow the active desktop theme. Pause freezes playback; reduced motion keeps the live TUI readable. No raw shell output is captured.
 
 Records are timestamped when the browser observes a transition, not when the underlying action happened. Collection is sampled and can miss brief intermediate states; this is not a complete Herdr event stream. Prompts are interface labels, not executed shell commands. Raw terminal content is never exported. Connection loss clears live panes without claiming they finished. The accessible text equivalent contains the current panes and the last 60 observations.
 
@@ -252,4 +252,4 @@ Protocol reference: [Herdr socket API](https://herdr.dev/docs/socket-api/).
 
 Docker builds `renderer/` in a pinned Rust build stage and copies its executable into the runtime image. Nothing is installed at runtime. If the local Docker build network cannot resolve dependency hosts, use `docker build --network host` for the build; runtime networking is unchanged. For a local development server, run `cargo build --release --locked --manifest-path renderer/Cargo.toml` and set `OBSERVATORY_TEXT_RENDERER="$PWD/renderer/target/release/observatory-text"`. Without the adapter, the feed falls back to plain text.
 
-The read-only `/api/text-frames` endpoint derives text from the same server-filtered state as the TUI. It accepts no text or effect arguments. Frames are cached per capture, generation has a two-second deadline, and playback is bounded to 120 frames of 100×6 cells. Long observation sets rotate in batches. Licence and upstream TTE attribution are retained in `renderer/TTFX-LICENSE` and `renderer/NOTICE`.
+The read-only `/api/text-frames` endpoint derives text from the same server-filtered state as the TUI. It accepts only validated prior-effect, page and category selectors, never arbitrary text. Frames are cached per capture and selection. Generation must finish naturally within 15 seconds, 5000 frames and 128 MiB; an incomplete effect is discarded. Complete 120×36 coloured frames are compressed for transport and played without interruption by new samples. Source loss cancels obsolete playback. Long thread sets use pages. Licence and upstream TTE attribution are retained in `renderer/TTFX-LICENSE` and `renderer/NOTICE`.

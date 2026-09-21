@@ -9,30 +9,67 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("invalid effect".into());
     }
     let mut text = String::new();
-    std::io::stdin().take(2049).read_to_string(&mut text)?;
-    if text.len() > 2048 {
+    std::io::stdin().take(8193).read_to_string(&mut text)?;
+    if text.len() > 8192 {
         return Err("input too large".into());
     }
     let mut args = vec![
         "ttfx",
-        "--no-color",
         "--ignore-terminal-dimensions",
         "--canvas-width",
-        "100",
+        "120",
         "--canvas-height",
-        "6",
+        "36",
         "--anchor-text",
         "nw",
         "--seed",
         "42",
         &effect,
     ];
+    let colours: Vec<String> = std::env::args().skip(2).collect();
+    let defaults = vec![
+        "7aa2f7".into(),
+        "c0caf5".into(),
+        "9ece6a".into(),
+        "e0af68".into(),
+    ];
+    let colours = if colours.len() == 4 {
+        colours
+    } else {
+        defaults
+    };
+    if colours
+        .iter()
+        .any(|c| c.len() != 6 || !c.chars().all(|x| x.is_ascii_hexdigit()))
+    {
+        return Err("invalid palette".into());
+    }
     if effect == "vhstape" {
-        args.extend(["--total-glitch-time", "90"]);
+        args.extend([
+            "--total-glitch-time",
+            "90",
+            "--glitch-line-colors",
+            &colours[0],
+            &colours[1],
+            "--glitch-wave-colors",
+            &colours[2],
+            &colours[0],
+            "--noise-colors",
+            &colours[0],
+            &colours[1],
+        ]);
     }
     if effect == "decrypt" {
-        args.extend(["--typing-speed", "12"]);
+        args.extend([
+            "--typing-speed",
+            "30",
+            "--ciphertext-colors",
+            &colours[0],
+            &colours[2],
+            &colours[3],
+        ]);
     }
+    args.extend(["--final-gradient-stops", &colours[0], &colours[1]]);
     let cli = ttfx::cli::Cli::try_parse_from(args)?;
     let mut ctx = EngineCtx::new(
         &text,
@@ -44,16 +81,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     renderer.build(&mut ctx)?;
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
-    // Bound CPU and wire size; downsample longer effects and finish with original text in the UI.
-    for i in 0..360 {
+    // Only complete animations are accepted by the caller. Budget exhaustion fails closed.
+    let mut bytes = 0;
+    for _ in 0..5000 {
         let Some(frame) = renderer.next_frame(&mut ctx) else {
-            break;
+            out.write_all(b"END\n")?;
+            return Ok(());
         };
-        if i % 3 == 0 {
-            writeln!(out, "{}", frame.len())?;
-            out.write_all(frame.as_bytes())?;
-            out.write_all(b"\n")?;
+        bytes += frame.len();
+        if bytes > 128 * 1024 * 1024 {
+            return Err("frame budget exceeded".into());
         }
+        writeln!(out, "{}", frame.len())?;
+        out.write_all(frame.as_bytes())?;
+        out.write_all(b"\n")?;
     }
-    Ok(())
+    Err("animation did not finish within budget".into())
 }
