@@ -1,5 +1,6 @@
 """Work-only feed publication over SSH and bounded private-file receipt."""
 import argparse
+import fcntl
 import json
 import math
 import os
@@ -61,16 +62,34 @@ def atomic_receive(path, data):
     raw = validate_feed(json.loads(data))
     path = Path(path).expanduser()
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    descriptor, name = tempfile.mkstemp(prefix='.feed-', dir=path.parent)
-    try:
-        with os.fdopen(descriptor, 'w') as stream:
-            json.dump(raw, stream, allow_nan=False)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(name, path)
-    finally:
-        if os.path.exists(name):
-            os.unlink(name)
+    # Compare and replace under one cross-process lock: SSH invocations may overlap.
+    lock_descriptor = os.open(str(path) + '.lock', os.O_CREAT | os.O_RDWR, 0o600)
+    with os.fdopen(lock_descriptor, 'a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if path.exists():
+            with path.open('rb') as stream:
+                previous_data = stream.read(MAX_BYTES + 1)
+            if len(previous_data) > MAX_BYTES:
+                raise ValueError('Existing feed exceeds size limit')
+            previous = validate_feed(json.loads(previous_data), raw['host_id'])
+            if raw['captured_at'] < previous['captured_at']:
+                return False
+            if raw['captured_at'] == previous['captured_at']:
+                if previous['online'] and not raw['online']:
+                    raw = dict(previous, online=False, agents=[], metrics=None)
+                else:
+                    return False
+        descriptor, name = tempfile.mkstemp(prefix='.feed-', dir=path.parent)
+        try:
+            with os.fdopen(descriptor, 'w') as stream:
+                json.dump(raw, stream, allow_nan=False)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(name, path)
+        finally:
+            if os.path.exists(name):
+                os.unlink(name)
+    return True
 
 
 def read_feed(host):

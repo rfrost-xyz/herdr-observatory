@@ -37,7 +37,7 @@ class FeedTests(unittest.TestCase):
             raw = read_feed(host)
             self.assertEqual(len(raw['agent_views']), 1)
             feed['captured_at'] = time.time() - 31
-            atomic_receive(path, json.dumps(feed).encode())
+            path.write_text(json.dumps(feed))
             raw = read_feed(host)
             self.assertEqual(raw['agent_views'], [])
             self.assertIsNotNone(raw['error'])
@@ -97,3 +97,40 @@ class FeedTests(unittest.TestCase):
         app.poll(HOST); app.poll(other)
         self.assertTrue(app.snapshot()['hosts'][0]['online'])
         self.assertFalse(app.snapshot()['hosts'][1]['online'])
+
+    def test_older_feed_cannot_resurrect_state_or_theme_across_restart(self):
+        _app, newer = fixture()
+        newer['captured_at'] = time.time() - 2
+        newer['agents'][0]['status'] = 'done'
+        newer['theme'] = {'name': 'New', 'colours': {'accent': '#123456'}}
+        older = copy.deepcopy(newer)
+        older['captured_at'] -= 8
+        older['agents'][0]['status'] = 'working'
+        older['theme']['name'] = 'Old'
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'feed.json'
+            self.assertTrue(atomic_receive(path, json.dumps(newer).encode()))
+            self.assertFalse(atomic_receive(path, json.dumps(older).encode()))
+            host = {'id': HOST['id'], 'transport': 'file', 'path': str(path)}
+            app = Observatory({'hosts': [host]}, 'work')
+            app.poll(host)
+            self.assertEqual(app.snapshot()['hosts'][0]['agents'][0]['status'], 'done')
+            self.assertEqual(app.snapshot()['theme']['name'], 'New')
+            # Defence in depth even if a file was replaced outside the receiver.
+            path.write_text(json.dumps(older))
+            app.poll(host)
+            self.assertEqual(app.snapshot()['hosts'][0]['agents'][0]['status'], 'done')
+            self.assertEqual(app.snapshot()['theme']['name'], 'New')
+            self.assertEqual(len(app.snapshot()['history']), 1)
+
+    def test_equal_capture_only_allows_offline_transition(self):
+        _app, feed = fixture()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'feed.json'
+            atomic_receive(path, json.dumps(feed).encode())
+            changed = copy.deepcopy(feed)
+            changed['agents'][0]['status'] = 'done'
+            self.assertFalse(atomic_receive(path, json.dumps(changed).encode()))
+            self.assertTrue(atomic_receive(path, json.dumps(dict(feed, online=False)).encode()))
+            self.assertFalse(atomic_receive(path, json.dumps(feed).encode()))
+            self.assertFalse(json.loads(path.read_text())['online'])

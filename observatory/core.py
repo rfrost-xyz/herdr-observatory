@@ -192,10 +192,14 @@ class Observatory:
                 error = 'Herdr unavailable or incompatible'
             with self.lock:
                 state = self.hosts[host['id']]
-                if is_feed and host['id'] == self.config.get('theme_host', self.config['hosts'][0]['id']):
+                if is_feed and state['sampled_at'] is not None:
+                    if sampled_at < state['sampled_at']:
+                        return
+                    if sampled_at == state['sampled_at']:
+                        if not (state['online'] and error):
+                            return
+                if is_feed and sampled_at != state['sampled_at'] and host['id'] == self.config.get('theme_host', self.config['hosts'][0]['id']):
                     self.palette = theme(raw.get('theme'))
-                if is_feed and state['sampled_at'] == sampled_at and state['online'] == (not bool(error)):
-                    return
                 previous = {a['id']: a for a in state['agents']} if state['online'] else {}
                 for agent in agents:
                     old = previous.get(agent['id'])
