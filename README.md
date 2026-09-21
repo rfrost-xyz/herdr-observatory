@@ -24,11 +24,32 @@ The browser on each host opens **http://localhost:8789**. On a native Linux inst
 docker compose ps                  # container and health status
 docker compose logs --tail=50      # recent application logs
 docker compose restart            # restart the installed release
-docker compose stop               # intentionally stop it
+docker compose stop               # stop now and keep stopped across reboots
+docker compose start              # resume it and restore normal autostart
 lazydocker                        # interactive Docker management, if installed
 ```
 
 Both services use `unless-stopped`, health checks, bounded logs and read-only root filesystems. Enable the Linux Docker service at boot; the Windows workstation also needs its existing WSL headless startup. The containers do not open the browser automatically or override screen-lock policy. Installation, update and rollback instructions are below.
+
+## Controlling autostart
+
+The application runs in Docker on both machines. There is no separate Observatory systemd service, cron job or development server. On iapetus, the enabled system Docker service starts the container at boot. On the workstation, the existing Windows headless startup starts WSL, then its native Docker engine starts the container. Compose does not start Windows or WSL.
+
+Docker's `unless-stopped` policy controls the application. To stop Observatory and leave it stopped across reboots, use `docker compose stop` in its deployment directory. To resume it, use `docker compose start`. This affects Observatory only; do not disable the shared Docker engine to stop this application.
+
+For the installed container, these equivalent commands work from any directory:
+
+```sh
+docker stop herdr-observatory       # stop and keep stopped across reboots
+docker start herdr-observatory      # resume, including subsequent boot startup
+docker logs --tail=50 herdr-observatory
+```
+
+Run workstation commands through `ssh omaterm@ws-255`, for example `ssh omaterm@ws-255 docker stop herdr-observatory`.
+
+To keep the application running now but disable automatic restarts, change `restart: unless-stopped` to `restart: "no"` in the installed `compose.yaml`, then run `docker compose up -d --wait`. Restore `unless-stopped` and apply again to re-enable automatic restarts. Keep that local policy when replacing deployment files during upgrades. A one-off `docker update --restart=no` is not a durable Compose setting: recreation restores the policy from the Compose file.
+
+The browser is separate and does **not** autostart. Open `http://localhost:8789` manually. `deploy/Start-OfficeDisplay.ps1` is a manual Windows Edge kiosk launcher; this project has not installed a Windows login/startup task for it. Closing the browser does not stop collection. Existing lock and display-sleep policies are unchanged.
 
 ## Development run
 
@@ -240,11 +261,11 @@ CPU/RAM come from the Linux kernel, network from the shared host namespace and d
 ```sh
 python -m unittest discover -s tests -v
 node --check web/app.js
-node --test tests/test_ui.cjs
+node --test tests/test_ui.cjs tests/test_wasm.mjs
 openspec validate --all --strict
 ```
 
-The application needs no OpenSpec installation to run. OpenSpec is used for project delivery. GitHub Actions runs Python tests and JavaScript syntax checks. Live compatibility testing is separate from automated fixture tests.
+The application needs no OpenSpec installation to run. OpenSpec is used for project delivery. GitHub Actions runs Python tests, JavaScript syntax checks, UI regression tests and the complete WASM effect catalogue tests. Live compatibility testing is separate from automated fixture tests.
 
 Protocol reference: [Herdr socket API](https://herdr.dev/docs/socket-api/).
 
