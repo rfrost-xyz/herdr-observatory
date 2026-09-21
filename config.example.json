@@ -1,0 +1,13 @@
+{
+  "interval": 5,
+  "theme_host": "desktop",
+  "hosts": [
+    {
+      "id": "desktop",
+      "label": "Desktop",
+      "transport": "local",
+      "work_roots": [],
+      "personal_roots": []
+    }
+  ]
+}
