@@ -37,7 +37,7 @@ cp config.example.json config.local.json
 python -m observatory --config config.local.json --profile personal
 ```
 
-Open **http://127.0.0.1:8789**. Use F or F11 for fullscreen. The rendered terminal fits one 16:9 screen. Pane pages rotate every 15 seconds; Page Up/Down selects a page and holds it, R resumes rotation. C cycles All/Work/Personal on the Personal display. Space pauses visual effects. Left/Right changes the hold between effects in one-second increments (default 10 seconds; range 0–300). Collection continues while effects are paused. Ctrl+C stops a foreground server.
+Open **http://127.0.0.1:8789**. Use F or F11 for fullscreen. The rendered terminal fills the browser viewport with an eight-pixel inset; live text and effects share the same cell grid and resize together. Pane pages rotate every 15 seconds; Page Up/Down selects a page and holds it, R resumes rotation. C cycles All/Work/Personal on the Personal display. Space pauses visual effects. Left/Right changes the hold between effects in one-second increments (default 10 seconds; range 0–300). Collection continues while effects are paused. Ctrl+C stops a foreground server.
 
 For a work display:
 

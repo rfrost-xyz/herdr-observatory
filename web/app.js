@@ -86,9 +86,9 @@ function resize() {
   draw(performance.now());
 }
 function geometry(w,h) {
-  const margin=Math.max(16,w*.025),line=(h-margin*2)/36;
-  const font=Math.max(8,Math.min((w-margin*2)/(120*.61),line/1.4));
-  return {font,line,margin,columns:120,processRows:12,logRows:6};
+  const margin=8,cell=Math.max(1,(w-margin*2)/120),line=Math.max(1,(h-margin*2)/36);
+  const font=Math.min(cell/.61,line*.9);
+  return {font,cell,line,margin,columns:120,processRows:12,logRows:6};
 }
 function filteredAgents(){return agents.filter(a=>category==='all'||snapshot?.profile==='work'||a.category===category);}
 function currentPage(now=Date.now()) {return (manualPage ?? Math.floor(now/15000))%Math.max(1,Math.ceil(filteredAgents().length/geometry(width,height).processRows));}
@@ -148,21 +148,21 @@ function paintEffect(frame,x,y,cell,line) {
     let fg=themedColour(frame.fg[i],palette.foreground),bg=themedColour(frame.bg[i],palette.background);
     if(flag&16)[fg,bg]=[bg,fg];
     if(bg!==palette.background){ctx.fillStyle=bg;ctx.fillRect(px,py,cell,line);}
-    if(symbol && symbol!==32){ctx.globalAlpha=flag&2?.55:1;ctx.fillStyle=fg;ctx.fillText(String.fromCodePoint(symbol),px,py);}
+    if(symbol && symbol!==32){ctx.globalAlpha=flag&2?.55:1;ctx.fillStyle=fg;ctx.fillText(String.fromCodePoint(symbol),px,py,cell);}
     if(flag&8){ctx.fillStyle=fg;ctx.fillRect(px,py+line*.85,cell,1);}
   }
   ctx.globalAlpha=1;
 }
 function draw(now) {
   if(!ctx)return;
-  const {font,line,margin,columns,processRows}=geometry(width,height);
+  const {font,cell,line,margin,columns,processRows}=geometry(width,height);
   ctx.globalAlpha=1;ctx.fillStyle=palette.background;ctx.fillRect(0,0,width,height);
   ctx.font=`${font}px "DejaVu Sans Mono", "Cascadia Code", monospace`;ctx.textBaseline='top';
-  const cell=ctx.measureText('M').width, cols=Math.min(columns,Math.floor((width-margin*2)/cell));
+  const cols=columns;
   const playing=animationIndex>=0 && framesCurrent() && !reduced.matches;
   document.getElementById('controls').hidden=playing;
   if(playing){paintEffect(effectFrame,margin,margin,cell,line);return;}
-  function text(value,row,tint=palette.foreground){ctx.fillStyle=tint;ctx.fillText(clean(value,cols),margin,margin+row*line);}
+  function text(value,row,tint=palette.foreground){ctx.fillStyle=tint;let col=0;for(const glyph of clean(value,cols)){ctx.fillText(glyph,margin+col*cell,margin+row*line,cell);col++;}}
   function rule(row,label){const title='─ '+label+' ';text('├'+title+'─'.repeat(Math.max(0,cols-title.length-2))+'┤',row,palette.blue);}
   if(snapshot?.terminal_text && !disconnected && snapshot.hosts.every(h=>!h.online || previous.get(h.id)?.live)){
     const rows=snapshot.terminal_text.split('\n');
