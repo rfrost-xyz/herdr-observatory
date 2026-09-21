@@ -2,6 +2,7 @@
 import argparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import signal
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -57,6 +58,10 @@ def main():
     except (OSError, ValueError, TypeError, AttributeError) as error:
         parser.error(str(error))
     server = ThreadingHTTPServer(('127.0.0.1', args.port), handler(observatory))
+    def terminate(_signum, _frame):
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, terminate)
     observatory.start()
     print(f'Herdr Observatory · {args.profile} · http://127.0.0.1:{args.port}', flush=True)
     try:

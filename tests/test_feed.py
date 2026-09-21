@@ -91,6 +91,13 @@ class FeedTests(unittest.TestCase):
         self.assertIn("cd '/app with spaces'", args[0][-1])
         self.assertNotIn('shell', kwargs)
 
+    @patch('observatory.feed.subprocess.run')
+    def test_publisher_uses_receiver_image_without_remote_checkout(self, run):
+        app, _feed = fixture()
+        Publisher(app, {'host_id': HOST['id'], 'target': 'office', 'container': 'herdr-observatory', 'path': '/feeds/work.json'}).once()
+        self.assertEqual(run.call_args.args[0][-1], 'docker exec -i herdr-observatory python3 -m observatory.feed /feeds/work.json')
+        self.assertNotIn('PRIVATE', run.call_args.kwargs['input'])
+
     def test_missing_feed_does_not_hide_local_agents(self):
         other = {'id': 'laptop', 'transport': 'file', 'path': '/nonexistent/source.json'}
         app = Observatory({'hosts': [HOST, other]}, 'work', lambda h: copy.deepcopy(RAW) if h['id'] == HOST['id'] else collect(h))

@@ -1,0 +1,8 @@
+*
+!Dockerfile
+!observatory/
+!observatory/*.py
+!web/
+!web/*.html
+!web/*.css
+!web/*.js

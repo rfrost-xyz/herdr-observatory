@@ -12,7 +12,7 @@ import tempfile
 import threading
 import time
 
-from .core import STATUSES, clean, sanitise_metrics, theme
+from .core import STATUSES, clean, sanitise_metrics, theme, ssh_command
 
 MAX_BYTES = 1024 * 1024
 MAX_AGE = 30
@@ -116,8 +116,11 @@ class Publisher:
         if len(payload.encode()) > MAX_BYTES:
             raise ValueError('Feed exceeds size limit')
         # Only configured operator values enter the remote shell, individually quoted.
-        remote = 'cd ' + shlex.quote(self.config['directory']) + ' && python3 -m observatory.feed ' + shlex.quote(self.config['path'])
-        command = ['ssh', '-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', '-o', 'ServerAliveInterval=5', '-o', 'ServerAliveCountMax=1', '--', self.config['target'], remote]
+        if self.config.get('container'):
+            remote = 'docker exec -i ' + shlex.quote(self.config['container']) + ' python3 -m observatory.feed ' + shlex.quote(self.config['path'])
+        else:
+            remote = 'cd ' + shlex.quote(self.config['directory']) + ' && python3 -m observatory.feed ' + shlex.quote(self.config['path'])
+        command = ssh_command() + ['-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', '-o', 'ServerAliveInterval=5', '-o', 'ServerAliveCountMax=1', '--', self.config['target'], remote]
         subprocess.run(command, input=payload, text=True, capture_output=True, check=True, timeout=15)
 
     def run(self):

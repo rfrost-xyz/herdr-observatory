@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 import copy
 import json
 import math
+import os
 from pathlib import Path, PurePosixPath
 import re
 import subprocess
@@ -53,7 +54,9 @@ def validate_config(config):
             roots = host.get(key, [])
             if not isinstance(roots, list) or any(not isinstance(r, str) or not r.startswith('/') or '..' in PurePosixPath(r).parts for r in roots):
                 raise ValueError('Project roots must be absolute POSIX paths without parent traversal')
-        for key in ('herdr', 'session'):
+        if host.get('socket_path') and host.get('session'):
+            raise ValueError('Select a socket path or a CLI session, not both')
+        for key in ('herdr', 'session', 'socket_path', 'theme_path', 'disk_path'):
             if key in host and (not isinstance(host[key], str) or not host[key]):
                 raise ValueError(f'{key} must be a nonempty string')
     interval = config.get('interval', 5)
@@ -68,7 +71,11 @@ def validate_config(config):
         target = publication.get('target', '')
         if not isinstance(target, str) or not re.fullmatch(r'[a-zA-Z0-9_.@:-]+', target) or target.startswith('-'):
             raise ValueError('Invalid publisher SSH target')
-        if any(not isinstance(publication.get(k), str) or not publication[k].startswith('/') for k in ('directory', 'path')):
+        container = publication.get('container')
+        if container is not None and (not isinstance(container, str) or not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9_.-]*', container)):
+            raise ValueError('Invalid receiver container')
+        fields = ('path',) if container else ('directory', 'path')
+        if any(not isinstance(publication.get(k), str) or not publication[k].startswith('/') for k in fields):
             raise ValueError('Publisher directory and path must be absolute')
     return config
 
@@ -139,16 +146,22 @@ def rates(current, previous):
     return result
 
 
+def ssh_command():
+    config = os.environ.get('OBSERVATORY_SSH_CONFIG')
+    return ['ssh'] + (['-F', config] if config else [])
+
+
 def collect(host):
     if host.get('transport') == 'file':
         from .feed import read_feed
         return read_feed(host)
     options = {'binary': host.get('herdr', 'herdr'), 'session': host.get('session')}
+    options.update({key: host[key] for key in ('socket_path', 'theme_path', 'disk_path') if key in host})
     script = Path(probe.__file__).read_text().split("if __name__ == '__main__':")[0]
     script += '\nprint(json.dumps(sample(**' + repr(options) + ')))\n'
     command = [sys.executable, '-']
     if host.get('transport') == 'ssh':
-        command = ['ssh', '-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', '-o', 'ServerAliveInterval=5', '-o', 'ServerAliveCountMax=1', '--', host['target'], 'python3 -']
+        command = ssh_command() + ['-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', '-o', 'ServerAliveInterval=5', '-o', 'ServerAliveCountMax=1', '--', host['target'], 'python3 -']
     process = subprocess.run(command, input=script, capture_output=True, text=True, timeout=15, check=True)
     if len(process.stdout) > 4 * 1024 * 1024:
         raise ValueError('Collector response too large')

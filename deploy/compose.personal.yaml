@@ -1,0 +1,20 @@
+services:
+  dashboard:
+    environment:
+      OBSERVATORY_SSH_CONFIG: /config/ssh_config
+    volumes:
+      - type: bind
+        source: ${OBSERVATORY_CONFIG_DIR:?Set private configuration directory}
+        target: /config
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${HERDR_DIRECTORY:?Set Herdr socket directory}
+        target: /herdr
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${OMARCHY_CURRENT:?Set active Omarchy theme parent directory}
+        target: /theme
+        read_only: true
+        bind: {create_host_path: false}

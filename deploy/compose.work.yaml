@@ -1,0 +1,28 @@
+# Docker daemon sees named-volume subpaths, not paths inside the SSH container.
+services:
+  dashboard:
+    volumes:
+      - type: volume
+        source: host_home
+        target: /config
+        read_only: true
+        volume:
+          nocopy: true
+          subpath: ${OBSERVATORY_CONFIG_SUBPATH:?Set config subpath}
+      - type: volume
+        source: host_home
+        target: /herdr
+        read_only: true
+        volume:
+          nocopy: true
+          subpath: ${HERDR_SUBPATH:-.config/herdr}
+      - type: volume
+        source: host_home
+        target: /feeds
+        volume:
+          nocopy: true
+          subpath: ${OBSERVATORY_FEED_SUBPATH:?Set feed subpath}
+volumes:
+  host_home:
+    external: true
+    name: ${HOST_HOME_VOLUME:?Set existing Herdr home volume}

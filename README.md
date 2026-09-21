@@ -95,17 +95,11 @@ ssh -N -L 8789:127.0.0.1:8789 workstation-ssh-alias
 
 Open `http://localhost:8789` on a device where port 8789 is free. Host validation requires the forwarded and service ports to match. The laptop's own Personal dashboard already provides its full fleet view without this tunnel. Do not bind the Personal service to a LAN or tailnet address.
 
-### Persistent container service
+### Persistent services on both machines
 
-For a WSL host with an existing Python-equipped runtime image, host networking and a named home volume, run the supplied script on the Docker host:
+Use the dedicated versioned image and Compose definitions in [deploy/README.md](deploy/README.md) for both Personal and Work installations. They include health checks, bounded logs, restart policies, narrow mounts and upgrade/rollback instructions. Application code is baked into the image; production services do not run from a development checkout. Lazydocker can manage each installed Compose project.
 
-```sh
-./deploy/run-office-container.sh EXISTING_IMAGE HOME_VOLUME /home/user UID:GID /home/user/Projects/herdr-observatory/current /home/user/.local/state/herdr-observatory/config.json
-```
-
-Replace the six arguments with the existing image, volume, collector home, numeric user/group, release path and private Work configuration. The script refuses an existing `herdr-observatory` container and never pulls an image. It uses a read-only home mount, a read-only container filesystem, no capabilities, no Docker socket and `restart: unless-stopped`. It does not recreate the Herdr container or its Tailscale identity.
-
-To update an existing display service, inspect its image, mounts and configuration, stop/remove only `herdr-observatory`, then run the script with the new release. The feed and config remain in the home volume. Stop the named container to roll back service operation. No other containers need restarting.
+The older `run-office-container.sh` is a legacy migration/rollback helper, not the supported installation path. Do not use an unrelated image or mount an entire home for new installations.
 
 ### Windows office monitor
 

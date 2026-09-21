@@ -47,3 +47,36 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual(result['snapshot']['agents'][0]['agent_status'], 'working')
         self.assertIsNone(result['metrics']['gpu'])
         self.assertIsNotNone(result['metrics']['cpu'])
+
+
+class SocketTests(unittest.TestCase):
+    @patch('observatory.probe.socket.socket')
+    def test_socket_request_is_read_only_and_response_is_allowlisted(self, socket):
+        client = socket.return_value.__enter__.return_value
+        payload = json.dumps({'id': 'observatory-snapshot', 'result': {'snapshot': SNAP}}).encode() + b'\n'
+        client.recv.side_effect = [payload[:20], payload[20:]]
+        with patch('observatory.probe.metrics', return_value={'at': 1}), patch('observatory.probe.palette', return_value=None):
+            result = probe.sample(socket_path='/herdr/herdr.sock')
+        self.assertIsNone(result['error'])
+        self.assertNotIn('SECRET SESSION', json.dumps(result))
+        sent = json.loads(client.sendall.call_args.args[0])
+        self.assertEqual(sent, {'id': 'observatory-snapshot', 'method': 'session.snapshot', 'params': {}})
+        client.connect.assert_called_once_with('/herdr/herdr.sock')
+
+    @patch('observatory.probe.socket.socket')
+    def test_socket_failure_frames_are_rejected(self, socket):
+        client = socket.return_value.__enter__.return_value
+        for payload in (b'{}\n', b'invalid\n', b'[]\n', b'', b'{"id":"other","result":{}}\n', b'{"id":"observatory-snapshot","error":{}}\n'):
+            client.recv.side_effect = [payload]
+            with self.assertRaises((ValueError, KeyError)):
+                probe.socket_snapshot('/herdr/herdr.sock')
+        client.recv.side_effect = [b'x' * 65536] * 65
+        with self.assertRaises(ValueError):
+            probe.socket_snapshot('/herdr/herdr.sock')
+
+    @patch('observatory.probe.socket.socket')
+    @patch('observatory.probe.time.monotonic', side_effect=[0, 0, 7])
+    def test_socket_deadline_rejects_slow_response(self, _clock, socket):
+        socket.return_value.__enter__.return_value.recv.return_value = b'x'
+        with self.assertRaises(ValueError):
+            probe.socket_snapshot('/herdr/herdr.sock')
