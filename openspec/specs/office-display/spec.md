@@ -59,7 +59,7 @@ The display SHALL show available typed Herdr revision, state sequence and protoc
 - **THEN** unavailable fields remain marked unavailable and excluded metadata never reaches the Work feed or display.
 
 ### Requirement: Reactive rendered terminal
-The display SHALL render a fixed character-cell TUI with clearly readable thread states and a separate CLI feed using the pinned ttfx text-effects library. It SHALL NOT render decorative circles or background geometry. Only current profile-filtered source observations SHALL reach the renderer. Frame generation and playback SHALL be bounded, deduplicated by source capture, and fall back to plain text on errors. Reduced motion and pause SHALL keep plain observations readable while current thread state continues updating.
+The display SHALL show an unbranded live thread TUI between whole-terminal text effects. Effects SHALL use current theme colours, complete naturally without replacement by routine updates, and never repeat consecutively. A ten-second default hold SHALL begin after completion and be adjustable with Left/Right in one-second increments. Incomplete generation SHALL fall back to the live TUI. Profile filtering, accessibility and reduced-motion support SHALL remain.
 
 #### Scenario: Agent milestone
 - **WHEN** an agent appears, changes status or disappears from a fresh source
@@ -72,3 +72,11 @@ The display SHALL render a fixed character-cell TUI with clearly readable thread
 #### Scenario: Accessible one-screen rendering
 - **WHEN** the scene runs at 720p or 1080p, or reduced motion is requested
 - **THEN** the terminal remains bounded to one screen with an accessible text equivalent and reduced motion suppresses dynamic effects.
+
+#### Scenario: Complete playback and hold
+- **WHEN** fresh data arrives during an effect
+- **THEN** playback continues through the final frame, followed by the configured hold before a different effect begins.
+
+#### Scenario: Theme and controls
+- **WHEN** the user presses Left or Right
+- **THEN** the hold changes by one second and the unbranded terminal retains theme-derived coloured effects across its full contents.
