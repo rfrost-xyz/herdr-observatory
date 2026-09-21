@@ -8,3 +8,5 @@
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important}.scan-plane,.matrix-plane{display:none}}
 
 .event{display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-rows:auto auto;column-gap:5px;align-content:start;line-height:1.15}.event-time{grid-column:1/-1}.event-project{font-size:8px}.event-status{font-size:7px;white-space:nowrap}
+/* Reserve character-based columns so terminal timestamps never touch event tags. */
+.console-record{grid-template-columns:9ch 5ch minmax(0,1fr);column-gap:1ch}
