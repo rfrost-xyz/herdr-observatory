@@ -6,11 +6,9 @@ Provide a continuously visible, private office activity display that operates in
 ## Requirements
 
 ### Requirement: Single-screen activity
-The display SHALL fit 1280x720 and 1920x1080 16:9 viewports without document or internal panel scrolling, while preserving readable bounded pages and aggregate counts.
+The display SHALL fit 1280x720 and 1920x1080 16:9 viewports without document scrolling, with bounded process pages and a count of all permitted live panes.
 
-#### Scenario: Many agents
-- **WHEN** more agents or machines exist than fit on one page
-- **THEN** counters include all permitted live agents and labelled pages rotate with pause and manual navigation controls.
+##
 
 ### Requirement: Work-only publication
 The publisher SHALL send only explicitly selected hosts' Work agents, sanitised telemetry and palette through authenticated SSH; it SHALL omit personal agent titles, paths, session identifiers and history before transmission.
@@ -33,17 +31,6 @@ The workstation SHALL run its own loopback Work dashboard independently of the l
 - **WHEN** the dashboard service restarts
 - **THEN** it resumes the Work profile, local collection and the latest valid feed without starting or controlling Herdr panes.
 
-### Requirement: Continuous status heartbeats
-Machine and working-thread heartbeat animations SHALL retain their phase through routine refreshes and traverse the full track. Thread heartbeats SHALL indicate fresh working status only, respect reduced-motion preferences and preserve the fixed viewport layout.
-
-#### Scenario: Refresh during a sweep
-- **WHEN** routine rendering occurs before a sweep finishes
-- **THEN** the indicator continues from its elapsed phase rather than restarting at the left edge.
-
-#### Scenario: Inactive or disconnected thread
-- **WHEN** a thread is idle, blocked, done or its source becomes stale
-- **THEN** it has no animated heartbeat.
-
 ### Requirement: Reproducible supervised deployment
 Both profiles SHALL run from versioned application images under Compose with health checks, bounded logs and restart policies, independently of development checkouts. Runtime mounts SHALL be limited to explicit configuration, Herdr integration, palette and feed paths; the application SHALL NOT mount the Docker socket or an entire home directory.
 
@@ -59,23 +46,21 @@ Local container collection SHALL issue only the read-only session snapshot reque
 - **THEN** the source is unavailable while independent sources continue and later valid samples restore it.
 
 ### Requirement: Differentiated technical activity
-Each displayed machine and working thread SHALL have a stable identity-dependent heartbeat period and phase which survives redraws. The display SHALL show available typed Herdr revision, state sequence, focus/readiness flags and protocol metadata without implying measured model throughput, while retaining one-screen geometry and reduced-motion support.
+The display SHALL show available typed Herdr revision, state sequence and protocol metadata without implying measured model throughput, while retaining one-screen geometry and reduced-motion support.
 
-#### Scenario: Multiple working entities
-- **WHEN** multiple machines or threads are working
-- **THEN** their heartbeat rhythms differ and remain consistent across redraws and card reordering.
+##
 
-#### Scenario: Missing or private telemetry
-- **WHEN** metadata is unavailable, malformed or belongs to an excluded Personal agent
-- **THEN** unavailable fields remain marked unavailable and excluded metadata never reaches the Work feed or display.
+### Requirement: Reactive rendered terminal
+The display SHALL be a single rendered terminal scene rather than dashboard cards or charts. Meaningful sampled Herdr agent and source transitions SHALL create deduplicated terminal observations and scene-wide reactions. Routine polling, unchanged samples and metadata-only changes SHALL NOT create work impacts. Initial state SHALL establish a baseline without replaying historical impacts.
 
-### Requirement: Living operations console
-The display SHALL animate the surfaces and perimeters of working machine and agent cards with distinct persistent phases, replacing literal heartbeat strips. It SHALL provide a bounded terminal-style presentation of actual sampled state, labelled as derived observations rather than raw command output. It SHALL retain fixed viewport bounds, escaping and reduced-motion support.
+#### Scenario: Agent milestone
+- **WHEN** an agent appears, changes status or disappears from a fresh source
+- **THEN** the terminal records the observed change and the rendered scene reacts once, without claiming unsampled tool execution.
 
-#### Scenario: Active operations
-- **WHEN** permitted agents are working
-- **THEN** their cards animate as a whole while readable task and technical data remain stable; console entries retain real capture timestamps.
+#### Scenario: Source unavailable
+- **WHEN** a source or browser connection is lost
+- **THEN** the terminal records loss once, removes stale agents from the live listing and does not report them as completed.
 
-#### Scenario: No live activity
-- **WHEN** sources become unavailable or reduced motion is selected
-- **THEN** active FX stop without fabricating work or new console observations.
+#### Scenario: Accessible one-screen rendering
+- **WHEN** the scene runs at 720p or 1080p, or reduced motion is requested
+- **THEN** the terminal remains bounded to one screen with an accessible text equivalent and reduced motion suppresses dynamic effects.
