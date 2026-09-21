@@ -8,7 +8,9 @@ Provide a continuously visible, private office activity display that operates in
 ### Requirement: Single-screen activity
 The display SHALL fit 1280x720 and 1920x1080 16:9 viewports without document scrolling, with bounded process pages and a count of all permitted live panes.
 
-##
+#### Scenario: Many agents
+- **WHEN** more agents exist than fit on one page
+- **THEN** the total includes all permitted live agents and labelled pages rotate with keyboard manual navigation that holds the selected page until rotation is resumed.
 
 ### Requirement: Work-only publication
 The publisher SHALL send only explicitly selected hosts' Work agents, sanitised telemetry and palette through authenticated SSH; it SHALL omit personal agent titles, paths, session identifiers and history before transmission.
@@ -48,7 +50,13 @@ Local container collection SHALL issue only the read-only session snapshot reque
 ### Requirement: Differentiated technical activity
 The display SHALL show available typed Herdr revision, state sequence and protocol metadata without implying measured model throughput, while retaining one-screen geometry and reduced-motion support.
 
-##
+#### Scenario: Multiple working entities
+- **WHEN** multiple machines or threads are working
+- **THEN** their current state and available counters remain readable, with reactions reserved for observed transitions.
+
+#### Scenario: Missing or private telemetry
+- **WHEN** metadata is unavailable, malformed or belongs to an excluded Personal agent
+- **THEN** unavailable fields remain marked unavailable and excluded metadata never reaches the Work feed or display.
 
 ### Requirement: Reactive rendered terminal
 The display SHALL be a single rendered terminal scene rather than dashboard cards or charts. Meaningful sampled Herdr agent and source transitions SHALL create deduplicated terminal observations and scene-wide reactions. Routine polling, unchanged samples and metadata-only changes SHALL NOT create work impacts. Initial state SHALL establish a baseline without replaying historical impacts.
