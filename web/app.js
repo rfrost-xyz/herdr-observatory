@@ -1,135 +1,151 @@
 'use strict';
-const $ = id => document.getElementById(id);
-let state = null;
-let received = 0;
-let failed = false;
-let page = 0;
-let rotationPaused = false;
-const AGENT_PAGE = 6;
-const HOST_PAGE = 3;
-const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const label = status => ({working:'Working',blocked:'Needs input',done:'Done',idle:'Idle',unknown:'Unknown'}[status] || 'Unknown');
-const ago = at => at ? `${Math.max(0, Math.floor(Date.now() / 1000 - at))}s ago` : 'No sample';
-const bytes = n => n == null ? '—' : n >= 1073741824 ? `${(n / 1073741824).toFixed(1)} GB` : `${(n / 1048576).toFixed(1)} MB`;
-const rate = n => n == null ? '—' : n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB/s` : `${(n / 1024).toFixed(1)} KB/s`;
-const pct = n => n == null || !Number.isFinite(n) ? '—' : `${n.toFixed(0)}%`;
-const stale = () => failed || !received || Date.now() - received > 12000;
-const usable = host => !stale() && host.online && Date.now() / 1000 - host.sampled_at < (state.interval + 20);
-const visibleAgents = () => state.hosts.flatMap(h => usable(h) ? h.agents : []).filter(a => ($('machine').value === 'all' || a.host === $('machine').value) && ($('category').value === 'all' || a.category === $('category').value));
-function meter(name, value, detail) {
-  const width = Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 0;
-  return `<div class="meter"><span>${name}</span><span class="bar"><i style="width:${width}%"></i></span><span class="meter-value">${escapeHtml(detail ?? pct(value))}</span></div>`;
+const canvas = document.getElementById('scene');
+const ctx = canvas.getContext('2d');
+const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+let snapshot = null, received = 0, disconnected = false, initialised = false, paused = false;
+let previous = new Map(), agents = [], records = [], impacts = [], serial = 0;
+let width = 0, height = 0, lastFrame = 0, manualPage = null, category = 'all';
+let palette = {background:'#101318',foreground:'#c0caf5',blue:'#7aa2f7',green:'#9ece6a',yellow:'#e0af68',red:'#f7768e',cyan:'#7dcfff'};
+const clean = (value, limit=160) => String(value ?? '—').replace(/[\x00-\x1f\x7f-\x9f]/g,' ').slice(0,limit);
+const number = value => Number.isSafeInteger(value) && value >= 0 ? String(value) : '—';
+const statusKind = status => ({working:'EXEC',done:'DONE',blocked:'INPUT',idle:'IDLE',unknown:'UNKNOWN'}[status] || 'UNKNOWN');
+const colour = kind => palette[{EXEC:'cyan',DONE:'green',INPUT:'yellow',LOST:'red',DETACH:'yellow',LINK:'blue',ATTACH:'blue'}[kind] || 'foreground'];
+function record(kind, text, now, react=true) {
+  const entry = {id:++serial,kind,text:clean(text),at:now,born:performance.now()};
+  records.push(entry); records = records.slice(-60);
+  if (react && !paused && !reduced.matches) { impacts.push({...entry,x:.25+(serial*0.173)%0.5,y:.25+(serial*0.117)%0.45}); impacts=impacts.slice(-8); }
 }
-function sparkSegments(trend) {
-  const segments = [];
-  let points = [];
-  trend.forEach((sample, index) => {
-    if (!Number.isFinite(sample.working)) {
-      if (points.length) segments.push(points.join(' '));
-      points = [];
-    } else {
-      points.push(`${index * 100 / Math.max(1, trend.length - 1)},${28 - Math.min(25, sample.working * 5)}`);
+function observe(data, now=Date.now()) {
+  snapshot=data; received=now;
+  const recovery=disconnected; disconnected=false;
+  if (recovery) record('LINK','browser transport restored / baseline reacquired',now);
+  for (const [key,value] of Object.entries(data.theme?.colours || {})) if ((key in palette || key==='accent') && /^#[0-9a-f]{6}$/i.test(value)) {palette[key]=value;if(key==='accent'){palette.blue=value;palette.cyan=value;}}
+  reconcile(now,recovery);
+}
+function reconcile(now=Date.now(), reset=false) {
+  if (!snapshot) return;
+  const next = new Map(); agents=[];
+  for (const host of snapshot.hosts) {
+    const live=!disconnected && host.online && Number.isFinite(host.sampled_at) && now/1000-host.sampled_at < snapshot.interval+20;
+    const old=previous.get(host.id);
+    const current=new Map(live ? host.agents.map(a=>[a.id,{...a}]) : []);
+    next.set(host.id,{live,agents:current});
+    if (initialised && !reset && old && old.live!==live) record(live?'LINK':'LOST',`${host.label} / ${live?'source restored; baseline reacquired':'source unavailable; activity unknown'}`,now);
+    if (initialised && !reset && live && old?.live) {
+      for (const [id,a] of current) {
+        const before=old.agents.get(id);
+        if (!before) record('ATTACH',`${host.id}/${a.project} / ${a.harness} / ${statusKind(a.status)}`,now);
+        else if (before.status!==a.status) record(statusKind(a.status),`${host.id}/${a.project} / ${clean(a.title,80)} / ${statusKind(before.status)} -> ${statusKind(a.status)}`,now);
+      }
+      for (const [id,a] of old.agents) if (!current.has(id)) record('DETACH',`${host.id}/${a.project} / pane no longer observed`,now);
     }
-  });
-  if (points.length) segments.push(points.join(' '));
-  return segments.map(points => `<polyline points="${points}"/>`).join('');
-}
-// Identity controls rhythm; monotonic time keeps replaced cards on that timeline.
-function identityHash(identity) {
-  let hash = 2166136261;
-  for (const character of String(identity)) hash = Math.imul(hash ^ character.charCodeAt(0), 16777619) >>> 0;
-  // Avalanche the suffix too, so neighbouring pane IDs do not look correlated.
-  hash = Math.imul(hash ^ (hash >>> 16), 0x85ebca6b) >>> 0;
-  hash = Math.imul(hash ^ (hash >>> 13), 0xc2b2ae35) >>> 0;
-  return (hash ^ (hash >>> 16)) >>> 0;
-}
-function activityPhase(identity) {
-  const hash = identityHash(identity);
-  const sweep = 2800 + hash % 2701;
-  const pulse = 1700 + (hash >>> 8) % 1801;
-  const elapsed = performance.now() + hash % 60000;
-  return `--sweep-duration:${sweep}ms;--pulse-duration:${pulse}ms;--sweep-delay:-${elapsed % sweep}ms;--pulse-delay:-${elapsed % pulse}ms`;
-}
-const technicalNumber = value => Number.isSafeInteger(value) && value >= 0 ? value : '—';
-function technicalStrip(agent) {
-  const t = agent.technical || {};
-  const flag = (value, yes, no) => value === true ? yes : value === false ? no : '—';
-  return `<div class="technical-strip"><span title="Herdr pane revision; not a token count">REV <b>${technicalNumber(t.revision)}</b></span><span title="Herdr state-change sequence; not completed tasks">SEQ <b>${technicalNumber(t.state_change_seq)}</b></span><span class="${t.focused === true ? 'focus-marker' : ''}" title="Focused in Herdr">${flag(t.focused,'FOCUS','BACKGROUND')}</span><span title="Interactive readiness / launch pending, when supplied by Herdr">${t.launch_pending === true ? 'LAUNCHING' : flag(t.interactive_ready,'READY','NOT READY')}</span></div>`;
-}
-function cardEffects() {
-  return '<span class="card-fx" aria-hidden="true"><svg viewBox="0 0 100 100" preserveAspectRatio="none"><rect x=".5" y=".5" width="99" height="99" pathLength="100"/></svg><span class="scan-plane"></span><span class="matrix-plane"></span></span>';
-}
-function snapshotConsole(hosts, history) {
-  const records = hosts.map(h => ({at:h.sampled_at || 0, kind:usable(h) ? 'RECV' : 'LOST',
-    text:`${h.label} proto=${technicalNumber(h.protocol)} agents=${usable(h) ? h.agents.length : '—'} status=${usable(h) ? 'online' : 'unavailable'}`}));
-  for (const a of history.slice(0,8)) records.push({at:a.at,kind:a.observation === 'discovered' ? 'SEEN' : 'STATE',text:`${a.host} / ${a.project} → ${label(a.status)} rev=${technicalNumber(a.technical?.revision)}`});
-  return records.sort((a,b)=>b.at-a.at).slice(0,11).map(r=>`<div class="console-record"><time>${r.at ? new Date(r.at*1000).toLocaleTimeString('en-GB') : '--:--:--'}</time><b>${r.kind}</b><span>${escapeHtml(r.text)}</span></div>`).join('');
-}
-function render() {
-  $('clock').textContent = new Date().toLocaleTimeString('en-GB');
-  if (!state) { $('connection').textContent = failed ? 'DISCONNECTED' : 'CONNECTING'; return; }
-  $('connection').textContent = stale() ? 'STALE / DISCONNECTED' : '● LIVE';
-  $('connection').style.color = stale() ? 'var(--yellow)' : 'var(--green)';
-  $('profile').textContent = state.profile;
-  $('theme').textContent = state.theme.name;
-  for (const [key, colour] of Object.entries(state.theme.colours)) {
-    if (/^[a-z_]+$/.test(key) && /^#[0-9a-f]{6}$/i.test(colour)) document.documentElement.style.setProperty(`--${key}`, colour);
+    if (live) agents.push(...current.values());
   }
-  const all = state.hosts.flatMap(h => usable(h) ? h.agents : []);
-  for (const status of ['working','blocked','done']) $(status).textContent = all.filter(a => a.status === status).length;
-  $('connected').textContent = `${state.hosts.filter(usable).length}/${state.hosts.length}`;
-  $('fleet-note').textContent = stale() ? 'LAST SNAPSHOT · CONNECTION LOST' : `REFRESH ${state.interval}S · READ ONLY`;
-  $('category').hidden = state.profile === 'work';
-  if (state.profile === 'work') $('category').value = 'all';
-  const previous = $('machine').value;
-  const options = '<option value="all">All machines</option>' + state.hosts.map(h => `<option value="${escapeHtml(h.id)}">${escapeHtml(h.label)}</option>`).join('');
-  if ($('machine').innerHTML !== options) { $('machine').innerHTML = options; $('machine').value = state.hosts.some(h => h.id === previous) ? previous : 'all'; }
-  const hostPages = Math.max(1, Math.ceil(state.hosts.length / HOST_PAGE));
-  const shownHosts = state.hosts.slice((page % hostPages) * HOST_PAGE, (page % hostPages + 1) * HOST_PAGE);
-  $('network').innerHTML = shownHosts.map(h => {
-    const live = usable(h), agents = live ? h.agents : [], working = agents.filter(a => a.status === 'working').length;
-    return `<article style="${activityPhase('machine:' + h.id)}" class="machine-node ${live ? (working ? 'active' : '') : 'offline'}">${live && working ? cardEffects() : ''}<div class="node-header"><strong>${escapeHtml(h.label)}</strong><small>${live ? `HERDR ${escapeHtml(h.version)} / P${technicalNumber(h.protocol)}` : 'UNAVAILABLE'}</small></div><div class="node-signal"><span class="node-core">⌘</span><span class="node-process">${working ? 'PROCESSING' : live ? 'STANDBY' : 'NO SIGNAL'}</span><div class="agent-dots">${agents.slice(0,24).map(a => `<span class="agent-dot ${a.status}" title="${escapeHtml(a.project)}: ${label(a.status)}"></span>`).join('') || '<span class="agent-dot"></span>'}</div></div><div class="node-count">${live ? `<b>${working}</b> working / <b>${agents.length}</b> agents · ${escapeHtml(ago(h.sampled_at))}` : escapeHtml(stale() ? 'Display disconnected' : h.error || 'Sample expired')}</div></article>`;
-  }).join('');
-  const agents = visibleAgents().sort((a,b) => ['blocked','working','done','idle','unknown'].indexOf(a.status) - ['blocked','working','done','idle','unknown'].indexOf(b.status));
-  const agentPages = Math.max(1, Math.ceil(agents.length / AGENT_PAGE));
-  $('page-counter').textContent = `Agents ${page % agentPages + 1}/${agentPages} · Machines ${page % hostPages + 1}/${hostPages}`;
-  const shownAgents = agents.slice((page % agentPages) * AGENT_PAGE, (page % agentPages + 1) * AGENT_PAGE);
-  $('agents').innerHTML = shownAgents.map(a => `<article class="agent-card" data-status="${a.status}" style="${activityPhase('thread:' + a.host + ':' + a.id)}">${a.status === 'working' ? cardEffects() : ''}<div class="card-address">${escapeHtml(a.host)} <span>// ${identityHash(a.id).toString(16).padStart(8,'0').slice(0,6).toUpperCase()}</span></div><div class="agent-top"><strong>${escapeHtml(a.project)}</strong><span class="badge ${a.status}">● ${label(a.status)}</span></div><p class="task" title="${escapeHtml(a.title)}">${escapeHtml(a.title)}</p><div class="observer-prompt"><span>observe&gt;</span> ${escapeHtml(a.harness)} <b>${label(a.status).toLowerCase()}</b></div>${technicalStrip(a)}<div class="agent-meta"><span>${escapeHtml(a.harness)} / ${escapeHtml(a.host)} / ${escapeHtml(a.category)}</span><span title="Time since this state was first observed">${escapeHtml(ago(a.since))}</span></div></article>`).join('') || `<p class="empty">${stale() ? 'Connection lost. Agent activity is no longer live.' : state.profile === 'work' ? 'No visible work agents. Only configured work projects appear in this profile.' : 'No agents match this view.'}</p>`;
-  const history = state.history.filter(a => ($('machine').value === 'all' || a.host === $('machine').value) && ($('category').value === 'all' || a.category === $('category').value));
-  $('timeline').innerHTML = history.slice(0,6).map(a => `<div class="event ${a.status}"><span class="event-time">${new Date(a.at * 1000).toLocaleTimeString('en-GB')} / ${escapeHtml(a.host)}</span><span class="event-project">${escapeHtml(a.project)}</span><span class="event-status">${a.observation === 'discovered' ? 'DISCOVER' : 'STATE'} → ${label(a.status).toLowerCase()}</span></div>`).join('') || '<p class="empty">Waiting for observed state changes.</p>';
-  $('console-stream').innerHTML = snapshotConsole(shownHosts, history);
-  $('resources').innerHTML = shownHosts.map(h => {
-    const m = !stale() && h.metrics && Date.now()/1000 - h.sampled_at < state.interval + 20 ? h.metrics : null;
-    if (!m) return `<article class="resource offline"><h3>${escapeHtml(h.label)}</h3><p class="resource-error">Telemetry unavailable</p><span class="resource-scope">${escapeHtml(ago(h.sampled_at))}</span></article>`;
-    const memory = m.memory ? m.memory.used / m.memory.total * 100 : null;
-    const disk = m.disk ? m.disk.used / m.disk.total * 100 : null;
-    const trace = sparkSegments(h.trend);
-    return `<article class="resource"><h3>${escapeHtml(h.label)}</h3><div class="resource-scope">${escapeHtml(m.scope)} · ${escapeHtml(ago(h.sampled_at))}</div>${meter('CPU',m.cpu_percent)}${meter('RAM',memory,m.memory ? bytes(m.memory.used) : '—')}${meter('DISK',disk)}${meter('GPU',m.gpu?.percent,m.gpu ? pct(m.gpu.percent) : 'Unavailable')}<div class="resource-bottom"><span>↓ ${rate(m.rx_rate)}</span><span>↑ ${rate(m.tx_rate)}</span><span>${m.gpu ? `${bytes(m.gpu.used)} VRAM` : 'No GPU sample'}</span></div><svg class="spark" viewBox="0 0 100 30" preserveAspectRatio="none" role="img" aria-label="Recent working agent count, clipped at five">${trace}</svg><span class="resource-scope">Working agents / last ${h.trend.length} samples · gaps = unavailable</span></article>`;
-  }).join('');
-  $('footer-status').textContent = state.profile === 'work' ? 'WORK DISPLAY · Permitted projects only' : `PERSONAL VIEW · Full fleet insight${state.publication ? (state.publication.ok ? ' · Office display synced' : ' · Office sync unavailable') : ''}`;
+  for (const [id,old] of previous) if (!next.has(id) && old.live && !reset) record('LOST',`${id} / source removed`,now);
+  previous=next;
+  if (!initialised) { record('BOOT',`observer attached / ${snapshot.profile} / ${agents.length} panes / baseline only`,now,false); initialised=true; }
+  accessible();
 }
+function disconnect(now=Date.now()) {
+  if (!disconnected) record('LOST','browser transport unavailable / activity unknown',now);
+  disconnected=true; agents=[];
+  // Preserve source baseline until transport recovery, without inventing per-pane exits.
+  accessible();
+}
+function accessible() {
+  document.getElementById('transcript').textContent=[`HERDR OBSERVATORY / ${snapshot?.profile || 'connecting'} / ${disconnected?'disconnected':'sampled observations'}`,...agents.map(a=>`${clean(a.host)}/${clean(a.project)} ${statusKind(a.status)} ${clean(a.title)}`),...records.map(r=>`${new Date(r.at).toISOString()} ${r.kind} ${r.text}`)].join('\n');
+}
+function resize() {
+  width=innerWidth; height=innerHeight;
+  const ratio=Math.min(devicePixelRatio || 1,2);
+  canvas.width=Math.round(width*ratio);canvas.height=Math.round(height*ratio);
+  ctx?.setTransform(ratio,0,0,ratio,0,0);
+  draw(performance.now());
+}
+function geometry(w,h) {
+  const font=Math.max(10,Math.min(17,w/98,h/45));
+  const line=font*1.65, margin=Math.max(20,w*.035);
+  return {font,line,margin,columns:Math.floor((w-margin*2)/(font*.61)),processRows:Math.max(2,Math.min(9,Math.floor(h/line*.18))),logRows:Math.max(2,Math.floor(h/line*.22))};
+}
+function filteredAgents(){return agents.filter(a=>category==='all'||snapshot?.profile==='work'||a.category===category);}
+function currentPage(now=Date.now()) {return (manualPage ?? Math.floor(now/15000))%Math.max(1,Math.ceil(filteredAgents().length/geometry(width,height).processRows));}
+function draw(now) {
+  if (!ctx) return;
+  const {font,line,margin,columns,processRows,logRows}=geometry(width,height);
+  const motion=!paused && !reduced.matches;
+  impacts=impacts.filter(i=>now-i.born<2300);
+  const active=motion?impacts:[];
+  ctx.fillStyle=palette.background;ctx.fillRect(0,0,width,height);
+  // A spatial field, disturbed by observations. No synthetic activity counters.
+  ctx.lineWidth=.6;
+  for (let row=0;row<16;row++) {
+    ctx.beginPath();
+    for(let col=0;col<=40;col++) {
+      let x=col*width/40,y=height*.22+row*height*.055;
+      for(const i of active) {const age=(now-i.born)/2300,dist=Math.hypot(x-i.x*width,y-i.y*height);y+=Math.sin((dist-age*width*1.1)/35)*Math.exp(-Math.abs(dist-age*width*1.1)/110)*(1-age)*24;}
+      col?ctx.lineTo(x,y):ctx.moveTo(x,y);
+    }
+    ctx.strokeStyle=palette.blue;ctx.globalAlpha=.055;ctx.stroke();
+  }
+  for(const i of active) {
+    const age=(now-i.born)/2300;
+    ctx.globalAlpha=(1-age)*.42;ctx.strokeStyle=colour(i.kind);ctx.lineWidth=1.5;
+    ctx.beginPath();ctx.ellipse(i.x*width,i.y*height,Math.max(1,age*width),Math.max(1,age*width*.55),0,0,Math.PI*2);ctx.stroke();
+    ctx.globalAlpha=(1-age)*.035;ctx.fillStyle=colour(i.kind);ctx.fillRect(0,0,width,height);
+  }
+  if(active.length){const latest=active.at(-1),age=(now-latest.born)/2300;ctx.globalAlpha=(1-age)*.15;ctx.strokeStyle=colour(latest.kind);ctx.lineWidth=1;ctx.font=`${Math.min(width*.14,160)}px monospace`;ctx.strokeText(latest.kind,width*.54,height*.51);}
+  ctx.globalAlpha=1;ctx.font=`${font}px ui-monospace, "Cascadia Code", "DejaVu Sans Mono", monospace`;ctx.textBaseline='top';
+  function text(value,y,tint=palette.foreground,alpha=1) {
+    const str=clean(value,columns);ctx.fillStyle=tint;ctx.globalAlpha=alpha;
+    // Every terminal line participates in the expanding disturbance.
+    let shift=0;
+    for(const i of active) {const age=(now-i.born)/2300,d=Math.abs(y-i.y*height);shift+=Math.sin(d/18-age*22)*Math.exp(-Math.abs(d-age*height)/95)*(1-age)*9;}
+    ctx.fillText(str,margin+shift,y);ctx.globalAlpha=1;
+  }
+  text('HERDR / OBSERVATORY                                      '+new Date().toLocaleTimeString('en-GB'),margin,palette.cyan);
+  text(`observer@fleet:~$ follow --profile ${clean(snapshot?.profile || 'connecting')} --read-only`,margin+line*1.8);
+  text(`sampled state / ${clean(snapshot?.theme?.name || 'awaiting palette')} / ${disconnected?'TRANSPORT LOST':'no shell execution'} / ${agents.length} visible panes`,margin+line*2.8,palette.foreground,.5);
+  let y=margin+line*4.5;
+  for(const host of (snapshot?.hosts || []).slice(0,3)) {
+    const live=!disconnected && previous.get(host.id)?.live,m=live?host.metrics:null;
+    const cpu=Number.isFinite(m?.cpu_percent)?m.cpu_percent.toFixed(0)+'%':'—';
+    text(`${live?'::':'!!'} ${clean(host.label,18).padEnd(18)} link=${live?'up  ':'lost'} proto=${number(host.protocol).padEnd(3)} cpu=${cpu.padEnd(4)} scope=${clean(m?.scope || 'unavailable',32)}`,y,live?palette.blue:palette.red);y+=line;
+    const percent=v=>Number.isFinite(v)?Math.round(v)+'%':'—';
+    const ratio=v=>v?.total?percent(v.used/v.total*100):'—';
+    const rate=v=>Number.isFinite(v)?Math.round(v/1024)+'K':'—';
+    text(`   ram=${ratio(m?.memory)} disk=${ratio(m?.disk)} gpu=${percent(m?.gpu?.percent)} rx=${rate(m?.rx_rate)} tx=${rate(m?.tx_rate)} / sample ${Number.isFinite(host.sampled_at)?Math.max(0,Math.floor(Date.now()/1000-host.sampled_at))+'s ago':'unavailable'}`,y,palette.foreground,.5);y+=line;
+  }
+  y=margin+line*11.5;
+  text('  PANE / SOURCE          STATE    ENGINE       PROJECT / OBSERVED TASK',y,palette.foreground,.45);y+=line*1.3;
+  const page=currentPage();
+  const shown=filteredAgents().slice(page*processRows,(page+1)*processRows);
+  for(const a of shown) {
+    const address=`${clean(a.id,6)}@${clean(a.host,12)}`.padEnd(22);
+    text(`  ${address}${statusKind(a.status).padEnd(9)}${clean(a.harness,12).padEnd(13)}${clean(a.project,20)} r${number(a.technical?.revision)} s${number(a.technical?.state_change_seq)} / ${clean(a.title)}`,y,colour(statusKind(a.status)));y+=line;
+
+  }
+  if(!shown.length) text(disconnected?'  [activity unavailable]':'  [no permitted panes observed]',y,palette.foreground,.55);
+  y=height-line*(logRows+4.2);
+  text(`── OBSERVATION STREAM / ${records.length} retained / ${category} panes ${filteredAgents().length?page+1:0}/${Math.ceil(filteredAgents().length/processRows)} ──`,y,palette.blue);y+=line*1.5;
+  for(const r of records.slice(-logRows)) {
+    const full=`${new Date(r.at).toLocaleTimeString('en-GB')}  ${r.kind.padEnd(7)} ${r.text}`;
+    const count=motion?Math.max(0,Math.floor((now-r.born)*.22)):full.length;
+    text(full.slice(0,count),y,colour(r.kind),.9);y+=line;
+  }
+  text(`observer@fleet:~$ _${motion && Math.floor(now/550)%2?'':'▌'}`,height-line*2.2,palette.green);
+  text(`PASSIVE / ${paused?'FX PAUSED':reduced.matches?'REDUCED MOTION':'REACTIVE RENDER'} / ← → pages · R rotate · C category / observed milestones`,height-line*.8,palette.foreground,.4);
+}
+function frame(now) {if(!document.hidden && now-lastFrame>=33){draw(now);lastFrame=now;}requestAnimationFrame(frame);}
 async function refresh() {
-  try {
-    const response = await fetch('/api/state', {cache:'no-store', signal:AbortSignal.timeout(8000)});
-    if (!response.ok) throw new Error('Unavailable');
-    state = await response.json(); received = Date.now(); failed = false;
-  } catch { failed = true; }
-  render(); setTimeout(refresh, 2000);
+  try {const response=await fetch('/api/state',{cache:'no-store',signal:AbortSignal.timeout(8000)});if(!response.ok)throw new Error();observe(await response.json());}
+  catch {disconnect();}
+  setTimeout(refresh,2000);
 }
-$('machine').addEventListener('change', () => { page = 0; render(); });
-$('category').addEventListener('change', () => { page = 0; render(); });
-$('previous').addEventListener('click', () => { page = Math.max(0, page - 1); render(); });
-$('next').addEventListener('click', () => { page += 1; render(); });
-$('pause').addEventListener('click', () => {
-  rotationPaused = !rotationPaused;
-  $('pause').textContent = rotationPaused ? 'Resume' : 'Pause';
-  $('pause').setAttribute('aria-pressed', String(rotationPaused));
-  $('pause').setAttribute('aria-label', rotationPaused ? 'Resume page rotation' : 'Pause page rotation');
-});
-setInterval(() => { if (!rotationPaused && !stale()) { page += 1; render(); } }, 15000);
-$('fullscreen').addEventListener('click', async () => {
-  try { if (document.fullscreenElement) await document.exitFullscreen(); else await document.documentElement.requestFullscreen(); }
-  catch { $('connection').textContent = 'Use browser fullscreen (F11)'; }
-});
-setInterval(render, 1000);
-refresh();
+function pause() {paused=!paused;impacts=[];document.getElementById('pause').setAttribute('aria-pressed',String(paused));document.getElementById('pause').textContent=paused?'[SPACE] resume FX':'[SPACE] pause FX';}
+async function fullscreen(){try{if(document.fullscreenElement)await document.exitFullscreen();else await document.documentElement.requestFullscreen();}catch{record('INFO','Use browser fullscreen (F11)',Date.now(),false);}}
+ document.getElementById('pause').addEventListener('click',pause);
+document.getElementById('fullscreen').addEventListener('click',fullscreen);
+addEventListener('keydown',event=>{if(event.target?.tagName==='BUTTON')return;if(event.code==='Space'){event.preventDefault();pause();}if(event.key==='f')fullscreen();if(event.key==='ArrowRight')manualPage=currentPage()+1;if(event.key==='ArrowLeft')manualPage=Math.max(0,currentPage()-1);if(event.key==='r')manualPage=null;if(event.key==='c' && snapshot?.profile==='personal'){category=['all','work','personal'][(['all','work','personal'].indexOf(category)+1)%3];manualPage=0;}});
+addEventListener('resize',resize);
+setInterval(()=>{if(received && Date.now()-received>12000)disconnect();if(!disconnected)reconcile();},1000);
+resize();requestAnimationFrame(frame);refresh();

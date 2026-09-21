@@ -37,7 +37,7 @@ cp config.example.json config.local.json
 python -m observatory --config config.local.json --profile personal
 ```
 
-Open **http://127.0.0.1:8789**. Use the Full screen button or F11 for a 16:9 wall display. The viewport does not scroll: six agent cards, three machines and six recent changes fit per page. Counts cover all live permitted agents. Pages rotate every 15 seconds; Pause and arrow controls let you inspect any page. Keep the process running while the display is in use. Ctrl+C stops it; collection workers finish within their bounded timeout.
+Open **http://127.0.0.1:8789**. Use F or F11 for fullscreen. The rendered terminal fits one 16:9 screen. Pane pages rotate every 15 seconds; Left/Right selects a page and holds it, R resumes rotation. C cycles All/Work/Personal on the Personal display. Space pauses visual effects. Collection continues while effects are paused. Ctrl+C stops a foreground server.
 
 For a work display:
 
@@ -129,9 +129,9 @@ The PowerShell launcher opens the display; the independently running container s
 
 ## Technical display and what the numbers mean
 
-The screen is an operations console: working cards have independently phased perimeter circuits, scanning surfaces and drifting grid textures. Text stays stable while the card animates around it. Blocked cells use static amber attention styling; stale sources lose active effects. These effects follow reported status and do not claim measured tokens, packets or tool calls. Reduced-motion preferences disable animation.
+The screen is a single canvas-rendered terminal: a live process listing, source telemetry and a bounded observation stream. Agent attachment, removal and status transitions disturb the entire scene with displacement waves, coloured rings and settling glyphs. Source or browser connection loss and recovery also react. First connection establishes a quiet baseline; unchanged polls and metadata-only changes do not create impacts. Reduced-motion preferences suppress these effects.
 
-The snapshot console formats real source captures and sampled state changes as bounded terminal-style records, preserving capture timestamps. Its `observe>` and `$ observe fleet --read-only` prompts are interface labels, not a real shell or executed commands. It is explicitly labelled **derived records / not shell output**. Raw terminal content is never exported. The fixed 16:9 screen keeps six execution cells, three hosts, the console/state journal and resource telemetry visible without scrolling.
+Records are timestamped when the browser observes a transition, not when the underlying action happened. Collection is sampled and can miss brief intermediate states; this is not a complete Herdr event stream. Prompts are interface labels, not executed shell commands. Raw terminal content is never exported. Connection loss clears live panes without claiming they finished. The accessible text equivalent contains the current panes and the last 60 observations.
 
 | Technical field | Meaning | When absent |
 | --- | --- | --- |
