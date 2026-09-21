@@ -2,7 +2,7 @@
 
 A passive display of Herdr agent activity across your machines. See working agents, tasks needing input, project titles, sampled state changes and resource telemetry in a full-screen dashboard that follows your Omarchy palette.
 
-No agent controls, terminal transcripts, cloud service or remote installation. Python 3.11+ standard library on collector hosts, a browser, Herdr 0.9.x with `api snapshot`, and OpenSSH for remote collection. No npm dependencies or build step.
+No agent controls, terminal transcripts or cloud service. Optional Work feeds and a persistent office-display service are explicitly deployed. Python 3.11+ standard library on collector hosts, a browser, Herdr 0.9.x with `api snapshot`, and OpenSSH for remote collection. No npm dependencies or build step.
 
 ## Run
 
@@ -11,7 +11,7 @@ cp config.example.json config.local.json
 python -m observatory --config config.local.json --profile personal
 ```
 
-Open **http://127.0.0.1:8789**. Use the Full screen button or F11 for a wall display. Keep the process running while the display is in use. Ctrl+C stops it; collection workers finish within their bounded timeout.
+Open **http://127.0.0.1:8789**. Use the Full screen button or F11 for a 16:9 wall display. The viewport does not scroll: six agent cards, three machines and six recent changes fit per page. Counts cover all live permitted agents. Pages rotate every 15 seconds; Pause and arrow controls let you inspect any page. Keep the process running while the display is in use. Ctrl+C stops it; collection workers finish within their bounded timeout.
 
 For a work display:
 
@@ -55,17 +55,63 @@ Use your SSH config for users, Tailscale routing, ProxyCommand and keys. Verify 
 
 `theme_host` selects the machine supplying the palette. The collector reads `~/.local/state/omarchy/current/theme/colors.toml` and `theme.name`, falling back to the older `~/.config/omarchy/current` location. Valid colour changes appear on the next refresh. Missing colours use Tokyo Night defaults. No Omarchy hooks or config edits are needed. Fonts use installed JetBrains Mono / Cascadia Code with a monospace fallback; no external fonts are downloaded.
 
-## Windows office display
+## Work display and Tailscale
 
-Run the service in the same WSL distribution/container as Herdr. With the checkout and private configuration already available inside an `omaterm` container, run from Windows PowerShell:
+Run an independent Work service on the workstation. The Personal laptop service can publish a Work-only projection over your existing SSH connection on Tailscale; reverse SSH to the laptop is unnecessary. Personal agents and history are removed before data crosses the connection. HTTP stays on loopback, with no public deployment or firewall changes.
 
-```powershell
-wsl -d archlinux -- docker exec -it -u omaterm -w /home/omaterm/Projects/herdr-observatory omaterm python3 -m observatory --profile work
+Add this optional block to the laptop's private config. Use absolute paths on the receiving machine; these are examples, not deployment defaults:
+
+```json
+"publish": {
+  "host_id": "desktop",
+  "target": "workstation-ssh-alias",
+  "directory": "/home/user/Projects/herdr-observatory/current",
+  "path": "/home/user/.local/state/herdr-observatory/desktop.json"
+}
 ```
 
-The working directory in this example must point to the actual checkout containing `observatory/` and `config.local.json`. Open `http://localhost:8789` in the Windows browser. This relies on WSL localhost forwarding and the container sharing the WSL network namespace. For other container layouts, configure loopback forwarding explicitly; do not expose the service to the LAN. This launch path is documented, not an automated Windows installation.
+The source `host_id` must exist in the laptop config. Work roots there control what leaves the laptop. Personal exclusions win. The receiver must have this release of Observatory available in `directory`. The publisher invokes `python3 -m observatory.feed` via authenticated SSH and atomically writes a 0600 allowlisted file. Feed size is limited to 1 MiB. No HTTP upload endpoint is opened.
 
-A Windows-hosted display can read the laptop's Omarchy palette by setting `theme_host` to a configured SSH source. If the laptop is unreachable, the last valid palette remains until it reconnects. Windows locking or display sleep still hides the dashboard. No idle, lock, auto-login or startup policies are modified.
+On the workstation, configure its local Herdr source plus the laptop feed:
+
+```json
+{
+  "interval": 5,
+  "theme_host": "desktop",
+  "hosts": [
+    {"id": "workstation", "transport": "local", "work_roots": ["/home/user/work"], "personal_roots": ["/home/user/personal"]},
+    {"id": "desktop", "transport": "file", "path": "/home/user/.local/state/herdr-observatory/desktop.json"}
+  ]
+}
+```
+
+Start the workstation with `--profile work`. A feed older than 30 seconds stops contributing agents or metrics. Local workstation collection continues independently. The last validated palette remains available from the feed file across display-service restarts. The laptop footer reports whether office synchronisation is working. Theme files on either machine are never modified.
+
+For another browser on the tailnet, use an SSH loopback tunnel:
+
+```sh
+ssh -N -L 8789:127.0.0.1:8789 workstation-ssh-alias
+```
+
+Open `http://localhost:8789` on a device where port 8789 is free. Host validation requires the forwarded and service ports to match. The laptop's own Personal dashboard already provides its full fleet view without this tunnel. Do not bind the Personal service to a LAN or tailnet address.
+
+### Persistent container service
+
+For a WSL host with an existing Python-equipped runtime image, host networking and a named home volume, run the supplied script on the Docker host:
+
+```sh
+./deploy/run-office-container.sh EXISTING_IMAGE HOME_VOLUME /home/user UID:GID /home/user/Projects/herdr-observatory/current /home/user/.local/state/herdr-observatory/config.json
+```
+
+Replace the six arguments with the existing image, volume, collector home, numeric user/group, release path and private Work configuration. The script refuses an existing `herdr-observatory` container and never pulls an image. It uses a read-only home mount, a read-only container filesystem, no capabilities, no Docker socket and `restart: unless-stopped`. It does not recreate the Herdr container or its Tailscale identity.
+
+To update an existing display service, inspect its image, mounts and configuration, stop/remove only `herdr-observatory`, then run the script with the new release. The feed and config remain in the home volume. Stop the named container to roll back service operation. No other containers need restarting.
+
+### Windows office monitor
+
+The service URL is **http://localhost:8789** on Windows when WSL localhost forwarding reaches the host-networked service. Copy `deploy/Start-OfficeDisplay.ps1` to Windows and run it in your logged-in desktop session. It checks that the endpoint is Work-only before opening Edge in full-screen kiosk mode. Alt+F4 exits the window.
+
+The PowerShell launcher opens the display; the independently running container supplies the data. This avoids starting a second interactive Herdr client. Windows lock/display sleep policies remain unchanged. The container SSH shell cannot launch or verify a Windows desktop window unless Windows interoperability or a GUI connection is separately available.
 
 ## What the numbers mean
 

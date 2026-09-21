@@ -41,12 +41,14 @@ def validate_config(config):
         if not isinstance(identifier, str) or not re.fullmatch(r'[a-zA-Z0-9_-]{1,40}', identifier) or identifier in ids:
             raise ValueError('Host IDs must be unique letters, digits, underscores or hyphens')
         ids.add(identifier)
-        if host.get('transport', 'local') not in ('local', 'ssh'):
-            raise ValueError('Transport must be local or ssh')
+        if host.get('transport', 'local') not in ('local', 'ssh', 'file'):
+            raise ValueError('Transport must be local, ssh or file')
         if host.get('transport') == 'ssh':
             target = host.get('target', '')
             if not isinstance(target, str) or not re.fullmatch(r'[a-zA-Z0-9_.@:-]+', target) or target.startswith('-'):
                 raise ValueError('SSH target must be an SSH alias or user@host')
+        if host.get('transport') == 'file' and (not isinstance(host.get('path'), str) or not host['path']):
+            raise ValueError('File transport needs a feed path')
         for key in ('work_roots', 'personal_roots'):
             roots = host.get(key, [])
             if not isinstance(roots, list) or any(not isinstance(r, str) or not r.startswith('/') or '..' in PurePosixPath(r).parts for r in roots):
@@ -59,6 +61,15 @@ def validate_config(config):
         raise ValueError('Interval must be between 2 and 60 seconds')
     if config.get('theme_host', hosts[0]['id']) not in ids:
         raise ValueError('Theme host must name a configured host')
+    publication = config.get('publish')
+    if publication is not None:
+        if not isinstance(publication, dict) or publication.get('host_id') not in ids:
+            raise ValueError('Publisher needs a configured host_id')
+        target = publication.get('target', '')
+        if not isinstance(target, str) or not re.fullmatch(r'[a-zA-Z0-9_.@:-]+', target) or target.startswith('-'):
+            raise ValueError('Invalid publisher SSH target')
+        if any(not isinstance(publication.get(k), str) or not publication[k].startswith('/') for k in ('directory', 'path')):
+            raise ValueError('Publisher directory and path must be absolute')
     return config
 
 
@@ -129,6 +140,9 @@ def rates(current, previous):
 
 
 def collect(host):
+    if host.get('transport') == 'file':
+        from .feed import read_feed
+        return read_feed(host)
     options = {'binary': host.get('herdr', 'herdr'), 'session': host.get('session')}
     script = Path(probe.__file__).read_text().split("if __name__ == '__main__':")[0]
     script += '\nprint(json.dumps(sample(**' + repr(options) + ')))\n'
@@ -154,6 +168,8 @@ class Observatory:
         self.lock = threading.Lock()
         self.stop = threading.Event()
         self.pool = None
+        self.publisher = None
+        self.publication = None
         self.history = []
         self.previous_metrics = {}
         self.palette = theme(None)
@@ -165,13 +181,21 @@ class Observatory:
             raw = self.collector(host)
             if not isinstance(raw, dict):
                 raise ValueError('Invalid sample')
-            measured_raw = sanitise_metrics(raw.get('metrics'))
-            agents = normalise(raw['snapshot'], host, self.profile) if raw.get('snapshot') is not None else []
+            is_feed = host.get('transport') == 'file'
+            measured_raw = sanitise_metrics(raw.get('metrics')) if raw.get('metrics') is not None else None
+            if measured_raw is None and not is_feed:
+                raise ValueError('Missing metrics')
+            agents = raw['agent_views'] if is_feed else (normalise(raw['snapshot'], host, self.profile) if raw.get('snapshot') is not None else [])
+            sampled_at = raw.get('sampled_at', now) if is_feed else now
             error = raw.get('error')
             if raw.get('snapshot') is None:
                 error = 'Herdr unavailable or incompatible'
             with self.lock:
                 state = self.hosts[host['id']]
+                if is_feed and host['id'] == self.config.get('theme_host', self.config['hosts'][0]['id']):
+                    self.palette = theme(raw.get('theme'))
+                if is_feed and state['sampled_at'] == sampled_at and state['online'] == (not bool(error)):
+                    return
                 previous = {a['id']: a for a in state['agents']} if state['online'] else {}
                 for agent in agents:
                     old = previous.get(agent['id'])
@@ -179,10 +203,10 @@ class Observatory:
                     if old is None or old['status'] != agent['status']:
                         self.history.insert(0, dict(agent, at=now, observation='discovered' if old is None else 'changed'))
                 self.history = self.history[:100]
-                measured = rates(measured_raw, self.previous_metrics.get(host['id']))
+                measured = rates(measured_raw, self.previous_metrics.get(host['id'])) if measured_raw is not None else None
                 self.previous_metrics[host['id']] = measured_raw
                 trend = (state['trend'] + [{'at': now, 'working': None if error else sum(a['status'] == 'working' for a in agents)}])[-60:]
-                state.update(online=not bool(error), error='Herdr unavailable or incompatible' if error else None, sampled_at=now, agents=agents if not error else [], metrics=measured, trend=trend, version=clean(raw.get('snapshot', {}).get('version') if raw.get('snapshot') else None, 'unknown'))
+                state.update(online=not bool(error), error='Herdr unavailable or incompatible' if error else None, sampled_at=sampled_at, agents=agents if not error else [], metrics=measured, trend=trend, version=clean(raw.get('snapshot', {}).get('version') if raw.get('snapshot') else None, 'unknown'))
                 if host['id'] == self.config.get('theme_host', self.config['hosts'][0]['id']):
                     self.palette = theme(raw.get('theme'))
         except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError):
@@ -200,12 +224,23 @@ class Observatory:
         self.pool = ThreadPoolExecutor(max_workers=len(self.config['hosts']))
         for host in self.config['hosts']:
             self.pool.submit(self.worker, host)
+        if self.config.get('publish'):
+            from .feed import Publisher
+            self.publisher = Publisher(self, self.config['publish'])
+            self.publisher.start()
 
     def close(self):
         self.stop.set()
         if self.pool:
             self.pool.shutdown(wait=True)
+        if self.publisher:
+            self.publisher.close()
 
     def snapshot(self):
         with self.lock:
-            return copy.deepcopy({'profile': self.profile, 'at': time.time(), 'interval': self.config.get('interval', 5), 'theme': self.palette, 'hosts': list(self.hosts.values()), 'history': self.history})
+            result = copy.deepcopy({'profile': self.profile, 'at': time.time(), 'interval': self.config.get('interval', 5), 'theme': self.palette, 'hosts': list(self.hosts.values()), 'history': self.history, 'publication': self.publication})
+            feeds = {h['id'] for h in self.config['hosts'] if h.get('transport') == 'file'}
+            for host in result['hosts']:
+                if host['id'] in feeds and host['sampled_at'] is not None and time.time() - host['sampled_at'] > 30:
+                    host.update(online=False, agents=[], metrics=None, error='Feed expired')
+            return result

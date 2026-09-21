@@ -32,3 +32,27 @@ test('Unknown activity breaks the trace rather than plotting zero',()=>{
  assert.equal((svg.match(/<polyline/g)||[]).length,2);
  assert.ok(!svg.includes('50,28'));
 });
+test('Wall display bounds each page while totals cover all agents',()=>{
+ const h=harness();
+ h.run(`state={profile:'personal',interval:5,theme:{name:'Test',colours:{}},history:Array.from({length:50},(_,i)=>({at:1,host:'desktop',project:'Event '+i,status:'working'})),hosts:Array.from({length:8},(_,i)=>({id:'host'+i,label:'Host '+i,online:true,sampled_at:Date.now()/1000,version:'0.9.1',trend:[],metrics:null,agents:Array.from({length:4},(_,j)=>({id:i+':'+j,host:'host'+i,project:'Project '+i+':'+j,title:'Task',category:'work',harness:'codex',status:'working',since:1}))}))};received=Date.now();render();`);
+ assert.equal(h.get('working').textContent,32);
+ assert.equal((h.get('agents').innerHTML.match(/class="agent-card"/g)||[]).length,6);
+ assert.equal((h.get('network').innerHTML.match(/class="machine-node/g)||[]).length,3);
+ assert.equal((h.get('timeline').innerHTML.match(/class="event /g)||[]).length,6);
+ const first=h.get('agents').innerHTML;
+ h.run('page=1;render();');
+ assert.notEqual(h.get('agents').innerHTML,first);
+ assert.ok(h.get('page-counter').textContent.includes('2/6'));
+});
+test('Viewport row budget leaves two readable agent rows at target sizes',()=>{
+ for(const height of [720,1080]) {
+  const clamp=(min,value,max)=>Math.max(min,Math.min(value,max));
+  const header=clamp(44,.06*height,64),padding=clamp(8,.013*height,16),gap=clamp(6,.009*height,12);
+  const fixed=clamp(40,.06*height,64)+clamp(54,.08*height,84)+clamp(86,.15*height,160)+clamp(108,.18*height,184)+16;
+  const workspace=height-header-2*padding-5*gap-fixed;
+  assert.ok(workspace>=250);
+ }
+ const css=fs.readFileSync('web/style.css','utf8');
+ assert.ok(css.includes('html,body{width:100%;height:100%;overflow:hidden}'));
+ assert.ok(css.includes('grid-template-rows:repeat(2,minmax(0,1fr))'));
+});
