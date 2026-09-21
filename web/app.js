@@ -34,6 +34,11 @@ function sparkSegments(trend) {
   if (points.length) segments.push(points.join(' '));
   return segments.map(points => `<polyline points="${points}"/>`).join('');
 }
+// Rendering replaces cards; resume CSS animations on a shared monotonic timeline.
+function heartbeatPhase() {
+  const elapsed = performance.now();
+  return `--sweep-delay:-${elapsed % 3000}ms;--pulse-delay:-${elapsed % 2500}ms`;
+}
 function render() {
   $('clock').textContent = new Date().toLocaleTimeString('en-GB');
   if (!state) { $('connection').textContent = failed ? 'DISCONNECTED' : 'CONNECTING'; return; }
@@ -44,6 +49,7 @@ function render() {
   for (const [key, colour] of Object.entries(state.theme.colours)) {
     if (/^[a-z_]+$/.test(key) && /^#[0-9a-f]{6}$/i.test(colour)) document.documentElement.style.setProperty(`--${key}`, colour);
   }
+  const phase = heartbeatPhase();
   const all = state.hosts.flatMap(h => usable(h) ? h.agents : []);
   for (const status of ['working','blocked','done']) $(status).textContent = all.filter(a => a.status === status).length;
   $('connected').textContent = `${state.hosts.filter(usable).length}/${state.hosts.length}`;
@@ -57,13 +63,13 @@ function render() {
   const shownHosts = state.hosts.slice((page % hostPages) * HOST_PAGE, (page % hostPages + 1) * HOST_PAGE);
   $('network').innerHTML = shownHosts.map(h => {
     const live = usable(h), agents = live ? h.agents : [], working = agents.filter(a => a.status === 'working').length;
-    return `<article class="machine-node ${live ? (working ? 'active' : '') : 'offline'}"><div class="node-header"><strong>${escapeHtml(h.label)}</strong><small>${live ? `HERDR ${escapeHtml(h.version)}` : 'UNAVAILABLE'}</small></div><div class="node-signal"><span class="node-core">◎</span><span class="signal-line"></span><div class="agent-dots">${agents.slice(0,24).map(a => `<span class="agent-dot ${a.status}" title="${escapeHtml(a.project)}: ${label(a.status)}"></span>`).join('') || '<span class="agent-dot"></span>'}</div></div><div class="node-count">${live ? `<b>${working}</b> working / <b>${agents.length}</b> visible agents` : escapeHtml(stale() ? 'Display disconnected' : h.error || 'Sample expired')}</div><div class="node-count">${escapeHtml(ago(h.sampled_at))}</div></article>`;
+    return `<article style="${phase}" class="machine-node ${live ? (working ? 'active' : '') : 'offline'}"><div class="node-header"><strong>${escapeHtml(h.label)}</strong><small>${live ? `HERDR ${escapeHtml(h.version)}` : 'UNAVAILABLE'}</small></div><div class="node-signal"><span class="node-core">◎</span><span class="signal-line"></span><div class="agent-dots">${agents.slice(0,24).map(a => `<span class="agent-dot ${a.status}" title="${escapeHtml(a.project)}: ${label(a.status)}"></span>`).join('') || '<span class="agent-dot"></span>'}</div></div><div class="node-count">${live ? `<b>${working}</b> working / <b>${agents.length}</b> visible agents` : escapeHtml(stale() ? 'Display disconnected' : h.error || 'Sample expired')}</div><div class="node-count">${escapeHtml(ago(h.sampled_at))}</div></article>`;
   }).join('');
   const agents = visibleAgents().sort((a,b) => ['blocked','working','done','idle','unknown'].indexOf(a.status) - ['blocked','working','done','idle','unknown'].indexOf(b.status));
   const agentPages = Math.max(1, Math.ceil(agents.length / AGENT_PAGE));
   $('page-counter').textContent = `Agents ${page % agentPages + 1}/${agentPages} · Machines ${page % hostPages + 1}/${hostPages}`;
   const shownAgents = agents.slice((page % agentPages) * AGENT_PAGE, (page % agentPages + 1) * AGENT_PAGE);
-  $('agents').innerHTML = shownAgents.map(a => `<article class="agent-card"><div class="agent-top"><strong>${escapeHtml(a.project)}</strong><span class="badge ${a.status}">● ${label(a.status)}</span></div><p class="task" title="${escapeHtml(a.title)}">${escapeHtml(a.title)}</p><div class="agent-meta"><span>${escapeHtml(a.harness)} / ${escapeHtml(a.host)} / ${escapeHtml(a.category)}</span><span title="Time since this state was first observed">${escapeHtml(ago(a.since))}</span></div></article>`).join('') || `<p class="empty">${stale() ? 'Connection lost. Agent activity is no longer live.' : state.profile === 'work' ? 'No visible work agents. Only configured work projects appear in this profile.' : 'No agents match this view.'}</p>`;
+  $('agents').innerHTML = shownAgents.map(a => `<article class="agent-card" style="${phase}">${a.status === 'working' ? '<span class="thread-heartbeat" aria-hidden="true"></span>' : ''}<div class="agent-top"><strong>${escapeHtml(a.project)}</strong><span class="badge ${a.status}">● ${label(a.status)}</span></div><p class="task" title="${escapeHtml(a.title)}">${escapeHtml(a.title)}</p><div class="agent-meta"><span>${escapeHtml(a.harness)} / ${escapeHtml(a.host)} / ${escapeHtml(a.category)}</span><span title="Time since this state was first observed">${escapeHtml(ago(a.since))}</span></div></article>`).join('') || `<p class="empty">${stale() ? 'Connection lost. Agent activity is no longer live.' : state.profile === 'work' ? 'No visible work agents. Only configured work projects appear in this profile.' : 'No agents match this view.'}</p>`;
   const history = state.history.filter(a => ($('machine').value === 'all' || a.host === $('machine').value) && ($('category').value === 'all' || a.category === $('category').value));
   $('timeline').innerHTML = history.slice(0,6).map(a => `<div class="event ${a.status}"><span class="event-time">${new Date(a.at * 1000).toLocaleTimeString('en-GB')} / ${escapeHtml(a.host)}</span><span class="event-project">${escapeHtml(a.project)}</span><br><span class="event-status">${a.observation === 'discovered' ? 'Observed' : 'Changed to'} ${label(a.status).toLowerCase()}</span></div>`).join('') || '<p class="empty">Waiting for observed state changes.</p>';
   $('resources').innerHTML = shownHosts.map(h => {

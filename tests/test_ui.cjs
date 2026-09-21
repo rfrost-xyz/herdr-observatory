@@ -5,7 +5,7 @@ const vm = require('node:vm');
 function harness() {
   const elements = new Map();
   const get = id => { if (!elements.has(id)) elements.set(id, {value:'all', innerHTML:'', style:{}, addEventListener(){}}); return elements.get(id); };
-  const context = vm.createContext({document:{getElementById:get,documentElement:{style:{setProperty(){}}}},Date,AbortSignal,fetch:()=>new Promise(()=>{}),setTimeout(){},setInterval(){}});
+  const context = vm.createContext({document:{getElementById:get,documentElement:{style:{setProperty(){}}}},Date,performance:{now:()=>0},AbortSignal,fetch:()=>new Promise(()=>{}),setTimeout(){},setInterval(){}});
   vm.runInContext(fs.readFileSync('web/app.js','utf8'),context);
   return {get,run:code=>vm.runInContext(code,context)};
 }
@@ -55,4 +55,27 @@ test('Viewport row budget leaves two readable agent rows at target sizes',()=>{
  const css=fs.readFileSync('web/style.css','utf8');
  assert.ok(css.includes('html,body{width:100%;height:100%;overflow:hidden}'));
  assert.ok(css.includes('grid-template-rows:repeat(2,minmax(0,1fr))'));
+});
+
+test('Heartbeats resume elapsed phase across renders and stop with working status',()=>{
+ const h=harness();
+ h.run(`state={profile:'work',interval:5,theme:{name:'Test',colours:{}},history:[],hosts:[{id:'desktop',label:'Desktop',online:true,sampled_at:Date.now()/1000,version:'test',trend:[],metrics:null,agents:[{id:'a',host:'desktop',project:'Project',title:'Task',category:'work',harness:'codex',status:'working',since:1}]}]};received=Date.now();`);
+ for(const elapsed of [0,1000,2000,2999,3000,4100]) {
+  h.run(`performance.now=()=>${elapsed};render();`);
+  const phase=`--sweep-delay:-${elapsed%3000}ms`;
+  assert.ok(h.get('network').innerHTML.includes(phase));
+  assert.ok(h.get('agents').innerHTML.includes(phase));
+  assert.ok(h.get('agents').innerHTML.includes('class="thread-heartbeat" aria-hidden="true"'));
+ }
+ for(const status of ['idle','blocked','done','unknown']) {
+  h.run(`state.hosts[0].agents[0].status='${status}';render();`);
+  assert.ok(!h.get('agents').innerHTML.includes('thread-heartbeat'));
+ }
+ h.run("state.hosts[0].agents[0].status='working';failed=true;render();");
+ assert.ok(!h.get('agents').innerHTML.includes('thread-heartbeat'));
+ assert.ok(!h.get('network').innerHTML.includes('machine-node active'));
+ const css=fs.readFileSync('web/style.css','utf8');
+ assert.ok(css.includes('@keyframes travel{to{left:82%}}'));
+ assert.ok(css.includes('animation-delay:var(--sweep-delay,0ms)'));
+ assert.ok(css.includes('animation:none!important'));
 });
