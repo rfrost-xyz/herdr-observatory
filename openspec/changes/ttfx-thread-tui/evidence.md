@@ -1,0 +1,9 @@
+# Evidence
+
+The Rust adapter in `renderer/` links ttfx commit `54d21f046f22512b113056a1964077d7b7bf04cc` through Cargo.lock and calls the actual Effect/EngineCtx API. Docker builds it in pinned Rust 1.96 and copies the executable and licence attribution only. The Python frame endpoint accepts no supplied text/effect arguments and uses filtered current state, bounded generation, cached frames and a plain fallback.
+
+The browser now draws character-cell TUI rows with explicit states, metadata and an isolated ttfx playback region. All decorative circles, grid, wave geometry and custom fragments are removed. Chromium inspected actual vhstape frames at 720p and plain reduced-motion rendering at 1080p; no page scrolling or browser errors.
+
+44 Python tests pass including maximum-size real decrypt/vhstape/crumble, invalid frames, stale sources, timeout/cache fallback and Work endpoint privacy. 16 Node tests pass, including geometry, no decorative primitives, stale accessible text and pause/reduced-motion playback. Syntax, diff checks and strict OpenSpec pass. Independent review findings on accessible freshness and protocol metadata resolved.
+
+Container and deployment verification pending.

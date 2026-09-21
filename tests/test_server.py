@@ -50,3 +50,10 @@ class ServerTests(unittest.TestCase):
             self.assertGreater(len(body), 100)
             self.assertIn("frame-ancestors 'none'", headers['Content-Security-Policy'])
             self.assertNotIn('Access-Control-Allow-Origin', headers)
+
+    def test_text_frames_preserve_work_boundary(self):
+        status,body,_ = self.request('/api/text-frames?profile=personal')
+        self.assertEqual(status,200)
+        self.assertNotIn(b'PRIVATE',body)
+        self.assertIn('frames',json.loads(body))
+        self.assertEqual(self.request('/api/text-frames',{'Origin':'https://evil.test'})[0],403)

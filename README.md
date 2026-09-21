@@ -129,7 +129,7 @@ The PowerShell launcher opens the display; the independently running container s
 
 ## Technical display and what the numbers mean
 
-The screen is a single canvas-rendered terminal: a live process listing, source telemetry and a bounded observation stream. Agent attachment, removal and status transitions disturb the entire scene with displacement waves, coloured rings and settling glyphs. Source or browser connection loss and recovery also react. Every fresh collector capture supplies a rolling SAMPLE/PANE stream, even while status is unchanged. Records arrive in a bounded staggered sequence with ripples, signal tearing and outgoing text fragments. State milestones create stronger impacts. The current thread listing stays unbroken and readable. Repeated browser polls of the same capture do not create new records; queued stale data is discarded. These are sampled observations, not a native Herdr event subscription. Reduced-motion preferences suppress these effects.
+The display is a character-cell TUI: current thread states stay fixed and clear above a separate CLI feed. The feed uses the actual [ttfx](https://github.com/omacom/ttfx) Rust library (`decrypt`, `vhstape`, `crumble`), pinned by commit and Cargo.lock. There are no decorative circles or background geometry. The library animates permitted sampled observations; it does not read shell output. Pause and reduced motion show the original text immediately.
 
 Records are timestamped when the browser observes a transition, not when the underlying action happened. Collection is sampled and can miss brief intermediate states; this is not a complete Herdr event stream. Prompts are interface labels, not executed shell commands. Raw terminal content is never exported. Connection loss clears live panes without claiming they finished. The accessible text equivalent contains the current panes and the last 60 observations.
 
@@ -247,3 +247,9 @@ openspec validate --all --strict
 The application needs no OpenSpec installation to run. OpenSpec is used for project delivery. GitHub Actions runs Python tests and JavaScript syntax checks. Live compatibility testing is separate from automated fixture tests.
 
 Protocol reference: [Herdr socket API](https://herdr.dev/docs/socket-api/).
+
+### Text renderer build
+
+Docker builds `renderer/` in a pinned Rust build stage and copies its executable into the runtime image. Nothing is installed at runtime. For a local development server, run `cargo build --release --locked --manifest-path renderer/Cargo.toml` and set `OBSERVATORY_TEXT_RENDERER="$PWD/renderer/target/release/observatory-text"`. Without the adapter, the feed falls back to plain text.
+
+The read-only `/api/text-frames` endpoint derives text from the same server-filtered state as the TUI. It accepts no text or effect arguments. Frames are cached per capture, generation has a two-second deadline, and playback is bounded to 120 frames of 100×6 cells. Long observation sets rotate in batches. Licence and upstream TTE attribution are retained in `renderer/TTFX-LICENSE` and `renderer/NOTICE`.

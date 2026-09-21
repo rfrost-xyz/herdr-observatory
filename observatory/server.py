@@ -7,11 +7,13 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from .core import Observatory
+from .effects import TextEffects
 
 WEB = Path(__file__).resolve().parent.parent / 'web'
 
 
 def handler(observatory):
+    effects = TextEffects()
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             allowed = {f'localhost:{self.server.server_port}', f'127.0.0.1:{self.server.server_port}'}
@@ -22,6 +24,9 @@ def handler(observatory):
             path = urlsplit(self.path).path
             if path == '/api/state':
                 content = json.dumps(observatory.snapshot(), allow_nan=False).encode()
+                kind = 'application/json'
+            elif path == '/api/text-frames':
+                content = json.dumps(effects.snapshot(observatory.snapshot()), allow_nan=False).encode()
                 kind = 'application/json'
             elif path in ('/', '/app.js', '/style.css'):
                 name = {'/': 'index.html', '/app.js': 'app.js', '/style.css': 'style.css'}[path]
