@@ -129,7 +129,9 @@ The PowerShell launcher opens the display; the independently running container s
 
 ## Technical display and what the numbers mean
 
-Each machine and working thread has its own deterministic pulse period and offset. Rhythms survive refreshes and page reordering. The waveform and moving highlights are status decoration, not measured tokens per second or network packets. Reduced-motion preferences disable animation. Static grids, scanlines and terminal-style event labels use the active Omarchy palette; the display remains a single 16:9 viewport.
+The screen is an operations console: working cards have independently phased perimeter circuits, scanning surfaces and drifting grid textures. Text stays stable while the card animates around it. Blocked cells use static amber attention styling; stale sources lose active effects. These effects follow reported status and do not claim measured tokens, packets or tool calls. Reduced-motion preferences disable animation.
+
+The snapshot console formats real source captures and sampled state changes as bounded terminal-style records, preserving capture timestamps. Its `observe>` and `$ observe fleet --read-only` prompts are interface labels, not a real shell or executed commands. It is explicitly labelled **derived records / not shell output**. Raw terminal content is never exported. The fixed 16:9 screen keeps six execution cells, three hosts, the console/state journal and resource telemetry visible without scrolling.
 
 | Technical field | Meaning | When absent |
 | --- | --- | --- |

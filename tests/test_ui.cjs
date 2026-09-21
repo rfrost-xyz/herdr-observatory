@@ -44,37 +44,30 @@ test('Wall display bounds each page while totals cover all agents',()=>{
  assert.notEqual(h.get('agents').innerHTML,first);
  assert.ok(h.get('page-counter').textContent.includes('2/6'));
 });
-test('Viewport row budget leaves two readable agent rows at target sizes',()=>{
- for(const height of [720,1080]) {
-  const clamp=(min,value,max)=>Math.max(min,Math.min(value,max));
-  const header=clamp(44,.06*height,64),padding=clamp(8,.013*height,16),gap=clamp(6,.009*height,12);
-  const fixed=clamp(40,.06*height,64)+clamp(54,.08*height,84)+clamp(86,.15*height,160)+clamp(108,.18*height,184)+16;
-  const workspace=height-header-2*padding-5*gap-fixed;
-  assert.ok(workspace>=250);
- }
+test('Layout retains fixed viewport and bounded two-row execution cells',()=>{
  const css=fs.readFileSync('web/style.css','utf8');
  assert.ok(css.includes('html,body{width:100%;height:100%;overflow:hidden}'));
  assert.ok(css.includes('grid-template-rows:repeat(2,minmax(0,1fr))'));
 });
 
-test('Heartbeats resume elapsed phase across renders and stop with working status',()=>{
+test('Card FX resume elapsed phase across renders and stop with working status',()=>{
  const h=harness();
  h.run(`state={profile:'work',interval:5,theme:{name:'Test',colours:{}},history:[],hosts:[{id:'desktop',label:'Desktop',online:true,sampled_at:Date.now()/1000,version:'test',trend:[],metrics:null,agents:[{id:'a',host:'desktop',project:'Project',title:'Task',category:'work',harness:'codex',status:'working',since:1}]}]};received=Date.now();`);
  for(const elapsed of [0,1000,2000,2999,3000,4100]) {
   h.run(`performance.now=()=>${elapsed};render();`);
-  assert.ok(h.get('network').innerHTML.includes(h.run("heartbeatPhase('machine:desktop')")));
-  assert.ok(h.get('agents').innerHTML.includes(h.run("heartbeatPhase('thread:desktop:a')")));
-  assert.ok(h.get('agents').innerHTML.includes('class="thread-heartbeat" aria-hidden="true"'));
+  assert.ok(h.get('network').innerHTML.includes(h.run("activityPhase('machine:desktop')")));
+  assert.ok(h.get('agents').innerHTML.includes(h.run("activityPhase('thread:desktop:a')")));
+  assert.ok(h.get('agents').innerHTML.includes('class="card-fx" aria-hidden="true"'));
  }
  for(const status of ['idle','blocked','done','unknown']) {
   h.run(`state.hosts[0].agents[0].status='${status}';render();`);
-  assert.ok(!h.get('agents').innerHTML.includes('thread-heartbeat'));
+  assert.ok(!h.get('agents').innerHTML.includes('card-fx'));
  }
  h.run("state.hosts[0].agents[0].status='working';failed=true;render();");
- assert.ok(!h.get('agents').innerHTML.includes('thread-heartbeat'));
+ assert.ok(!h.get('agents').innerHTML.includes('card-fx'));
  assert.ok(!h.get('network').innerHTML.includes('machine-node active'));
  const css=fs.readFileSync('web/style.css','utf8');
- assert.ok(css.includes('@keyframes travel{to{left:82%}}'));
+ assert.ok(css.includes('@keyframes circuit{to{stroke-dashoffset:-100}}'));
  assert.ok(css.includes('animation-delay:var(--sweep-delay,0ms)'));
  assert.ok(css.includes('animation:none!important'));
 });
@@ -83,13 +76,13 @@ test('Entity rhythms differ and remain stable across render order',()=>{
  const h=harness();
  h.run('performance.now=()=>1200');
  const ids=['machine:desktop','machine:laptop','thread:desktop:a','thread:desktop:b','thread:laptop:a'];
- const phases=ids.map(id=>h.run(`heartbeatPhase('${id}')`));
+ const phases=ids.map(id=>h.run(`activityPhase('${id}')`));
  assert.equal(new Set(phases).size,ids.length);
- ids.slice().reverse().forEach(id=>assert.equal(h.run(`heartbeatPhase('${id}')`),phases[ids.indexOf(id)]));
+ ids.slice().reverse().forEach(id=>assert.equal(h.run(`activityPhase('${id}')`),phases[ids.indexOf(id)]));
  const parse=s=>Object.fromEntries([...s.matchAll(/--([a-z-]+):(-?[0-9.]+)ms/g)].map(m=>[m[1],Number(m[2])]));
  const before=parse(phases[0]);
  h.run('performance.now=()=>2200');
- const after=parse(h.run("heartbeatPhase('machine:desktop')"));
+ const after=parse(h.run("activityPhase('machine:desktop')"));
  assert.equal(after['sweep-duration'],before['sweep-duration']);
  assert.equal(-after['sweep-delay'],(-before['sweep-delay']+1000)%before['sweep-duration']);
 });
@@ -101,4 +94,15 @@ test('Technical strip shows genuine counters and explicit missing flags',()=>{
  assert.ok(strip.includes('FOCUS'));
  assert.ok(strip.includes('>—</span>'));
  assert.ok(!h.run("technicalStrip({technical:{revision:'<script>secret</script>'}})").includes('<script>'));
+});
+
+test('Snapshot console is bounded, escaped and uses source timestamps',()=>{
+ const h=harness();
+ h.run(`state={interval:5};received=Date.now();`);
+ const result=h.run(`snapshotConsole([{id:'host',label:'<script>private</script>',sampled_at:123,protocol:22,online:true,agents:[{status:'working'}]}],Array.from({length:30},(_,i)=>({at:100+i,host:'node',project:'<img onerror=x>',status:'working',technical:{revision:4}})))`);
+ assert.ok(!result.includes('<script>'));
+ assert.ok(result.includes('&lt;script&gt;'));
+ assert.ok(result.includes('status=unavailable'));
+ assert.equal((result.match(/class="console-record"/g)||[]).length,9);
+ assert.ok(result.includes(new Date(123000).toLocaleTimeString('en-GB')));
 });
