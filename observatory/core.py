@@ -91,6 +91,18 @@ def classification(cwd, host):
     return 'personal'
 
 
+def counter(value):
+    return value if type(value) is int and 0 <= value <= 9007199254740991 else None
+
+
+def technical(raw):
+    raw = raw if isinstance(raw, dict) else {}
+    result = {key: counter(raw.get(key)) for key in ('revision', 'state_change_seq')}
+    result.update({key: raw[key] if type(raw.get(key)) is bool else None
+                   for key in ('focused', 'interactive_ready', 'launch_pending')})
+    return result
+
+
 def normalise(snapshot, host, profile):
     if not isinstance(snapshot, dict) or not isinstance(snapshot.get('agents'), list) or not isinstance(snapshot.get('workspaces'), list):
         raise ValueError('Invalid Herdr snapshot')
@@ -104,6 +116,7 @@ def normalise(snapshot, host, profile):
             continue
         status = entry.get('agent_status')
         agents.append({'id': host['id'] + ':' + clean(entry['pane_id']), 'host': host['id'], 'category': category,
+            'technical': technical(entry),
             'project': spaces.get(entry.get('workspace_id'), 'Untitled'), 'harness': clean(entry.get('agent'), 'unknown'),
             'status': status if status in STATUSES else 'unknown', 'title': clean(entry.get('terminal_title_stripped'), 'No task title reported')})
     return agents
@@ -223,7 +236,7 @@ class Observatory:
                 measured = rates(measured_raw, self.previous_metrics.get(host['id'])) if measured_raw is not None else None
                 self.previous_metrics[host['id']] = measured_raw
                 trend = (state['trend'] + [{'at': now, 'working': None if error else sum(a['status'] == 'working' for a in agents)}])[-60:]
-                state.update(online=not bool(error), error='Herdr unavailable or incompatible' if error else None, sampled_at=sampled_at, agents=agents if not error else [], metrics=measured, trend=trend, version=clean(raw.get('snapshot', {}).get('version') if raw.get('snapshot') else None, 'unknown'))
+                state.update(online=not bool(error), error='Herdr unavailable or incompatible' if error else None, sampled_at=sampled_at, agents=agents if not error else [], metrics=measured, trend=trend, protocol=counter((raw.get('snapshot') or {}).get('protocol')), version=clean(raw.get('snapshot', {}).get('version') if raw.get('snapshot') else None, 'unknown'))
                 if host['id'] == self.config.get('theme_host', self.config['hosts'][0]['id']):
                     self.palette = theme(raw.get('theme'))
         except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError):

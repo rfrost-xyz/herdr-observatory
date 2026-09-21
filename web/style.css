@@ -25,3 +25,21 @@ footer{padding:0;border:0;align-items:center;flex-direction:row;font-size:clamp(
 .agent-card{position:relative;overflow:hidden}
 .thread-heartbeat{position:absolute;left:12px;right:12px;bottom:3px;height:1px;background:var(--line);pointer-events:none}
 .thread-heartbeat:after{content:'';position:absolute;left:0;top:-1px;height:3px;width:18%;background:var(--green);box-shadow:0 0 6px var(--green);animation:travel 3s linear infinite;animation-delay:var(--sweep-delay,0ms)}
+
+/* Identity-specific rhythms and compact, genuine Herdr telemetry. */
+.active .signal-line:after,.thread-heartbeat:after{animation-duration:var(--sweep-duration,3000ms)}
+.active .node-core{animation-duration:var(--pulse-duration,2500ms)}
+.machine-node .node-count.link-meta:last-child{display:flex;justify-content:space-between;gap:8px;font-size:clamp(7px,.85vh,9px);color:var(--dim);letter-spacing:.5px}
+.machine-node,.agent-card,.resource{border-radius:2px;background-image:linear-gradient(90deg,color-mix(in srgb,var(--accent) 8%,transparent) 1px,transparent 1px);background-size:24px 100%}
+.agent-card{padding-bottom:18px;border-left:2px solid color-mix(in srgb,var(--accent) 50%,transparent)}
+.technical-strip{display:flex;align-items:center;justify-content:space-between;gap:5px;font-size:clamp(7px,.8vh,9px);line-height:1.2;white-space:nowrap;min-height:10px;color:var(--dim);border-top:1px solid var(--line);padding-top:3px;margin-bottom:3px;overflow:hidden}
+.technical-strip b{font-weight:400;color:var(--accent)}.technical-strip .focus-marker{color:var(--green)}
+.thread-heartbeat{height:13px;bottom:2px;background:none;overflow:hidden}
+.thread-heartbeat svg{position:absolute;width:100%;height:100%;stroke:var(--green);stroke-width:1;fill:none;opacity:.4}
+.thread-heartbeat:after{top:7px;height:2px;box-shadow:0 0 8px var(--green)}
+.network-panel{position:relative;background-image:linear-gradient(transparent 50%,color-mix(in srgb,var(--foreground) 2%,transparent) 50%),radial-gradient(var(--line) .65px,transparent .65px);background-size:100% 4px,18px 18px}
+.resource,.machine-node{box-shadow:inset 0 1px color-mix(in srgb,var(--accent) 18%,transparent)}
+.event-time,.resource h3{letter-spacing:.5px}.event-status{font-size:clamp(7px,.9vh,10px)}
+@media(prefers-reduced-motion:reduce){.thread-heartbeat:after{display:none}}
+
+.machine-node{padding-top:2px;padding-bottom:2px}.node-header{line-height:1.1}.node-signal{margin:1px 0}.machine-node .node-count:last-child{display:block;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}

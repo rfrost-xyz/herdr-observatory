@@ -62,9 +62,8 @@ test('Heartbeats resume elapsed phase across renders and stop with working statu
  h.run(`state={profile:'work',interval:5,theme:{name:'Test',colours:{}},history:[],hosts:[{id:'desktop',label:'Desktop',online:true,sampled_at:Date.now()/1000,version:'test',trend:[],metrics:null,agents:[{id:'a',host:'desktop',project:'Project',title:'Task',category:'work',harness:'codex',status:'working',since:1}]}]};received=Date.now();`);
  for(const elapsed of [0,1000,2000,2999,3000,4100]) {
   h.run(`performance.now=()=>${elapsed};render();`);
-  const phase=`--sweep-delay:-${elapsed%3000}ms`;
-  assert.ok(h.get('network').innerHTML.includes(phase));
-  assert.ok(h.get('agents').innerHTML.includes(phase));
+  assert.ok(h.get('network').innerHTML.includes(h.run("heartbeatPhase('machine:desktop')")));
+  assert.ok(h.get('agents').innerHTML.includes(h.run("heartbeatPhase('thread:desktop:a')")));
   assert.ok(h.get('agents').innerHTML.includes('class="thread-heartbeat" aria-hidden="true"'));
  }
  for(const status of ['idle','blocked','done','unknown']) {
@@ -78,4 +77,28 @@ test('Heartbeats resume elapsed phase across renders and stop with working statu
  assert.ok(css.includes('@keyframes travel{to{left:82%}}'));
  assert.ok(css.includes('animation-delay:var(--sweep-delay,0ms)'));
  assert.ok(css.includes('animation:none!important'));
+});
+
+test('Entity rhythms differ and remain stable across render order',()=>{
+ const h=harness();
+ h.run('performance.now=()=>1200');
+ const ids=['machine:desktop','machine:laptop','thread:desktop:a','thread:desktop:b','thread:laptop:a'];
+ const phases=ids.map(id=>h.run(`heartbeatPhase('${id}')`));
+ assert.equal(new Set(phases).size,ids.length);
+ ids.slice().reverse().forEach(id=>assert.equal(h.run(`heartbeatPhase('${id}')`),phases[ids.indexOf(id)]));
+ const parse=s=>Object.fromEntries([...s.matchAll(/--([a-z-]+):(-?[0-9.]+)ms/g)].map(m=>[m[1],Number(m[2])]));
+ const before=parse(phases[0]);
+ h.run('performance.now=()=>2200');
+ const after=parse(h.run("heartbeatPhase('machine:desktop')"));
+ assert.equal(after['sweep-duration'],before['sweep-duration']);
+ assert.equal(-after['sweep-delay'],(-before['sweep-delay']+1000)%before['sweep-duration']);
+});
+test('Technical strip shows genuine counters and explicit missing flags',()=>{
+ const h=harness();
+ const strip=h.run("technicalStrip({technical:{revision:42,state_change_seq:17,focused:true}})");
+ assert.ok(strip.includes('REV <b>42</b>'));
+ assert.ok(strip.includes('SEQ <b>17</b>'));
+ assert.ok(strip.includes('FOCUS'));
+ assert.ok(strip.includes('>—</span>'));
+ assert.ok(!h.run("technicalStrip({technical:{revision:'<script>secret</script>'}})").includes('<script>'));
 });

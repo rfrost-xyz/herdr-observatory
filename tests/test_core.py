@@ -23,6 +23,21 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(len(app.snapshot()['hosts'][0]['agents']), 1)
         self.assertEqual(len(app.snapshot()['history']), 1)
 
+    def test_technical_metadata_is_typed_and_private_agents_stay_excluded(self):
+        sample = copy.deepcopy(SNAP)
+        sample['agents'][0].update(revision=32, state_change_seq=7, focused=True,
+                                   interactive_ready='yes', launch_pending=False,
+                                   tokens={'secret': 'PRIVATE TOKEN'}, state_labels={'secret': 'PRIVATE LABEL'})
+        sample['agents'][1]['revision'] = 987654321
+        agents = normalise(sample, HOST, 'work')
+        self.assertEqual(agents[0]['technical'], {'revision':32, 'state_change_seq':7,
+            'focused':True, 'interactive_ready':None, 'launch_pending':False})
+        self.assertNotIn('PRIVATE', json.dumps(agents))
+        self.assertNotIn('987654321', json.dumps(agents))
+        for invalid in (True, -1, 1.5, '12', 2**64):
+            sample['agents'][0]['revision'] = invalid
+            self.assertIsNone(normalise(sample, HOST, 'work')[0]['technical']['revision'])
+
     def test_personal_profile_includes_both_categories(self):
         agents = normalise(SNAP, HOST, 'personal')
         self.assertEqual([a['category'] for a in agents], ['work', 'personal'])

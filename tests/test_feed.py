@@ -98,6 +98,22 @@ class FeedTests(unittest.TestCase):
         self.assertEqual(run.call_args.args[0][-1], 'docker exec -i herdr-observatory python3 -m observatory.feed /feeds/work.json')
         self.assertNotIn('PRIVATE', run.call_args.kwargs['input'])
 
+    def test_feed_preserves_only_typed_technical_metadata(self):
+        _app, feed = fixture()
+        feed['protocol'] = 22
+        feed['agents'][0]['technical'] = {'revision':12, 'state_change_seq':8, 'focused':False,
+            'interactive_ready':True, 'launch_pending':False, 'tokens':'PRIVATE'}
+        value = validate_feed(feed)
+        self.assertEqual(value['protocol'],22)
+        self.assertEqual(value['agents'][0]['technical']['revision'],12)
+        self.assertNotIn('PRIVATE',json.dumps(value))
+        feed['protocol'] = True
+        feed['agents'][0]['technical'] = {'revision':True,'focused':'yes'}
+        value=validate_feed(feed)
+        self.assertIsNone(value['protocol'])
+        self.assertIsNone(value['agents'][0]['technical']['revision'])
+        self.assertIsNone(value['agents'][0]['technical']['focused'])
+
     def test_missing_feed_does_not_hide_local_agents(self):
         other = {'id': 'laptop', 'transport': 'file', 'path': '/nonexistent/source.json'}
         app = Observatory({'hosts': [HOST, other]}, 'work', lambda h: copy.deepcopy(RAW) if h['id'] == HOST['id'] else collect(h))

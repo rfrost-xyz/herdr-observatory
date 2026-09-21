@@ -12,7 +12,7 @@ import tempfile
 import threading
 import time
 
-from .core import STATUSES, clean, sanitise_metrics, theme, ssh_command
+from .core import STATUSES, clean, sanitise_metrics, theme, ssh_command, technical, counter
 
 MAX_BYTES = 1024 * 1024
 MAX_AGE = 30
@@ -37,13 +37,15 @@ def validate_feed(raw, expected_host=None):
         if not isinstance(item.get('id'), str) or not item['id'] or item['id'] in ids or item.get('status') not in STATUSES:
             raise ValueError('Invalid agent identity or state')
         ids.add(item['id'])
-        agents.append({key: clean(item.get(key)) for key in ('id', 'host', 'category', 'project', 'harness', 'status', 'title')})
+        agent = {key: clean(item.get(key)) for key in ('id', 'host', 'category', 'project', 'harness', 'status', 'title')}
+        agent['technical'] = technical(item.get('technical'))
+        agents.append(agent)
     raw_theme = raw.get('theme')
     palette = theme(raw_theme)
     metrics = sanitise_metrics(raw['metrics']) if raw.get('metrics') is not None else None
     return {'schema': 'herdr-work-v1', 'profile': 'work', 'host_id': host_id, 'captured_at': at,
             'agents': agents if raw.get('online') is True else [], 'online': raw.get('online') is True,
-            'metrics': metrics, 'theme': palette, 'version': clean(raw.get('version'), 'unknown')}
+            'metrics': metrics, 'theme': palette, 'protocol': counter(raw.get('protocol')), 'version': clean(raw.get('version'), 'unknown')}
 
 
 def project_work(snapshot, host_id):
@@ -51,7 +53,7 @@ def project_work(snapshot, host_id):
     if host['sampled_at'] is None:
         raise ValueError('No source sample yet')
     return validate_feed({'schema': 'herdr-work-v1', 'profile': 'work', 'host_id': host_id,
-        'captured_at': host['sampled_at'], 'online': host['online'], 'version': host.get('version'),
+        'captured_at': host['sampled_at'], 'online': host['online'], 'protocol': host.get('protocol'), 'version': host.get('version'),
         'agents': [a for a in host['agents'] if a['category'] == 'work'],
         'metrics': host['metrics'], 'theme': snapshot['theme']}, host_id)
 
@@ -100,7 +102,7 @@ def read_feed(host):
         raise ValueError('Feed exceeds size limit')
     feed = validate_feed(json.loads(data), host['id'])
     fresh = time.time() - feed['captured_at'] <= MAX_AGE
-    return {'snapshot': {'version': feed['version']}, 'agent_views': feed['agents'] if fresh else [],
+    return {'snapshot': {'version': feed['version'], 'protocol': feed['protocol']}, 'agent_views': feed['agents'] if fresh else [],
             'metrics': feed['metrics'], 'theme': feed['theme'], 'sampled_at': feed['captured_at'],
             'error': None if fresh and feed['online'] else 'Source unavailable or feed expired'}
 

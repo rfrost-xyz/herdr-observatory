@@ -89,8 +89,8 @@ def sample(binary='herdr', session=None, socket_path=None, theme_path=None, disk
         if not isinstance(raw.get('agents'), list) or not isinstance(raw.get('workspaces'), list):
             raise ValueError('Invalid snapshot')
         # Do not export terminal buffers, process arguments or native session IDs.
-        result['snapshot'] = {'version': raw.get('version', 'unknown'),
-            'agents': [{k: a.get(k) for k in ('pane_id', 'workspace_id', 'agent', 'agent_status', 'cwd', 'terminal_title_stripped')} for a in raw['agents']],
+        result['snapshot'] = {'version': raw.get('version', 'unknown'), 'protocol': raw.get('protocol'),
+            'agents': [{k: a.get(k) for k in ('pane_id', 'workspace_id', 'agent', 'agent_status', 'cwd', 'terminal_title_stripped', 'revision', 'state_change_seq', 'focused', 'interactive_ready', 'launch_pending')} for a in raw['agents']],
             'workspaces': [{k: w.get(k) for k in ('workspace_id', 'label')} for w in raw['workspaces']]}
     except (OSError, ValueError, KeyError, TypeError, AttributeError, subprocess.SubprocessError):
         result['error'] = 'Herdr unavailable or incompatible'
