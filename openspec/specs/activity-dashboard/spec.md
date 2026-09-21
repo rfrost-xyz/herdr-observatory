@@ -6,7 +6,7 @@ Provide truthful, passive visibility of Herdr agents and machine activity across
 ## Requirements
 
 ### Requirement: Passive fleet observation
-The dashboard SHALL collect Herdr agent metadata from configured local and SSH hosts without controlling panes or persisting remote files.
+The dashboard SHALL collect Herdr agent metadata from configured local and SSH hosts and explicitly configured Work feed files without controlling panes. Feed persistence SHALL be limited to the configured private display state path.
 
 #### Scenario: Working agent
 - **WHEN** a valid snapshot contains a working agent
