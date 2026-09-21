@@ -250,6 +250,6 @@ Protocol reference: [Herdr socket API](https://herdr.dev/docs/socket-api/).
 
 ### Text renderer build
 
-Docker builds `renderer/` in a pinned Rust build stage and copies its executable into the runtime image. Nothing is installed at runtime. For a local development server, run `cargo build --release --locked --manifest-path renderer/Cargo.toml` and set `OBSERVATORY_TEXT_RENDERER="$PWD/renderer/target/release/observatory-text"`. Without the adapter, the feed falls back to plain text.
+Docker builds `renderer/` in a pinned Rust build stage and copies its executable into the runtime image. Nothing is installed at runtime. If the local Docker build network cannot resolve dependency hosts, use `docker build --network host` for the build; runtime networking is unchanged. For a local development server, run `cargo build --release --locked --manifest-path renderer/Cargo.toml` and set `OBSERVATORY_TEXT_RENDERER="$PWD/renderer/target/release/observatory-text"`. Without the adapter, the feed falls back to plain text.
 
 The read-only `/api/text-frames` endpoint derives text from the same server-filtered state as the TUI. It accepts no text or effect arguments. Frames are cached per capture, generation has a two-second deadline, and playback is bounded to 120 frames of 100×6 cells. Long observation sets rotate in batches. Licence and upstream TTE attribution are retained in `renderer/TTFX-LICENSE` and `renderer/NOTICE`.
