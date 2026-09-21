@@ -59,7 +59,7 @@ The display SHALL show available typed Herdr revision, state sequence and protoc
 - **THEN** unavailable fields remain marked unavailable and excluded metadata never reaches the Work feed or display.
 
 ### Requirement: Reactive rendered terminal
-The display SHALL show an unbranded live thread TUI between whole-terminal text effects. Effects SHALL use current theme colours, complete naturally without replacement by routine updates, and never repeat consecutively. A ten-second default hold SHALL begin after completion and be adjustable with Left/Right in one-second increments. Incomplete generation SHALL fall back to the live TUI. Profile filtering, accessibility and reduced-motion support SHALL remain.
+The display SHALL show an unbranded live thread TUI between whole-terminal text effects. Effects SHALL use current theme colours, complete naturally without replacement by routine updates, and never repeat consecutively. A ten-second default hold SHALL begin after completion and be adjustable with Left/Right in one-second increments. Renderer failure SHALL fall back to the live TUI. All 37 bundled effects SHALL be available in a shuffled rotation, generated locally in the browser from disclosed snapshots without animation-frame downloads. Profile filtering, accessibility and reduced-motion support SHALL remain.
 
 #### Scenario: Agent milestone
 - **WHEN** an agent appears, changes status or disappears from a fresh source
@@ -80,3 +80,11 @@ The display SHALL show an unbranded live thread TUI between whole-terminal text 
 #### Scenario: Theme and controls
 - **WHEN** the user presses Left or Right
 - **THEN** the hold changes by one second and the unbranded terminal retains theme-derived coloured effects across its full contents.
+
+#### Scenario: Complete catalogue
+- **WHEN** a full rotation completes
+- **THEN** each of the 37 effects has played once, including across rotation boundaries without consecutive repeats, and each finishes naturally.
+
+#### Scenario: Browser renderer unavailable
+- **WHEN** WebAssembly cannot initialise or an effect fails
+- **THEN** current thread state remains readable and collection continues.
