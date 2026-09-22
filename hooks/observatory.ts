@@ -28,6 +28,23 @@ export default function (pi) {
       }
     } finally { running = false; }
   }
+  function measuredUsage(message, live=false) {
+    const u=message?.usage;
+    const stamp=Number.isFinite(message?.timestamp)?message.timestamp:(live?Date.now():NaN);
+    if(!u || !Number.isFinite(stamp) || Date.now()-stamp<0 || Date.now()-stamp>120000)return {};
+    return {input:u.input,output_tokens:u.output,cache_read:u.cacheRead,cache_write:u.cacheWrite,
+      usage_seq:Math.floor(stamp*1000),usage_source:'pi-extension'};
+  }
+  function seedUsage(ctx) {
+    try {
+      const branch=ctx.sessionManager.getBranch?.();
+      if(!Array.isArray(branch))return;
+      const latest=branch.slice(-128).reverse().find(entry=>entry.type==='message' && entry.message?.role==='assistant');
+      const candidate=latest?measuredUsage(latest.message):{};
+      // agent_end can precede persistence of the latest message in the branch.
+      if(!usage.usage_seq || (candidate.usage_seq && candidate.usage_seq>=usage.usage_seq))usage=candidate;
+    }catch{usage={};}
+  }
   function emit(event, nextPhase, ctx, extra = {}) {
     try {
       const context = ctx.getContextUsage?.();
@@ -42,9 +59,9 @@ export default function (pi) {
       void drain();
     } catch { /* telemetry failure must never affect the harness */ }
   }
-  pi.on('session_start', (_e, ctx) => { queue = []; usage = {}; emit('session', 'ready', ctx); });
+  pi.on('session_start', (_e, ctx) => { queue = []; usage = {}; seedUsage(ctx); emit('session', 'ready', ctx); });
   pi.on('agent_start', (_e, ctx) => emit('turn', 'working', ctx));
-  pi.on('agent_end', (_e, ctx) => emit('idle', 'idle', ctx));
+  pi.on('agent_end', (_e, ctx) => { seedUsage(ctx); emit('idle', 'idle', ctx); });
   pi.on('tool_execution_start', (e, ctx) => emit('tool-start', 'tool', ctx, { tool: e.toolName }));
   pi.on('tool_execution_end', (e, ctx) => emit('tool-end', 'working', ctx,
     { tool: e.toolName, result: e.isError === true ? 'error' : 'finished' }));
@@ -55,8 +72,7 @@ export default function (pi) {
   });
   pi.on('message_end', (e, ctx) => {
     if (e.message?.role !== 'assistant') return;
-    const u = e.message.usage;
-    usage = u ? { input: u.input, output_tokens: u.output, cache_read: u.cacheRead, cache_write: u.cacheWrite } : {};
+    usage = measuredUsage(e.message,true);
     emit('output', 'output', ctx);
   });
   pi.on('session_before_compact', (_e, ctx) => emit('compact-start', 'compacting', ctx));

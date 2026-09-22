@@ -15,7 +15,7 @@ import tomllib
 TELEMETRY_EVENTS = {'session', 'turn', 'tool-start', 'tool-end', 'thinking', 'output',
                     'compact-start', 'compact-end', 'compact-failed', 'idle', 'interrupt', 'end', 'model', 'subagent-start', 'subagent-stop'}
 TELEMETRY_PHASES = {'ready', 'working', 'tool', 'thinking', 'output', 'compacting', 'idle', 'interrupted', 'ended'}
-TELEMETRY_NUMBERS = ('input', 'output_tokens', 'cache_read', 'cache_write', 'context', 'window')
+TELEMETRY_NUMBERS = ('input', 'output_tokens', 'cache_read', 'cache_write', 'context', 'window', 'usage_seq')
 TELEMETRY_TTL = 120
 
 
@@ -48,6 +48,11 @@ def telemetry_view(raw, now=None):
     for key in TELEMETRY_NUMBERS:
         value = raw.get(key)
         result[key] = value if type(value) is int and 0 <= value <= 9007199254740991 else None
+    result['usage_source'] = raw.get('usage_source') if raw.get('usage_source') in ('codex-rollout','pi-extension') else None
+    supplied_usage_time = raw.get('usage_seq') is not None or raw.get('usage_source') is not None
+    if supplied_usage_time and (result['usage_seq'] is None or not 0 <= now - result['usage_seq'] / 1_000_000 <= TELEMETRY_TTL):
+        for key in TELEMETRY_NUMBERS: result[key] = None
+        result['usage_source'] = None
     # Cross-field consistency: invalid estimates are unavailable, not clamped.
     if result['window'] == 0 or (result['context'] is not None and result['window'] is not None and result['context'] > result['window']):
         result['context'] = result['window'] = None
@@ -58,7 +63,7 @@ def telemetry_from_agent(agent, now=None):
     tokens = agent.get('tokens')
     if not isinstance(tokens, dict) or tokens.get('obs_v') != '1' or not session_binding(agent) or tokens.get('obs_bind') != session_binding(agent):
         return None
-    raw = {k: tokens.get('obs_' + k) for k in ('seq', 'event', 'phase', 'tool', 'model', 'result') + TELEMETRY_NUMBERS}
+    raw = {k: tokens.get('obs_' + k) for k in ('seq', 'event', 'phase', 'tool', 'model', 'result', 'usage_source') + TELEMETRY_NUMBERS}
     for key in ('seq',) + TELEMETRY_NUMBERS:
         value = raw[key]
         raw[key] = int(value) if isinstance(value, str) and re.fullmatch(r'[0-9]{1,16}', value) else None

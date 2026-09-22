@@ -54,15 +54,16 @@ def install(home, container, uninstall=False):
         raise ValueError('Invalid container name')
     root = home / '.local/share/herdr-observatory/hooks'
     shell = root / 'codex.sh'
+    helper = root / 'codex_usage.py'
     extension = home / '.pi/agent/extensions/observatory.ts'
     config = home / '.codex/hooks.json'
-    paths = (shell, extension, config)
+    paths = (shell, extension, config, helper)
     chezmoi = shutil.which('chezmoi')
     for path in paths:
         if path.is_symlink(): raise ValueError(f'Refusing symlink: {path}')
         if chezmoi and subprocess.run([chezmoi, 'source-path', str(path)], capture_output=True).returncode == 0:
             raise ValueError(f'Edit managed configuration through chezmoi: {path}')
-    for path in (shell, extension):
+    for path in (shell, extension, helper):
         if path.exists() and MARKER not in '\n'.join(path.read_text().splitlines()[:2]):
             raise ValueError(f'Conflicting adapter: {path}')
     existing = json.loads(config.read_text()) if config.exists() else {}
@@ -70,7 +71,7 @@ def install(home, container, uninstall=False):
     updated = merge_hooks(existing, command, uninstall)
     payloads = {}
     if not uninstall:
-        for name in ('codex.sh', 'observatory.ts'):
+        for name in ('codex.sh', 'observatory.ts', 'codex_usage.py'):
             payload = subprocess.check_output(['docker', 'exec', container, 'cat', '/app/hooks/' + name], timeout=5).decode()
             if MARKER not in payload[:160]: raise ValueError('Unrecognised image payload')
             payloads[name] = payload.replace('__CONTAINER__', container)
@@ -80,11 +81,12 @@ def install(home, container, uninstall=False):
         if not backup.exists(): atomic(backup, json.dumps(existing, indent=2) + '\n')
     if not uninstall:
         atomic(shell, payloads['codex.sh'], 0o700)
+        atomic(helper, payloads['codex_usage.py'], 0o700)
         atomic(extension, payloads['observatory.ts'])
     if existing != updated:
         atomic(config, json.dumps(updated, indent=2) + '\n')
     if uninstall:
-        for path in (shell, extension): path.unlink(missing_ok=True)
+        for path in (shell, extension, helper): path.unlink(missing_ok=True)
     return paths
 
 

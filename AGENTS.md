@@ -117,6 +117,7 @@ world-writable sockets or an entire-home mount.
   `.env` and optional receiver feed files. These must survive image replacement.
 - Small optional harness adapters in the environment where Codex/Pi actually
   run. `hooks/install.py` owns `~/.local/share/herdr-observatory/hooks/codex.sh`,
+  `~/.local/share/herdr-observatory/hooks/codex_usage.py`,
   `~/.pi/agent/extensions/observatory.ts` and its entries in `~/.codex/hooks.json`.
   It preserves unrelated entries and one private backup. It refuses symlinks,
   conflicting files and chezmoi-managed targets. Never bypass those checks.
@@ -176,7 +177,7 @@ Run the repository checks for runtime changes and before a runtime release:
 ```sh
 python -m unittest discover -s tests -v
 node --check web/app.js
-node --test tests/test_ui.cjs tests/test_wasm.mjs tests/test_background.mjs tests/test_title.mjs tests/test_music_title.mjs
+node --test tests/test_ui.cjs tests/test_wasm.mjs tests/test_background.mjs tests/test_title.mjs tests/test_music_title.mjs tests/test_pi_hooks.mjs
 openspec validate --all --strict
 ```
 
@@ -211,6 +212,6 @@ Observatory release tags after acceptance; do not prune unrelated Docker assets.
 
 Project and safe checkout leaf replace the terminal title in cards. The private probe keeps native checkout paths only until classification; the HTTP/Work projection exports a leaf only when its category matches the pane. Never add project mounts or infer a branch from its directory label. Work feed receipt revalidates leaf labels. Display Host/Client identity derives from the configured local host and file-feed presence, not Docker hostname or privacy profile.
 
-Numeric tiles appear only for fresh supported values, with zero distinct from missing. Codex hooks do not expose usage counters; Pi coverage depends on provider usage/context. Codex SubagentStart/SubagentStop are latest parent-session-bound observations only. Drop child IDs/types/transcript paths/content, do not construct roster counts or interpret stop as permanent completion. Updating registrations requires the existing image-supplied hook installer on both harness hosts and harness restart/reload. No new persistent process is permitted.
+Numeric tiles appear only for fresh supported values, with zero distinct from missing. Codex hooks gain optional numeric enrichment from the bounded host-local `hooks/codex_usage.py` helper; Pi coverage depends on provider usage/context. Preserve the exact-session header check, owner/no-symlink path walk, session-root restriction, 64 KiB header/line and 512 KiB tail bounds. Never forward transcript text or mount session directories into the image. Usage-source timestamps must expire independently of newer hook sequence timestamps. Pi reload seeds only recent active-branch assistant usage and must not replace newer live usage with a lagging persisted entry. Codex SubagentStart/SubagentStop are latest parent-session-bound observations only. Drop child IDs/types/transcript paths/content, do not construct roster counts or interpret stop as permanent completion. Updating registrations requires the existing image-supplied hook installer on both harness hosts and harness restart/reload. No new persistent process is permitted.
 
-Music title effects are separate from Rich and event effects, use the bounded single-line factory, and trigger only after a fresh track baseline changes. Preserve the sr-only track equivalent while the visual title is hidden. On rapid changes finish the session without displaying stale metadata and retain only the latest pending track; hidden/reduced-motion/stale paths cancel and reset the baseline.
+Music title and artist effects are separate from Rich and event effects, use the bounded single-line factory, and trigger only after a fresh track baseline changes. Preserve the sr-only track equivalent while the visual title is hidden. On rapid changes finish the session without displaying stale metadata and retain only the latest pending track; hidden/reduced-motion/stale paths cancel and reset the baseline.

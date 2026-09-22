@@ -219,7 +219,7 @@ The base image is digest-pinned. OpenSSH is installed at build time; preserve th
 
 ## Harness telemetry (Codex and Pi)
 
-The optional adapters share telemetry with **native Herdr and Observatory**. They run inside the harness environment on each machine. Codex uses one small shell adapter registered for several event types; Pi uses one extension. Both call `docker exec` to run the reporter already bundled in the Observatory image. Herdr stores expiring metadata; the existing local/SSH probe and Work feed carry its allowlisted fields. There is no additional daemon, listener, database, transcript tailer, Docker socket mount or background log collector.
+The optional adapters share telemetry with **native Herdr and Observatory**. They run inside the harness environment on each machine. Codex uses one small shell adapter and its short-lived numeric helper, registered for several event types; Pi uses one extension. Both paths call `docker exec` to run the reporter already bundled in the Observatory image. Herdr stores expiring metadata; the existing local/SSH probe and Work feed carry its allowlisted fields. There is no additional daemon, listener, database, transcript tailer, Docker socket mount or background log collector.
 
 | Data | Codex hooks | Pi extension |
 | --- | --- | --- |
@@ -227,12 +227,14 @@ The optional adapters share telemetry with **native Herdr and Observatory**. The
 | Model | Hook-reported model | Active model identifier |
 | Phase | Turn, tool, compact, idle, interruption | Turn, tool, reported thinking/output phase, compact, idle |
 | Compaction | Start/completion | Start/completion/failure |
-| Input/output/cache | Unavailable | **Last assistant response** reported input, output, cache read/write tokens |
-| Context | Unavailable | **Estimated** current tokens against model context window |
+| Input/output/cache | Recent matching rollout last-response numeric record, when present | **Last assistant response** reported input, output, cache read/write tokens |
+| Context | Last-response total-token estimate and reported window, when present | **Estimated** current tokens against model context window |
 
 A “finished” tool is not a claim that its command succeeded. Raw commands, arguments, tool output, prompts, transcript paths and reasoning text are never published. MCP and unknown tool identifiers become generic `mcp-tool`/`custom-tool` labels. Model identifiers are bounded identifiers, not content. Pi phase markers describe exposed events, not hidden reasoning. Local models work through Pi's normal event API; telemetry depends on the harness, not the model brand.
 
 The native Herdr agent label gains a concise phase/tool/context hint. Its authoritative state, waits, notifications and session restoration stay under Herdr's own integration. Namespaced `obs_*` tokens are also available to custom Herdr sidebar rows. Observatory shows the latest hint in the thread card and concise sampled tool/compaction changes in recent activity, with available model/usage details. The source timestamp expires after **120 seconds without another report**; this means “no recent telemetry”, not “agent disconnected”. Very short tools can be missed between polls, and concurrent tools show the latest observed event, not a complete active-tool inventory. Full lossless tracing is outside this integration.
+
+Codex numeric enrichment reads at most a 64 KiB session header and a 512 KiB tail from the exact hook-supplied `.jsonl` file beneath `$CODEX_HOME/sessions` (normally `~/.codex/sessions`). It rejects symlinks, files owned by another user and session-header mismatches. Only supported numeric `token_count` fields and their timestamp are forwarded; transcript text and file paths remain local. Last-response counters are not session totals, and the context value is a labelled last-response estimate. Unsupported, old, malformed or missing records leave numeric fields unavailable while ordinary hooks remain best-effort. No session-directory mount, transcript tailing daemon or extra service is added. Pi reload uses its current branch API, examines at most its final 128 entries and retains the assistant message timestamp rather than treating reload as new usage.
 
 ### Install or update on a machine
 
@@ -252,6 +254,7 @@ The installer is idempotent and uses atomic file replacement. It refuses conflic
 Only these host additions remain:
 
 - `~/.local/share/herdr-observatory/hooks/codex.sh` — silent, time-bounded forwarder.
+- `~/.local/share/herdr-observatory/hooks/codex_usage.py` — short-lived bounded local numeric reader; invokes the image reporter.
 - `~/.codex/hooks.json` — owned entries merged beside native hooks.
 - `~/.pi/agent/extensions/observatory.ts` — event adapter with a bounded serial queue; no per-token subprocesses.
 - `~/.local/share/herdr-observatory/hooks/hooks.before-install.json` — one private pre-install hook backup, if an existing config changed.
@@ -260,7 +263,7 @@ Start a **new Codex session** after installation. In Pi, use `/reload` or start 
 
 ### Remove or roll back
 
-Copy the installer as above and run `python3 "$installer" --uninstall` before deleting it. This removes only the owned Codex commands and the two adapter files; it does not uninstall Herdr's native integrations. The single private backup is retained for manual comparison and can be deleted once no longer needed. Restart/reload harnesses, then select the retained image using the deployment rollback procedure below. Already published telemetry expires within 120 seconds. Do not restore an old hooks.json over newer unrelated settings.
+Copy the installer as above and run `python3 "$installer" --uninstall` before deleting it. This removes only the owned Codex commands and the three adapter/helper files; it does not uninstall Herdr's native integrations. The single private backup is retained for manual comparison and can be deleted once no longer needed. Restart/reload harnesses, then select the retained image using the deployment rollback procedure below. Already published telemetry expires within 120 seconds. Do not restore an old hooks.json over newer unrelated settings.
 
 Work classification applies to this data before browser/history/feed publication. Personal or unknown projects remain excluded from the office display. No telemetry or local hook configuration belongs in the public repository.
 
@@ -334,7 +337,7 @@ CPU/RAM come from the Linux kernel, network from the shared host namespace and d
 ```sh
 python -m unittest discover -s tests -v
 node --check web/app.js
-node --test tests/test_ui.cjs tests/test_wasm.mjs tests/test_background.mjs tests/test_title.mjs tests/test_music_title.mjs
+node --test tests/test_ui.cjs tests/test_wasm.mjs tests/test_background.mjs tests/test_title.mjs tests/test_music_title.mjs tests/test_pi_hooks.mjs
 openspec validate --all --strict
 ```
 
@@ -352,7 +355,7 @@ The browser composes live and animated scenes from the same filtered `/api/state
 
 The server permits only explicit asset paths, serves WASM as `application/wasm`, and uses `script-src 'self' 'wasm-unsafe-eval'` without JavaScript eval or external scripts. The former `/api/text-frames` endpoint and native adapter have been removed. If WASM loading or execution fails, the live card display remains available and retries only on a new eligible event after the configured cooldown. Licences and attribution remain in `web/vendor/LICENSE` and `web/vendor/NOTICE`.
 
-Run `python -m unittest discover -s tests -v`, `node --check web/app.js`, `node --test tests/test_ui.cjs tests/test_wasm.mjs tests/test_background.mjs tests/test_title.mjs tests/test_music_title.mjs`, and `openspec validate --all --strict`. The WASM tests verify artifact hashes and run every effect to completion using a synthetic single-line event.
+Run `python -m unittest discover -s tests -v`, `node --check web/app.js`, `node --test tests/test_ui.cjs tests/test_wasm.mjs tests/test_background.mjs tests/test_title.mjs tests/test_music_title.mjs tests/test_pi_hooks.mjs`, and `openspec validate --all --strict`. The WASM tests verify artifact hashes and run every effect to completion using a synthetic single-line event.
 
 ### Further Herdr API coverage
 
@@ -418,10 +421,10 @@ The redundant Observed activity widget is removed. Thread cards retain their sta
 
 Cards emphasise project, native state and worktree/checkout name. The checkout is a directory label supplied by Herdr (or the pane's current-directory leaf), not a claimed Git branch. Full paths are omitted, and Personal checkout names cannot pass through a Work pane. The label beside Rich identifies the configured local machine: Host for direct collection, Client when consuming a received fleet feed. These labels do not alter Personal/Work filtering.
 
-Cards retain a slight state tint: Working uses the theme accent, Blocked yellow, Done green. Recent observations follow the associated state colour too. Larger header totals include all permitted threads, including other pages. Available context and usage appear as compact tiles with exact values in their tooltips. Context is an estimate; response and cache counters cover the last reported response. Missing fields are not zero and are summarised in one coverage note.
+Cards retain a slight state tint: Working uses the theme yellow/amber, Blocked red, and Done and Idle green, following Herdr’s palette roles. Idle has a quieter fill. Recent observations follow the associated state colour too. Click a card (or press Enter/Space when focused) to open its live read-only inspector with exact metrics, source age and recent thread activity. Escape or Close returns to the card; source loss clears the inspector. Larger header totals include all permitted threads, including other pages. Available context and usage appear as compact tiles with exact values in their tooltips. Context is an estimate; response and cache counters cover the last reported response. Missing fields are not zero and are summarised in one coverage note.
 
-Codex hooks currently provide activity, tools, model and compaction markers, but no context/cache/token counters. Pi supplies these when its provider and extension context report them. Both expire after 120 seconds without a fresh hook. Codex SubagentStart/SubagentStop hooks add the latest observed child activity under the matching parent; they do not provide a complete live roster or a running-child count. Stopped does not assert permanent termination. Pi has no general equivalent lifecycle event; extension-specific instrumentation is not installed. No transcript reading or additional observer process is used.
+Codex hooks provide activity, tools, model and compaction markers. A short-lived host helper now enriches each hook with recent numeric usage from the exact matching local rollout named by the hook. Pi supplies counters when its provider reports them and seeds recent usage from its active session branch on reload. Numeric source timestamps expire after 120 seconds; a newer activity hook cannot refresh old usage. Codex SubagentStart/SubagentStop hooks add the latest observed child activity under the matching parent; they do not provide a complete live roster or a running-child count. Stopped does not assert permanent termination. Pi has no general equivalent lifecycle event; extension-specific instrumentation is not installed. No transcript content is forwarded and no additional persistent observer process is used.
 
-After upgrading the image, re-run the existing hook installer on each harness host to add the two Codex event registrations. Existing Codex sessions need restart/reload before the new registrations take effect. The adapter paths and number of installed adapter files are unchanged.
+After upgrading the image, re-run the existing hook installer on each harness host to add the two Codex event registrations. Existing Codex sessions need restart/reload before the new registrations take effect. Re-run the installer to update these registrations and install the numeric helper beside the existing shell adapter.
 
-The music tile gives title and artist separate lines. A track identity change triggers an in-place title effect using the bundled renderer. Initial connection, duplicate samples, pause/resume and stale recovery do not trigger it. Rapid changes retain at most the latest pending track; reduced motion and source loss preserve plain readable text.
+The music tile gives title and artist separate lines. A track identity change triggers in-place effects on both title and artist using the bundled renderer. Initial connection, duplicate samples, pause/resume and stale recovery do not trigger it. Rapid changes retain at most the latest pending track; reduced motion and source loss preserve plain readable text.

@@ -16,7 +16,7 @@ CODEX_EVENTS = {'SessionStart': ('session', 'ready'), 'UserPromptSubmit': ('turn
                 'PreCompact': ('compact-start', 'compacting'), 'PostCompact': ('compact-end', 'working'),
                 'Stop': ('idle', 'idle'), 'Interrupt': ('interrupt', 'interrupted'), 'SessionEnd': ('end', 'ended'),
                 'SubagentStart': ('subagent-start', 'working'), 'SubagentStop': ('subagent-stop', 'working')}
-KEYS = ('v', 'bind', 'seq', 'event', 'phase', 'tool', 'model', 'result') + TELEMETRY_NUMBERS
+KEYS = ('v', 'bind', 'seq', 'event', 'phase', 'tool', 'model', 'result', 'usage_source') + TELEMETRY_NUMBERS
 
 
 def rpc(path, method, params):
@@ -47,6 +47,9 @@ def event_view(harness, raw, seq):
             return None
         value = {'seq': seq, 'event': event[0], 'phase': event[1], 'tool': raw.get('tool_name'), 'model': raw.get('model'),
                  'result': 'finished' if event[0] == 'tool-end' else None}
+        usage = raw.get('observatory_usage')
+        if isinstance(usage, dict) and usage.get('usage_source') == 'codex-rollout' and type(usage.get('usage_seq')) is int:
+            value.update({key: usage.get(key) for key in TELEMETRY_NUMBERS + ('usage_source',)})
     elif harness == 'pi':
         value = {**raw, 'seq': seq}
     else:

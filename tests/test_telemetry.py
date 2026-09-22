@@ -89,6 +89,18 @@ class TelemetryTests(unittest.TestCase):
             self.assertNotIn('SECRET', json.dumps(view))
             self.assertIn(name, installer.EVENTS)
 
+    def test_codex_numeric_enrichment_and_source_expiry(self):
+        seq = event()['seq']
+        raw = {'hook_event_name': 'PostToolUse', 'observatory_usage': {'input': 100, 'output_tokens': 20, 'cache_read': 0, 'cache_write': 4, 'context': 120, 'window': 1000, 'usage_seq': seq-1000000, 'usage_source': 'codex-rollout', 'secret': 'PRIVATE'}}
+        view = event_view('codex', raw, seq)
+        self.assertEqual(view['input'],100)
+        self.assertEqual(view['cache_read'],0)
+        self.assertNotIn('PRIVATE',json.dumps(view))
+        raw['observatory_usage']['usage_seq'] = seq-121000000
+        view = event_view('codex', raw, seq)
+        self.assertIsNone(view['input'])
+        self.assertEqual(view['event'],'tool-end')
+
     def test_pi_native_path_binding(self):
         a = agent('pi');a['agent_session'].update(kind='path', value='/private/session.jsonl')
         with tempfile.TemporaryDirectory() as directory:
@@ -179,3 +191,11 @@ class InstallerTests(unittest.TestCase):
         with patch.object(installer.subprocess, 'check_output') as call:
             with self.assertRaises(ValueError): installer.install(Path('/tmp/test'), 'x; bad')
             call.assert_not_called()
+
+class InvalidUsageTimestampTests(unittest.TestCase):
+    def test_invalid_supplied_usage_time_cannot_retain_numbers(self):
+        from observatory.probe import telemetry_view
+        for stamp in (None, True, '123', -1, 9007199254740992):
+            value=telemetry_view({'seq':100000000,'event':'tool-start','phase':'tool','input':12,'usage_seq':stamp,'usage_source':'codex-rollout'},100)
+            self.assertIsNone(value['input'])
+            self.assertIsNone(value['usage_source'])

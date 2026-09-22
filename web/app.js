@@ -5,14 +5,15 @@ const reduced = matchMedia('(prefers-reduced-motion: reduce)');
 let snapshot = null, received = 0, disconnected = false, initialised = false;
 let rowActivity = new Map();
 let previous = new Map(), agents = [], records = [], serial = 0;
-let pixelField=null,titleMark=null,musicTitle=null,fieldHeight=-1,music=null,musicReceived=0;
+let pixelField=null,titleMark=null,musicTitle=null,musicArtist=null,fieldHeight=-1,music=null,musicReceived=0;
 const GRID={columns:140,feedRows:4,threadRows:8};
 let lastFrame=0,manualPage=null,category='all';
+let inspected=null,inspectPage=0,inspectReturn=null,inspectSignature='';
 let palette = {background:'#101318',foreground:'#c0caf5',blue:'#7aa2f7',green:'#9ece6a',yellow:'#e0af68',red:'#f7768e',cyan:'#7dcfff'};
 const clean = (value, limit=160) => Array.from(String(value ?? '—').replace(/[\x00-\x1f\x7f-\x9f]/g,' ')).slice(0,limit).join('');
 const number = value => Number.isSafeInteger(value) && value >= 0 ? String(value) : '—';
 const statusKind = status => ({working:'Working',done:'Done',blocked:'Blocked',idle:'Idle',unknown:'Unknown'}[status] || 'Unknown');
-const colour = kind => palette[{Working:'cyan',Done:'green',Blocked:'yellow',Idle:'blue',Unknown:'yellow',LOST:'red',DETACH:'yellow',LINK:'blue',ATTACH:'blue',TOOL:'cyan',COMPACT:'yellow',USAGE:'green',BOOT:'blue',INFO:'blue'}[kind] || 'foreground'];
+const colour = kind => palette[{Working:'yellow',Done:'green',Blocked:'red',Idle:'green',Unknown:'yellow',LOST:'red',DETACH:'yellow',LINK:'blue',ATTACH:'blue',TOOL:'cyan',COMPACT:'yellow',USAGE:'green',BOOT:'blue',INFO:'blue'}[kind] || 'foreground'];
 const FONT_FACE='"Observatory Nerd", "JetBrainsMono Nerd Font", monospace';
 let nerdFontReady=false;
 const GLYPHS={terminal:'\uea85',host:'\uf233',threads:'\uf126',feed:'\uf0ca',clock:'\uf017',branch:'\ue0a0',working:'\uf04b',done:'\uf00c',blocked:'\uf071',idle:'\uf04c',unknown:'\uf128',tool:'\uf0ad',compact:'\uf066',usage:'\uf080',attach:'\uf067',detach:'\uf068',link:'\uf0c1',lost:'\uf127',info:'\uf05a'};
@@ -38,7 +39,9 @@ function paneNumber(a) {const prefix=a.host+':';return clean(a.id?.startsWith(pr
 function agentEvent(kind,a,now,action) {record(kind,action,now,{project:a.project,detail:a.title,host:a.host,state:statusKind(a.status),thread:paneNumber(a),eligible:true});}
 function telemetryFor(a,now=Date.now()) {
   const t=a.technical?.telemetry;
-  return t && Number.isSafeInteger(t.seq) && now-t.seq/1000>=0 && now-t.seq/1000<=120000?t:null;
+  if(!t || !Number.isSafeInteger(t.seq) || now-t.seq/1000<0 || now-t.seq/1000>120000)return null;
+  if(t.usage_seq!=null && (!Number.isSafeInteger(t.usage_seq) || now-t.usage_seq/1000<0 || now-t.usage_seq/1000>120000))return {...t,...Object.fromEntries(['input','output_tokens','cache_read','cache_write','context','window','usage_seq','usage_source'].map(key=>[key,null]))};
+  return t;
 }
 function telemetryBrief(a,now=Date.now()) {
   const t=telemetryFor(a,now);if(!t)return a.title;
@@ -107,7 +110,7 @@ function threadMotion(a,now=performance.now(),wall=Date.now()) {
     glyph:moving?Array.from('⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏')[Math.floor((now+hash%1000)/130)%10]:icon(a.status)};
 }
 function filteredAgents(){return agents.filter(a=>category==='all'||snapshot?.profile==='work'||a.category===category);}
-function currentPage(now=Date.now()) {return (manualPage ?? Math.floor(now/15000))%Math.max(1,Math.ceil(filteredAgents().length/GRID.threadRows));}
+function currentPage(now=Date.now()) {return (inspected?inspectPage:(manualPage ?? Math.floor(now/15000)))%Math.max(1,Math.ceil(filteredAgents().length/GRID.threadRows));}
 let textFrames={text:'',sources:[]}, effectSession=null, effectFrame=null, effectLibrary=null, effectBag=[],pendingEffect=null;
 let effectGeneration=0;
 let holdSeconds=120, holdElapsed=Infinity, lastEffect='', animationIndex=-1, frameElapsed=0, loadingFrames=false;
@@ -191,7 +194,7 @@ function cardTelemetry(a,t){
   if(has('cache_read') || has('cache_write'))tiles.push({label:'Cache R / W',value:`${compactNumber(t.cache_read)} R / ${compactNumber(t.cache_write)} W`,detail:`${number(t.cache_read)} read / ${number(t.cache_write)} written tokens`});
   const subagent=t?.event==='subagent-start'?'Subagent started':t?.event==='subagent-stop'?'Subagent stopped':null;
   const activity=subagent || (t?phaseLabel(t.phase):statusKind(a.status));
-  const note=!t?'No fresh hook sample':!tiles.length?(a.harness==='codex'?'Usage not exposed by Codex hooks':'Waiting for usage from harness'):!['context','window','input','output_tokens','cache_read','cache_write'].every(has)?'Some usage fields not reported':'';
+  const note=!t?'No fresh hook sample':!tiles.length?'Waiting for reported usage':!['context','window','input','output_tokens','cache_read','cache_write'].every(has)?'Some usage fields not reported':'';
   return {activity,tool:t?.tool || '',model:t?.model || '',tiles,note,subagent:Boolean(subagent)};
 }
 function observationColour(entry){return colour(['Working','Blocked','Done','Idle','Unknown'].includes(entry.state) && !['LOST','LINK','DETACH'].includes(entry.kind)?entry.state:entry.kind);}
@@ -219,9 +222,47 @@ function viewModel(now=performance.now(),wall=Date.now()) {
 function node(tag,className,text){const element=document.createElement(tag);element.className=className;if(text!==undefined)element.textContent=text;return element;}
 function setText(element,text){if(element.textContent!==String(text))element.textContent=text;}
 let cardNodes=[],hostNodes=[],eventNodes=[];
+function openInspector(id,source){
+  if(!filteredAgents().some(a=>a.id===id))return;
+  inspectPage=currentPage();inspected=id;inspectReturn=source;inspectSignature='';document.getElementById('threads').inert=true;draw();document.getElementById('inspect-close').focus?.();
+}
+function closeInspector(){
+  const id=inspected,target=inspectReturn,page=inspectPage;
+  inspected=null;inspectReturn=null;inspectSignature='';
+  document.getElementById('threads').inert=false;document.getElementById('inspector').hidden=true;
+  for(const field of ['project','identity','state','checkout','activity','model','freshness','metrics','events'])document.getElementById('inspect-'+field).textContent='';
+  target?.setAttribute?.('aria-expanded','false');
+  if(target){const stillVisible=currentPage()===page && filteredAgents().some(a=>a.id===id);const current=stillVisible?cardNodes.find(c=>!c.card.hidden && c.card.dataset.thread===id)?.card:null;(current||document.getElementById('previous')).focus?.();}
+}
+function drawInspector(){
+  const panel=document.getElementById('inspector');
+  const a=filteredAgents().find(a=>a.id===inspected);
+  if(!a){if(inspected)closeInspector();panel.hidden=true;return;}
+  panel.hidden=false;panel.style.setProperty('--state',colour(statusKind(a.status)));
+  const signature=JSON.stringify([a,records.at(-1)?.id,Math.floor(Date.now()/1000)]);if(signature===inspectSignature)return;inspectSignature=signature;
+  const t=telemetryFor(a),view=cardTelemetry(a,t);
+  setText(document.getElementById('inspect-project'),clean(a.project));
+  setText(document.getElementById('inspect-identity'),`${clean(a.harness)} · ${clean(a.host)} · ${paneNumber(a)}`);
+  setText(document.getElementById('inspect-state'),statusKind(a.status));
+  setText(document.getElementById('inspect-checkout'),`${icon('branch')} ${clean(a.checkout || 'Checkout not reported')}`);
+  setText(document.getElementById('inspect-activity'),[view.activity,view.tool].filter(Boolean).join(' · '));
+  setText(document.getElementById('inspect-model'),view.model || 'Model not reported');
+  setText(document.getElementById('inspect-freshness'),t?`Latest hook · ${Math.max(0,Math.floor((Date.now()-t.seq/1000)/1000))}s ago`:'No fresh hook sample');
+  const metrics=document.getElementById('inspect-metrics');metrics.textContent='';
+  for(const tile of view.tiles){metrics.append(node('dt','',tile.label),node('dd','',tile.detail));}
+  if(t?.usage_seq)metrics.append(node('dt','','Usage source'),node('dd','',`${t.usage_source==='codex-rollout'?'Local Codex record':'Pi extension'} · ${Math.max(0,Math.floor((Date.now()-t.usage_seq/1000)/1000))}s ago`));
+  if(view.note)metrics.append(node('dt','','Coverage'),node('dd','',view.note));
+  const history=document.getElementById('inspect-events');history.textContent='';
+  const recent=records.filter(r=>r.host===a.host && r.thread===paneNumber(a)).slice(-6).reverse();
+  if(!recent.length)history.append(node('p','inspect-empty','Waiting for a new observation'));
+  for(const r of recent){const line=node('p','inspect-event',`${new Date(r.at).toISOString().slice(11,19)} ${icon(({Working:'working',Done:'done',Blocked:'blocked'}[r.kind] || 'info'))} ${r.text}`);line.style.color=observationColour(r);history.append(line);}
+}
+document.getElementById('inspect-close').addEventListener('click',()=>{closeInspector();draw();});
 function buildView(){
   cardNodes=Array.from({length:8},()=>{
     const card=node('article','thread-card'),head=node('div','card-top'),project=node('h3','project'),status=node('span','state'),glyph=node('span','state-glyph'),state=node('span','state-word');status.append(glyph,state);head.append(project,status);
+    card.setAttribute('role','button');card.setAttribute('tabindex','0');card.setAttribute('aria-haspopup','dialog');
+    card.addEventListener('click',()=>openInspector(card.dataset.thread,card));card.addEventListener('keydown',event=>{if(['Enter',' '].includes(event.key)){event.preventDefault?.();openInspector(card.dataset.thread,card);}});
     const checkout=node('p','checkout'),identity=node('p','identity'),activity=node('div','card-activity'),activityGlyph=node('span','activity-glyph'),activityText=node('strong','activity-text'),tool=node('span','tool-name'),model=node('p','model-name'),metrics=node('div','card-metrics'),coverage=node('p','coverage');
     activity.title='Latest observed hook activity; the state badge is Herdr’s current state';activity.append(activityGlyph,activityText,tool);
     const fields=Array.from({length:3},()=>{const tile=node('div','usage-tile'),label=node('span','usage-label'),value=node('strong','usage-value'),bar=node('span','usage-bar'),fill=node('i','');bar.append(fill);bar.setAttribute('aria-hidden','true');tile.append(label,value,bar);metrics.append(tile);return {tile,label,value,bar,fill};});
@@ -245,8 +286,8 @@ function draw(now=performance.now()) {
   const widget=document.getElementById("music-widget");widget.hidden=!track;
   setText(document.getElementById("music-title"),track?.title || (track?"Track title unavailable":""));
   setText(document.getElementById('music-artist'),track?.artist || '');
-  setText(document.getElementById('music-detail'),track?(track.state==='playing'?'Playing on iapetus':'Paused on iapetus'):'');
-  musicTitle?.update(track,palette);
+
+  musicTitle?.update(track,palette);musicArtist?.update(track,palette);
   setText(document.getElementById('music-accessible'),track?[track.title,track.artist,track.state].filter(Boolean).join(' · '):'');
   widget.title=track?[track.title,track.artist].filter(Boolean).join(' · '):'';
   setText(document.getElementById('profile'),view.display);
@@ -255,7 +296,7 @@ function draw(now=performance.now()) {
   setText(document.getElementById('theme'),view.theme==='Unavailable'?'Theme unavailable':view.theme);setText(document.getElementById('connection'),view.connection);
   hostNodes.forEach((host,i)=>{const model=view.hosts[i];host.row.hidden=!model;if(!model)return;setText(host.name,model.label);host.name.title=model.label;setText(host.status,model.online?'Online':'Offline');host.status.dataset.online=String(model.online);host.fields.forEach((f,j)=>{setText(f.label,model.metrics[j][0]);setText(f.value,model.metrics[j][1]==='Unavailable'?'—':model.metrics[j][1]);f.value.title=model.metrics[j][1];f.value.setAttribute('aria-label',model.metrics[j][1]);if(j<4){const value=model.metrics[j][1],known=value.endsWith('%');f.gauge.dataset.known=String(known);f.fill.style.width=(known?Math.max(0,Math.min(100,parseFloat(value))):0)+'%';}if(j===4 || j===5)f.direction.dataset.known=String(model.metrics[j][1]!=='Unavailable');});});
   cardNodes.forEach((card,i)=>{const model=view.cards[i];card.card.hidden=!model;if(!model)return;
-    card.card.dataset.state=model.state.toLowerCase();card.card.dataset.thread=model.id;card.card.style.setProperty('--impulse',model.motion.flash.toFixed(3));
+    card.card.dataset.state=model.state.toLowerCase();card.card.dataset.thread=model.id;card.card.setAttribute('aria-label',`${model.project}, ${model.state}. Open thread details`);card.card.setAttribute('aria-expanded',String(inspected===model.id));card.card.style.setProperty('--impulse',model.motion.flash.toFixed(3));
     setText(card.project,model.project);card.project.title=model.project;setText(card.glyph,model.motion.glyph);setText(card.state,model.state);
     setText(card.checkout,`${icon('branch')} ${model.checkout}`);card.checkout.title='Worktree / checkout: '+model.checkout;
     setText(card.identity,`${model.harness} · ${model.host} · ${model.pane}`);card.identity.title=`Harness: ${model.harness} · Host: ${model.host} · Pane: ${model.pane}`;
@@ -268,24 +309,24 @@ function draw(now=performance.now()) {
   setText(document.getElementById('thread-total'),view.visibleTotal===view.total?view.total+' total':view.visibleTotal+' of '+view.total);
   setText(document.getElementById('page'),`${view.page} / ${view.pages}`);setText(document.getElementById('category'),`Category: ${category}`);document.getElementById('category').hidden=snapshot?.profile!=='personal';
   setText(document.getElementById('rotate'),manualPage===null?'Auto-page threads: on':'Auto-page threads: off');document.getElementById('rotate').hidden=view.pages<=1;document.getElementById('rotate').setAttribute('aria-pressed',String(manualPage===null));
-  setText(document.getElementById('sampling'),`Read only · ${snapshot?.interval || '?'}s samples · intermediate changes may be missed`);
+  drawInspector();
   const playing=Boolean(ctx) && animationIndex>=0 && framesCurrent() && !reduced.matches;
   let target=null;
   eventNodes.forEach((event,i)=>{const model=view.events[i];event.row.hidden=!model;if(!model)return;setText(event.glyph,eventIcon(model.kind));setText(event.text,model.line);event.text.style.visibility=playing && model.id===textFrames.recordId?'hidden':'visible';event.row.style.color=observationColour(model);event.row.style.setProperty('--event-colour',observationColour(model));if(playing && model.id===textFrames.recordId)target=event.text;});
   canvas.hidden=!target;
   if(target && ctx){const rect=target.getBoundingClientRect(),container=document.getElementById('activity').getBoundingClientRect(),ratio=Math.min(devicePixelRatio || 1,2);canvas.style.left=(rect.left-container.left)+'px';canvas.style.top=(rect.top-container.top)+'px';canvas.style.width=rect.width+'px';canvas.style.height=rect.height+'px';canvas.width=Math.round(rect.width*ratio);canvas.height=Math.round(rect.height*ratio);ctx.setTransform(ratio,0,0,ratio,0,0);ctx.clearRect(0,0,rect.width,rect.height);const font=parseFloat(getComputedStyle(target).fontSize);ctx.font=`${font}px ${FONT_FACE}`;const cell=ctx.measureText?.('M').width || font*.6;ctx.textBaseline='top';paintEffect(effectFrame,0,Math.max(0,(rect.height-font)/2),cell,rect.height);}
 }
-function frame(now) {pixelField?.frame(now);titleMark?.frame(now);musicTitle?.frame(now);if(!document.hidden && now-lastFrame>=33){advanceEffects(Math.min(100,now-lastFrame));draw();lastFrame=now;}if(document.hidden)lastFrame=now;requestAnimationFrame(frame);}
+function frame(now) {pixelField?.frame(now);titleMark?.frame(now);musicTitle?.frame(now);musicArtist?.frame(now);if(!document.hidden && now-lastFrame>=33){advanceEffects(Math.min(100,now-lastFrame));draw();lastFrame=now;}if(document.hidden)lastFrame=now;requestAnimationFrame(frame);}
 async function refresh() {
   try {const response=await fetch(`/api/state?page=${currentPage()}&category=${category}&hold=${holdSeconds}`,{cache:'no-store',signal:AbortSignal.timeout(8000)});if(!response.ok)throw new Error();observe(await response.json());}
   catch {disconnect();}
   setTimeout(refresh,2000);
 }
 async function fullscreen(){try{if(document.fullscreenElement)await document.exitFullscreen();else await document.documentElement.requestFullscreen();}catch{record('INFO','Use browser fullscreen (F11)',Date.now(),false);}}
-function changePage(delta){manualPage=Math.max(0,currentPage()+delta);draw();}
-function cycleCategory(){if(snapshot?.profile==='personal'){category=['all','work','personal'][(['all','work','personal'].indexOf(category)+1)%3];manualPage=0;draw();}}
+function changePage(delta){closeInspector();manualPage=Math.max(0,currentPage()+delta);draw();}
+function cycleCategory(){closeInspector();if(snapshot?.profile==='personal'){category=['all','work','personal'][(['all','work','personal'].indexOf(category)+1)%3];manualPage=0;draw();}}
 for(const [id,action] of Object.entries({fullscreen,previous:()=>changePage(-1),next:()=>changePage(1),rotate:()=>{manualPage=manualPage===null?currentPage():null;draw();},category:cycleCategory}))document.getElementById(id).addEventListener('click',action);
-addEventListener('keydown',event=>{if(event.key==='f')fullscreen();if(event.key==='PageDown')changePage(1);if(event.key==='PageUp')changePage(-1);if(event.key==='r'){manualPage=null;draw();}if(event.key==='c')cycleCategory();});
+addEventListener('keydown',event=>{if(event.key==='Escape' && inspected){closeInspector();return;}if(inspected && ['PageDown','PageUp','r','c'].includes(event.key))return;if(event.key==='f')fullscreen();if(event.key==='PageDown')changePage(1);if(event.key==='PageUp')changePage(-1);if(event.key==='r'){manualPage=null;draw();}if(event.key==='c')cycleCategory();});
 reduced.addEventListener?.('change',()=>{if(reduced.matches){pendingEffect=null;effectGeneration++;}draw();});
 addEventListener('resize',()=>{fitBackground();pixelField?.resize();titleMark?.resize();draw();});
 setInterval(()=>{if(received && Date.now()-received>12000)disconnect();if(!disconnected)reconcile();},1000);
@@ -318,7 +359,7 @@ document.getElementById('brand-title').addEventListener('click',()=>titleMark?.t
 loadTitle();
 
 async function loadMusicTitle(){
-  try{const {MusicTitle}=await import('./music-title.mjs');musicTitle=new MusicTitle(document.getElementById('music-effect'),document.getElementById('music-title'));}
+  try{const {MusicTitle}=await import('./music-title.mjs');musicTitle=new MusicTitle(document.getElementById('music-effect'),document.getElementById('music-title'));musicArtist=new MusicTitle(document.getElementById('artist-effect'),document.getElementById('music-artist'),{field:'artist'});}
   catch{/* Native track text remains readable. */}
 }
 loadMusicTitle();

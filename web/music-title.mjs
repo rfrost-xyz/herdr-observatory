@@ -4,7 +4,7 @@ const bounded=value=>Array.from(String(value || '').replace(/[\x00-\x1f\x7f-\x9f
 // Track changes only. Initial connection and recovery establish a new baseline.
 export class MusicTitle {
   constructor(canvas,text,options={}) {
-    this.canvas=canvas;this.text=text;this.ctx=canvas.getContext('2d');this.env=options.environment || globalThis;
+    this.field=options.field==='artist'?'artist':'title';this.canvas=canvas;this.text=text;this.ctx=canvas.getContext('2d');this.env=options.environment || globalThis;
     this.motion=this.env.matchMedia?.('(prefers-reduced-motion: reduce)') || {matches:false};
     this.load=options.load || (async()=>{const m=await import('./effects.mjs');return {...await m.loadEffects(),next:m.nextEffect};});
     this.palette={...defaults};this.bag=[];this.previous='';this.key=null;this.pending=null;this.session=null;this.cells=null;this.loading=false;this.generation=0;this.lastFrame=-Infinity;this.disposed=false;
@@ -13,7 +13,7 @@ export class MusicTitle {
   update(track,palette={}) {
     for(const [k,v] of Object.entries(palette))if(k in defaults && /^#[0-9a-f]{6}$/i.test(v))this.palette[k]=v;
     if(!track || this.env.document?.hidden || this.motion.matches){this.key=null;this.cancel();return;}
-    const item={key:JSON.stringify([track.title || '',track.artist || '']),text:bounded(track.title)};
+    const item={key:JSON.stringify([track.title || '',track.artist || '']),text:bounded(track[this.field])};
     const changed=this.key!==null && item.key!==this.key;this.key=item.key;
     if(changed && item.text){if(this.session || this.loading)this.pending=item;else this.trigger(item);}
     this.draw();

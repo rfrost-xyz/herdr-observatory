@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {MusicTitle} from '../web/music-title.mjs';
-function fixture(load){
+function fixture(load,field){
   const calls=[],motion={matches:false,addEventListener(){},removeEventListener(){}},env={document:{hidden:false,addEventListener(){},removeEventListener(){}},matchMedia:()=>motion};
   const canvas={hidden:true,getContext:()=>({setTransform(){},clearRect(){},fillRect(){},fillText(){}})},text={style:{},getBoundingClientRect:()=>({width:400,height:26})};let freed=0;
   const library={catalogue:['one','two'],next:(_c,_b,last)=>last==='one'?'two':'one',create(text,name){calls.push({text,name});let n=0;return {next(){return n++<3?{symbols:[65],flags:[0],fg:[0],bg:[0]}:null;},free(){freed++;}};}};
-  const effect=new MusicTitle(canvas,text,{environment:env,load:load || (async()=>library)});
+  const effect=new MusicTitle(canvas,text,{field,environment:env,load:load || (async()=>library)});
   return {effect,calls,motion,env,canvas,text,library,freed:()=>freed};
 }
 const track=(title='First',artist='Artist',state='playing')=>({title,artist,state});
@@ -17,3 +17,5 @@ test('hidden and reduced-motion transitions release sessions and do not replay',
 test('failed loading retains text without retrying duplicate samples',async()=>{const h=fixture(async()=>{throw Error('load');});h.effect.update(track());h.effect.update(track('Next'));await tick();assert.equal(h.canvas.hidden,true);assert.equal(h.text.style.visibility,'visible');h.effect.update(track('Next'));assert.equal(h.effect.loading,false);});
 test('in-flight load cannot revive an expired source',async()=>{let resolve;const h=fixture(()=>new Promise(r=>resolve=r));h.effect.update(track());h.effect.update(track('Next'));h.effect.update(null);resolve(h.library);await tick();assert.equal(h.calls.length,0);assert.equal(h.canvas.hidden,true);});
 test('artist changes count as identity changes; title is bounded before WASM',async()=>{const h=fixture();h.effect.update(track());h.effect.update(track('First','Other artist'));await tick();assert.equal(h.calls.length,1);h.effect.cancel();h.effect.update(track('x'.repeat(400)));await tick();assert.equal(h.calls.at(-1).text.length,110);h.effect.dispose();assert.equal(h.canvas.hidden,true);});
+
+test('artist renderer uses artist text and responds when only song changes',async()=>{const h=fixture(null,'artist');h.effect.update(track('First','Same artist'));h.effect.update(track('Second','Same artist'));await tick();assert.equal(h.calls.length,1);assert.equal(h.calls[0].text,'Same artist');h.effect.update(null);assert.equal(h.canvas.hidden,true);assert.equal(h.text.style.visibility,'visible');});
