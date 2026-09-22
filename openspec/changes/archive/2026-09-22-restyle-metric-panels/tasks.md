@@ -5,4 +5,4 @@
 ## 2. Verification and delivery
 - [x] 2.1 Update README/AGENTS, test all gates and both viewports, resolve independent review findings.
 - [x] 2.2 Deploy identical image and hooks on both hosts, verify data boundaries and preserve rollback, clean task artefacts.
-- [ ] 2.3 Synchronise specifications, archive evidence and publish the ready existing PR.
+- [x] 2.3 Synchronise specifications, archive evidence and publish the ready existing PR.

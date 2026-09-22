@@ -28,3 +28,5 @@ The first deployment exposed Herdr's native 16-key report limit: the expanded fl
 App/stylesheet/HTML and installed hook payload hashes match across both hosts. Work filtering contains only Work agents; both source hosts, palette and music feeds are available. Only current `2a787b1` and known-good rollback `d3cf8ec` images remain. Rollback config was preserved across the corrective deployment. Synthetic server/tab removed after geometry checks. Windows desktop visual QA is not claimed.
 
 Native contract: https://herdr.dev/docs/socket-api/#agent-state-reporting
+
+The actual local dashboard was refreshed and verified: four ordered state boxes, no host/theme labels, no inspector, eight hover containers, two live session-total panels and no document overflow. The existing PR is published ready and remains unmerged.
