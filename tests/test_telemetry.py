@@ -67,6 +67,21 @@ class TelemetryTests(unittest.TestCase):
                     self.assertFalse(report('codex', {'session_id': 'native-secret', 'hook_event_name': 'Stop'}, 'w1:p1', seq, config))
                     self.assertEqual(call.call_count, 1)
 
+    def test_opaque_pane_identifiers_resolve_before_reporting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / 'config.json'
+            config.write_text('{"hosts":[{"socket_path":"/herdr/herdr.sock"}]}')
+            for pane in ('w1E:p1', 'wABC:pZ9', 'w1:p1'):
+                a = agent();a['pane_id'] = pane
+                with patch('observatory.telemetry.rpc', side_effect=[{'pane': a}, {}]) as call:
+                    self.assertTrue(report('codex', {'session_id': 'native-secret', 'hook_event_name': 'PreToolUse'}, pane, event()['seq'], config))
+                    self.assertEqual(call.call_args_list[0].args[2], {'pane_id': pane})
+                    self.assertEqual(call.call_args.args[2]['pane_id'], pane)
+            for pane in ('', 'x' * 81, 'w1:p1\n', '/tmp/socket', None, ['w1:p1']):
+                with patch('observatory.telemetry.rpc') as call:
+                    self.assertFalse(report('codex', {'session_id': 'native-secret', 'hook_event_name': 'PreToolUse'}, pane, event()['seq'], config))
+                    call.assert_not_called()
+
     def test_pi_native_path_binding(self):
         a = agent('pi');a['agent_session'].update(kind='path', value='/private/session.jsonl')
         with tempfile.TemporaryDirectory() as directory:

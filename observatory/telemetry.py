@@ -60,7 +60,7 @@ def event_view(harness, raw, seq):
 
 def report(harness, raw, pane_id, seq, config_path='/config/config.json'):
     event = event_view(harness, raw, seq)
-    if event is None or not re.fullmatch(r'w[0-9]+:p[0-9]+', pane_id):
+    if event is None or not isinstance(pane_id, str) or not re.fullmatch(r'[A-Za-z0-9:_-]{1,80}', pane_id):
         return False
     config = json.loads(Path(config_path).read_text())
     hosts = [h for h in config['hosts'] if h.get('transport', 'local') == 'local']
