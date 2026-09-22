@@ -99,6 +99,17 @@ Thread cards SHALL use Herdr's Working, Blocked, Done, Idle and Unknown state na
 - **WHEN** a fresh state or telemetry sequence changes
 - **THEN** the affected card receives one bounded highlight, without duplicate samples restarting it.
 
+### Requirement: Differentiated technical activity
+The display SHALL show readable fleet resource metrics and available typed hook activity/usage metadata without implying measured model throughput, while retaining one-screen geometry and reduced-motion support.
+
+#### Scenario: Multiple working entities
+- **WHEN** multiple machines or threads are working
+- **THEN** their current state and available counters remain readable, with reactions reserved for observed transitions.
+
+#### Scenario: Missing or private telemetry
+- **WHEN** metadata is unavailable, malformed or belongs to an excluded Personal agent
+- **THEN** unavailable fields remain marked unavailable and excluded metadata never reaches the Work feed or display.
+
 ## ADDED Requirements
 
 ### Requirement: Readable fleet and theme integration
