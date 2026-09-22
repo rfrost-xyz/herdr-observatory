@@ -14,7 +14,7 @@ let palette = {background:'#101318',foreground:'#c0caf5',blue:'#7aa2f7',green:'#
 const clean = (value, limit=160) => Array.from(String(value ?? '—').replace(/[\x00-\x1f\x7f-\x9f]/g,' ')).slice(0,limit).join('');
 const number = value => Number.isSafeInteger(value) && value >= 0 ? String(value) : '—';
 const statusKind = status => ({working:'Working',done:'Done',blocked:'Blocked',idle:'Idle',unknown:'Unknown'}[status] || 'Unknown');
-const colour = kind => palette[{Working:'yellow',Done:'green',Blocked:'red',Idle:'green',Unknown:'yellow',LOST:'red',DETACH:'yellow',LINK:'blue',ATTACH:'blue',TOOL:'cyan',COMPACT:'yellow',USAGE:'green',BOOT:'blue',INFO:'blue'}[kind] || 'foreground'];
+const colour = kind => kind==='Idle'?'var(--muted)':palette[{Working:'yellow',Done:'green',Blocked:'red',Unknown:'yellow',LOST:'red',DETACH:'yellow',LINK:'blue',ATTACH:'blue',TOOL:'cyan',COMPACT:'yellow',USAGE:'green',BOOT:'blue',INFO:'blue'}[kind] || 'foreground'];
 const FONT_FACE='"Observatory Nerd", "JetBrainsMono Nerd Font", monospace';
 let nerdFontReady=false;
 const GLYPHS={terminal:'\uea85',host:'\uf233',threads:'\uf126',feed:'\uf0ca',clock:'\uf017',branch:'\ue0a0',working:'\uf04b',done:'\uf00c',blocked:'\uf071',idle:'\uf04c',unknown:'\uf128',tool:'\uf0ad',compact:'\uf066',usage:'\uf080',attach:'\uf067',detach:'\uf068',link:'\uf0c1',lost:'\uf127',info:'\uf05a'};
@@ -40,14 +40,14 @@ function paneNumber(a) {const prefix=a.host+':';return clean(a.id?.startsWith(pr
 function agentEvent(kind,a,now,action) {record(kind,action,now,{project:a.project,detail:a.title,host:a.host,state:statusKind(a.status),thread:paneNumber(a),eligible:true});}
 function telemetryFor(a,now=Date.now()) {
   const t=a.technical?.telemetry;
-  if(!t || !Number.isSafeInteger(t.seq) || now-t.seq/1000<0 || now-t.seq/1000>120000)return null;
-  if(t.usage_seq!=null && (!Number.isSafeInteger(t.usage_seq) || now-t.usage_seq/1000<0 || now-t.usage_seq/1000>120000))return {...t,...Object.fromEntries(['input','output_tokens','cache_read','cache_write','context','window','usage_seq','usage_source','total_input','total_output','total_cache_read','total_cache_write','total_uncached_input','compactions','context_percent'].map(key=>[key,null]))};
+  if(!t || !Number.isSafeInteger(t.seq) || now-t.seq/1000<0)return null;
+  if(t.usage_seq!=null && (!Number.isSafeInteger(t.usage_seq) || now-t.usage_seq/1000<0))return {...t,...Object.fromEntries(['input','output_tokens','cache_read','cache_write','context','window','usage_seq','usage_source','total_input','total_output','total_cache_read','total_cache_write','total_uncached_input','compactions','context_percent'].map(key=>[key,null]))};
   return t;
 }
 function telemetryBrief(a,now=Date.now()) {
   const t=telemetryFor(a,now);if(!t)return a.title;
   const usage=t.input!=null?`in ${number(t.input)} out ${number(t.output_tokens)} cache ${number(t.cache_read)}/${number(t.cache_write)}`:t.model;
-  return [t.phase,t.tool,usage,t.context!=null && t.window?`ctx~${Number.isSafeInteger(t.context_percent)?t.context_percent:Math.round(100*t.context/t.window)}%`:null].filter(Boolean).join(' · ');
+  return [now-t.seq/1000>120000 || t.usage_seq!=null && now-t.usage_seq/1000>120000?'last known':null,t.phase,t.tool,usage,t.context!=null && t.window?`ctx~${Number.isSafeInteger(t.context_percent)?t.context_percent:Math.round(100*t.context/t.window)}%`:null].filter(Boolean).join(' · ');
 }
 function telemetryEvent(a,before,now) {
   const t=telemetryFor(a,now);if(!t || t.seq===before.technical?.telemetry?.seq)return;
@@ -196,6 +196,21 @@ function compactTokens(value){
   const amount=value/scale;
   return (amount>=100?amount.toFixed(0):amount.toFixed(1).replace(/\.0$/,''))+unit;
 }
+function tokenPercent(ratio){
+  if(ratio===0)return '0%';
+  if(ratio===1)return '100%';
+  const pct=ratio*100;
+  if(pct<.1)return '<0.1%';
+  if(pct>99.9)return '>99.9%';
+  return Number(pct.toFixed(1))+'%';
+}
+function ageLabel(milliseconds){
+  const seconds=Math.max(0,Math.floor(milliseconds/1000));
+  if(seconds<120)return `${seconds}s ago`;
+  if(seconds<7200)return `${Math.floor(seconds/60)}m ago`;
+  if(seconds<172800)return `${Math.floor(seconds/3600)}h ago`;
+  return `${Math.floor(seconds/86400)}d ago`;
+}
 function cardTelemetry(a,t){
   const tiles=[],has=key=>Number.isSafeInteger(t?.[key]) && t[key]>=0;
   if(has('context') && t.window>0){const supplied=has('context_percent'),pct=supplied?t.context_percent:Math.round(t.context/t.window*100);tiles.push({kind:'context',label:'Context',value:pct+'% used',exact:`~${compactTokens(t.context)} of ${compactTokens(t.window)}`,detail:`Estimated context: ~${groupedNumber(t.context)} of ${groupedNumber(t.window)} tokens. ${supplied?(t.usage_source==='codex-rollout'?'Codex percentage accounts for its reserved baseline.':'Percentage reported by the harness.'):'Percentage calculated from the reported context and window.'}`,ratio:pct/100});}
@@ -205,7 +220,8 @@ function cardTelemetry(a,t){
     const other=bounded?t.total_input-t.total_cache_read:null;
     const complete=bounded && (other===t.total_uncached_input || has('total_cache_write') && other-t.total_uncached_input===t.total_cache_write);
     const includesWrites=complete && other>t.total_uncached_input;
-    tiles.push({kind:'balance',label:'Input mix',value:`Cached ${compactTokens(t.total_cache_read)}`,exact:`${includesWrites?'Other':'Uncached'} ${compactTokens(includesWrites?other:t.total_uncached_input)}`,detail:`${groupedNumber(t.total_cache_read)} cached input / ${groupedNumber(t.total_uncached_input)} uncached input${includesWrites?` / ${groupedNumber(t.total_cache_write)} cache-write input`:''} tokens (session)`,ratio:complete && t.total_input>0?t.total_cache_read/t.total_input:null});
+    const ratio=complete && t.total_input>0?t.total_cache_read/t.total_input:null;
+    tiles.push({kind:'balance',label:ratio==null?'Input mix':`Input mix · ${tokenPercent(ratio)}`,value:`Cached ${compactTokens(t.total_cache_read)}`,exact:`${includesWrites?'Other':'Uncached'} ${compactTokens(includesWrites?other:t.total_uncached_input)}`,detail:`${groupedNumber(t.total_cache_read)} cached input / ${groupedNumber(t.total_uncached_input)} uncached input${includesWrites?` / ${groupedNumber(t.total_cache_write)} cache-write input`:''} tokens (session)${ratio==null?'':`; ${tokenPercent(ratio)} of input was cache-read`}`,ratio});
   }
   if(has('input') || has('output_tokens'))tiles.push({kind:'response',label:'Last response',value:`↓ ${compactTokens(t.input)}  ↑ ${compactTokens(t.output_tokens)}`,detail:`${groupedNumber(t.input)} input / ${groupedNumber(t.output_tokens)} output tokens (last response)`});
   if(!tiles.some(tile=>tile.kind==='balance') && (has('cache_read') || has('cache_write')))tiles.push({kind:'response',label:'Last response cache',value:`Read ${compactTokens(t.cache_read)}`,exact:`Write ${compactTokens(t.cache_write)}`,detail:`${groupedNumber(t.cache_read)} read / ${groupedNumber(t.cache_write)} written cache tokens (last response)`});
@@ -233,8 +249,9 @@ function viewModel(now=performance.now(),wall=Date.now()) {
     ]};}),
     cards:shown.map(a=>{const t=telemetryFor(a,wall),motion=threadMotion(a,now,wall);return {
       id:a.id,project:clean(a.project),checkout:clean(a.checkout || 'Checkout not reported'),state:statusKind(a.status),harness:clean(a.harness),pane:paneNumber(a),host:clean(a.host),motion,
-      freshness:t?`Hook: ${Math.max(0,Math.floor((wall-t.seq/1000)/1000))}s ago`:'No fresh hook sample',
-      usageFreshness:t?.usage_seq!=null?`Usage: ${t.usage_source==='codex-rollout'?'Codex record':t.usage_source==='pi-extension'?'Pi extension':'reported sample'} · ${Math.max(0,Math.floor((wall-t.usage_seq/1000)/1000))}s ago`:'Usage source time unavailable',
+      freshness:t?`Hook: ${ageLabel(wall-t.seq/1000)}`:'No hook sample',
+      usageFreshness:t?.usage_seq!=null?`Usage: ${t.usage_source==='codex-rollout'?'Codex record':t.usage_source==='pi-extension'?'Pi extension':'reported sample'} · ${ageLabel(wall-t.usage_seq/1000)}`:'Usage source time unavailable',
+      lastKnown:Boolean(t && (wall-t.seq/1000>120000 || t.usage_seq!=null && wall-t.usage_seq/1000>120000)),
       ...cardTelemetry(a,t)
     };}),
     events:records.slice(-GRID.feedRows).map(r=>({id:r.id,line:eventLine(r),kind:r.kind,state:r.state})),
@@ -294,14 +311,14 @@ function draw(now=performance.now()) {
   setText(document.getElementById('connection'),view.connection);
   hostNodes.forEach((host,i)=>{const model=view.hosts[i];host.row.hidden=!model;if(!model)return;setText(host.name,model.label);host.name.title=model.label;setText(host.status,model.online?'Online':'Offline');host.status.dataset.online=String(model.online);host.row.title='Sample age: '+model.metrics[6][1];host.fields.forEach((f,j)=>{setText(f.label,model.metrics[j][0]);setText(f.value,model.metrics[j][1]==='Unavailable'?'—':model.metrics[j][1]);f.value.title=model.metrics[j][1];f.value.setAttribute('aria-label',model.metrics[j][1]);if(j<4){const value=model.metrics[j][1],known=value.endsWith('%');f.gauge.dataset.known=String(known);f.fill.style.width=(known?Math.max(0,Math.min(100,parseFloat(value))):0)+'%';}if(j===4 || j===5)f.direction.dataset.known=String(model.metrics[j][1]!=='Unavailable');const values=model.online?(fleetHistory.get(model.id)?.rows || []).map(row=>row[j]):[];const scale=j>=4?Math.max(1,...values.filter(Number.isFinite)):100;f.graph.hidden=j>5;setText(f.graph,sparkline(values,scale));const measured=values.filter(Number.isFinite).length;f.graph.title=`${measured} measured samples · ${values.length-measured} missing${j>=4?(measured?' · peak '+rate(Math.max(...values.filter(Number.isFinite))):' · peak unavailable'):' · 0–100% scale'}`;f.graph.setAttribute('aria-label',f.graph.title);});});
   cardNodes.forEach((card,i)=>{const model=view.cards[i];card.card.hidden=!model;if(!model){for(const field of ['project','state','checkout','identity','activityText','tool','model','freshness','coverage','accessibleMetrics']){setText(card[field],'');card[field].title='';}for(const f of card.fields){setText(f.label,'');setText(f.value,'');setText(f.exact,'');f.tile.title='';f.tile.setAttribute('aria-label','');}card.card.setAttribute('aria-label','');return;}
-    card.card.dataset.state=model.state.toLowerCase();card.card.dataset.thread=model.id;card.card.setAttribute('aria-label',`${model.project}, ${model.state}. Activate for a brief visual effect`);card.card.setAttribute('aria-describedby',card.accessibleMetrics.id);setText(card.accessibleMetrics,[...model.tiles.map(tile=>`${tile.label}: ${tile.detail}`),model.compactions?`Compactions: ${model.compactions.detail}`:null].filter(Boolean).join(' '));const clickAge=now-(cardClicks.get(model.id) ?? -Infinity);const clickLevel=reduced.matches || document.hidden || disconnected?0:Math.max(0,1-clickAge/650);card.card.style.setProperty('--click',clickLevel.toFixed(3));card.card.style.setProperty('--glitch-x',(clickLevel>0?Math.sin(clickAge*.13)*2*clickLevel:0).toFixed(2)+'px');card.card.style.setProperty('--impulse',model.motion.flash.toFixed(3));
+    card.card.dataset.state=model.state.toLowerCase();card.card.dataset.thread=model.id;card.card.setAttribute('aria-label',`${model.project}, ${model.state}. Activate for a brief visual effect`);card.card.setAttribute('aria-describedby',card.accessibleMetrics.id);setText(card.accessibleMetrics,[model.lastKnown?'Last known telemetry.':null,...model.tiles.map(tile=>`${tile.label}: ${tile.detail}`),model.compactions?`Compactions: ${model.compactions.detail}`:null].filter(Boolean).join(' '));const clickAge=now-(cardClicks.get(model.id) ?? -Infinity);const clickLevel=reduced.matches || document.hidden || disconnected?0:Math.max(0,1-clickAge/650);card.card.style.setProperty('--click',clickLevel.toFixed(3));card.card.style.setProperty('--glitch-x',(clickLevel>0?Math.sin(clickAge*.13)*2*clickLevel:0).toFixed(2)+'px');card.card.style.setProperty('--impulse',model.motion.flash.toFixed(3));
     setText(card.project,model.project);card.project.title=model.project;setText(card.glyph,model.motion.glyph);setText(card.state,model.state);
     const checkout=model.checkout && !['.bare','Checkout not reported',model.project].includes(model.checkout)?model.checkout:'';setText(card.checkout,checkout?`${icon('branch')} ${checkout}`:'');card.checkout.hidden=!checkout;card.checkout.title='Worktree / checkout: '+model.checkout;
     setText(card.identity,`${model.harness} · ${model.host} · ${model.pane}`);card.identity.title=`Harness: ${model.harness} · Host: ${model.host} · Pane: ${model.pane}`;
     card.activity.hidden=!model.activity && !model.tool;setText(card.activityGlyph,icon(model.subagent?'threads':model.tool?'tool':model.state.toLowerCase()));setText(card.activityText,model.activity);setText(card.tool,model.tool);card.tool.hidden=!model.tool;card.tool.title=model.tool;
     setText(card.model,model.model);card.model.hidden=!model.model;card.model.title=model.model;
-    card.metrics.hidden=!model.tiles.length;card.fields.forEach((f,j)=>{const tile=model.tiles[j];f.tile.hidden=!tile;if(!tile)return;f.tile.dataset.kind=tile.kind;setText(f.label,tile.label);setText(f.value,tile.value);setText(f.exact,tile.exact || '');f.exact.hidden=!tile.exact;f.tile.title=tile.detail;f.tile.setAttribute('aria-label',tile.label+': '+tile.detail);f.bar.hidden=tile.ratio==null;f.fill.style.width=(Math.min(1,Math.max(0,tile.ratio || 0))*100)+'%';f.remainder.hidden=tile.kind!=='balance' || tile.ratio==null;f.remainder.style.width=((1-Math.min(1,Math.max(0,tile.ratio || 0)))*100)+'%';});
-    setText(card.coverage,model.note);card.coverage.hidden=!model.note;setText(card.freshness,`${model.compactions?'Compactions '+model.compactions.value+' · ':''}${model.freshness} · ${model.usageFreshness.replace('Usage: ','').replace('Usage source time unavailable','Usage time unknown')}`);card.freshness.title=model.compactions?.detail || '';
+    card.metrics.hidden=!model.tiles.length;card.metrics.dataset.lastKnown=String(model.lastKnown);card.fields.forEach((f,j)=>{const tile=model.tiles[j];f.tile.hidden=!tile;if(!tile)return;f.tile.dataset.kind=tile.kind;setText(f.label,tile.label);setText(f.value,tile.value);setText(f.exact,tile.exact || '');f.exact.hidden=!tile.exact;f.tile.title=tile.detail;f.tile.setAttribute('aria-label',tile.label+': '+tile.detail);f.bar.hidden=tile.ratio==null;f.fill.style.width=(Math.min(1,Math.max(0,tile.ratio || 0))*100)+'%';f.remainder.hidden=tile.kind!=='balance' || tile.ratio==null;f.remainder.style.width=((1-Math.min(1,Math.max(0,tile.ratio || 0)))*100)+'%';});
+    setText(card.coverage,model.note);card.coverage.hidden=!model.note;setText(card.freshness,`${model.lastKnown?'Last known · ':''}${model.compactions?'Compactions '+model.compactions.value+' · ':''}${model.freshness} · ${model.usageFreshness.replace('Usage: ','').replace('Usage source time unavailable','Usage time unknown')}`);card.freshness.title=model.compactions?.detail || '';
   });
   const empty=document.getElementById('empty');empty.hidden=Boolean(view.cards.length);setText(empty,view.empty);
   setText(document.getElementById('thread-total'),view.visibleTotal===view.total?view.total+' total':view.visibleTotal+' of '+view.total);

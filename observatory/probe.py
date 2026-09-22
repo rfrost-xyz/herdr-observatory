@@ -23,7 +23,6 @@ TELEMETRY_V2_GROUPS = (
     ('total_output', 'total_cache_read', 'total_cache_write', 'total_uncached_input'),
     ('compactions', 'context_percent'),
 )
-TELEMETRY_TTL = 120
 
 
 def session_binding(agent):
@@ -41,7 +40,7 @@ def telemetry_view(raw, now=None):
         return None
     now = time.time() if now is None else now
     seq = raw.get('seq')
-    if type(seq) is not int or not 0 <= now - seq / 1_000_000 <= TELEMETRY_TTL:
+    if type(seq) is not int or not 0 <= seq <= 9007199254740991 or now - seq / 1_000_000 < 0:
         return None
     if raw.get('event') not in TELEMETRY_EVENTS or raw.get('phase') not in TELEMETRY_PHASES:
         return None
@@ -57,7 +56,7 @@ def telemetry_view(raw, now=None):
         result[key] = value if type(value) is int and 0 <= value <= 9007199254740991 else None
     result['usage_source'] = raw.get('usage_source') if raw.get('usage_source') in ('codex-rollout','pi-extension') else None
     supplied_usage_time = raw.get('usage_seq') is not None or raw.get('usage_source') is not None
-    if supplied_usage_time and (result['usage_seq'] is None or not 0 <= now - result['usage_seq'] / 1_000_000 <= TELEMETRY_TTL):
+    if supplied_usage_time and (result['usage_seq'] is None or now - result['usage_seq'] / 1_000_000 < 0):
         for key in TELEMETRY_NUMBERS: result[key] = None
         result['usage_source'] = None
     if result['context_percent'] is not None and result['context_percent'] > 100: result['context_percent'] = None

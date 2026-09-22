@@ -31,7 +31,7 @@ export default function (pi) {
   function measuredUsage(message, live=false) {
     const u=message?.usage;
     const stamp=Number.isFinite(message?.timestamp)?message.timestamp:(live?Date.now():NaN);
-    if(!u || !Number.isFinite(stamp) || Date.now()-stamp<0 || Date.now()-stamp>120000)return {};
+    if(!u || !Number.isFinite(stamp) || Date.now()-stamp<0)return {};
     return {input:u.input,output_tokens:u.output,cache_read:u.cacheRead,cache_write:u.cacheWrite,
       usage_seq:Math.floor(stamp*1000),usage_source:'pi-extension'};
   }
@@ -43,7 +43,7 @@ export default function (pi) {
       const candidate=latest?measuredUsage(latest.message):{};
       // agent_end can precede persistence of the latest message in the branch.
       if(!usage.usage_seq || (candidate.usage_seq && candidate.usage_seq>=usage.usage_seq))usage=candidate;
-    }catch{usage={};}
+    }catch{ /* Keep the last measured value if branch lookup fails. */ }
   }
   function totalsFor(ctx) {
     try {

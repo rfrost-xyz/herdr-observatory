@@ -36,7 +36,7 @@ header{gap:22px}.brand{align-items:flex-start;flex-direction:column;gap:3px}.bra
 .card-metrics{flex-wrap:nowrap}.usage-tile{flex:1 1 0;overflow:hidden}.usage-label{overflow:hidden;text-overflow:ellipsis}.card-activity{flex-shrink:0}
 @media(max-height:800px){.thread-card{padding:8px;gap:3px}.checkout{line-height:1.2}.card-activity{padding-top:0;line-height:1.2}.model-name{line-height:1.2}.coverage{font-size:8px;line-height:1.15}.state{padding:3px 4px}}
 /* Herdr's semantic state roles follow the active terminal palette. */
-.thread-card[data-state=working]{--state:var(--yellow)}.thread-card[data-state=blocked]{--state:var(--red)}.thread-card[data-state=idle]{--state:var(--green)}
+.thread-card[data-state=working]{--state:var(--yellow)}.thread-card[data-state=blocked]{--state:var(--red)}.thread-card[data-state=idle]{--state:var(--muted)}
 .total.working{color:var(--yellow)}.total.blocked{color:var(--red)}
 .thread-card[role=button]{cursor:pointer;outline:none}.thread-card[role=button]:hover,.thread-card[role=button]:focus-visible{border-color:var(--state);box-shadow:inset 0 0 0 1px var(--state)}
 #artist-effect{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
@@ -93,3 +93,5 @@ header{padding-bottom:8px}.brand{justify-content:center}.totals{gap:7px}.total{m
 .usage-tile[data-kind=context] .usage-exact,.usage-tile[data-kind=balance] .usage-exact{font-variant-numeric:tabular-nums}
 @media(max-height:800px){.usage-tile[data-kind=context] .usage-value{font-size:10px}}
 @media(min-height:900px){.usage-tile[data-kind=context] .usage-value{font-size:14px}}
+
+.card-metrics[data-last-known=true]{opacity:.72}

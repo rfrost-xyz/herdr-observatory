@@ -46,11 +46,12 @@ class TelemetryTests(unittest.TestCase):
                 self.assertEqual(params['tokens']['obs_n0'], ',,,')
                 self.assertLessEqual(len(params['tokens']), 16)
                 self.assertTrue(all(value is None or len(value)<=80 for value in params['tokens'].values()))
-                self.assertEqual(params['ttl_ms'], 120000)
+                self.assertNotIn('ttl_ms', params)
                 self.assertNotIn('SECRET', json.dumps(params))
                 a['tokens'] = params['tokens']
                 decoded = telemetry_from_agent(a)
                 self.assertEqual(decoded['tool'], 'Bash')
+                self.assertEqual(telemetry_from_agent(a, time.time()+3600)['tool'], 'Bash')
                 self.assertNotIn('native-secret', json.dumps(decoded))
                 a['agent_session']['value'] = 'replacement'
                 self.assertIsNone(telemetry_from_agent(a))
@@ -100,7 +101,7 @@ class TelemetryTests(unittest.TestCase):
             self.assertNotIn('SECRET', json.dumps(view))
             self.assertIn(name, installer.EVENTS)
 
-    def test_codex_numeric_enrichment_and_source_expiry(self):
+    def test_codex_numeric_enrichment_preserves_reported_source_age(self):
         seq = event()['seq']
         raw = {'hook_event_name': 'PostToolUse', 'observatory_usage': {'input': 100, 'output_tokens': 20, 'cache_read': 0, 'cache_write': 4, 'context': 120, 'window': 1000, 'usage_seq': seq-1000000, 'usage_source': 'codex-rollout', 'secret': 'PRIVATE'}}
         view = event_view('codex', raw, seq)
@@ -109,7 +110,8 @@ class TelemetryTests(unittest.TestCase):
         self.assertNotIn('PRIVATE',json.dumps(view))
         raw['observatory_usage']['usage_seq'] = seq-121000000
         view = event_view('codex', raw, seq)
-        self.assertIsNone(view['input'])
+        self.assertEqual(view['input'],100)
+        self.assertEqual(view['usage_seq'],seq-121000000)
         self.assertEqual(view['event'],'tool-end')
 
     def test_pi_native_path_binding(self):
@@ -132,7 +134,7 @@ class TelemetryTests(unittest.TestCase):
             result = telemetry_view({**event(), 'input': value, 'secret': 'SECRET'})
             self.assertIsNone(result['input']);self.assertNotIn('secret', result)
         self.assertIsNone(telemetry_view({**event(), 'context': 200, 'window': 100})['context'])
-        self.assertIsNone(telemetry_view({**event(), 'seq': int((time.time()-121)*1e6)}))
+        self.assertIsNotNone(telemetry_view({**event(), 'seq': int((time.time()-121)*1e6)}))
         self.assertIsNone(telemetry_view({**event(), 'seq': int((time.time()+1)*1e6)}))
         self.assertIsNone(telemetry_view({**event(), 'phase': 'SECRET'}))
 
@@ -218,13 +220,13 @@ class InvalidUsageTimestampTests(unittest.TestCase):
             self.assertIsNone(value['usage_source'])
 
 class CumulativeTelemetryTests(unittest.TestCase):
-    def test_totals_are_allowlisted_and_expire_with_usage_source(self):
+    def test_totals_are_allowlisted_and_retain_last_known_source_time(self):
         from observatory.probe import telemetry_view
         raw={'seq':100000000,'event':'tool-start','phase':'tool','usage_seq':99000000,'usage_source':'codex-rollout','total_input':21700000,'total_output':3,'total_cache_read':20000000,'total_uncached_input':1700000,'total_cache_write':0,'compactions':0,'context_percent':70}
         value=telemetry_view(raw,100)
         self.assertEqual(value['total_input'],21700000);self.assertEqual(value['compactions'],0);self.assertEqual(value['context_percent'],70)
         value=telemetry_view({**raw,'seq':220000000},220)
-        self.assertIsNone(value['total_input']);self.assertIsNone(value['context_percent']);self.assertIsNone(value['compactions'])
+        self.assertEqual(value['total_input'],21700000);self.assertEqual(value['context_percent'],70);self.assertEqual(value['compactions'],0)
     def test_invalid_cumulative_values_remain_unknown(self):
         from observatory.probe import telemetry_view
         value=telemetry_view({'seq':100000000,'event':'tool-start','phase':'tool','total_input':True,'compactions':-1,'context_percent':101},100)

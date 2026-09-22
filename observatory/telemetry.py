@@ -96,7 +96,7 @@ def report(harness, raw, pane_id, seq, config_path='/config/config.json'):
         for index, fields in enumerate(TELEMETRY_V2_GROUPS):
             owned['n' + str(index)] = ','.join(str(event[key]) if event.get(key) is not None else '' for key in fields)
         params = {'pane_id': pane_id, 'source': 'user:observatory', 'agent': harness,
-                  'seq': seq, 'ttl_ms': 120000,
+                  'seq': seq,
                   'tokens': {'obs_' + k: str(v) if v is not None else None for k, v in owned.items()}}
         # Guarded display name is supplemental; it never replaces semantic state.
         label = f"{harness} · {event['phase']}"

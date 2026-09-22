@@ -35,8 +35,10 @@ class UsageReaderTests(unittest.TestCase):
         with patch.object(helper.os,'getuid',return_value=os.getuid()+1):self.assertEqual(self.read(),{})
         alias=Path(self.temp.name)/'alias';alias.symlink_to(self.root,target_is_directory=True)
         self.assertEqual(helper.read_usage({**self.raw,'transcript_path':str(alias/'session.jsonl')},alias,self.now),{})
-    def test_stale_future_partial_and_invalid_numbers(self):
-        self.assertEqual(helper.read_usage(self.raw,self.root,self.now+121),{})
+    def test_last_known_future_partial_and_invalid_numbers(self):
+        old=helper.read_usage(self.raw,self.root,self.now+121)
+        self.assertEqual(old['input'],12)
+        self.assertEqual(old['usage_seq'],int((self.now-1)*1e6))
         self.assertEqual(helper.read_usage(self.raw,self.root,self.now-2),{})
         self.event['payload']['info']['last_token_usage'].pop('cache_write_input_tokens');self.event['payload']['info']['last_token_usage']['input_tokens']=True;self.write()
         self.assertIsNone(self.read()['cache_write']);self.assertIsNone(self.read()['input'])

@@ -81,7 +81,7 @@ def read_usage(raw, root=None, now=None):
                 stamp=datetime.datetime.fromisoformat(event['timestamp'].replace('Z','+00:00'))
                 if stamp.tzinfo is None: return {}
                 captured=stamp.timestamp()
-                if not 0<=now-captured<=120: return {}
+                if captured>now: return {}
                 result={key:safe_number(usage.get(source)) for key,source in FIELDS.items()}
                 totals=info.get('total_token_usage')
                 for key,source in (('total_input','input_tokens'),('total_output','output_tokens'),('total_cache_read','cached_input_tokens'),('total_cache_write','cache_write_input_tokens')):
