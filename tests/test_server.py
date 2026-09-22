@@ -44,7 +44,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(self.request('/../config.local.json')[0], 404)
 
     def test_assets_and_security_headers(self):
-        for path in ('/', '/style.css', '/app.js', '/background.mjs'):
+        for path in ('/', '/style.css', '/app.js', '/background.mjs', '/title.mjs'):
             status, body, headers = self.request(path)
             self.assertEqual(status, 200)
             self.assertGreater(len(body), 100)

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {createHash} from 'node:crypto';
 import {initSync,effect_catalog} from '../web/vendor/engine.mjs';
-import {createEffect,nextEffect} from '../web/effects.mjs';
+import {createEffect,createTitleEffect,nextEffect} from '../web/effects.mjs';
 const bytes=fs.readFileSync('web/vendor/effects.wasm');
 initSync({module:bytes});
 const catalogue=JSON.parse(effect_catalog()).map(e=>e.name);
@@ -17,3 +17,7 @@ test('effect input rejects whole scenes and oversized lines',()=>{for(const text
 test('bundled Nerd Font matches pinned source',()=>{assert.equal(createHash('sha256').update(fs.readFileSync('web/fonts/JetBrainsMonoNerdFont-Regular.ttf')).digest('hex'),'1c680e8cde9fcf8b88a5605ce8d1fb94dd3fb15841f7ca7bf4c55664855e5611');});
 
 test('single-line Unicode ends at the same glyph positions as live text',()=>{for(const text of ['12:00 café Working w1:p1 done','12:00 项目 Working w1:p1 done','12:00 🚀 Working w1:p1 done','12:00 cafe\u0301 Working w1:p1 done']){const effect=createEffect(text,'decrypt',palette);let frame,last;try{while((frame=effect.next()))last=String.fromCodePoint(...frame.symbols);assert.equal(last,text);}finally{effect.free();}}});
+
+import {TITLE_TEXT,TITLE_ROWS} from '../web/title.mjs';
+for(const name of catalogue)test(`Rich title ${name} completes in bounded eight-row geometry`,()=>{const effect=createTitleEffect(TITLE_TEXT,name,palette);let frame,last,count=0;try{while((frame=effect.next())){assert.equal(frame.width,Array.from(TITLE_ROWS[0]).length);assert.equal(frame.height,8);last=String.fromCodePoint(...frame.symbols);assert.ok(++count<30000);}assert.ok(count>0);assert.equal(last,TITLE_ROWS.join(''));}finally{effect.free();}});
+test('title factory cannot accept arbitrary scenes',()=>{for(const text of ['line',Array(9).fill('a').join('\n'),Array(8).fill('x'.repeat(61)).join('\n')])assert.throws(()=>createTitleEffect(text,'decrypt',palette));});

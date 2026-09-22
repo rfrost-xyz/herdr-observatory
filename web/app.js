@@ -5,19 +5,18 @@ const reduced = matchMedia('(prefers-reduced-motion: reduce)');
 let snapshot = null, received = 0, disconnected = false, initialised = false;
 let rowActivity = new Map();
 let previous = new Map(), agents = [], records = [], serial = 0;
-let latestActivity=null;
-let pixelField=null,music=null,musicReceived=0;
+let pixelField=null,titleMark=null,fieldHeight=-1,music=null,musicReceived=0;
 const GRID={columns:140,feedRows:4,threadRows:8};
 let lastFrame=0,manualPage=null,category='all';
 let palette = {background:'#101318',foreground:'#c0caf5',blue:'#7aa2f7',green:'#9ece6a',yellow:'#e0af68',red:'#f7768e',cyan:'#7dcfff'};
 const clean = (value, limit=160) => Array.from(String(value ?? '—').replace(/[\x00-\x1f\x7f-\x9f]/g,' ')).slice(0,limit).join('');
 const number = value => Number.isSafeInteger(value) && value >= 0 ? String(value) : '—';
 const statusKind = status => ({working:'Working',done:'Done',blocked:'Blocked',idle:'Idle',unknown:'Unknown'}[status] || 'Unknown');
-const colour = kind => palette[{Working:'cyan',Done:'green',Blocked:'yellow',LOST:'red',DETACH:'yellow',LINK:'blue',ATTACH:'blue'}[kind] || 'foreground'];
+const colour = kind => palette[{Working:'cyan',Done:'green',Blocked:'yellow',Idle:'blue',Unknown:'yellow',LOST:'red',DETACH:'yellow',LINK:'blue',ATTACH:'blue',TOOL:'cyan',COMPACT:'yellow',USAGE:'green',BOOT:'blue',INFO:'blue'}[kind] || 'foreground'];
 const FONT_FACE='"Observatory Nerd", "JetBrainsMono Nerd Font", monospace';
 let nerdFontReady=false;
-const GLYPHS={terminal:'\uea85',host:'\uf233',threads:'\uf126',feed:'\uf0ca',clock:'\uf017',branch:'\ue0a0',working:'\uf04b',done:'\uf00c',blocked:'\uf071',idle:'\uf04c',unknown:'\uf128'};
-function icon(name) {return nerdFontReady?GLYPHS[name] || '·':({terminal:'›',host:'◇',threads:'≡',feed:'≡',clock:'◷',branch:'⑂',working:'▶',done:'✓',blocked:'!',idle:'Ⅱ',unknown:'?'}[name] || '·');}
+const GLYPHS={terminal:'\uea85',host:'\uf233',threads:'\uf126',feed:'\uf0ca',clock:'\uf017',branch:'\ue0a0',working:'\uf04b',done:'\uf00c',blocked:'\uf071',idle:'\uf04c',unknown:'\uf128',tool:'\uf0ad',compact:'\uf066',usage:'\uf080',attach:'\uf067',detach:'\uf068',link:'\uf0c1',lost:'\uf127',info:'\uf05a'};
+function icon(name) {return nerdFontReady?GLYPHS[name] || '·':({terminal:'›',host:'◇',threads:'≡',feed:'≡',clock:'◷',branch:'⑂',working:'▶',done:'✓',blocked:'!',idle:'Ⅱ',unknown:'?',tool:'⚒',compact:'⇥',usage:'▥',attach:'+',detach:'−',link:'↔',lost:'×',info:'i'}[name] || '·');}
 async function loadFont() {
   try {const loaded=await document.fonts?.load('16px "Observatory Nerd"');nerdFontReady=Boolean(loaded?.length);}
   catch {nerdFontReady=false;}
@@ -25,7 +24,6 @@ async function loadFont() {
 }
 function record(kind, text, now, context={}) {
   const entry = {id:++serial,kind,text:clean(text),at:now,born:performance.now(),project:clean(context.project || ''),detail:clean(context.detail || ''),host:clean(context.host || ''),state:clean(context.state || '—'),thread:clean(context.thread || '—'),eligible:Boolean(context.eligible)};
-  if(entry.eligible)latestActivity={born:entry.born,host:entry.host};
   records.push(entry); records = records.slice(-60);
   if(entry.eligible && !document.hidden && !reduced.matches && !disconnected && animationIndex<0 && !loadingFrames && !pendingEffect && holdElapsed>=holdSeconds*1000)pendingEffect=entry;
 }
@@ -69,7 +67,7 @@ function reconcile(now=Date.now(), reset=false) {
     if (initialised && !reset && live && old?.live) {
       for (const [id,a] of current) {
         const before=old.agents.get(id);
-        if (before && (before.status!==a.status || (telemetryFor(a,now)?.seq && telemetryFor(a,now).seq!==before.technical?.telemetry?.seq))) {rowActivity.set(id,performance.now());latestActivity={born:performance.now(),host:host.id};}
+        if (before && (before.status!==a.status || (telemetryFor(a,now)?.seq && telemetryFor(a,now).seq!==before.technical?.telemetry?.seq))) {rowActivity.set(id,performance.now());}
         if (before) telemetryEvent(a,before,now);
         if (!before) agentEvent('ATTACH',a,now,'thread joined');
         else if (before.status!==a.status) {
@@ -179,10 +177,10 @@ function eventLine(entry) {
 function phaseLabel(value){return ({ready:'Ready',working:'Working',tool:'Running tool',thinking:'Thinking',output:'Responding',compacting:'Compacting context',idle:'Idle',interrupted:'Interrupted',ended:'Ended'}[value] || 'Unavailable');}
 function percent(value){return Number.isFinite(value)?Math.round(value)+'%':'Unavailable';}
 function rate(value){return Number.isFinite(value)?(value/1024).toFixed(1)+' KiB/s':'Unavailable';}
-function activityBars(now=performance.now()) {
-  if(document.hidden || reduced.matches || disconnected || !latestActivity || !previous.get(latestActivity.host)?.live)return Array(12).fill(0);
-  const age=now-latestActivity.born,level=Math.max(0,1-age/5000);
-  return Array.from({length:12},(_,i)=>Math.round(level*(2+Math.abs(Math.sin(age/180+i*1.7))*6)));
+function eventIcon(kind){return icon(({Working:'working',Done:'done',Blocked:'blocked',Idle:'idle',Unknown:'unknown',TOOL:'tool',COMPACT:'compact',USAGE:'usage',ATTACH:'attach',DETACH:'detach',LINK:'link',LOST:'lost',BOOT:'terminal',INFO:'info'})[kind] || 'info');}
+function fitBackground(){
+  const top=Math.max(0,Math.min(innerHeight,Math.floor(document.getElementById('activity').getBoundingClientRect().top)));
+  if(top!==fieldHeight){fieldHeight=top;document.getElementById('pixel-field').style.height=top+'px';pixelField?.resize();}
 }
 function viewModel(now=performance.now(),wall=Date.now()) {
   const shown=filteredAgents().slice(currentPage(wall)*8,currentPage(wall)*8+8);
@@ -191,7 +189,7 @@ function viewModel(now=performance.now(),wall=Date.now()) {
     connection:disconnected?'Connection lost':snapshot?(snapshot.hosts.some(h=>previous.get(h.id)?.live)?'Observing':'Sources unavailable'):'Connecting',
     total:agents.length,visibleTotal:filteredAgents().length,
     working:agents.filter(a=>a.status==='working').length,blocked:agents.filter(a=>a.status==='blocked').length,
-    bars:activityBars(now),page:filteredAgents().length?currentPage(wall)+1:0,pages:Math.ceil(filteredAgents().length/8),
+    page:filteredAgents().length?currentPage(wall)+1:0,pages:Math.ceil(filteredAgents().length/8),
     hosts:(snapshot?.hosts || []).slice(0,3).map(h=>{const live=!disconnected && previous.get(h.id)?.live,m=live?h.metrics:null;return {id:h.id,label:clean(h.label || h.id),online:Boolean(live),metrics:[
       ['Processor',percent(m?.cpu_percent)],['Memory',percent(m?.memory?.total?m.memory.used/m.memory.total*100:null)],
       ['Graphics',percent(m?.gpu?.percent)],['Storage',percent(m?.disk?.total?m.disk.used/m.disk.total*100:null)],
@@ -210,16 +208,15 @@ function viewModel(now=performance.now(),wall=Date.now()) {
 }
 function node(tag,className,text){const element=document.createElement(tag);element.className=className;if(text!==undefined)element.textContent=text;return element;}
 function setText(element,text){if(element.textContent!==String(text))element.textContent=text;}
-let cardNodes=[],hostNodes=[],eventNodes=[],barNodes=[];
+let cardNodes=[],hostNodes=[],eventNodes=[];
 function buildView(){
-  barNodes=Array.from({length:12},()=>{const n=node('i','pixel-bar');document.getElementById('equaliser').append(n);return n;});
   cardNodes=Array.from({length:8},()=>{
     const card=node('article','thread-card'),head=node('div','card-top'),project=node('h3','project'),status=node('span','state'),glyph=node('span','state-glyph'),state=node('span','state-word');status.append(glyph,state);head.append(project,status);
     const title=node('p','thread-title'),identity=node('p','identity'),details=node('dl','details');const fields=Array.from({length:6},()=>{const label=node('dt',''),value=node('dd','');details.append(label,value);return {label,value};});
     card.append(head,title,identity,details);document.getElementById('threads').append(card);return {card,project,glyph,state,title,identity,fields};
   });
   hostNodes=Array.from({length:3},()=>{const row=node('article','host-row'),name=node('strong','host-name'),status=node('span','host-status'),metrics=node('dl','host-metrics');const fields=Array.from({length:7},(_,i)=>{const pair=node('div','metric'),label=node('dt',''),value=node('dd',''),gauge=node('span','metric-gauge'),fill=node('i','metric-fill'),direction=node('span','network-direction',i===4?'↓':i===5?'↑':'');gauge.setAttribute('aria-hidden','true');direction.setAttribute('aria-hidden','true');gauge.append(fill);gauge.hidden=i>=4;direction.hidden=i<4 || i>5;pair.append(label,value,gauge,direction);metrics.append(pair);return {label,value,gauge,fill,direction};});row.append(name,status,metrics);document.getElementById('fleet').append(row);return {row,name,status,fields};});
-  eventNodes=Array.from({length:4},()=>{const row=node('div','event-row'),text=node('span','event-text');row.append(text);document.getElementById('events').append(row);return {row,text};});
+  eventNodes=Array.from({length:4},()=>{const row=node('div','event-row'),glyph=node('span','event-icon'),text=node('span','event-text');glyph.setAttribute('aria-hidden','true');row.append(glyph,text);document.getElementById('events').append(row);return {row,glyph,text};});
 }
 function applyTheme(){
   const root=document.documentElement;
@@ -230,6 +227,8 @@ function applyTheme(){
 function draw(now=performance.now()) {
   const view=viewModel(now);applyTheme();
   pixelField?.update({colours:palette});
+  titleMark?.update(palette);
+  fitBackground();
   const track=currentMusic();
   const widget=document.getElementById("music-widget");widget.hidden=!track;
   setText(document.getElementById("music-title"),track?.title || (track?"Track title unavailable":""));
@@ -237,9 +236,7 @@ function draw(now=performance.now()) {
   widget.title=track?[track.title,track.artist].filter(Boolean).join(' · '):'';
   setText(document.getElementById('profile'),view.profile);
   setText(document.getElementById('working-count'),view.working+' working');setText(document.getElementById('blocked-count'),view.blocked+' blocked');
-  setText(document.getElementById('theme'),view.theme==='Unavailable'?'Theme unavailable':view.theme+' · OS theme');setText(document.getElementById('connection'),view.connection);
-  setText(document.getElementById('activity-state'),view.bars.some(Boolean)?'New observations':'Quiet');
-  barNodes.forEach((bar,i)=>bar.style.setProperty('--level',view.bars[i]));
+  setText(document.getElementById('theme'),view.theme==='Unavailable'?'Theme unavailable':view.theme);setText(document.getElementById('connection'),view.connection);
   hostNodes.forEach((host,i)=>{const model=view.hosts[i];host.row.hidden=!model;if(!model)return;setText(host.name,model.label);host.name.title=model.label;setText(host.status,model.online?'Online':'Offline');host.status.dataset.online=String(model.online);host.fields.forEach((f,j)=>{setText(f.label,model.metrics[j][0]);setText(f.value,model.metrics[j][1]==='Unavailable'?'—':model.metrics[j][1]);f.value.title=model.metrics[j][1];f.value.setAttribute('aria-label',model.metrics[j][1]);if(j<4){const value=model.metrics[j][1],known=value.endsWith('%');f.gauge.dataset.known=String(known);f.fill.style.width=(known?Math.max(0,Math.min(100,parseFloat(value))):0)+'%';}if(j===4 || j===5)f.direction.dataset.known=String(model.metrics[j][1]!=='Unavailable');});});
   cardNodes.forEach((card,i)=>{const model=view.cards[i];card.card.hidden=!model;if(!model)return;card.card.dataset.state=model.state.toLowerCase();card.card.dataset.thread=model.id;card.card.style.setProperty('--impulse',model.motion.flash.toFixed(3));setText(card.project,model.project);card.project.title=model.project;setText(card.glyph,model.motion.glyph);setText(card.state,model.state);setText(card.title,model.title);card.title.title=model.title;setText(card.identity,`Agent: ${model.harness} · Pane: ${model.pane} · Host: ${model.host}`);card.identity.title=card.identity.textContent;card.fields.forEach((f,j)=>{setText(f.label,model.details[j][0]);setText(f.value,model.details[j][1]);f.value.title=model.details[j][1];});});
   const empty=document.getElementById('empty');empty.hidden=Boolean(view.cards.length);setText(empty,view.empty);
@@ -249,11 +246,11 @@ function draw(now=performance.now()) {
   setText(document.getElementById('sampling'),`Read only · ${snapshot?.interval || '?'}s samples · intermediate changes may be missed`);
   const playing=Boolean(ctx) && animationIndex>=0 && framesCurrent() && !reduced.matches;
   let target=null;
-  eventNodes.forEach((event,i)=>{const model=view.events[i];event.row.hidden=!model;if(!model)return;setText(event.text,model.line);event.text.style.visibility=playing && model.id===textFrames.recordId?'hidden':'visible';event.row.style.color=colour(model.kind);if(playing && model.id===textFrames.recordId)target=event.row;});
+  eventNodes.forEach((event,i)=>{const model=view.events[i];event.row.hidden=!model;if(!model)return;setText(event.glyph,eventIcon(model.kind));setText(event.text,model.line);event.text.style.visibility=playing && model.id===textFrames.recordId?'hidden':'visible';event.row.style.color=colour(model.kind);if(playing && model.id===textFrames.recordId)target=event.text;});
   canvas.hidden=!target;
   if(target && ctx){const rect=target.getBoundingClientRect(),container=document.getElementById('activity').getBoundingClientRect(),ratio=Math.min(devicePixelRatio || 1,2);canvas.style.left=(rect.left-container.left)+'px';canvas.style.top=(rect.top-container.top)+'px';canvas.style.width=rect.width+'px';canvas.style.height=rect.height+'px';canvas.width=Math.round(rect.width*ratio);canvas.height=Math.round(rect.height*ratio);ctx.setTransform(ratio,0,0,ratio,0,0);ctx.clearRect(0,0,rect.width,rect.height);const font=parseFloat(getComputedStyle(target).fontSize);ctx.font=`${font}px ${FONT_FACE}`;const cell=ctx.measureText?.('M').width || font*.6;ctx.textBaseline='top';paintEffect(effectFrame,0,Math.max(0,(rect.height-font)/2),cell,rect.height);}
 }
-function frame(now) {pixelField?.frame(now);if(!document.hidden && now-lastFrame>=33){advanceEffects(Math.min(100,now-lastFrame));draw();lastFrame=now;}if(document.hidden)lastFrame=now;requestAnimationFrame(frame);}
+function frame(now) {pixelField?.frame(now);titleMark?.frame(now);if(!document.hidden && now-lastFrame>=33){advanceEffects(Math.min(100,now-lastFrame));draw();lastFrame=now;}if(document.hidden)lastFrame=now;requestAnimationFrame(frame);}
 async function refresh() {
   try {const response=await fetch(`/api/state?page=${currentPage()}&category=${category}&hold=${holdSeconds}`,{cache:'no-store',signal:AbortSignal.timeout(8000)});if(!response.ok)throw new Error();observe(await response.json());}
   catch {disconnect();}
@@ -265,7 +262,7 @@ function cycleCategory(){if(snapshot?.profile==='personal'){category=['all','wor
 for(const [id,action] of Object.entries({fullscreen,previous:()=>changePage(-1),next:()=>changePage(1),rotate:()=>{manualPage=manualPage===null?currentPage():null;draw();},category:cycleCategory}))document.getElementById(id).addEventListener('click',action);
 addEventListener('keydown',event=>{if(event.key==='f')fullscreen();if(event.key==='PageDown')changePage(1);if(event.key==='PageUp')changePage(-1);if(event.key==='r'){manualPage=null;draw();}if(event.key==='c')cycleCategory();});
 reduced.addEventListener?.('change',()=>{if(reduced.matches){pendingEffect=null;effectGeneration++;}draw();});
-addEventListener('resize',()=>{pixelField?.resize();draw();});
+addEventListener('resize',()=>{fitBackground();pixelField?.resize();titleMark?.resize();draw();});
 setInterval(()=>{if(received && Date.now()-received>12000)disconnect();if(!disconnected)reconcile();},1000);
 buildView();draw();loadFont();requestAnimationFrame(frame);refresh();
 
@@ -280,10 +277,17 @@ async function refreshMusic(){
   setTimeout(refreshMusic,100);
 }
 async function loadBackground(){
-  try{const {PixelField}=await import('./background.mjs');pixelField=new PixelField(document.getElementById('pixel-field'));pixelField.update({colours:palette,music:currentMusic()});}
+  try{const {PixelField}=await import('./background.mjs');pixelField=new PixelField(document.getElementById('pixel-field'));pixelField.update({colours:palette,music:currentMusic()});fitBackground();pixelField.resize();}
   catch{/* The foreground remains usable without a background renderer. */}
 }
 function backgroundHit(target){return target===document.body || ['observatory','threads','thread-section','fleet','pixel-field'].includes(target?.id) || target?.className==='thread-section';}
 addEventListener('pointermove',event=>{if(backgroundHit(event.target))pixelField?.pointer(event.clientX,event.clientY);else pixelField?.pointer(null,null);});
 addEventListener('click',event=>{if(backgroundHit(event.target))pixelField?.click(event.clientX,event.clientY);});
 loadBackground();refreshMusic();
+
+async function loadTitle(){
+  try{const {TitleMark}=await import('./title.mjs');titleMark=new TitleMark(document.getElementById('title-mark'));titleMark.update(palette);document.getElementById('title-fallback').hidden=Boolean(titleMark.ctx);}
+  catch{/* Keep the accessible, plain title if the artwork renderer is unavailable. */}
+}
+document.getElementById('brand-title').addEventListener('click',()=>titleMark?.trigger());
+loadTitle();

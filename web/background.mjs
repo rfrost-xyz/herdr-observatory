@@ -162,7 +162,7 @@ export class PixelField {
       this.beatPulse=Math.max(this.beatPulse*.84,this.music.beat);if(this.beatPulse<.005)this.beatPulse=0;}
     const {spacing:wmCW,columns:cols,rows}=this.grid,wmCH=wmCW,wmX=0,wmY=0,cMin=0,rMin=0;
     const ramp=new Float32Array(rows*cols).fill(.3),noise=this.noise,jitter=this.jitter,t=reduced?0:this.phase,ctx=this.ctx;
-    const palette={bg:this.colours.background,dim:mix(this.colours.background,this.colours.green,.27),mid:mix(this.colours.background,this.colours.green,.58),lit:this.colours.green};
+    const palette={bg:this.colours.background,dim:mix(this.colours.background,this.colours.accent,.10),mid:mix(this.colours.background,this.colours.accent,.20),lit:mix(this.colours.background,this.colours.accent,.34)};
     ctx.globalAlpha=1;ctx.clearRect(0,0,this.width,this.height);
     this.strength=reduced?0:this.strength+((this.position?1:0)-this.strength)*.3;
     const glows=this.position && this.strength>.01?[{...this.position,strength:this.strength,reach:CURSOR_CELLS*wmCW*(.45+.55*this.strength)*(1+.8*this.beatPulse)}]:[];

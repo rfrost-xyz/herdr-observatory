@@ -58,7 +58,7 @@ cp config.example.json config.local.json
 python -m observatory --config config.local.json --profile personal
 ```
 
-Open **http://127.0.0.1:8789**. Use F or F11 for fullscreen. The card display fills one 16:9 browser viewport at 720p or 1080p, with a compact activity header and fleet strip above eight prominent thread cards. A small recent-activity area sits below them. Pane pages rotate every 15 seconds; Page Up/Down selects a page and holds it, R resumes rotation. C cycles All/Work/Personal on the Personal display. Auto-paging is enabled by default when more than eight permitted threads exist. The display has no pause or effect-timer controls; the OS reduced-motion preference suppresses animation. Ctrl+C stops a foreground server.
+Open **http://127.0.0.1:8789**. Use F or F11 for fullscreen. The card display fills one 16:9 browser viewport at 720p or 1080p, with a compact Rich title and fleet strip above eight prominent thread cards. Recent observations sit in a full-width footer outside the music visualiser. Pane pages rotate every 15 seconds; Page Up/Down selects a page and holds it, R resumes rotation. C cycles All/Work/Personal on the Personal display. Auto-paging is enabled by default when more than eight permitted threads exist. The display has no pause or effect-timer controls; the OS reduced-motion preference suppresses animation. Ctrl+C stops a foreground server.
 
 For a work display:
 
@@ -152,11 +152,11 @@ The PowerShell launcher opens the display; the independently running container s
 
 The display takes visual inspiration from [Omarchy](https://omarchy.org): crisp mono typography, pixel accents, thin borders and the current OS palette. Eight thread cards occupy most of the screen, with automatic and manual paging for additional threads. Each shows project, task title, normal Herdr state, native pane identifier, harness and host. Supported hook data adds phase, tool, model and context/usage details. Missing data remains explicitly unavailable.
 
-The header's “Observed activity” indicator responds to fresh state and hook changes, then settles when quiet. It is an activity cue, not measured token throughput or audio playback. Each affected card receives a brief impulse; working state indicators remain local to their card. Repeated unchanged samples do not restart the impulse. Paused, hidden, reduced-motion and unavailable views suppress animation.
+Each card affected by a fresh state or hook change receives a brief impulse; working state indicators remain local to their card. Repeated unchanged samples do not restart the impulse. Hidden, reduced-motion and unavailable views suppress animation.
 
 The fleet strip labels processor, memory, graphics, storage, network traffic and sample age in plain language. The active OS theme colours backgrounds, card surfaces, borders, typography and status accents. Its name is visible in the header. Existing theme transport is unchanged: the host OS supplies the palette, and the Personal instance forwards it with the permitted Work feed. The browser does not modify the OS theme or need another service.
 
-A separate recent-activity area shows four single-line observations: time, project, Herdr state, native pane identifier and pertinent update. Occasional text effects run only on an eligible incoming line here, never on thread cards. Effects finish naturally, then apply a fixed internal 120-second cooldown. Events received during playback or cooldown display immediately, without a backlog of animations. Quiet periods do not replay previous output. Source loss or the line leaving the visible recent history cancels obsolete playback. No decorative project-name artwork or travelling horizontal bands remain.
+An opaque full-width footer shows four single-line observations with semantic icons and theme-derived colours: time, project, Herdr state, native pane identifier and pertinent update. Occasional text effects run only on an eligible incoming line here, never on thread cards. Effects finish naturally, then apply a fixed internal 120-second cooldown. Events received during playback or cooldown display immediately, without a backlog of animations. Quiet periods do not replay previous output. Source loss or the line leaving the visible recent history cancels obsolete playback. No decorative project-name artwork or travelling horizontal bands remain.
 
 The bundled JetBrainsMono Nerd Font supplies the same typography on Linux and Windows without external requests. Readable words remain if it fails to load. Font source, checksum and licences live in `web/fonts/`.
 
@@ -185,7 +185,7 @@ Custom Herdr token/label maps, native session identifiers and terminal contents 
 
 ## Access and disclosure
 
-The server binds only to `127.0.0.1`, validates Host and Origin, sends no CORS headers and exposes only static assets plus read-only `GET /api/state`. It is a trusted local-user application, not a multi-user authenticated service. Any local process can read its selected profile. Use SSH loopback forwarding for remote viewing; keep the same port on both ends.
+The server binds only to `127.0.0.1`, validates Host and Origin, sends no CORS headers and exposes only static assets plus read-only `GET /api/state` and `GET /api/music`. It is a trusted local-user application, not a multi-user authenticated service. Any local process can read its selected profile. Use SSH loopback forwarding for remote viewing; keep the same port on both ends.
 
 Work filtering happens before data enters the browser or history. Full path fields, native agent session identifiers, raw snapshots and terminal buffers are not returned. Machine labels and aggregate telemetry remain visible in either profile. Local configuration is trusted operator input, including SSH aliases. Do not publish your local config or live API output.
 
@@ -349,7 +349,7 @@ Thread cards use Herdr's Working, Blocked, Done, Idle and Unknown states. Hook-d
 
 ### Shared music and pixel background
 
-The background adapts Omarchy’s actual pixel-field renderer, pinned to `omacom/omarchy-site@2af2bcdc41c1eba20a2f4d6a98b9521f5d014dc8`, including its noise, ordered dithering, spectrum columns and click stamps. Source attribution and adaptation details are retained in `web/vendor/OMARCHY-BACKGROUND-NOTICE`. It uses the synchronised OS palette, reacts to real music spectrum and produces local impulses when you click exposed background space. Cards and controls do not trigger these impulses. Text effects remain confined to occasional incoming event lines. Reduced motion makes the field stationary, and hidden tabs stop animation and music polling.
+The background adapts Omarchy’s actual pixel-field renderer, pinned to `omacom/omarchy-site@2af2bcdc41c1eba20a2f4d6a98b9521f5d014dc8`, including its noise, ordered dithering, spectrum columns and click stamps. Source attribution and adaptation details are retained in `web/vendor/OMARCHY-BACKGROUND-NOTICE`. It uses muted shades of the synchronised OS accent, including at music and click peaks, reacts to real music spectrum and produces local impulses when you click exposed background space. The canvas ends above the observations footer; no music pixels are rendered behind its text. Cards and controls do not trigger these impulses. Event effects remain confined to occasional incoming lines; the title has its own isolated effects. Reduced motion makes the field stationary, and hidden tabs stop animation and music polling.
 
 The current installation follows **cliamp on iapetus**, including track title and artist, on both displays. The application reads cliamp v2 `state.get` and `spectrum.get` over its Unix socket at up to 15 samples per second. It does not start a player, capture a microphone, play sound or install a daemon. Playback through cliamp's Spotify provider uses this same path. The standalone Spotify desktop/web player is not an audio source for this integration: track metadata alone is not a sound spectrum.
 
@@ -375,3 +375,9 @@ One persistent SSH channel invokes the receiver module in the existing image and
 Apply changed configuration using `docker compose up -d --force-recreate --wait`. For rollback after enabling music, restore both the previous image selection and private configuration, and omit the music override if the previous release predates this integration.
 
 Fleet percentage gauges show processor, memory, graphics and storage usage. A dashed gauge means unavailable, distinct from a measured zero. Network arrows denote direction; their values remain measured rates. Thread identities label Agent (harness), Pane (Herdr's native workspace/pane identifier) and Host explicitly.
+
+### Personal title and observations
+
+The header shows a small **Rich** mark in Delta Corps Priest 1 artwork. Click it (or activate its button with the keyboard) to play a text effect. It also animates automatically every minute while visible, without interrupting an effect already running. The title has its own bounded effect session, independent of recent-event effects and their 120-second cooldown. Hidden/reduced-motion views keep static artwork without queuing missed animations; renderer failure retains a readable title. Font attribution is in `web/vendor/STAMPS-NOTICE`.
+
+The redundant Observed activity widget is removed. Thread cards retain their state/hook impulses. The theme label shows its name alone. Recent observations use coloured semantic icons for working, blocked, completed, idle, tool, compaction, usage and source changes, while keeping each observation to one line. Event text effects leave the icon visible and remain aligned to the text itself.
