@@ -1,0 +1,9 @@
+# Optional Personal-host cliamp source. Mount the directory so socket replacement works.
+services:
+  dashboard:
+    volumes:
+      - type: bind
+        source: ${CLIAMP_DIRECTORY:?Set existing cliamp socket directory}
+        target: /music
+        read_only: true
+        bind: {create_host_path: false}

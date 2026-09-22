@@ -1,0 +1,131 @@
+# Activity dashboard
+
+## Purpose
+Provide truthful, passive visibility of Herdr agents and machine activity across a private fleet with display-specific disclosure.
+
+## Requirements
+
+### Requirement: Passive fleet observation
+The dashboard SHALL collect Herdr agent metadata from configured local and SSH hosts and explicitly configured Work feed files without controlling panes. Feed persistence SHALL be limited to the configured private display state path.
+
+#### Scenario: Working agent
+- **WHEN** a valid snapshot contains a working agent
+- **THEN** the dashboard shows its machine, project, harness, safe checkout label when reported and prominent working state.
+
+#### Scenario: Collector failure and recovery
+- **WHEN** a host times out or returns invalid data
+- **THEN** that host is unavailable and its previous agents are not counted as working; other hosts continue and a later valid sample restores it.
+
+### Requirement: Display disclosure
+The server SHALL enforce its selected Work or Personal profile, classify unknown paths as Personal and omit raw terminal output, full paths and native session identifiers from HTTP responses.
+
+#### Scenario: Work display
+- **WHEN** a personal or unclassified agent is collected in Work mode
+- **THEN** its metadata and history are absent from browser responses, including requests containing a personal profile parameter.
+
+#### Scenario: Personal display
+- **WHEN** Personal mode is selected at server startup
+- **THEN** personal and work agents can be viewed and filtered.
+
+### Requirement: Honest telemetry
+The dashboard SHALL show sampled status transitions and available resource metrics with timestamps and collection scope; unavailable metrics SHALL remain unavailable.
+
+#### Scenario: Missing GPU and stale browser
+- **WHEN** GPU telemetry is unavailable or the browser loses its connection
+- **THEN** GPU values are marked unavailable and stale browser activity stops appearing live.
+
+### Requirement: Omarchy display
+The dashboard SHALL adopt valid active Omarchy palette changes without modifying desktop configuration and provide a usable fallback, responsive layout, keyboard controls and reduced-motion support.
+
+#### Scenario: Theme changes
+- **WHEN** the selected theme source publishes a different valid palette
+- **THEN** the next successful refresh updates dashboard colours; missing or malformed colours use safe defaults.
+
+#### Scenario: Short display viewport
+- **WHEN** the viewport cannot fit two full rows of thread details
+- **THEN** thread cards retain enough height for their metrics and source ages, and the thread area scrolls without clipping the footer.
+
+#### Scenario: Initial connection
+- **WHEN** the browser is waiting for its first state sample
+- **THEN** the connection label has a reduced-motion-aware block loading indicator that disappears when that wait ends; measured percentages remain determinate gauges.
+
+### Requirement: Local access boundary
+The service SHALL bind to loopback and reject browser requests with untrusted Host or Origin headers and expose no agent mutation endpoints.
+
+#### Scenario: Unexpected origin
+- **WHEN** a request comes with an external Host or Origin
+- **THEN** the service denies it without returning activity data.
+
+### Requirement: Glanceable activity presentation
+The display SHALL give thread cards persistent subtle semantic state colour, prominent native state labels, project and checkout identity instead of terminal titles, and compact visual telemetry. Missing hook fields SHALL be explained as one coverage note rather than repeated empty rows. Unknown subagent counts SHALL never appear as zero. Recent observations SHALL use the associated native state colour when available. The header SHALL omit host-role and theme-name labels and retain Idle, Working, Blocked and Done totals in subtle persistent boxes. Cards SHALL avoid repeating the native state as their hook activity and omit meaningless bare-repository checkout labels.
+
+#### Scenario: Partial hook coverage
+- **WHEN** a fresh hook sample has a tool and phase but no usage counters
+- **THEN** the card shows its available activity with a concise coverage explanation and no fabricated counters or repeated Unavailable rows.
+
+#### Scenario: Completed thread
+- **WHEN** a thread is Done, including a tool observation associated with that state
+- **THEN** its card and observation use the theme's green and the Done total counts it.
+
+#### Scenario: Checkout disclosure
+- **WHEN** a permitted thread has a reported checkout directory
+- **THEN** only its sanitised leaf label reaches the browser and Work feed; full paths and excluded projects remain undisclosed.
+
+### Requirement: Track change presentation
+The music tile SHALL emphasise track title and artist and play bounded, theme-aware in-place text effects on both lines on an observed track change or explicit title/artist activation. Duplicate samples, initial connection, pause/resume and stale-source recovery SHALL NOT trigger automatic track-change effects. Effects SHALL remain outside thread cards, have no consecutive repeats, finish normally before another starts, and release resources on hidden/reduced-motion/stale/error paths with readable text retained.
+
+#### Scenario: Track transition
+- **WHEN** a fresh source changes from one track identity to another
+- **THEN** title and artist receive effects while both native strings remain accessible.
+
+#### Scenario: Unavailable or rapid changes
+- **WHEN** the source expires or another track arrives during playback
+- **THEN** stale effects are removed or allowed to finish without replacing the current readable metadata; at most the latest pending identity is retained, with no replay backlog.
+
+#### Scenario: Manual music effects
+- **WHEN** a user clicks or keyboard-activates either fresh music line
+- **THEN** both title and artist effects can play, without interrupting active playback, queuing repeats or changing the music player.
+
+### Requirement: Herdr state roles and thread inspection
+The display SHALL use the active theme's semantic Herdr state roles, with Working amber/yellow, Blocked red, Done green and Idle muted like its header total. Cards SHALL persistently show bounded technical detail with readable labels and visual instruments. Hook activity and numeric usage SHALL retain independent source ages; a fresh hook SHALL NOT make older usage appear fresh or dim freshly measured values. Older hook activity SHALL be worded as a dated observation without changing Herdr state. Hover and focus SHALL provide visual emphasis only; no information SHALL depend on hover or open a separate click inspector. Clicking or keyboard-activating a tile SHALL play a brief local decorative response respecting reduced motion, using a bounded decorative glitch without synthetic activity or Herdr input. Detail SHALL clear when its permitted source disappears. The footer SHALL omit the sampling disclaimer and music SHALL omit the source playback label.
+
+#### Scenario: Inspect a thread
+- **WHEN** a permitted card is visible and observations arrive
+- **THEN** its in-card details update from that thread's available metadata without changing its state or sending input.
+
+#### Scenario: Source loss
+- **WHEN** the inspected thread becomes unavailable or leaves the selected disclosure view
+- **THEN** its visible detail clears without retaining stale private details.
+
+#### Scenario: Last known session-bound detail
+- **WHEN** an identified thread remains present without a new hook report for more than two minutes
+- **THEN** its last reported values remain visible with their original source age and an explicit last-known label, without changing Herdr state or implying live activity.
+- **WHEN** the pane closes, its session binding changes or a newer report replaces the metadata
+- **THEN** the previous values no longer appear on that thread.
+
+#### Scenario: Independent hook and usage ages
+- **WHEN** a fresh hook carries older Codex usage or Pi last-response usage
+- **THEN** hook activity and usage have separate visible ages, only values from the older source receive last-known styling, and fresh Pi context and cumulative totals retain their current-hook presentation.
+
+#### Scenario: Historical tool observation
+- **WHEN** the latest hook activity is older than two minutes while the pane remains present
+- **THEN** the activity is labelled as a past observation with its age, while the state badge continues to show Herdr's current state.
+
+#### Scenario: Decorative activation
+- **WHEN** a card is clicked or activated by keyboard
+- **THEN** a bounded local effect responds without opening a dialogue or generating an activity observation.
+
+### Requirement: Compact measured metric panels
+Fleet machines SHALL show CPU, memory, disk and network in subtly coloured theme-aware bordered panels with instruments using their available height inspired by the supplied terminal monitor. Histories SHALL contain distinct measured samples, stay bounded and stop showing live traces for stale sources. Thread panels SHALL prioritise available session totals, context percentage and cache/compaction data with readable scope, compact visible counts and exact accessible values. A complete cache-read balance SHALL explicitly name total input as the percentage denominator and show separate read, uncached and cache-write parts when writes are reported, without implying request hit/miss counts. The display SHALL retain eight-card paging, readable labels without document scrolling at 720p and 1080p, and reduced-motion support.
+
+#### Scenario: Measured fleet history
+- **WHEN** successive fresh host samples arrive
+- **THEN** compact traces update from those measurements; repeated polls add no duplicate measurement and missing values are not zeroes.
+
+#### Scenario: Thread usage
+- **WHEN** a fresh harness reports cumulative input/output, context and cache counters
+- **THEN** the card displays their distinct scopes and a source-grounded cache-read token percentage without presenting last-response counters as totals or cached tokens as request counts.
+
+#### Scenario: Cache writes
+- **WHEN** Pi reports a complete input balance containing cache writes
+- **THEN** read, uncached and write token counts remain separately labelled and the three gauge segments add to the reported input total.

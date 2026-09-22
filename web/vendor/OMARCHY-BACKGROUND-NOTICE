@@ -1,0 +1,25 @@
+Omarchy background renderer adaptation
+
+Source: https://github.com/basecamp/omarchy-site
+Pinned commit: 2af2bcdc41c1eba20a2f4d6a98b9521f5d014dc8
+Source component: HeroPixelField.tsx
+Companion reference: music.ts (BANDS = 32)
+
+web/background.mjs directly adapts HeroPixelField's seeded two-pass smoothed
+noise, jitter tile, smooth sampling, 8x8 Bayer thresholding, drifting field
+luminance, pointer reach and easing, mirrored spectrum columns, colour heat
+selection, square-spiral logo bitmap and quick-click stamp growth/dissolution.
+
+The React wrapper, site wordmark, etching, theme picker, autonomous sprite,
+audio loading/playback and silent music timeline are omitted. Canvas layout
+uses a bounded viewport grid instead of the site wordmark grid. Application
+palette colours supply the inks. Reduced motion is stationary; hidden views
+suspend updates. Ten captured music bands are interpolated into the source's
+32 visual columns, with a three-second capture/receive freshness guard.
+The source beat envelope accepts only explicitly supplied captured beat data;
+no silent timeline, generated beats or autoplay are included. Input currently
+without beat data supplies zero beat energy. Clicks use the source's zero-charge
+launch because the application API does not expose press-and-hold duration.
+
+The inspected upstream repository does not declare a licence. This notice
+attributes the source and documents the adaptation; it makes no licence claim.

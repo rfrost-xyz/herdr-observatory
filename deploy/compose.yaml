@@ -1,0 +1,29 @@
+name: herdr-observatory
+services:
+  dashboard:
+    image: ${OBSERVATORY_IMAGE:?Set a versioned Observatory image}
+    container_name: ${OBSERVATORY_CONTAINER:-herdr-observatory}
+    user: "${OBSERVATORY_UID:-1000}:${OBSERVATORY_GID:-1000}"
+    init: true
+    stop_grace_period: 25s
+    restart: unless-stopped
+    network_mode: host
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m,mode=1777
+    environment:
+      OBSERVATORY_PORT: ${OBSERVATORY_PORT:-8789}
+    command: ["--config", "/config/config.json", "--profile", "${OBSERVATORY_PROFILE:?Set personal or work}", "--port", "${OBSERVATORY_PORT:-8789}"]
+    healthcheck:
+      test: [CMD, python3, -c, "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:'+os.environ['OBSERVATORY_PORT']+'/api/state',timeout=3).read(1)"]
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "3"
