@@ -19,3 +19,8 @@
 !web/fonts/OFL.txt
 !web/fonts/NERD-FONTS-LICENSE
 !web/fonts/NOTICE
+
+!hooks/
+!hooks/*.py
+!hooks/*.sh
+!hooks/*.ts

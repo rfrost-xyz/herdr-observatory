@@ -100,6 +100,8 @@ def technical(raw):
     result = {key: counter(raw.get(key)) for key in ('revision', 'state_change_seq')}
     result.update({key: raw[key] if type(raw.get(key)) is bool else None
                    for key in ('focused', 'interactive_ready', 'launch_pending')})
+    if 'telemetry' in raw:
+        result['telemetry'] = probe.telemetry_view(raw.get('telemetry'))
     return result
 
 

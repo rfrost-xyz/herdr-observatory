@@ -45,6 +45,25 @@ function observe(data, now=Date.now()) {
   reconcile(now,recovery);
 }
 function agentEvent(kind,a,now,action) {record(kind,`${a.project} · ${action}`,now,{project:a.project,detail:a.title,host:a.host});}
+function telemetryFor(a,now=Date.now()) {
+  const t=a.technical?.telemetry;
+  return t && Number.isSafeInteger(t.seq) && now-t.seq/1000>=0 && now-t.seq/1000<=120000?t:null;
+}
+function telemetryBrief(a,now=Date.now()) {
+  const t=telemetryFor(a,now);if(!t)return a.title;
+  const usage=t.input!=null?`in ${number(t.input)} out ${number(t.output_tokens)} cache ${number(t.cache_read)}/${number(t.cache_write)}`:t.model;
+  return [t.phase,t.tool,usage,t.context!=null && t.window?`ctx~${Math.round(100*t.context/t.window)}%`:null].filter(Boolean).join(' · ');
+}
+function telemetryEvent(a,before,now) {
+  const t=telemetryFor(a,now);if(!t || t.seq===before.technical?.telemetry?.seq)return;
+  const usageChanged=t.input!=null && ['input','output_tokens','cache_read','cache_write'].some(k=>t[k]!==before.technical?.telemetry?.[k]);
+  const action=(usageChanged && ['output','idle'].includes(t.event)?'response received':null) || {'tool-start':'tool started','tool-end':'tool finished','compact-start':'compacting context','compact-end':'context compacted','compact-failed':'compaction failed','model':'model changed'}[t.event];
+  if(!action)return;
+  const details=[t.model,t.result,t.context!=null?`context ~${number(t.context)} / ${number(t.window)}`:null,
+    t.input!=null?`last response in ${number(t.input)} out ${number(t.output_tokens)} cache R ${number(t.cache_read)} W ${number(t.cache_write)}`:null].filter(Boolean).join(' · ');
+  record(action==='response received'?'USAGE':t.event.startsWith('compact')?'COMPACT':'TOOL',`${a.project} · ${action}${t.tool?' · '+t.tool:''}`,now,{project:a.project,detail:details,host:a.host});
+}
+
 function reconcile(now=Date.now(), reset=false) {
   if (!snapshot) return;
   const next = new Map(); agents=[];
@@ -57,6 +76,7 @@ function reconcile(now=Date.now(), reset=false) {
     if (initialised && !reset && live && old?.live) {
       for (const [id,a] of current) {
         const before=old.agents.get(id);
+        if (before) telemetryEvent(a,before,now);
         if (!before) agentEvent('ATTACH',a,now,'thread joined');
         else if (before.status!==a.status) {
           agentEvent(statusKind(a.status),a,now,({working:'started working',blocked:'needs your input',done:'completed',idle:'became idle'}[a.status] || 'state unknown'));
@@ -79,7 +99,7 @@ function disconnect(now=Date.now()) {
   accessible();
 }
 function accessible() {
-  document.getElementById('transcript').textContent=[`HERDR OBSERVATORY / ${snapshot?.profile || 'connecting'} / ${disconnected?'disconnected':'sampled observations'}`,...agents.map(a=>`${clean(a.host)}/${clean(a.project)} ${statusKind(a.status)} ${clean(a.title)}`),...(typeof textFrames!=='undefined' && animationIndex>=0 && framesCurrent()?['Animated capture: '+textFrames.text]:[]),...records.map(r=>`${new Date(r.at).toISOString()} ${r.kind} ${r.text}`)].join('\n');
+  document.getElementById('transcript').textContent=[`HERDR OBSERVATORY / ${snapshot?.profile || 'connecting'} / ${disconnected?'disconnected':'sampled observations'}`,...agents.map(a=>`${clean(a.host)}/${clean(a.project)} ${statusKind(a.status)} ${clean(a.title)} · ${clean(telemetryBrief(a))}`),...(typeof textFrames!=='undefined' && animationIndex>=0 && framesCurrent()?['Animated capture: '+textFrames.text]:[]),...records.map(r=>`${new Date(r.at).toISOString()} ${r.kind} ${r.text}`)].join('\n');
 }
 function resize() {
   width=innerWidth; height=innerHeight;
@@ -180,10 +200,10 @@ function sceneRows(now=performance.now(),showArt=true) {
   put(5,rule(`${icon('threads')} Threads  ·  ${agents.filter(a=>a.status==='working').length} running  ·  ${agents.filter(a=>a.status==='blocked').length} need input  ·  ${agents.length} total`));
   put(6,fields([[5,'State'],[15,'Project'],[35,'Thread'],[77,'Engine'],[92,'Host'],[108,'R L F'],[118,'Rev / Seq']]));
   const shown=filteredAgents().slice(currentPage()*GRID.threadRows,currentPage()*GRID.threadRows+GRID.threadRows),flag=v=>v===true?'●':v===false?'·':'?';
-  shown.forEach((a,i)=>{const t=a.technical || {};put(7+i,fields([[2,icon(a.status)],[5,padded(statusKind(a.status),8)],[15,padded(a.project,18)],[35,padded(a.title,40)],[77,padded(a.harness,12)],[92,padded(a.host,14)],[108,`${flag(t.interactive_ready)} ${flag(t.launch_pending)} ${flag(t.focused)}`],[118,number(t.revision)+' / '+number(t.state_change_seq)]]));});
+  shown.forEach((a,i)=>{const t=a.technical || {};put(7+i,fields([[2,icon(a.status)],[5,padded(statusKind(a.status),8)],[15,padded(a.project,18)],[35,padded(telemetryBrief(a),40)],[77,padded(a.harness,12)],[92,padded(a.host,14)],[108,`${flag(t.interactive_ready)} ${flag(t.launch_pending)} ${flag(t.focused)}`],[118,number(t.revision)+' / '+number(t.state_change_seq)]]));});
   if(!shown.length)put(7,'  '+(disconnected?'Connection lost · current thread state unavailable':'No permitted threads in this view'));
   put(15,`╰─ ${category}  ·  ${filteredAgents().length?currentPage()+1:0}/${Math.ceil(filteredAgents().length/GRID.threadRows)}  ·  PgUp/PgDn page   r rotate   c category   ${'─'.repeat(8)}   R ready · L launching · F focused`);
-  put(16,rule(`${icon('feed')} Notable events  ·  state changes and connections`));
+  put(16,rule(`${icon('feed')} Notable events · sampled  ·  state changes and connections`));
   const cli=cliLayout(now,showArt);
   if(cli.art){cli.art.forEach((row,i)=>put(17+i,'   '+row));put(26,'  '+eventLine(cli.stamp));}
   cli.feed.slice(-cli.capacity).forEach((r,i,list)=>{const row=41-list.length*2+i*2;put(row,'  '+eventLine(r));put(row+1,eventDetail(r));});

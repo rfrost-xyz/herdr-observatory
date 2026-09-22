@@ -5,6 +5,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends openssh-client 
 WORKDIR /app
 COPY observatory /app/observatory
 COPY web /app/web
+COPY hooks /app/hooks
 ARG REVISION=unknown
 LABEL org.opencontainers.image.title="Herdr Observatory" \
       org.opencontainers.image.source="https://github.com/rfrost-xyz/herdr-observatory" \

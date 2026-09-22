@@ -1,5 +1,7 @@
 """One read-only sample, also executable over SSH stdin without installation."""
 import json
+import hashlib
+import re
 import os
 from pathlib import Path
 import shutil
@@ -7,6 +9,60 @@ import socket
 import subprocess
 import time
 import tomllib
+
+
+# This code also travels with the read-only SSH probe: no package imports here.
+TELEMETRY_EVENTS = {'session', 'turn', 'tool-start', 'tool-end', 'thinking', 'output',
+                    'compact-start', 'compact-end', 'compact-failed', 'idle', 'interrupt', 'end', 'model'}
+TELEMETRY_PHASES = {'ready', 'working', 'tool', 'thinking', 'output', 'compacting', 'idle', 'interrupted', 'ended'}
+TELEMETRY_NUMBERS = ('input', 'output_tokens', 'cache_read', 'cache_write', 'context', 'window')
+TELEMETRY_TTL = 120
+
+
+def session_binding(agent):
+    ref = agent.get('agent_session')
+    if not isinstance(ref, dict) or ref.get('agent') != agent.get('agent') or ref.get('source') != 'herdr:' + str(agent.get('agent')):
+        return None
+    if ref.get('kind') not in ('id', 'path') or not isinstance(ref.get('value'), str) or not ref['value']:
+        return None
+    return hashlib.sha256((str(agent.get('agent')) + ':' + ref['kind'] + ':' + ref['value']).encode()).hexdigest()
+
+
+def telemetry_view(raw, now=None):
+    """Second disclosure boundary, also used for already-normalised Work feeds."""
+    if not isinstance(raw, dict):
+        return None
+    now = time.time() if now is None else now
+    seq = raw.get('seq')
+    if type(seq) is not int or not 0 <= now - seq / 1_000_000 <= TELEMETRY_TTL:
+        return None
+    if raw.get('event') not in TELEMETRY_EVENTS or raw.get('phase') not in TELEMETRY_PHASES:
+        return None
+    result = {k: raw[k] for k in ('seq', 'event', 'phase')}
+    tool = raw.get('tool')
+    known = {'Bash', 'bash', 'apply_patch', 'read', 'write', 'edit', 'grep', 'find', 'ls', 'exec_command', 'write_stdin', 'exec', 'web', 'mcp-tool', 'custom-tool'}
+    result['tool'] = (tool if tool in known else ('mcp-tool' if tool.startswith('mcp') else 'custom-tool')) if isinstance(tool, str) and tool else None
+    model = raw.get('model')
+    result['model'] = model if isinstance(model, str) and len(model) <= 64 and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.:-]*(/[A-Za-z0-9][A-Za-z0-9_.:-]*)?', model) and '..' not in model and not re.match(r'^[A-Za-z]:/', model) else None
+    result['result'] = raw.get('result') if raw.get('result') in ('finished', 'error', 'cancelled') else None
+    for key in TELEMETRY_NUMBERS:
+        value = raw.get(key)
+        result[key] = value if type(value) is int and 0 <= value <= 9007199254740991 else None
+    # Cross-field consistency: invalid estimates are unavailable, not clamped.
+    if result['window'] == 0 or (result['context'] is not None and result['window'] is not None and result['context'] > result['window']):
+        result['context'] = result['window'] = None
+    return result
+
+
+def telemetry_from_agent(agent, now=None):
+    tokens = agent.get('tokens')
+    if not isinstance(tokens, dict) or tokens.get('obs_v') != '1' or not session_binding(agent) or tokens.get('obs_bind') != session_binding(agent):
+        return None
+    raw = {k: tokens.get('obs_' + k) for k in ('seq', 'event', 'phase', 'tool', 'model', 'result') + TELEMETRY_NUMBERS}
+    for key in ('seq',) + TELEMETRY_NUMBERS:
+        value = raw[key]
+        raw[key] = int(value) if isinstance(value, str) and re.fullmatch(r'[0-9]{1,16}', value) else None
+    return telemetry_view(raw, now)
 
 
 def palette(directory=None):
@@ -90,7 +146,7 @@ def sample(binary='herdr', session=None, socket_path=None, theme_path=None, disk
             raise ValueError('Invalid snapshot')
         # Do not export terminal buffers, process arguments or native session IDs.
         result['snapshot'] = {'version': raw.get('version', 'unknown'), 'protocol': raw.get('protocol'),
-            'agents': [{k: a.get(k) for k in ('pane_id', 'workspace_id', 'agent', 'agent_status', 'cwd', 'terminal_title_stripped', 'revision', 'state_change_seq', 'focused', 'interactive_ready', 'launch_pending')} for a in raw['agents']],
+            'agents': [{k: a.get(k) for k in ('pane_id', 'workspace_id', 'agent', 'agent_status', 'cwd', 'terminal_title_stripped', 'revision', 'state_change_seq', 'focused', 'interactive_ready', 'launch_pending')} | {'telemetry': telemetry_from_agent(a)} for a in raw['agents']],
             'workspaces': [{k: w.get(k) for k in ('workspace_id', 'label')} for w in raw['workspaces']]}
     except (OSError, ValueError, KeyError, TypeError, AttributeError, subprocess.SubprocessError):
         result['error'] = 'Herdr unavailable or incompatible'
