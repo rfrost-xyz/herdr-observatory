@@ -63,7 +63,7 @@ The display SHALL show available typed Herdr revision, state sequence and protoc
 - **THEN** unavailable fields remain marked unavailable and excluded metadata never reaches the Work feed or display.
 
 ### Requirement: Reactive rendered terminal
-The display SHALL show an unbranded live thread TUI between whole-terminal text effects. Effects SHALL use current theme colours, complete naturally without replacement by routine updates, and never repeat consecutively. A ten-second default hold SHALL begin after completion and be adjustable with Left/Right in one-second increments. Renderer failure SHALL fall back to the live TUI. All 37 bundled effects SHALL be available in a shuffled rotation, generated locally in the browser from disclosed snapshots without animation-frame downloads. Profile filtering, accessibility and reduced-motion support SHALL remain.
+The display SHALL show an unbranded live thread TUI between whole-terminal text effects. Effects SHALL use current theme colours, complete naturally without replacement by routine updates, and never repeat consecutively. A 120-second default hold SHALL begin after completion and be adjustable with Left/Right in one-second increments. Renderer failure SHALL fall back to the live TUI. All 37 bundled effects SHALL be available in a shuffled rotation, generated locally in the browser from disclosed snapshots without animation-frame downloads. Profile filtering, accessibility and reduced-motion support SHALL remain.
 
 #### Scenario: Agent milestone
 - **WHEN** an agent appears, changes status or disappears from a fresh source
@@ -94,15 +94,15 @@ The display SHALL show an unbranded live thread TUI between whole-terminal text 
 - **THEN** current thread state remains readable and collection continues.
 
 ### Requirement: Scrolling observation console
-The live terminal SHALL scroll timestamped, bounded observations as fresh samples and agent transitions arrive. Duplicate samples SHALL NOT create duplicate transitions. Status stamps SHALL distinguish observed state changes from raw events or tool execution. The current thread list SHALL remain separate and readable. Readiness, launch flags and revision/sequence changes SHALL use only sanitised available metadata.
+The live terminal SHALL scroll timestamped, bounded observations only as notable agent lifecycle/status and source-availability changes are observed. Duplicate samples SHALL NOT create duplicate transitions. Status stamps SHALL distinguish observed state changes from raw events or tool execution. The current thread list SHALL remain separate and readable. Readiness, launch flags and revision/sequence changes SHALL use only sanitised available metadata in the live table. The CLI SHALL use concise event text and local arrival effects without inventing activity.
 
 #### Scenario: Fresh and duplicate observations
 - **WHEN** an agent changes between idle, working, blocked or done and a duplicate snapshot follows
-- **THEN** one timestamped transition is appended and the thread state updates; fresh sample rows scroll in, while duplicates add no transitions.
+- **THEN** one timestamped transition is appended and the thread state updates; routine samples and metadata counters add no log rows, while notable changes scroll in once.
 
 #### Scenario: Sparse milestone artwork
 - **WHEN** a fresh done or blocked transition is observed
-- **THEN** a brief themed Delta Corps Priest 1 stamp may appear without covering thread rows, with a cooldown preventing repeated large banners; ordinary observations use normal terminal text.
+- **THEN** a brief themed Delta Corps Priest 1 project-name stamp may appear inside the expanded CLI, with event context and a cooldown preventing repeated large banners, without covering thread rows; ordinary observations use normal terminal text.
 
 #### Scenario: Animation accessibility and disclosure
 - **WHEN** motion is paused, reduced motion is requested, a source expires, or a whole-terminal effect is playing

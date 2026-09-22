@@ -13,3 +13,5 @@
 Synthetic browser screenshots were inspected: dynamic ORBIT completion artwork and short contextual events fit beneath clear thread rows. The fixture emitted exactly three records (baseline and two state changes) despite ongoing polls. Reduced motion suppressed artwork while retaining the same events. Bundled Nerd Font loaded at both sizes. No live private snapshots were used; physical monitor presentation was not verified.
 
 README describes notable-event filtering, expanded CLI, local effects, dynamic atlas limitations and slower hold. Events remain observed through polling, not a complete socket event subscription.
+
+Runtime commit: `756fe78`. Packaged Python tests passed (43). Both profiles passed live source/asset/default-hold checks, Work disclosure verification and container health checks. Each deployment retains one immediately previous image and rollback environment. The synthetic server and task QA/browser artifacts were removed. No host services or desktop configuration were added.
