@@ -82,9 +82,34 @@ def read_usage(raw, root=None, now=None):
                 captured=stamp.timestamp()
                 if not 0<=now-captured<=120: return {}
                 result={key:safe_number(usage.get(source)) for key,source in FIELDS.items()}
+                totals=info.get('total_token_usage')
+                for key,source in (('total_input','input_tokens'),('total_output','output_tokens'),('total_cache_read','cached_input_tokens'),('total_cache_write','cache_write_input_tokens')):
+                    result[key]=safe_number(totals.get(source)) if isinstance(totals,dict) else None
+                input_total,cache_total=result['total_input'],result['total_cache_read']
+                result['total_uncached_input']=input_total-cache_total if input_total is not None and cache_total is not None and cache_total<=input_total else None
+                result['compactions']=None
+                if start==len(header):
+                    try:
+                        complete=[json.loads(item) for item in lines if item.endswith(b'\n') and len(item)<=LINE_BYTES]
+                        if len(complete)==len(lines) and all(isinstance(item,dict) for item in complete):
+                            markers=sum(item.get('type')=='event_msg' and isinstance(item.get('payload'),dict) and item['payload'].get('type')=='context_compacted' for item in complete)
+                            summaries=sum(item.get('type')=='compacted' for item in complete)
+                            # Some versions persist both a summary and its notification.
+                            result['compactions']=max(markers,summaries)
+                    except (ValueError,TypeError,RecursionError): pass
                 result['window']=safe_number(info.get('model_context_window'))
+                # Codex rust-v0.155.1 TUI subtracts its 12,000-token baseline
+                # before rounding remaining percentage; display usage is its complement.
+                context,window=result['context'],result['window']
+                result['context_percent']=None
+                if context is not None and window is not None:
+                    if window<=12000: result['context_percent']=100
+                    else:
+                        remaining=max((window-12000)-max(context-12000,0),0)
+                        remaining_percent=min(100,max(0,remaining/(window-12000)*100))
+                        result['context_percent']=100-int(remaining_percent+0.5)
                 if result['window']==0 or (result['context'] is not None and result['window'] is not None and result['context']>result['window']):
-                    result['context']=result['window']=None
+                    result['context']=result['window']=result['context_percent']=None
                 if not any(value is not None for value in result.values()): return {}
                 return {**result,'usage_seq':int(captured*1e6),'usage_source':'codex-rollout'}
             except (ValueError,TypeError,KeyError,AttributeError,OverflowError,RecursionError):

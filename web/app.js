@@ -8,7 +8,7 @@ let previous = new Map(), agents = [], records = [], serial = 0;
 let pixelField=null,titleMark=null,musicTitle=null,musicArtist=null,fieldHeight=-1,music=null,musicReceived=0;
 const GRID={columns:140,feedRows:4,threadRows:8};
 let lastFrame=0,manualPage=null,category='all';
-let inspected=null,inspectPage=0,inspectReturn=null,inspectSignature='';
+const fleetHistory=new Map(),cardClicks=new Map();
 let palette = {background:'#101318',foreground:'#c0caf5',blue:'#7aa2f7',green:'#9ece6a',yellow:'#e0af68',red:'#f7768e',cyan:'#7dcfff'};
 const clean = (value, limit=160) => Array.from(String(value ?? '—').replace(/[\x00-\x1f\x7f-\x9f]/g,' ')).slice(0,limit).join('');
 const number = value => Number.isSafeInteger(value) && value >= 0 ? String(value) : '—';
@@ -29,7 +29,7 @@ function record(kind, text, now, context={}) {
   if(entry.eligible && !document.hidden && !reduced.matches && !disconnected && animationIndex<0 && !loadingFrames && !pendingEffect && holdElapsed>=holdSeconds*1000)pendingEffect=entry;
 }
 function observe(data, now=Date.now()) {
-  snapshot=data; received=now;
+  snapshot=data; received=now;sampleFleet(data);
   const recovery=disconnected; disconnected=false;
   if (recovery) record('LINK','Connection restored · watching for changes',now);
   for (const [key,value] of Object.entries(data.theme?.colours || {})) if ((key in palette || key==='accent') && /^#[0-9a-f]{6}$/i.test(value)) {palette[key]=value;if(key==='accent'){palette.blue=value;palette.cyan=value;}}
@@ -40,13 +40,13 @@ function agentEvent(kind,a,now,action) {record(kind,action,now,{project:a.projec
 function telemetryFor(a,now=Date.now()) {
   const t=a.technical?.telemetry;
   if(!t || !Number.isSafeInteger(t.seq) || now-t.seq/1000<0 || now-t.seq/1000>120000)return null;
-  if(t.usage_seq!=null && (!Number.isSafeInteger(t.usage_seq) || now-t.usage_seq/1000<0 || now-t.usage_seq/1000>120000))return {...t,...Object.fromEntries(['input','output_tokens','cache_read','cache_write','context','window','usage_seq','usage_source'].map(key=>[key,null]))};
+  if(t.usage_seq!=null && (!Number.isSafeInteger(t.usage_seq) || now-t.usage_seq/1000<0 || now-t.usage_seq/1000>120000))return {...t,...Object.fromEntries(['input','output_tokens','cache_read','cache_write','context','window','usage_seq','usage_source','total_input','total_output','total_cache_read','total_cache_write','total_uncached_input','compactions','context_percent'].map(key=>[key,null]))};
   return t;
 }
 function telemetryBrief(a,now=Date.now()) {
   const t=telemetryFor(a,now);if(!t)return a.title;
   const usage=t.input!=null?`in ${number(t.input)} out ${number(t.output_tokens)} cache ${number(t.cache_read)}/${number(t.cache_write)}`:t.model;
-  return [t.phase,t.tool,usage,t.context!=null && t.window?`ctx~${Math.round(100*t.context/t.window)}%`:null].filter(Boolean).join(' · ');
+  return [t.phase,t.tool,usage,t.context!=null && t.window?`ctx~${Number.isSafeInteger(t.context_percent)?t.context_percent:Math.round(100*t.context/t.window)}%`:null].filter(Boolean).join(' · ');
 }
 function telemetryEvent(a,before,now) {
   const t=telemetryFor(a,now);if(!t || t.seq===before.technical?.telemetry?.seq)return;
@@ -63,6 +63,7 @@ function reconcile(now=Date.now(), reset=false) {
   const next = new Map(); agents=[];
   for (const host of snapshot.hosts) {
     const live=!disconnected && host.online && Number.isFinite(host.sampled_at) && now/1000-host.sampled_at < snapshot.interval+20;
+    if(!live)fleetHistory.delete(host.id);
     const old=previous.get(host.id);
     const current=new Map(live ? host.agents.map(a=>[a.id,{...a}]) : []);
     next.set(host.id,{live,agents:current});
@@ -86,13 +87,13 @@ function reconcile(now=Date.now(), reset=false) {
   if(pendingEffect && (!previous.get(pendingEffect.host)?.live || !records.slice(-GRID.feedRows).some(r=>r.id===pendingEffect.id)))pendingEffect=null;
   if((loadingFrames || animationIndex>=0) && !framesCurrent())stopEffect();
   const present=new Set(agents.map(a=>a.id));
-  for(const id of rowActivity.keys())if(!present.has(id))rowActivity.delete(id);
+  for(const id of rowActivity.keys())if(!present.has(id))rowActivity.delete(id);for(const id of cardClicks.keys())if(!present.has(id))cardClicks.delete(id);
   if (!initialised) { record('BOOT',`Watching ${agents.length} threads · ${snapshot.profile}`,now,false); initialised=true; }
   accessible();
 }
 function disconnect(now=Date.now()) {
   if (!disconnected) record('LOST','Connection lost · activity unknown',now);
-  disconnected=true; agents=[];rowActivity.clear();pendingEffect=null;stopEffect();
+  disconnected=true; agents=[];rowActivity.clear();fleetHistory.clear();cardClicks.clear();pendingEffect=null;stopEffect();
   // Preserve source baseline until transport recovery, without inventing per-pane exits.
   accessible();
 }
@@ -110,7 +111,7 @@ function threadMotion(a,now=performance.now(),wall=Date.now()) {
     glyph:moving?Array.from('⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏')[Math.floor((now+hash%1000)/130)%10]:icon(a.status)};
 }
 function filteredAgents(){return agents.filter(a=>category==='all'||snapshot?.profile==='work'||a.category===category);}
-function currentPage(now=Date.now()) {return (inspected?inspectPage:(manualPage ?? Math.floor(now/15000)))%Math.max(1,Math.ceil(filteredAgents().length/GRID.threadRows));}
+function currentPage(now=Date.now()) {return (manualPage ?? Math.floor(now/15000))%Math.max(1,Math.ceil(filteredAgents().length/GRID.threadRows));}
 let textFrames={text:'',sources:[]}, effectSession=null, effectFrame=null, effectLibrary=null, effectBag=[],pendingEffect=null;
 let effectGeneration=0;
 let holdSeconds=120, holdElapsed=Infinity, lastEffect='', animationIndex=-1, frameElapsed=0, loadingFrames=false;
@@ -187,14 +188,21 @@ function fitBackground(){
 }
 function compactNumber(value){return Number.isSafeInteger(value) && value>=0?(value>=1000000?(value/1000000).toFixed(1)+'m':value>=1000?(value/1000).toFixed(1)+'k':String(value)):'—';}
 function cardTelemetry(a,t){
-  const tiles=[];
-  const has=key=>Number.isSafeInteger(t?.[key]) && t[key]>=0;
-  if(has('context') && t.window>0)tiles.push({label:'Context estimate',value:Math.round(t.context/t.window*100)+'%',detail:`~${number(t.context)} / ${number(t.window)} tokens`,ratio:t.context/t.window});
-  if(has('input') || has('output_tokens'))tiles.push({label:'Last response',value:`${compactNumber(t.input)} ↗ ${compactNumber(t.output_tokens)} ↘`,detail:`${number(t.input)} input / ${number(t.output_tokens)} output tokens`});
-  if(has('cache_read') || has('cache_write'))tiles.push({label:'Cache R / W',value:`${compactNumber(t.cache_read)} R / ${compactNumber(t.cache_write)} W`,detail:`${number(t.cache_read)} read / ${number(t.cache_write)} written tokens`});
+  const tiles=[],has=key=>Number.isSafeInteger(t?.[key]) && t[key]>=0;
+  if(has('context') && t.window>0){const pct=has('context_percent')?t.context_percent:Math.round(t.context/t.window*100);tiles.push({label:'Context',value:pct+'%',detail:`~${number(t.context)} / ${number(t.window)} tokens (estimate)`,ratio:pct/100});}
+  if(has('total_input') || has('total_output'))tiles.push({label:'Session tokens',value:`${compactNumber(t.total_input)} in · ${compactNumber(t.total_output)} out`,detail:`${number(t.total_input)} input / ${number(t.total_output)} output tokens`});
+  else if(has('input') || has('output_tokens'))tiles.push({label:'Last response',value:`${compactNumber(t.input)} in · ${compactNumber(t.output_tokens)} out`,detail:`${number(t.input)} input / ${number(t.output_tokens)} output tokens`});
+  if(has('total_cache_read') || has('total_uncached_input'))tiles.push({label:'Cached / uncached',value:`${compactNumber(t.total_cache_read)} / ${compactNumber(t.total_uncached_input)}`,detail:`${number(t.total_cache_read)} cached / ${number(t.total_uncached_input)} uncached input tokens (session)`,ratio:has('total_cache_read') && has('total_uncached_input') && t.total_cache_read+t.total_uncached_input>0?t.total_cache_read/(t.total_cache_read+t.total_uncached_input):null});
+  else if(has('cache_read') || has('cache_write'))tiles.push({label:'Cache R / W',value:`${compactNumber(t.cache_read)} / ${compactNumber(t.cache_write)}`,detail:`${number(t.cache_read)} read / ${number(t.cache_write)} written tokens (last response)`});
+  if(has('compactions'))tiles.push({label:'Compactions',value:number(t.compactions),detail:`${number(t.compactions)} reported session compactions`});
   const subagent=t?.event==='subagent-start'?'Subagent started':t?.event==='subagent-stop'?'Subagent stopped':null;
-  const activity=subagent || (t?phaseLabel(t.phase):statusKind(a.status));
-  const note=!t?'No fresh hook sample':!tiles.length?'Waiting for reported usage':!['context','window','input','output_tokens','cache_read','cache_write'].every(has)?'Some usage fields not reported':'';
+  const phase=t?phaseLabel(t.phase):'';
+  const toolEnd=t?.event==='tool-end'?(t.result==='error'?'Tool error':t.result==='cancelled'?'Tool cancelled':'Tool finished'):null;
+  const activity=subagent || toolEnd || (!['Working','Idle','Ready','Ended'].includes(phase)?phase:'');
+  const note=!t?'No fresh hook sample':!tiles.length?'Waiting for reported usage':!['context','window','input','output_tokens','cache_read','cache_write'].every(has)?'Partial usage coverage':'';
+  for(const tile of tiles){
+    tile.hover=tile.label==='Session tokens'?`Session: ${number(t.total_input)} in · ${number(t.total_output)} out`:tile.label==='Last response'?`Response: ${number(t.input)} in · ${number(t.output_tokens)} out`:tile.label==='Cached / uncached'?`Cache: ${number(t.total_cache_read)} read · ${number(t.total_uncached_input)} uncached`:tile.label==='Cache R / W'?`Response cache: ${number(t.cache_read)} read · ${number(t.cache_write)} write`:tile.label==='Compactions'?`Compactions: ${number(t.compactions)}`:`Context: ~${number(t.context)} / ${number(t.window)}`;
+  }
   return {activity,tool:t?.tool || '',model:t?.model || '',tiles,note,subagent:Boolean(subagent)};
 }
 function observationColour(entry){return colour(['Working','Blocked','Done','Idle','Unknown'].includes(entry.state) && !['LOST','LINK','DETACH'].includes(entry.kind)?entry.state:entry.kind);}
@@ -204,7 +212,7 @@ function viewModel(now=performance.now(),wall=Date.now()) {
     profile:snapshot?.profile || 'Connecting',display:snapshot?.display?.host?`${clean(snapshot.display.host)} · ${snapshot.display.role==='Client'?'Client':'Host'}`:'Connecting',theme:snapshot?.theme?.name || 'Unavailable',
     connection:disconnected?'Connection lost':snapshot?(snapshot.hosts.some(h=>previous.get(h.id)?.live)?'Observing':'Sources unavailable'):'Connecting',
     total:agents.length,visibleTotal:filteredAgents().length,
-    working:agents.filter(a=>a.status==='working').length,blocked:agents.filter(a=>a.status==='blocked').length,done:agents.filter(a=>a.status==='done').length,
+    working:agents.filter(a=>a.status==='working').length,blocked:agents.filter(a=>a.status==='blocked').length,done:agents.filter(a=>a.status==='done').length,idle:agents.filter(a=>a.status==='idle').length,
     page:filteredAgents().length?currentPage(wall)+1:0,pages:Math.ceil(filteredAgents().length/8),
     hosts:(snapshot?.hosts || []).slice(0,3).map(h=>{const live=!disconnected && previous.get(h.id)?.live,m=live?h.metrics:null;return {id:h.id,label:clean(h.label || h.id),online:Boolean(live),metrics:[
       ['Processor',percent(m?.cpu_percent)],['Memory',percent(m?.memory?.total?m.memory.used/m.memory.total*100:null)],
@@ -213,6 +221,8 @@ function viewModel(now=performance.now(),wall=Date.now()) {
     ]};}),
     cards:shown.map(a=>{const t=telemetryFor(a,wall),motion=threadMotion(a,now,wall);return {
       id:a.id,project:clean(a.project),checkout:clean(a.checkout || 'Checkout not reported'),state:statusKind(a.status),harness:clean(a.harness),pane:paneNumber(a),host:clean(a.host),motion,
+      freshness:t?`Hook: ${Math.max(0,Math.floor((wall-t.seq/1000)/1000))}s ago`:'No fresh hook sample',
+      usageFreshness:t?.usage_seq!=null?`Usage: ${t.usage_source==='codex-rollout'?'Codex record':t.usage_source==='pi-extension'?'Pi extension':'reported sample'} · ${Math.max(0,Math.floor((wall-t.usage_seq/1000)/1000))}s ago`:'Usage source time unavailable',
       ...cardTelemetry(a,t)
     };}),
     events:records.slice(-GRID.feedRows).map(r=>({id:r.id,line:eventLine(r),kind:r.kind,state:r.state})),
@@ -222,53 +232,29 @@ function viewModel(now=performance.now(),wall=Date.now()) {
 function node(tag,className,text){const element=document.createElement(tag);element.className=className;if(text!==undefined)element.textContent=text;return element;}
 function setText(element,text){if(element.textContent!==String(text))element.textContent=text;}
 let cardNodes=[],hostNodes=[],eventNodes=[];
-function openInspector(id,source){
-  if(!filteredAgents().some(a=>a.id===id))return;
-  inspectPage=currentPage();inspected=id;inspectReturn=source;inspectSignature='';document.getElementById('threads').inert=true;draw();document.getElementById('inspect-close').focus?.();
+function pulseCard(id){if(!reduced.matches && !document.hidden)cardClicks.set(id,performance.now());}
+function sparkline(values,maximum=100){
+  const glyphs='▁▂▃▄▅▆▇█',tail=values.slice(-24);
+  return tail.map(v=>Number.isFinite(v)?glyphs[Math.max(0,Math.min(7,Math.floor(v/Math.max(1,maximum)*7)))]: '·').join('');
 }
-function closeInspector(){
-  const id=inspected,target=inspectReturn,page=inspectPage;
-  inspected=null;inspectReturn=null;inspectSignature='';
-  document.getElementById('threads').inert=false;document.getElementById('inspector').hidden=true;
-  for(const field of ['project','identity','state','checkout','activity','model','freshness','metrics','events'])document.getElementById('inspect-'+field).textContent='';
-  target?.setAttribute?.('aria-expanded','false');
-  if(target){const stillVisible=currentPage()===page && filteredAgents().some(a=>a.id===id);const current=stillVisible?cardNodes.find(c=>!c.card.hidden && c.card.dataset.thread===id)?.card:null;(current||document.getElementById('previous')).focus?.();}
+function sampleFleet(data){
+  const ids=new Set(data.hosts.map(h=>h.id));for(const id of fleetHistory.keys())if(!ids.has(id))fleetHistory.delete(id);
+  for(const h of data.hosts){const old=fleetHistory.get(h.id);if(!h.online){fleetHistory.delete(h.id);continue;}if(!Number.isFinite(h.sampled_at) || old?.at===h.sampled_at)continue;
+    const m=h.metrics,values=[m?.cpu_percent,m?.memory?.total?m.memory.used/m.memory.total*100:null,m?.gpu?.percent,m?.disk?.total?m.disk.used/m.disk.total*100:null,m?.rx_rate,m?.tx_rate];
+    fleetHistory.set(h.id,{at:h.sampled_at,rows:[...(old?.rows || []),values.map(v=>Number.isFinite(v)?v:null)].slice(-24)});
+  }
 }
-function drawInspector(){
-  const panel=document.getElementById('inspector');
-  const a=filteredAgents().find(a=>a.id===inspected);
-  if(!a){if(inspected)closeInspector();panel.hidden=true;return;}
-  panel.hidden=false;panel.style.setProperty('--state',colour(statusKind(a.status)));
-  const signature=JSON.stringify([a,records.at(-1)?.id,Math.floor(Date.now()/1000)]);if(signature===inspectSignature)return;inspectSignature=signature;
-  const t=telemetryFor(a),view=cardTelemetry(a,t);
-  setText(document.getElementById('inspect-project'),clean(a.project));
-  setText(document.getElementById('inspect-identity'),`${clean(a.harness)} · ${clean(a.host)} · ${paneNumber(a)}`);
-  setText(document.getElementById('inspect-state'),statusKind(a.status));
-  setText(document.getElementById('inspect-checkout'),`${icon('branch')} ${clean(a.checkout || 'Checkout not reported')}`);
-  setText(document.getElementById('inspect-activity'),[view.activity,view.tool].filter(Boolean).join(' · '));
-  setText(document.getElementById('inspect-model'),view.model || 'Model not reported');
-  setText(document.getElementById('inspect-freshness'),t?`Latest hook · ${Math.max(0,Math.floor((Date.now()-t.seq/1000)/1000))}s ago`:'No fresh hook sample');
-  const metrics=document.getElementById('inspect-metrics');metrics.textContent='';
-  for(const tile of view.tiles){metrics.append(node('dt','',tile.label),node('dd','',tile.detail));}
-  if(t?.usage_seq)metrics.append(node('dt','','Usage source'),node('dd','',`${t.usage_source==='codex-rollout'?'Local Codex record':'Pi extension'} · ${Math.max(0,Math.floor((Date.now()-t.usage_seq/1000)/1000))}s ago`));
-  if(view.note)metrics.append(node('dt','','Coverage'),node('dd','',view.note));
-  const history=document.getElementById('inspect-events');history.textContent='';
-  const recent=records.filter(r=>r.host===a.host && r.thread===paneNumber(a)).slice(-6).reverse();
-  if(!recent.length)history.append(node('p','inspect-empty','Waiting for a new observation'));
-  for(const r of recent){const line=node('p','inspect-event',`${new Date(r.at).toISOString().slice(11,19)} ${icon(({Working:'working',Done:'done',Blocked:'blocked'}[r.kind] || 'info'))} ${r.text}`);line.style.color=observationColour(r);history.append(line);}
-}
-document.getElementById('inspect-close').addEventListener('click',()=>{closeInspector();draw();});
 function buildView(){
   cardNodes=Array.from({length:8},()=>{
     const card=node('article','thread-card'),head=node('div','card-top'),project=node('h3','project'),status=node('span','state'),glyph=node('span','state-glyph'),state=node('span','state-word');status.append(glyph,state);head.append(project,status);
-    card.setAttribute('role','button');card.setAttribute('tabindex','0');card.setAttribute('aria-haspopup','dialog');
-    card.addEventListener('click',()=>openInspector(card.dataset.thread,card));card.addEventListener('keydown',event=>{if(['Enter',' '].includes(event.key)){event.preventDefault?.();openInspector(card.dataset.thread,card);}});
+    card.setAttribute('role','button');card.setAttribute('tabindex','0');
+    card.addEventListener('click',()=>pulseCard(card.dataset.thread));card.addEventListener('keydown',event=>{if(['Enter',' '].includes(event.key)){event.preventDefault?.();pulseCard(card.dataset.thread);}});
     const checkout=node('p','checkout'),identity=node('p','identity'),activity=node('div','card-activity'),activityGlyph=node('span','activity-glyph'),activityText=node('strong','activity-text'),tool=node('span','tool-name'),model=node('p','model-name'),metrics=node('div','card-metrics'),coverage=node('p','coverage');
     activity.title='Latest observed hook activity; the state badge is Herdr’s current state';activity.append(activityGlyph,activityText,tool);
-    const fields=Array.from({length:3},()=>{const tile=node('div','usage-tile'),label=node('span','usage-label'),value=node('strong','usage-value'),bar=node('span','usage-bar'),fill=node('i','');bar.append(fill);bar.setAttribute('aria-hidden','true');tile.append(label,value,bar);metrics.append(tile);return {tile,label,value,bar,fill};});
-    card.append(head,checkout,identity,activity,model,metrics,coverage);document.getElementById('threads').append(card);return {card,project,glyph,state,checkout,identity,activityGlyph,activityText,tool,model,metrics,coverage,fields};
+    const fields=Array.from({length:4},()=>{const tile=node('div','usage-tile'),label=node('span','usage-label'),value=node('strong','usage-value'),bar=node('span','usage-bar'),fill=node('i','');bar.append(fill);bar.setAttribute('aria-hidden','true');tile.append(label,value,bar);metrics.append(tile);return {tile,label,value,bar,fill};});
+    const detail=node('div','hover-detail');card.append(head,checkout,model,activity,metrics,coverage,detail);detail.append(identity);document.getElementById('threads').append(card);return {card,project,glyph,state,checkout,identity,detail,activity,activityGlyph,activityText,tool,model,metrics,coverage,fields};
   });
-  hostNodes=Array.from({length:3},()=>{const row=node('article','host-row'),name=node('strong','host-name'),status=node('span','host-status'),metrics=node('dl','host-metrics');const fields=Array.from({length:7},(_,i)=>{const pair=node('div','metric'),label=node('dt',''),value=node('dd',''),gauge=node('span','metric-gauge'),fill=node('i','metric-fill'),direction=node('span','network-direction',i===4?'↓':i===5?'↑':'');gauge.setAttribute('aria-hidden','true');direction.setAttribute('aria-hidden','true');gauge.append(fill);gauge.hidden=i>=4;direction.hidden=i<4 || i>5;pair.append(label,value,gauge,direction);metrics.append(pair);return {label,value,gauge,fill,direction};});row.append(name,status,metrics);document.getElementById('fleet').append(row);return {row,name,status,fields};});
+  hostNodes=Array.from({length:3},()=>{const row=node('article','host-row'),name=node('strong','host-name'),status=node('span','host-status'),metrics=node('dl','host-metrics');const fields=Array.from({length:7},(_,i)=>{const pair=node('div','metric'),graph=node('span','metric-graph'),label=node('dt',''),value=node('dd',''),gauge=node('span','metric-gauge'),fill=node('i','metric-fill'),direction=node('span','network-direction',i===4?'↓':i===5?'↑':'');gauge.setAttribute('aria-hidden','true');direction.setAttribute('aria-hidden','true');gauge.append(fill);gauge.hidden=i>=4;direction.hidden=i<4 || i>5;pair.append(label,value,gauge,direction,graph);metrics.append(pair);return {label,value,gauge,fill,direction,graph};});row.append(name,status,metrics);document.getElementById('fleet').append(row);return {row,name,status,fields};});
   eventNodes=Array.from({length:4},()=>{const row=node('div','event-row'),glyph=node('span','event-icon'),text=node('span','event-text');glyph.setAttribute('aria-hidden','true');row.append(glyph,text);document.getElementById('events').append(row);return {row,glyph,text};});
 }
 function applyTheme(){
@@ -290,26 +276,26 @@ function draw(now=performance.now()) {
   musicTitle?.update(track,palette);musicArtist?.update(track,palette);
   setText(document.getElementById('music-accessible'),track?[track.title,track.artist,track.state].filter(Boolean).join(' · '):'');
   widget.title=track?[track.title,track.artist].filter(Boolean).join(' · '):'';
-  setText(document.getElementById('profile'),view.display);
+  setText(document.getElementById('idle-count'),view.idle);
   setText(document.getElementById('working-count'),view.working);setText(document.getElementById('blocked-count'),view.blocked);
   setText(document.getElementById('done-count'),view.done);
-  setText(document.getElementById('theme'),view.theme==='Unavailable'?'Theme unavailable':view.theme);setText(document.getElementById('connection'),view.connection);
-  hostNodes.forEach((host,i)=>{const model=view.hosts[i];host.row.hidden=!model;if(!model)return;setText(host.name,model.label);host.name.title=model.label;setText(host.status,model.online?'Online':'Offline');host.status.dataset.online=String(model.online);host.fields.forEach((f,j)=>{setText(f.label,model.metrics[j][0]);setText(f.value,model.metrics[j][1]==='Unavailable'?'—':model.metrics[j][1]);f.value.title=model.metrics[j][1];f.value.setAttribute('aria-label',model.metrics[j][1]);if(j<4){const value=model.metrics[j][1],known=value.endsWith('%');f.gauge.dataset.known=String(known);f.fill.style.width=(known?Math.max(0,Math.min(100,parseFloat(value))):0)+'%';}if(j===4 || j===5)f.direction.dataset.known=String(model.metrics[j][1]!=='Unavailable');});});
-  cardNodes.forEach((card,i)=>{const model=view.cards[i];card.card.hidden=!model;if(!model)return;
-    card.card.dataset.state=model.state.toLowerCase();card.card.dataset.thread=model.id;card.card.setAttribute('aria-label',`${model.project}, ${model.state}. Open thread details`);card.card.setAttribute('aria-expanded',String(inspected===model.id));card.card.style.setProperty('--impulse',model.motion.flash.toFixed(3));
+  setText(document.getElementById('connection'),view.connection);
+  hostNodes.forEach((host,i)=>{const model=view.hosts[i];host.row.hidden=!model;if(!model)return;setText(host.name,model.label);host.name.title=model.label;setText(host.status,model.online?'Online':'Offline');host.status.dataset.online=String(model.online);host.row.title='Sample age: '+model.metrics[6][1];host.fields.forEach((f,j)=>{setText(f.label,model.metrics[j][0]);setText(f.value,model.metrics[j][1]==='Unavailable'?'—':model.metrics[j][1]);f.value.title=model.metrics[j][1];f.value.setAttribute('aria-label',model.metrics[j][1]);if(j<4){const value=model.metrics[j][1],known=value.endsWith('%');f.gauge.dataset.known=String(known);f.fill.style.width=(known?Math.max(0,Math.min(100,parseFloat(value))):0)+'%';}if(j===4 || j===5)f.direction.dataset.known=String(model.metrics[j][1]!=='Unavailable');const values=model.online?(fleetHistory.get(model.id)?.rows || []).map(row=>row[j]):[];const scale=j>=4?Math.max(1,...values.filter(Number.isFinite)):100;f.graph.hidden=j>5;setText(f.graph,sparkline(values,scale));const measured=values.filter(Number.isFinite).length;f.graph.title=`${measured} measured samples · ${values.length-measured} missing${j>=4?(measured?' · peak '+rate(Math.max(...values.filter(Number.isFinite))):' · peak unavailable'):' · 0–100% scale'}`;f.graph.setAttribute('aria-label',f.graph.title);});});
+  cardNodes.forEach((card,i)=>{const model=view.cards[i];card.card.hidden=!model;if(!model){for(const field of ['project','state','checkout','identity','activityText','tool','model','coverage']){setText(card[field],'');card[field].title='';}for(const f of card.fields){setText(f.label,'');setText(f.value,'');f.tile.title='';f.tile.setAttribute('aria-label','');}card.card.setAttribute('aria-label','');return;}
+    card.card.dataset.state=model.state.toLowerCase();card.card.dataset.thread=model.id;card.card.setAttribute('aria-label',`${model.project}, ${model.state}. Focus for details; activate for a visual pulse`);const clickAge=now-(cardClicks.get(model.id) ?? -Infinity);const clickLevel=reduced.matches?0:Math.max(0,1-clickAge/650);card.card.style.setProperty('--click',clickLevel.toFixed(3));card.card.style.setProperty('--impulse',model.motion.flash.toFixed(3));
     setText(card.project,model.project);card.project.title=model.project;setText(card.glyph,model.motion.glyph);setText(card.state,model.state);
-    setText(card.checkout,`${icon('branch')} ${model.checkout}`);card.checkout.title='Worktree / checkout: '+model.checkout;
+    const checkout=model.checkout && !['.bare','Checkout not reported',model.project].includes(model.checkout)?model.checkout:'';setText(card.checkout,checkout?`${icon('branch')} ${checkout}`:'');card.checkout.hidden=!checkout;card.checkout.title='Worktree / checkout: '+model.checkout;
     setText(card.identity,`${model.harness} · ${model.host} · ${model.pane}`);card.identity.title=`Harness: ${model.harness} · Host: ${model.host} · Pane: ${model.pane}`;
-    setText(card.activityGlyph,icon(model.subagent?'threads':model.tool?'tool':model.state.toLowerCase()));setText(card.activityText,model.activity);setText(card.tool,model.tool);card.tool.hidden=!model.tool;card.tool.title=model.tool;
+    card.activity.hidden=!model.activity && !model.tool;setText(card.activityGlyph,icon(model.subagent?'threads':model.tool?'tool':model.state.toLowerCase()));setText(card.activityText,model.activity);setText(card.tool,model.tool);card.tool.hidden=!model.tool;card.tool.title=model.tool;
     setText(card.model,model.model);card.model.hidden=!model.model;card.model.title=model.model;
     card.metrics.hidden=!model.tiles.length;card.fields.forEach((f,j)=>{const tile=model.tiles[j];f.tile.hidden=!tile;if(!tile)return;setText(f.label,tile.label);setText(f.value,tile.value);f.tile.title=tile.detail;f.tile.setAttribute('aria-label',tile.label+': '+tile.detail);f.bar.hidden=tile.ratio==null;f.fill.style.width=(Math.min(1,Math.max(0,tile.ratio || 0))*100)+'%';});
-    setText(card.coverage,model.note);card.coverage.hidden=!model.note;
+    setText(card.coverage,model.note);card.coverage.hidden=!model.note;const details=[`${model.harness} · ${model.host} · ${model.pane}`,model.checkout && !['.bare','Checkout not reported'].includes(model.checkout)?`Checkout: ${model.checkout}`:'',...model.tiles.map(tile=>tile.hover),`${model.freshness} · ${model.usageFreshness.replace('Usage: ','').replace('Usage source time unavailable','Usage time unknown')}`,model.note].filter(Boolean).join('\n');setText(card.identity,details);
   });
   const empty=document.getElementById('empty');empty.hidden=Boolean(view.cards.length);setText(empty,view.empty);
   setText(document.getElementById('thread-total'),view.visibleTotal===view.total?view.total+' total':view.visibleTotal+' of '+view.total);
   setText(document.getElementById('page'),`${view.page} / ${view.pages}`);setText(document.getElementById('category'),`Category: ${category}`);document.getElementById('category').hidden=snapshot?.profile!=='personal';
   setText(document.getElementById('rotate'),manualPage===null?'Auto-page threads: on':'Auto-page threads: off');document.getElementById('rotate').hidden=view.pages<=1;document.getElementById('rotate').setAttribute('aria-pressed',String(manualPage===null));
-  drawInspector();
+
   const playing=Boolean(ctx) && animationIndex>=0 && framesCurrent() && !reduced.matches;
   let target=null;
   eventNodes.forEach((event,i)=>{const model=view.events[i];event.row.hidden=!model;if(!model)return;setText(event.glyph,eventIcon(model.kind));setText(event.text,model.line);event.text.style.visibility=playing && model.id===textFrames.recordId?'hidden':'visible';event.row.style.color=observationColour(model);event.row.style.setProperty('--event-colour',observationColour(model));if(playing && model.id===textFrames.recordId)target=event.text;});
@@ -323,10 +309,10 @@ async function refresh() {
   setTimeout(refresh,2000);
 }
 async function fullscreen(){try{if(document.fullscreenElement)await document.exitFullscreen();else await document.documentElement.requestFullscreen();}catch{record('INFO','Use browser fullscreen (F11)',Date.now(),false);}}
-function changePage(delta){closeInspector();manualPage=Math.max(0,currentPage()+delta);draw();}
-function cycleCategory(){closeInspector();if(snapshot?.profile==='personal'){category=['all','work','personal'][(['all','work','personal'].indexOf(category)+1)%3];manualPage=0;draw();}}
+function changePage(delta){manualPage=Math.max(0,currentPage()+delta);draw();}
+function cycleCategory(){if(snapshot?.profile==='personal'){category=['all','work','personal'][(['all','work','personal'].indexOf(category)+1)%3];manualPage=0;draw();}}
 for(const [id,action] of Object.entries({fullscreen,previous:()=>changePage(-1),next:()=>changePage(1),rotate:()=>{manualPage=manualPage===null?currentPage():null;draw();},category:cycleCategory}))document.getElementById(id).addEventListener('click',action);
-addEventListener('keydown',event=>{if(event.key==='Escape' && inspected){closeInspector();return;}if(inspected && ['PageDown','PageUp','r','c'].includes(event.key))return;if(event.key==='f')fullscreen();if(event.key==='PageDown')changePage(1);if(event.key==='PageUp')changePage(-1);if(event.key==='r'){manualPage=null;draw();}if(event.key==='c')cycleCategory();});
+addEventListener('keydown',event=>{if(event.key==='f')fullscreen();if(event.key==='PageDown')changePage(1);if(event.key==='PageUp')changePage(-1);if(event.key==='r'){manualPage=null;draw();}if(event.key==='c')cycleCategory();});
 reduced.addEventListener?.('change',()=>{if(reduced.matches){pendingEffect=null;effectGeneration++;}draw();});
 addEventListener('resize',()=>{fitBackground();pixelField?.resize();titleMark?.resize();draw();});
 setInterval(()=>{if(received && Date.now()-received>12000)disconnect();if(!disconnected)reconcile();},1000);

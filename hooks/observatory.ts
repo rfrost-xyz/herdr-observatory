@@ -45,6 +45,34 @@ export default function (pi) {
       if(!usage.usage_seq || (candidate.usage_seq && candidate.usage_seq>=usage.usage_seq))usage=candidate;
     }catch{usage={};}
   }
+  function totalsFor(ctx) {
+    try {
+      const entries=ctx.sessionManager.getEntries?.();
+      if(!Array.isArray(entries) || entries.length>4096)return {};
+      const totals={total_input:0,total_output:0,total_cache_read:0,total_cache_write:0,compactions:0};
+      const fields={total_input:'input',total_output:'output',total_cache_read:'cacheRead',total_cache_write:'cacheWrite'};
+      let measured=0;
+      for(const entry of entries){
+        if(entry?.type==='compaction')totals.compactions++;
+        const u=entry?.type==='message' && entry.message?.role==='assistant'?entry.message.usage:['usage','compaction','branch_summary'].includes(entry?.type)?entry.usage:null;
+        if(!u){if((entry?.type==='message' && entry.message?.role==='assistant') || ['usage','compaction','branch_summary'].includes(entry?.type))for(const key of Object.keys(fields))totals[key]=null;continue;}
+        measured++;
+        for(const [key,source] of Object.entries(fields)){
+          const value=u[source];
+          if(totals[key]===null)continue;
+          totals[key]=Number.isSafeInteger(value) && value>=0 && Number.isSafeInteger(totals[key]+value)?totals[key]+value:null;
+        }
+      }
+      if(!measured)return {compactions:totals.compactions};
+      // Pi reports uncached input separately from cache read/write, unlike Codex.
+      totals.total_uncached_input=totals.total_input;
+      if(totals.total_input!==null && totals.total_cache_read!==null && totals.total_cache_write!==null){
+        const allInput=totals.total_input+totals.total_cache_read+totals.total_cache_write;
+        totals.total_input=Number.isSafeInteger(allInput)?allInput:null;
+      }else totals.total_input=null;
+      return totals;
+    }catch{return {};}
+  }
   function emit(event, nextPhase, ctx, extra = {}) {
     try {
       const context = ctx.getContextUsage?.();
@@ -52,7 +80,7 @@ export default function (pi) {
       const item = { event, phase: nextPhase, seq: sequence,
         session_id: ctx.sessionManager.getSessionId(), session_path: ctx.sessionManager.getSessionFile(),
         model: ctx.model?.id, context: context?.tokens, window: ctx.model?.contextWindow,
-        ...usage, ...extra };
+        ...usage, ...totalsFor(ctx), context_percent:Number.isFinite(context?.percent)?Math.round(context.percent):undefined, ...extra };
       phase = nextPhase;
       if (queue.length >= 16) queue.shift();
       queue.push(item);

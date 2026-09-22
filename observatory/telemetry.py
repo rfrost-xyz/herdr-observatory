@@ -101,7 +101,9 @@ def report(harness, raw, pane_id, seq, config_path='/config/config.json'):
         if event.get('tool'):
             label += ' · ' + event['tool']
         if event.get('context') is not None and event.get('window'):
-            label += f" · ctx~{round(100 * event['context'] / event['window'])}%"
+            percentage = event.get('context_percent')
+            if percentage is None: percentage = round(100 * event['context'] / event['window'])
+            label += f" · ctx~{percentage}%"
         params['display_agent'] = label[:80]
         rpc(path, 'pane.report_metadata', params)
         return True

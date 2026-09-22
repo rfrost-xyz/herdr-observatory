@@ -43,7 +43,7 @@ class TelemetryTests(unittest.TestCase):
                 params = call.call_args.args[2]
                 self.assertEqual(params['tokens']['obs_bind'], session_binding(a))
                 self.assertIsNone(params['tokens']['obs_input'])
-                self.assertLessEqual(len(params['tokens']), 16)
+                self.assertLessEqual(len(params['tokens']), 23)
                 self.assertEqual(params['ttl_ms'], 120000)
                 self.assertNotIn('SECRET', json.dumps(params))
                 a['tokens'] = params['tokens']
@@ -52,6 +52,15 @@ class TelemetryTests(unittest.TestCase):
                 self.assertNotIn('native-secret', json.dumps(decoded))
                 a['agent_session']['value'] = 'replacement'
                 self.assertIsNone(telemetry_from_agent(a))
+
+    def test_native_display_label_uses_harness_context_percentage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config=Path(directory)/'config.json'
+            config.write_text(json.dumps({'hosts':[{'socket_path':'/herdr/herdr.sock'}]}))
+            raw={'session_id':'native-secret','hook_event_name':'PreToolUse','observatory_usage':{'usage_source':'codex-rollout','usage_seq':event()['seq'],'context':190000,'window':258000,'context_percent':72}}
+            with patch('observatory.telemetry.rpc',side_effect=[{'pane':agent()},{}]) as call:
+                self.assertTrue(report('codex',raw,'w1:p1',event()['seq'],config))
+                self.assertIn('ctx~72%',call.call_args.args[2]['display_agent'])
 
     def test_replaced_out_of_order_and_wrong_harness_reports_are_dropped(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -199,3 +208,28 @@ class InvalidUsageTimestampTests(unittest.TestCase):
             value=telemetry_view({'seq':100000000,'event':'tool-start','phase':'tool','input':12,'usage_seq':stamp,'usage_source':'codex-rollout'},100)
             self.assertIsNone(value['input'])
             self.assertIsNone(value['usage_source'])
+
+class CumulativeTelemetryTests(unittest.TestCase):
+    def test_totals_are_allowlisted_and_expire_with_usage_source(self):
+        from observatory.probe import telemetry_view
+        raw={'seq':100000000,'event':'tool-start','phase':'tool','usage_seq':99000000,'usage_source':'codex-rollout','total_input':21700000,'total_output':3,'total_cache_read':20000000,'total_uncached_input':1700000,'total_cache_write':0,'compactions':0,'context_percent':70}
+        value=telemetry_view(raw,100)
+        self.assertEqual(value['total_input'],21700000);self.assertEqual(value['compactions'],0);self.assertEqual(value['context_percent'],70)
+        value=telemetry_view({**raw,'seq':220000000},220)
+        self.assertIsNone(value['total_input']);self.assertIsNone(value['context_percent']);self.assertIsNone(value['compactions'])
+    def test_invalid_cumulative_values_remain_unknown(self):
+        from observatory.probe import telemetry_view
+        value=telemetry_view({'seq':100000000,'event':'tool-start','phase':'tool','total_input':True,'compactions':-1,'context_percent':101},100)
+        self.assertIsNone(value['total_input']);self.assertIsNone(value['compactions']);self.assertIsNone(value['context_percent'])
+
+class CumulativeConsistencyTests(unittest.TestCase):
+    def test_invalid_context_discards_percentage_too(self):
+        from observatory.probe import telemetry_view
+        for context, window in [(200,100),(0,0)]:
+            result=telemetry_view({'seq':100000000,'event':'tool-start','phase':'tool','context':context,'window':window,'context_percent':70},100)
+            self.assertIsNone(result['context_percent'])
+    def test_contradictory_cached_input_totals_fail_closed(self):
+        from observatory.probe import telemetry_view
+        result=telemetry_view({'seq':100000000,'event':'tool-start','phase':'tool','total_input':3,'total_cache_read':4,'total_uncached_input':0,'total_output':2},100)
+        for key in ('total_input','total_cache_read','total_uncached_input'): self.assertIsNone(result[key])
+        self.assertEqual(result['total_output'],2)

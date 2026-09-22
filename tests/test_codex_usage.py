@@ -56,3 +56,28 @@ class UsageReaderTests(unittest.TestCase):
             value=helper.enrich(self.raw)
         self.assertEqual(value['hook_event_name'],'Stop')
         self.assertEqual(value['observatory_usage'],{})
+
+    def test_native_cumulative_totals_are_not_last_response_or_tail_sums(self):
+        self.event['payload']['info']['total_token_usage']={'input_tokens':21700000,'output_tokens':4200,'cached_input_tokens':20000000,'cache_write_input_tokens':0}
+        self.write();value=self.read()
+        self.assertEqual(value['total_input'],21700000)
+        self.assertEqual(value['input'],12)
+        self.assertEqual(value['total_uncached_input'],1700000)
+        self.assertEqual(value['total_cache_write'],0)
+    def test_codex_statusbar_baseline_percentage(self):
+        info=self.event['payload']['info'];info['model_context_window']=258400;info['last_token_usage']['total_tokens']=185000
+        self.write();self.assertEqual(self.read()['context_percent'],70)
+        info['last_token_usage']['total_tokens']=12000;self.write();self.assertEqual(self.read()['context_percent'],0)
+    def test_compactions_unknown_for_truncated_history(self):
+        self.file.write_text(json.dumps(self.header)+'\n'+json.dumps({'type':'compacted','payload':{'message':'PRIVATE'}})+'\n'+json.dumps(self.event)+'\n')
+        self.assertEqual(self.read()['compactions'],1)
+        with self.file.open('a') as stream:stream.write('x'*helper.TAIL_BYTES+'\n'+json.dumps(self.event)+'\n')
+        self.assertIsNone(self.read()['compactions'])
+    def test_missing_totals_and_inconsistent_cache_are_unknown(self):
+        info=self.event['payload']['info'];info.pop('total_token_usage');self.write();self.assertIsNone(self.read()['total_input'])
+        info['total_token_usage']={'input_tokens':3,'cached_input_tokens':4};self.write();self.assertIsNone(self.read()['total_uncached_input'])
+
+    def test_compaction_marker_and_summary_do_not_double_count(self):
+        events=[{'type':'compacted','payload':{}},{'type':'event_msg','payload':{'type':'context_compacted'}}]
+        self.file.write_text(json.dumps(self.header)+'\n'+''.join(json.dumps(e)+'\n' for e in events)+json.dumps(self.event)+'\n')
+        self.assertEqual(self.read()['compactions'],1)

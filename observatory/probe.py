@@ -15,7 +15,7 @@ import tomllib
 TELEMETRY_EVENTS = {'session', 'turn', 'tool-start', 'tool-end', 'thinking', 'output',
                     'compact-start', 'compact-end', 'compact-failed', 'idle', 'interrupt', 'end', 'model', 'subagent-start', 'subagent-stop'}
 TELEMETRY_PHASES = {'ready', 'working', 'tool', 'thinking', 'output', 'compacting', 'idle', 'interrupted', 'ended'}
-TELEMETRY_NUMBERS = ('input', 'output_tokens', 'cache_read', 'cache_write', 'context', 'window', 'usage_seq')
+TELEMETRY_NUMBERS = ('input', 'output_tokens', 'cache_read', 'cache_write', 'context', 'window', 'usage_seq', 'total_input', 'total_output', 'total_cache_read', 'total_cache_write', 'total_uncached_input', 'compactions', 'context_percent')
 TELEMETRY_TTL = 120
 
 
@@ -53,9 +53,12 @@ def telemetry_view(raw, now=None):
     if supplied_usage_time and (result['usage_seq'] is None or not 0 <= now - result['usage_seq'] / 1_000_000 <= TELEMETRY_TTL):
         for key in TELEMETRY_NUMBERS: result[key] = None
         result['usage_source'] = None
+    if result['context_percent'] is not None and result['context_percent'] > 100: result['context_percent'] = None
+    if result['total_input'] is not None and result['total_cache_read'] is not None and result['total_cache_read'] > result['total_input']:
+        result['total_input'] = result['total_cache_read'] = result['total_uncached_input'] = None
     # Cross-field consistency: invalid estimates are unavailable, not clamped.
     if result['window'] == 0 or (result['context'] is not None and result['window'] is not None and result['context'] > result['window']):
-        result['context'] = result['window'] = None
+        result['context'] = result['window'] = result['context_percent'] = None
     return result
 
 
