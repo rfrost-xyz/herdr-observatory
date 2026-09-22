@@ -4,15 +4,14 @@ const ctx = canvas.getContext('2d');
 const reduced = matchMedia('(prefers-reduced-motion: reduce)');
 let snapshot = null, received = 0, disconnected = false, initialised = false, paused = false;
 let previous = new Map(), agents = [], records = [], serial = 0;
-let feedQueue = [], sampleSeen = new Map(), lastEmission = 0;
 let scrollStarted=0, scrollDistance=0, stampCandidate=null, activeStamp=null, lastStamp=-Infinity;
-const GRID={columns:140,rows:44,feedStart:31,feedRows:10};
+const GRID={columns:140,rows:44,feedStart:17,feedRows:24,threadRows:8};
 function scrollOffset(now=performance.now()) {return paused || reduced.matches ? 0 : scrollDistance*Math.max(0,Math.min(1,1-(now-scrollStarted)/260));}
 function stampCurrent(entry) {return entry && !disconnected && previous.get(entry.host)?.live && previous.get(entry.host).agents.get(entry.agent)?.status===entry.status;}
 function updateStamp(now=performance.now()) {
-  if(activeStamp && (!stampCurrent(activeStamp) || now-activeStamp.shown>=6000))activeStamp=null;
+  if(activeStamp && (!stampCurrent(activeStamp) || now-activeStamp.shown>=8000))activeStamp=null;
   if(stampCandidate && (!stampCurrent(stampCandidate) || now-stampCandidate.born>=30000))stampCandidate=null;
-  if(!activeStamp && stampCandidate && !paused && !reduced.matches && now-lastStamp>=30000){activeStamp={...stampCandidate,shown:now};stampCandidate=null;lastStamp=now;}
+  if(!activeStamp && stampCandidate && !paused && !reduced.matches && now-lastStamp>=60000){activeStamp={...stampCandidate,shown:now};stampCandidate=null;lastStamp=now;}
   return activeStamp;
 }
 let width = 0, height = 0, lastFrame = 0, manualPage = null, category = 'all';
@@ -33,41 +32,19 @@ async function loadFont() {
 function padded(value,length) {const text=clean(value,length);return text+' '.repeat(Math.max(0,length-Array.from(text).length));}
 function fields(entries) {let row='';for(const [column,value] of entries){row=padded(row,column)+value;}return clean(row,GRID.columns);}
 function meter(value) {if(!Number.isFinite(value))return '░░░░░░   ?';const n=Math.round(Math.max(0,Math.min(100,value))/100*6);return '▰'.repeat(n)+'▱'.repeat(6-n)+' '+padded(Math.round(value)+'%',4);}
-function record(kind, text, now) {
-  const entry = {id:++serial,kind,text:clean(text),at:now,born:performance.now()};
+function record(kind, text, now, context={}) {
+  const entry = {id:++serial,kind,text:clean(text),at:now,born:performance.now(),project:clean(context.project || ''),detail:clean(context.detail || ''),host:clean(context.host || '')};
   scrollDistance=Math.min(10,scrollOffset(entry.born)+1);scrollStarted=entry.born;
   records.push(entry); records = records.slice(-60);
 }
 function observe(data, now=Date.now()) {
   snapshot=data; received=now;
   const recovery=disconnected; disconnected=false;
-  if (recovery) record('LINK','browser transport restored / baseline reacquired',now);
+  if (recovery) record('LINK','Connection restored · watching for changes',now);
   for (const [key,value] of Object.entries(data.theme?.colours || {})) if ((key in palette || key==='accent') && /^#[0-9a-f]{6}$/i.test(value)) {palette[key]=value;if(key==='accent'){palette.blue=value;palette.cyan=value;}}
   reconcile(now,recovery);
-  enqueueSamples(data,now);
 }
-// New collector captures provide a rolling feed even when agent status is unchanged.
-// These are explicitly SAMPLE/PANE records, never invented tool calls or milestones.
-function enqueueSamples(data, now) {
-  for(const host of data.hosts) {
-    if(!previous.get(host.id)?.live || sampleSeen.get(host.id)===host.sampled_at) continue;
-    sampleSeen.set(host.id,host.sampled_at);
-    feedQueue=feedQueue.filter(item=>item.host!==host.id);
-    const m=host.metrics, percent=v=>Number.isFinite(v)?Math.round(v)+'%':'—';
-    const rows=[{kind:'SAMPLE',text:`${host.id} / capture=${new Date(host.sampled_at*1000).toISOString().slice(11,19)} / panes=${host.agents.length} cpu=${percent(m?.cpu_percent)} ram=${m?.memory?.total?percent(m.memory.used/m.memory.total*100):'—'} / ${clean(m?.scope || 'metrics unavailable')}`}];
-    for(const a of host.agents.slice(0,24)) rows.push({kind:'PANE',text:`${host.id}/${a.project} / ${statusKind(a.status)} / ${a.harness} rev=${number(a.technical?.revision)} seq=${number(a.technical?.state_change_seq)} / ${clean(a.title,60)}`});
-    feedQueue.push(...rows.map(r=>({...r,host:host.id,captured:host.sampled_at,at:now})));
-  }
-  feedQueue=feedQueue.slice(-64);
-}
-function drainFeed(now=performance.now(), wall=Date.now()) {
-  if(now-lastEmission<Math.max(160,Math.min(700,4000/Math.max(1,feedQueue.length))))return;
-  while(feedQueue.length) {
-    const item=feedQueue.shift();
-    if(disconnected || !previous.get(item.host)?.live || wall/1000-item.captured>=snapshot.interval+20)continue;
-    record(item.kind,item.text,item.at);lastEmission=now;accessible();break;
-  }
-}
+function agentEvent(kind,a,now,action) {record(kind,`${a.project} · ${action}`,now,{project:a.project,detail:a.title,host:a.host});}
 function reconcile(now=Date.now(), reset=false) {
   if (!snapshot) return;
   const next = new Map(); agents=[];
@@ -76,36 +53,28 @@ function reconcile(now=Date.now(), reset=false) {
     const old=previous.get(host.id);
     const current=new Map(live ? host.agents.map(a=>[a.id,{...a}]) : []);
     next.set(host.id,{live,agents:current});
-    if (initialised && !reset && old && old.live!==live) record(live?'LINK':'LOST',`${host.label} / ${live?'source restored; baseline reacquired':'source unavailable; activity unknown'}`,now);
+    if (initialised && !reset && old && old.live!==live) record(live?'LINK':'LOST',`${host.label || host.id} · ${live?'reconnected':'connection lost'}`,now);
     if (initialised && !reset && live && old?.live) {
       for (const [id,a] of current) {
         const before=old.agents.get(id);
-        if (!before) record('ATTACH',`${host.id}/${a.project} / ${a.harness} / ${statusKind(a.status)}`,now);
+        if (!before) agentEvent('ATTACH',a,now,'thread joined');
         else if (before.status!==a.status) {
-          record(statusKind(a.status),`${host.id}/${a.project} / ${statusKind(before.status)} -> ${statusKind(a.status)} / ${clean(a.title,72)}`,now);
+          agentEvent(statusKind(a.status),a,now,({working:'started working',blocked:'needs your input',done:'completed',idle:'became idle'}[a.status] || 'state unknown'));
           if(['blocked','done'].includes(a.status))stampCandidate={...records.at(-1),host:host.id,agent:id,status:a.status};
-        } else {
-          const oldSeq=before.technical?.state_change_seq,newSeq=a.technical?.state_change_seq;
-          if(Number.isSafeInteger(oldSeq) && Number.isSafeInteger(newSeq) && newSeq!==oldSeq)
-            record('STATESEQ',`${host.id}/${a.project} / seq ${oldSeq} -> ${newSeq} / intermediate states not sampled`,now);
-          else if(Number.isSafeInteger(before.technical?.revision) && Number.isSafeInteger(a.technical?.revision) && before.technical.revision!==a.technical.revision)
-            record('UPDATE',`${host.id}/${a.project} / rev ${before.technical.revision} -> ${a.technical.revision}`,now);
-          for(const key of ['interactive_ready','launch_pending'])if(typeof before.technical?.[key]==='boolean' && typeof a.technical?.[key]==='boolean' && before.technical[key]!==a.technical[key])
-            record(key==='interactive_ready'?'READY':'LAUNCH',`${host.id}/${a.project} / ${key} ${before.technical[key]} -> ${a.technical[key]}`,now);
         }
       }
-      for (const [id,a] of old.agents) if (!current.has(id)) record('DETACH',`${host.id}/${a.project} / pane no longer observed`,now);
+      for (const [id,a] of old.agents) if (!current.has(id)) agentEvent('DETACH',a,now,'thread left');
     }
     if (live) agents.push(...current.values());
   }
-  for (const [id,old] of previous) if (!next.has(id) && old.live && !reset) record('LOST',`${id} / source removed`,now);
+  for (const [id,old] of previous) if (!next.has(id) && old.live && !reset) record('LOST',`${id} · source removed`,now);
   previous=next;
-  if (!initialised) { record('BOOT',`observer attached / ${snapshot.profile} / ${agents.length} panes / baseline only`,now,false); initialised=true; }
+  if (!initialised) { record('BOOT',`Watching ${agents.length} threads · ${snapshot.profile}`,now,false); initialised=true; }
   accessible();
 }
 function disconnect(now=Date.now()) {
-  if (!disconnected) record('LOST','browser transport unavailable / activity unknown',now);
-  disconnected=true; agents=[];feedQueue=[];
+  if (!disconnected) record('LOST','Connection lost · activity unknown',now);
+  disconnected=true; agents=[];
   // Preserve source baseline until transport recovery, without inventing per-pane exits.
   accessible();
 }
@@ -122,12 +91,12 @@ function resize() {
 function geometry(w,h) {
   const margin=Math.max(20,Math.min(40,w*.025)),top=16,cell=Math.max(1,(w-margin*2)/GRID.columns),line=Math.max(1,(h-top*2)/GRID.rows);
   const font=Math.min(cell/.61,line*.85);
-  return {font,cell,line,margin,top,columns:GRID.columns,processRows:12,logRows:GRID.feedRows};
+  return {font,cell,line,margin,top,columns:GRID.columns,processRows:GRID.threadRows,logRows:GRID.feedRows};
 }
 function filteredAgents(){return agents.filter(a=>category==='all'||snapshot?.profile==='work'||a.category===category);}
 function currentPage(now=Date.now()) {return (manualPage ?? Math.floor(now/15000))%Math.max(1,Math.ceil(filteredAgents().length/geometry(width,height).processRows));}
 let textFrames={text:'',sources:[]}, effectSession=null, effectFrame=null, effectLibrary=null, effectBag=[];
-let holdSeconds=10, holdElapsed=0, lastEffect='', animationIndex=-1, frameElapsed=0, loadingFrames=false;
+let holdSeconds=120, holdElapsed=0, lastEffect='', animationIndex=-1, frameElapsed=0, loadingFrames=false;
 function framesCurrent() {return !disconnected && textFrames.sources?.length>0 && textFrames.sources.every(source=>previous.get(source.id)?.live);}
 function stopEffect() {effectSession?.free();effectSession=null;effectFrame=null;animationIndex=-1;holdElapsed=0;}
 async function refreshFrames() {
@@ -187,7 +156,17 @@ function paintEffect(frame,x,y,cell,line) {
   }
   ctx.globalAlpha=1;
 }
-function eventLine(entry) {const state={EXEC:'working',DONE:'done',INPUT:'blocked',IDLE:'idle'}[entry.kind];return `${new Date(entry.at).toISOString().slice(11,23)}  ${icon(state || 'feed')} ${padded(entry.kind,8)} ${entry.text}`;}
+function eventLine(entry) {const state={EXEC:'working',DONE:'done',INPUT:'blocked',IDLE:'idle'}[entry.kind];return `${new Date(entry.at).toISOString().slice(11,19)}  ${icon(state || 'feed')}  ${entry.text}`;}
+function eventDetail(entry) {return '             '+[entry.detail,entry.host].filter(Boolean).join(' · ');}
+function cliLayout(now=performance.now(),showArt=true) {
+  const stamp=showArt?updateStamp(now):null;
+  const label=stamp && (stamp.project.replace(/[^a-z ]/ig,' ').trim() || stamp.kind);
+  const art=stamp && !paused && !reduced.matches && typeof renderStamp==='function'?renderStamp(label):null;
+  const start=GRID.feedStart+(art?11:0),capacity=Math.floor((41-start)/2);
+  const feed=records.slice(-(capacity+1));
+  return {stamp,art,start,capacity,feed,first:41-feed.length*2};
+}
+function arrival(entry,now) {return paused || reduced.matches?1:Math.max(0,Math.min(1,(now-entry.born)/650));}
 function sceneRows(now=performance.now(),showArt=true) {
   const rows=Array(GRID.rows).fill('');
   const put=(row,value)=>{rows[row]=clean(value,GRID.columns);};
@@ -200,21 +179,14 @@ function sceneRows(now=performance.now(),showArt=true) {
   }
   put(5,rule(`${icon('threads')} Threads  ·  ${agents.filter(a=>a.status==='working').length} running  ·  ${agents.filter(a=>a.status==='blocked').length} need input  ·  ${agents.length} total`));
   put(6,fields([[5,'State'],[15,'Project'],[35,'Thread'],[77,'Engine'],[92,'Host'],[108,'R L F'],[118,'Rev / Seq']]));
-  const shown=filteredAgents().slice(currentPage()*12,currentPage()*12+12),flag=v=>v===true?'●':v===false?'·':'?';
+  const shown=filteredAgents().slice(currentPage()*GRID.threadRows,currentPage()*GRID.threadRows+GRID.threadRows),flag=v=>v===true?'●':v===false?'·':'?';
   shown.forEach((a,i)=>{const t=a.technical || {};put(7+i,fields([[2,icon(a.status)],[5,padded(statusKind(a.status),8)],[15,padded(a.project,18)],[35,padded(a.title,40)],[77,padded(a.harness,12)],[92,padded(a.host,14)],[108,`${flag(t.interactive_ready)} ${flag(t.launch_pending)} ${flag(t.focused)}`],[118,number(t.revision)+' / '+number(t.state_change_seq)]]));});
   if(!shown.length)put(7,'  '+(disconnected?'Connection lost · current thread state unavailable':'No permitted threads in this view'));
-  put(19,`╰─ ${category}  ·  ${filteredAgents().length?currentPage()+1:0}/${Math.ceil(filteredAgents().length/12)}  ·  PgUp/PgDn page   r rotate   c category   ${'─'.repeat(8)}   R ready · L launching · F focused`);
-  const stamp=showArt?updateStamp(now):null,art=stamp && typeof STAMP_ART!=='undefined'?STAMP_ART[stamp.kind]:null;
-  if(art && !paused && !reduced.matches)art.forEach((row,i)=>put(20+i,'   '+row));
-  else {
-    put(21,`  ${icon('branch')} Recent transitions`);
-    const milestones=records.filter(r=>!['SAMPLE','PANE','BOOT'].includes(r.kind)).slice(-5);
-    milestones.forEach((r,i)=>put(23+i,'  '+eventLine(r)));
-    if(!milestones.length)put(24,'    Watching for state changes · baseline captured');
-  }
-  if(stamp)put(29,'  '+eventLine(stamp));
-  put(30,rule(`${icon('feed')} Activity stream  ·  sampled observations`));
-  records.slice(-GRID.feedRows).forEach((r,i)=>put(GRID.feedStart+GRID.feedRows-Math.min(records.length,GRID.feedRows)+i,'  '+eventLine(r)));
+  put(15,`╰─ ${category}  ·  ${filteredAgents().length?currentPage()+1:0}/${Math.ceil(filteredAgents().length/GRID.threadRows)}  ·  PgUp/PgDn page   r rotate   c category   ${'─'.repeat(8)}   R ready · L launching · F focused`);
+  put(16,rule(`${icon('feed')} Notable events  ·  state changes and connections`));
+  const cli=cliLayout(now,showArt);
+  if(cli.art){cli.art.forEach((row,i)=>put(17+i,'   '+row));put(26,'  '+eventLine(cli.stamp));}
+  cli.feed.slice(-cli.capacity).forEach((r,i,list)=>{const row=41-list.length*2+i*2;put(row,'  '+eventLine(r));put(row+1,eventDetail(r));});
   put(41,'╰'+'─'.repeat(GRID.columns-2)+'╯');
   put(42,` ${icon('terminal')}  follow  ${nerdFontReady?'':'›'}  ${paused?'paused':reduced.matches?'reduced motion':'live'}  ·  ${snapshot?.theme?.name || 'default'}                                  ${icon('clock')}  FX hold ${holdSeconds}s   ← / → adjust`);
   put(43,`  Read only · ${snapshot?.interval || '?'}s samples · intermediate transitions may be missed`);
@@ -235,21 +207,33 @@ function draw(now=performance.now()) {
   band(6,.055);
   rows.forEach((row,i)=>{
     if(i>=GRID.feedStart && i<GRID.feedStart+GRID.feedRows)return;
-    if(i>=7 && i<=18 && row){
-      const state=filteredAgents()[currentPage()*12+i-7]?.status;
+    if(i>=7 && i<7+GRID.threadRows && row){
+      const state=filteredAgents()[currentPage()*GRID.threadRows+i-7]?.status;
       if(state){const tint=colour(statusKind(state));band(i,state==='blocked'?.09:i%2?.025:.045,state==='blocked'?palette.yellow:palette.foreground);text(row,i,palette.foreground,35,75);text(row,i,tint,0,14);text(row,i,palette.blue,15,33);ctx.globalAlpha=.65;text(row,i,palette.foreground,77);ctx.globalAlpha=1;return;}
     }
-    const muted=[6,19,43].includes(i);
+    const muted=[6,15,43].includes(i);
     ctx.globalAlpha=muted?.58:1;
-    text(row,i,[0,5,21,30,42].includes(i)?palette.blue:activeStamp && i>=20 && i<=28?colour(activeStamp.kind):palette.foreground);
+    text(row,i,[0,5,16,42].includes(i)?palette.blue:palette.foreground);
     ctx.globalAlpha=1;
   });
-  ctx.save();ctx.beginPath();ctx.rect(margin,top+GRID.feedStart*line,width-margin*2,GRID.feedRows*line);ctx.clip();
-  const feed=records.slice(-(GRID.feedRows+1)),start=GRID.feedStart+GRID.feedRows-feed.length,offset=scrollOffset(now);
-  feed.forEach((r,i)=>text('  '+eventLine(r),start+i+offset,colour(r.kind)));
+  const cli=cliLayout(now);
+  if(cli.art){
+    const progress=paused || reduced.matches?1:Math.min(1,(now-cli.stamp.shown)/750);
+    cli.art.forEach((row,i)=>text('   '+clean(row,Math.ceil(GRID.columns*progress)),17+i,colour(cli.stamp.kind)));
+    text('  '+eventLine(cli.stamp),26,colour(cli.stamp.kind));
+  }
+  ctx.save();ctx.beginPath();ctx.rect(margin,top+cli.start*line,width-margin*2,(41-cli.start)*line);ctx.clip();
+  const offset=scrollOffset(now)*2;
+  cli.feed.forEach((r,i)=>{
+    const row=cli.first+i*2+offset,progress=arrival(r,now);
+    if(progress<1){ctx.globalAlpha=(1-progress)*.14;ctx.fillStyle=colour(r.kind);ctx.fillRect(margin,top+row*line,(width-margin*2)*progress,line*2);ctx.globalAlpha=1;}
+    const message='  '+eventLine(r),detail=eventDetail(r);
+    text(clean(message,Math.ceil(Array.from(message).length*progress)),row,colour(r.kind));
+    ctx.globalAlpha=.6;text(clean(detail,Math.ceil(Array.from(detail).length*progress)),row+1);ctx.globalAlpha=1;
+  });
   ctx.restore();
 }
-function frame(now) {if(!document.hidden && now-lastFrame>=33){drainFeed(now);advanceEffects(Math.min(100,now-lastFrame));draw();lastFrame=now;}if(document.hidden)lastFrame=now;requestAnimationFrame(frame);}
+function frame(now) {if(!document.hidden && now-lastFrame>=33){advanceEffects(Math.min(100,now-lastFrame));draw();lastFrame=now;}if(document.hidden)lastFrame=now;requestAnimationFrame(frame);}
 async function refresh() {
   try {const response=await fetch(`/api/state?page=${currentPage()}&category=${category}&hold=${holdSeconds}`,{cache:'no-store',signal:AbortSignal.timeout(8000)});if(!response.ok)throw new Error();observe(await response.json());}
   catch {disconnect();}

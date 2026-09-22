@@ -26,5 +26,10 @@ class EffectsTests(unittest.TestCase):
         state=self.state()
         _,text=lines_for(state,time.time(),hold=11)
         self.assertEqual(len(text.splitlines()),44)
-        for label in ('THREADS','CLI FEED','FX HOLD 11s','allowed'):
+        for label in ('THREADS','NOTABLE EVENTS','FX HOLD 11s','allowed'):
             self.assertIn(label,text)
+
+    def test_default_hold_and_event_area(self):
+        _,text=lines_for(self.state(),time.time())
+        self.assertIn('FX HOLD 120s',text)
+        self.assertNotIn('rev=',text)

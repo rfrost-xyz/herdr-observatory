@@ -33,7 +33,7 @@ def handler(observatory):
                 category = query.get('category', ['all'])[0]
                 try:
                     page = int(query.get('page', ['0'])[0])
-                    hold = int(query.get('hold', ['10'])[0])
+                    hold = int(query.get('hold', ['120'])[0])
                     if not 0 <= hold <= 300 or not 0 <= page <= 10000 or category not in ('all','work','personal'): raise ValueError()
                 except ValueError:
                     self.send_error(400); return
