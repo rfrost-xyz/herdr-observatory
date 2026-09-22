@@ -17,4 +17,8 @@
 
 ## Deployment
 
-Pending immutable image build and both-host verification. Pi live response validation depends on an active reloaded Pi session; adapter API fixtures verify that path without controlling a user's session.
+Release `d3cf8ec`, image `sha256:1796e9c38e630d4f4fe56a2e8bb277d075b100c70e55624d57750ca734b09142`, is healthy on both hosts. The packaged image passed all 75 Python tests. Served app, stylesheet and music module hashes match across hosts. All three installed hook/helper payload hashes match across hosts.
+
+Live iapetus snapshots contain fresh Codex numeric enrichment. Both currently permitted Work threads were Idle with no recent hook usage, correctly retaining unknown metrics. All Work agents remain classified Work, both hosts are online, and Tokyo Night/theme plus music feeds are available. No Pi session was active during release validation; reload or start Pi to load its updated extension. Existing Codex shell entrypoints already invoke the updated helper.
+
+Previous `23eee37` image and `.env.previous`/`config.json.previous` retained for rollback. Synthetic browser server and tab removed after geometry/interaction checks. No Windows desktop browser visual verification was performed; ws-255 service and assets were checked over SSH.
