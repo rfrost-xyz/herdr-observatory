@@ -79,6 +79,8 @@ def validate_config(config):
             raise ValueError('Publisher directory and path must be absolute')
     from .music import validate_config as validate_music
     validate_music(config.get("music"))
+    from .allowances import validate_config as validate_allowances
+    validate_allowances(config.get("allowances"))
     return config
 
 
@@ -206,6 +208,9 @@ class Observatory:
         self.profile = profile
         from .music import Music
         self.music = Music(config.get("music"))
+        from .allowances import Allowances
+        self.allowances = Allowances(config.get("allowances"))
+        self.received_allowances = {}
         self.collector = collector
         self.lock = threading.Lock()
         self.stop = threading.Event()
@@ -240,6 +245,8 @@ class Observatory:
                     if sampled_at == state['sampled_at']:
                         if not (state['online'] and error):
                             return
+                if is_feed:
+                    self.received_allowances[host['id']] = raw.get('allowances', [])
                 if is_feed and sampled_at != state['sampled_at'] and host['id'] == self.config.get('theme_host', self.config['hosts'][0]['id']):
                     self.palette = theme(raw.get('theme'))
                 previous = {a['id']: a for a in state['agents']} if state['online'] else {}
@@ -268,6 +275,7 @@ class Observatory:
 
     def start(self):
         self.music.start()
+        self.allowances.start()
         self.pool = ThreadPoolExecutor(max_workers=len(self.config['hosts']))
         for host in self.config['hosts']:
             self.pool.submit(self.worker, host)
@@ -279,6 +287,7 @@ class Observatory:
     def close(self):
         self.stop.set()
         self.music.close()
+        self.allowances.close()
         if self.pool:
             self.pool.shutdown(wait=True)
         if self.publisher:
@@ -293,4 +302,5 @@ class Observatory:
             for host in result['hosts']:
                 if host['id'] in feeds and host['sampled_at'] is not None and time.time() - host['sampled_at'] > 30:
                     host.update(online=False, agents=[], metrics=None, error='Feed expired')
+            result['allowances'] = self.allowances.snapshot([r for rows in self.received_allowances.values() for r in rows])
             return result

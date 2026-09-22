@@ -2,6 +2,7 @@
 # herdr-observatory adapter v1; installed from the running image
 """Bounded, hook-time numeric enrichment. No transcript content leaves this process."""
 import datetime
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -127,7 +128,43 @@ def enrich(raw):
     return result
 
 
+
+def refresh_allowances(force=False):
+    if '__ALLOWANCES__' != 'true':
+        return
+    from allowances_probe import read_account
+    # Private timestamp only; no account data is persisted on the host.
+    path = Path(__file__).parent / 'allowances-refresh.lock'
+    descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    info = os.fstat(descriptor)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_size > 64:
+        os.close(descriptor)
+        return
+    with os.fdopen(descriptor, 'r+') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return
+        try:
+            previous = float(lock.read(64) or '0')
+        except ValueError:
+            previous = 0
+        now = time.time()
+        if not force and 0 <= now - previous < 60:
+            return
+        lock.seek(0); lock.truncate(); lock.write(str(now)); lock.flush()
+        row = read_account(timeout=4)
+        if row:
+            subprocess.run(['docker', 'exec', '-i', '__CONTAINER__', 'python3', '-m',
+                            'observatory.allowances', '--receive'], input=json.dumps(row).encode(),
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=1, check=False)
+
+
 def main():
+    if sys.argv[1:] == ['--refresh-allowances']:
+        try: refresh_allowances(force=True)
+        except (OSError, ValueError, TypeError, subprocess.SubprocessError): pass
+        return
     if os.environ.get('HERDR_ENV')!='1' or not os.environ.get('HERDR_PANE_ID'): return
     try:
         data=sys.stdin.buffer.read(MAX_INPUT+1)
@@ -137,6 +174,7 @@ def main():
         subprocess.run(['docker','exec','-i','__CONTAINER__','python3','-m','observatory.telemetry',
                         'codex',os.environ['HERDR_PANE_ID'],str(time.time_ns()//1000)],
                        input=json.dumps(item).encode(),stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=1.5,check=False)
+        refresh_allowances()
     except (OSError,ValueError,TypeError,RecursionError,subprocess.SubprocessError):
         pass
 

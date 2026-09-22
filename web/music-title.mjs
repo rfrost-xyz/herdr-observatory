@@ -7,17 +7,18 @@ export class MusicTitle {
     this.field=options.field==='artist'?'artist':'title';this.canvas=canvas;this.text=text;this.ctx=canvas.getContext('2d');this.env=options.environment || globalThis;
     this.motion=this.env.matchMedia?.('(prefers-reduced-motion: reduce)') || {matches:false};
     this.load=options.load || (async()=>{const m=await import('./effects.mjs');return {...await m.loadEffects(),next:m.nextEffect};});
-    this.palette={...defaults};this.bag=[];this.previous='';this.key=null;this.pending=null;this.session=null;this.cells=null;this.loading=false;this.generation=0;this.lastFrame=-Infinity;this.disposed=false;
+    this.palette={...defaults};this.bag=[];this.previous='';this.key=null;this.current=null;this.pending=null;this.session=null;this.cells=null;this.loading=false;this.generation=0;this.lastFrame=-Infinity;this.disposed=false;
     this.onVisibility=()=>{this.key=null;this.cancel();};this.env.document?.addEventListener?.('visibilitychange',this.onVisibility);this.motion.addEventListener?.('change',this.onVisibility);this.cancel();
   }
   update(track,palette={}) {
     for(const [k,v] of Object.entries(palette))if(k in defaults && /^#[0-9a-f]{6}$/i.test(v))this.palette[k]=v;
-    if(!track || this.env.document?.hidden || this.motion.matches){this.key=null;this.cancel();return;}
+    if(!track || this.env.document?.hidden || this.motion.matches){this.key=null;this.current=null;this.cancel();return;}
     const item={key:JSON.stringify([track.title || '',track.artist || '']),text:bounded(track[this.field])};
-    const changed=this.key!==null && item.key!==this.key;this.key=item.key;
+    const changed=this.key!==null && item.key!==this.key;this.key=item.key;this.current=item;
     if(changed && item.text){if(this.session || this.loading)this.pending=item;else this.trigger(item);}
     this.draw();
   }
+  activate(){if(this.current?.text)this.trigger(this.current);}
   cancel(){this.generation++;this.session?.free();this.session=null;this.cells=null;this.pending=null;this.canvas.hidden=true;this.text.style.visibility='visible';}
   async trigger(item) {
     if(this.disposed || !this.ctx || this.loading || this.session || this.motion.matches || this.env.document?.hidden)return;
@@ -29,7 +30,7 @@ export class MusicTitle {
   finish(){this.session?.free();this.session=null;this.cells=null;this.canvas.hidden=true;this.text.style.visibility='visible';}
   frame(now) {
     if(this.disposed)return;
-    if(this.motion.matches || this.env.document?.hidden){this.key=null;this.cancel();return;}
+    if(this.motion.matches || this.env.document?.hidden){this.key=null;this.current=null;this.cancel();return;}
     if(!Number.isFinite(now) || now-this.lastFrame<1000/30)return;this.lastFrame=now;
     if(this.session){try{this.cells=this.session.next();if(!this.cells)this.finish();}catch{this.cancel();}}
     if(!this.session && !this.loading && this.pending){const item=this.pending;this.pending=null;if(item.key===this.key)this.trigger(item);}

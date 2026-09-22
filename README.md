@@ -339,7 +339,7 @@ CPU/RAM come from the Linux kernel, network from the shared host namespace and d
 ```sh
 python -m unittest discover -s tests -v
 node --check web/app.js
-node --test tests/test_ui.cjs tests/test_wasm.mjs tests/test_background.mjs tests/test_title.mjs tests/test_music_title.mjs tests/test_pi_hooks.mjs
+node --test tests/test_ui.cjs tests/test_wasm.mjs tests/test_background.mjs tests/test_title.mjs tests/test_music_title.mjs tests/test_pi_hooks.mjs tests/test_allowances.mjs
 openspec validate --all --strict
 ```
 
@@ -357,7 +357,7 @@ The browser composes live and animated scenes from the same filtered `/api/state
 
 The server permits only explicit asset paths, serves WASM as `application/wasm`, and uses `script-src 'self' 'wasm-unsafe-eval'` without JavaScript eval or external scripts. The former `/api/text-frames` endpoint and native adapter have been removed. If WASM loading or execution fails, the live card display remains available and retries only on a new eligible event after the configured cooldown. Licences and attribution remain in `web/vendor/LICENSE` and `web/vendor/NOTICE`.
 
-Run `python -m unittest discover -s tests -v`, `node --check web/app.js`, `node --test tests/test_ui.cjs tests/test_wasm.mjs tests/test_background.mjs tests/test_title.mjs tests/test_music_title.mjs tests/test_pi_hooks.mjs`, and `openspec validate --all --strict`. The WASM tests verify artifact hashes and run every effect to completion using a synthetic single-line event.
+Run `python -m unittest discover -s tests -v`, `node --check web/app.js`, `node --test tests/test_ui.cjs tests/test_wasm.mjs tests/test_background.mjs tests/test_title.mjs tests/test_music_title.mjs tests/test_pi_hooks.mjs tests/test_allowances.mjs`, and `openspec validate --all --strict`. The WASM tests verify artifact hashes and run every effect to completion using a synthetic single-line event.
 
 ### Further Herdr API coverage
 
@@ -423,7 +423,7 @@ The redundant Observed activity widget is removed. Thread cards retain their sta
 
 Cards emphasise project, native state and worktree/checkout name. The checkout is a directory label supplied by Herdr (or the pane's current-directory leaf), not a claimed Git branch. Full paths are omitted, and Personal checkout names cannot pass through a Work pane. Configured Host/Client identity remains available as metadata; it is not shown beside Rich. Personal/Work filtering remains unchanged.
 
-Cards retain a slight state tint: Working uses the theme yellow/amber, Blocked red, and Done and Idle green, following Herdr’s palette roles. Idle has a quieter fill. Recent observations follow the associated state colour too. Hover or keyboard-focus a card for exact metrics, harness identity and separate hook/usage age. Click or press Enter/Space for a brief local tile pulse. This never opens a dialogue, controls an agent or adds a false activity event. Source loss clears its details. Persistent Idle, Working, Blocked and Done boxes count all permitted threads, including other pages. The host-role and theme-name labels are removed; OS palette synchronisation still operates. Available context and usage appear as compact tiles with exact values in their tooltips. Context is an estimate; session totals take priority, with explicitly labelled last-response fallback when totals are unavailable. Missing fields are not zero and are summarised in one coverage note.
+Cards retain a slight state tint: Working uses the theme yellow/amber, Blocked red, and Done and Idle green, following Herdr’s palette roles. Idle has a quieter fill. Recent observations follow the associated state colour too. Exact metrics, harness identity and separate hook/usage age stay visible on each card. Hover or keyboard focus adds visual emphasis; click or press Enter/Space for a brief local tile glitch. This never opens a dialogue, controls an agent or adds a false activity event. Source loss clears its details. Persistent Idle, Working, Blocked and Done boxes count all permitted threads, including other pages. The host-role and theme-name labels are removed; OS palette synchronisation still operates. Available context and usage appear as compact tiles with precise values visible in the instruments. Context is an estimate; session totals take priority, with explicitly labelled last-response fallback when totals are unavailable. Missing fields are not zero and are summarised in one coverage note.
 
 Codex hooks provide activity, tools, model and compaction markers. A short-lived host helper now enriches each hook with recent numeric usage from the exact matching local rollout named by the hook. Pi supplies counters when its provider reports them and seeds recent usage from its active session branch on reload. Numeric source timestamps expire after 120 seconds; a newer activity hook cannot refresh old usage. Codex SubagentStart/SubagentStop hooks add the latest observed child activity under the matching parent; they do not provide a complete live roster or a running-child count. Stopped does not assert permanent termination. Pi has no general equivalent lifecycle event; extension-specific instrumentation is not installed. No transcript content is forwarded and no additional persistent observer process is used.
 
@@ -445,4 +445,48 @@ A compaction count is reported only with complete bounded history: Codex require
 
 Fleet machines use bordered terminal-style panels for processor, memory, storage, graphics and network. Glyph histories hold at most 24 distinct measured samples per host; repeated browser polls do not add measurements. Missing samples remain gaps, percentages use a fixed 0–100 scale, and network history uses its labelled observed peak. These are browser-local histories and restart when the page reloads.
 
-Thread panels use the same compact gauges. The state badge appears once; tool, reasoning and compaction hints add different information. Meaningless `.bare` checkout labels are hidden. The header remains fixed with Idle, Working, Blocked and Done counts, and the complete display fits its existing 16:9 viewport. Hover/focus details preserve exact values without a separate inspector.
+Thread panels use the same compact gauges. The state badge appears once; tool, reasoning and compaction hints add different information. Meaningless `.bare` checkout labels are hidden. The header remains fixed with Idle, Working, Blocked and Done counts, and the complete display fits its existing 16:9 viewport. Exact values stay visible without a hover overlay or separate inspector.
+
+
+### Card and footer interaction
+
+Hover adds emphasis without hiding or revealing data. Thread activation gives a brief decorative glitch while state and metrics remain readable. Clicking either the music title or artist plays the current track text effects; clicking Rich retains its separate effect. Repeated clicks do not interrupt an active text effect. Reduced-motion mode keeps these controls static.
+
+The footer is split between recent observations and Personal/Work Codex allowances. Both sections remain outside the music visualiser. Fleet instruments use muted theme colours so thread state stays prominent.
+
+### Codex allowances
+
+The footer keeps two account panels, **Personal** and **Work**. Each shows the reported plan, weekly percentage remaining and relative scheduled reset, plus available **usage limit reset passes** and their next expiry when the complete pass details are reported. These passes are separate from the recurring weekly reset and purchased usage credits. The dashboard cannot redeem them or change your login.
+
+Accounts follow the actual Codex login, not the host name. The same account seen on two machines is one panel. Private configuration maps a source-generated account hash to Personal or Work; unmapped accounts are discarded. Email addresses, raw account IDs, credentials, pass IDs and titles are never sent to the browser. Project disclosure remains separate, so enabling account sharing does not expose Personal threads on the Work display.
+
+This is an optional extension of the existing Codex hook. At most once per minute during hook activity, a short-lived `codex app-server --stdio` process makes the read-only `account/rateLimits/read` request and exits. The source helper allows four seconds for this read, sends a bounded numeric/plan summary to the existing image and keeps only a throttle timestamp on the host. Ordinary thread telemetry is sent first. The hook has an eight-second outer deadline. There is no resident host allowance service, authentication mount or browser login scraper.
+
+An account can be idle or signed out elsewhere, so its last observation is not a continuously live balance. The panel shows when it was checked and expires after ten minutes without a new observation. A failed read retains the last successful observation with its original age until that deadline. Passing a weekly reset or a known pass expiry makes the affected value unknown until another read; it never invents a refill or assumes a reset was used. Container recreation clears its local temporary account cache.
+
+After enabling the configuration and reinstalling the image-supplied adapters, refresh the currently signed-in account without starting agent work:
+
+```bash
+python3 ~/.local/share/herdr-observatory/hooks/codex_usage.py --refresh-allowances
+```
+
+Use this private configuration shape, replacing the placeholder keys with source-generated account hashes. Never commit real account mapping configuration:
+
+```json
+{
+  "allowances": {
+    "accounts": {
+      "<personal-account-sha256>": "Personal",
+      "<work-account-sha256>": "Work"
+    },
+    "sources": [],
+    "publish": false
+  }
+}
+```
+
+`accounts` enables local collection for the selected labels. Obtain the current login's hash by running the installed `allowances_probe.py` helper in its harness environment and retaining only its `account_key` field in private configuration. Re-run the installer after enabling or disabling allowances because it embeds the enablement flag in the local hook adapter. No authentication files need to be opened or copied.
+
+For explicitly authorised cross-machine display, `sources` can contain an existing SSH destination and Observatory container, for example `{"target":"operator@example-host","container":"herdr-observatory"}`. The image reads only that container's validated account cache every minute. `publish: true` includes mapped allowance summaries in the existing authenticated Work publication. The recipient must also explicitly map the accounts. Keep publication disabled unless these account summaries are intended for that display. Removing `allowances` and reinstalling the adapters disables local capture; remove remote sources and publication on the sender too when withdrawing sharing.
+
+The adapter is verified against the installed Codex 0.155.1 schema. Weekly windows are selected by their reported seven-day duration, regardless of whether Codex calls the window primary or secondary. Missing optional fields, API-key logins and unsupported account responses remain unavailable. Available reset-pass count is authoritative; a capped pass list cannot establish the earliest expiry, so expiry stays unknown in that case.

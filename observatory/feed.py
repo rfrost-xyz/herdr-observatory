@@ -41,12 +41,17 @@ def validate_feed(raw, expected_host=None):
         agent['technical'] = technical(item.get('technical'))
         agent['checkout'] = safe_checkout(item.get('checkout'))
         agents.append(agent)
+    from .allowances import sanitise as sanitise_allowance
+    allowance_rows = raw.get('allowances', [])
+    if not isinstance(allowance_rows, list) or len(allowance_rows) > 4:
+        raise ValueError('Invalid allowance summaries')
+    allowances = [row for item in allowance_rows if (row := sanitise_allowance(item))]
     raw_theme = raw.get('theme')
     palette = theme(raw_theme)
     metrics = sanitise_metrics(raw['metrics']) if raw.get('metrics') is not None else None
     return {'schema': 'herdr-work-v1', 'profile': 'work', 'host_id': host_id, 'captured_at': at,
             'agents': agents if raw.get('online') is True else [], 'online': raw.get('online') is True,
-            'metrics': metrics, 'theme': palette, 'protocol': counter(raw.get('protocol')), 'version': clean(raw.get('version'), 'unknown')}
+            'metrics': metrics, 'theme': palette, 'allowances': allowances, 'protocol': counter(raw.get('protocol')), 'version': clean(raw.get('version'), 'unknown')}
 
 
 def project_work(snapshot, host_id):
@@ -104,7 +109,7 @@ def read_feed(host):
     feed = validate_feed(json.loads(data), host['id'])
     fresh = time.time() - feed['captured_at'] <= MAX_AGE
     return {'snapshot': {'version': feed['version'], 'protocol': feed['protocol']}, 'agent_views': feed['agents'] if fresh else [],
-            'metrics': feed['metrics'], 'theme': feed['theme'], 'sampled_at': feed['captured_at'],
+            'metrics': feed['metrics'], 'theme': feed['theme'], 'allowances': feed['allowances'] if fresh else [], 'sampled_at': feed['captured_at'],
             'error': None if fresh and feed['online'] else 'Source unavailable or feed expired'}
 
 
@@ -115,7 +120,11 @@ class Publisher:
         self.thread = threading.Thread(target=self.run, name='work-feed-publisher', daemon=True)
 
     def once(self):
-        payload = json.dumps(project_work(self.observatory.snapshot(), self.config['host_id']), allow_nan=False)
+        projected = project_work(self.observatory.snapshot(), self.config['host_id'])
+        allowances = self.observatory.allowances
+        if allowances.config and allowances.config.get('publish') is True:
+            projected['allowances'] = allowances.records()
+        payload = json.dumps(projected, allow_nan=False)
         if len(payload.encode()) > MAX_BYTES:
             raise ValueError('Feed exceeds size limit')
         # Only configured operator values enter the remote shell, individually quoted.

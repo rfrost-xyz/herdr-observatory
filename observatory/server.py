@@ -13,7 +13,7 @@ import time
 WEB = Path(__file__).resolve().parent.parent / 'web'
 
 ASSETS = {'/': ('index.html','text/html'), '/app.js': ('app.js','text/javascript'),
-          '/style.css': ('style.css','text/css'), '/background.mjs': ('background.mjs','text/javascript'), '/music-title.mjs': ('music-title.mjs','text/javascript'), '/title.mjs': ('title.mjs','text/javascript'), '/effects.mjs': ('effects.mjs','text/javascript'),
+          '/style.css': ('style.css','text/css'), '/allowances.mjs': ('allowances.mjs','text/javascript'), '/background.mjs': ('background.mjs','text/javascript'), '/music-title.mjs': ('music-title.mjs','text/javascript'), '/title.mjs': ('title.mjs','text/javascript'), '/effects.mjs': ('effects.mjs','text/javascript'),
           '/fonts/JetBrainsMonoNerdFont-Regular.ttf': ('fonts/JetBrainsMonoNerdFont-Regular.ttf','font/ttf'),
           '/vendor/engine.mjs': ('vendor/engine.mjs','text/javascript'),
           '/vendor/effects.wasm': ('vendor/effects.wasm','application/wasm')}

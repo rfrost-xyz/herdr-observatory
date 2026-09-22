@@ -183,7 +183,11 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(original['hooks']['SessionStart'][0]['hooks'][0]['command'], 'native-herdr')
 
     def test_installer_payload_conflicts_repeat_and_uninstall(self):
-        def payload(args, **_kw): return (INSTALL.parent / args[-1].split('/')[-1]).read_bytes()
+        def payload(args, **_kw):
+            if '-c' in args: return b'false\n'
+            name = args[-1].split('/')[-1]
+            root = INSTALL.parent.parent / 'observatory' if name == 'allowances_probe.py' else INSTALL.parent
+            return (root / name).read_bytes()
         with tempfile.TemporaryDirectory() as directory, patch.object(installer.shutil, 'which', return_value=None), patch.object(installer.subprocess, 'check_output', side_effect=payload):
             home = Path(directory)
             paths = installer.install(home, 'test-container')
@@ -191,6 +195,8 @@ class InstallerTests(unittest.TestCase):
             installer.install(home, 'test-container')
             self.assertEqual(paths[2].read_text(), first)
             self.assertNotIn('__CONTAINER__', paths[0].read_text())
+            self.assertIn("if 'false' != 'true'", paths[3].read_text())
+            self.assertTrue(paths[4].exists())
             self.assertEqual(paths[0].stat().st_mode & 0o777, 0o700)
             installer.install(home, 'test-container', True)
             self.assertFalse(paths[0].exists());self.assertFalse(paths[1].exists())
