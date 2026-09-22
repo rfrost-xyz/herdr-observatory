@@ -63,7 +63,7 @@ The display SHALL show available typed Herdr revision, state sequence and protoc
 - **THEN** unavailable fields remain marked unavailable and excluded metadata never reaches the Work feed or display.
 
 ### Requirement: Reactive rendered terminal
-The display SHALL show an unbranded live thread TUI between whole-terminal text effects. Effects SHALL use current theme colours, complete naturally without replacement by routine updates, and never repeat consecutively. A 120-second default hold SHALL begin after completion and be adjustable with Left/Right in one-second increments. Renderer failure SHALL fall back to the live TUI. All 37 bundled effects SHALL be available in a shuffled rotation, generated locally in the browser from disclosed snapshots without animation-frame downloads. Profile filtering, accessibility and reduced-motion support SHALL remain.
+The display SHALL show an unbranded live thread TUI alongside text effects confined to the events CLI. Effects SHALL use current theme colours, complete naturally without replacement by routine updates, and never repeat consecutively. A 120-second default hold SHALL begin after completion and be adjustable with Left/Right in one-second increments. Renderer failure SHALL fall back to the live TUI. All 37 bundled effects SHALL be available in a shuffled rotation, generated locally in the browser from disclosed snapshots without animation-frame downloads. Profile filtering, accessibility and reduced-motion support SHALL remain.
 
 #### Scenario: Agent milestone
 - **WHEN** an agent appears, changes status or disappears from a fresh source
@@ -83,7 +83,7 @@ The display SHALL show an unbranded live thread TUI between whole-terminal text 
 
 #### Scenario: Theme and controls
 - **WHEN** the user presses Left or Right
-- **THEN** the hold changes by one second and the unbranded terminal retains theme-derived coloured effects across its full contents.
+- **THEN** the hold changes by one second and the unbranded terminal retains theme-derived coloured effects only inside the events CLI while thread and machine rows remain live and readable.
 
 #### Scenario: Complete catalogue
 - **WHEN** a full rotation completes
@@ -105,7 +105,7 @@ The live terminal SHALL scroll timestamped, bounded observations only as notable
 - **THEN** a brief themed Delta Corps Priest 1 project-name stamp may appear inside the expanded CLI, with event context and a cooldown preventing repeated large banners, without covering thread rows; ordinary observations use normal terminal text.
 
 #### Scenario: Animation accessibility and disclosure
-- **WHEN** motion is paused, reduced motion is requested, a source expires, or a whole-terminal effect is playing
+- **WHEN** motion is paused, reduced motion is requested, a source expires, or a CLI effect is playing
 - **THEN** no fabricated activity is added, effects retain their completion semantics, obsolete pending stamps are discarded, and current disclosed state remains accessible.
 
 #### Scenario: Denser padded terminal
@@ -117,7 +117,7 @@ The display SHALL provide a modern themed TUI with locally served Nerd Font glyp
 
 #### Scenario: Locally rendered glyphs
 - **WHEN** a browser loads the display without installed Nerd Fonts
-- **THEN** the bundled font renders state and section glyphs without external font requests, and whole-terminal effects use the same face.
+- **THEN** the bundled font renders state and section glyphs without external font requests, and CLI effects use the same face.
 
 #### Scenario: Font failure and accessibility
 - **WHEN** the font cannot load or reduced motion is enabled
@@ -126,3 +126,18 @@ The display SHALL provide a modern themed TUI with locally served Nerd Font glyp
 #### Scenario: Modern one-screen composition
 - **WHEN** threads and events arrive at 720p or 1080p
 - **THEN** themed glyph-led rows and Unicode separators retain clear thread state above the scrolling feed, within the existing padded viewport.
+
+### Requirement: State-driven thread motion
+Thread rows SHALL use Herdr's Working, Blocked, Done, Idle and Unknown state names. Working rows SHALL animate independently, and newly observed state or telemetry changes SHALL briefly highlight the affected row. Unchanged samples SHALL NOT retrigger arrival highlights. Motion SHALL stop for stale/disconnected, paused and reduced-motion views, without obscuring state text.
+
+#### Scenario: Independent working rows
+- **WHEN** multiple permitted working threads are current
+- **THEN** their row indicators and highlights move at independently phased timings while state labels remain readable.
+
+#### Scenario: Settled or unavailable rows
+- **WHEN** a thread is idle, done or unknown, the source becomes stale, or motion is paused/reduced
+- **THEN** no ongoing working animation is shown for that row.
+
+#### Scenario: Observed activity
+- **WHEN** a fresh state or telemetry sequence changes
+- **THEN** the affected row receives one bounded highlight, without duplicate samples restarting it.
