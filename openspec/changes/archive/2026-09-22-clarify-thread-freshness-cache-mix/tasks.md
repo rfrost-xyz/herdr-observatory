@@ -5,4 +5,4 @@
 
 ## 2. Verification and delivery
 - [x] 2.1 Run full checks, review independently and record target-display verification limits.
-- [ ] 2.2 Deploy matching image to both hosts, verify served assets and Work filtering, and preserve rollback.
+- [x] 2.2 Deploy matching image to both hosts, verify served assets and Work filtering, and preserve rollback.
