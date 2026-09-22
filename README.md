@@ -4,6 +4,23 @@ A passive display of Herdr agent activity across your machines. See working agen
 
 No agent controls, terminal transcripts or cloud service. Optional Work feeds and a persistent office-display service are explicitly deployed. Python 3.11+ standard library on collector hosts, a browser, Herdr 0.9.x with `api snapshot`, and OpenSSH for remote collection. No npm dependencies or build step.
 
+## What needs to be installed
+
+Observatory's server, collectors, telemetry reporter, music observer and feed receivers are packaged in the same Docker image. Deploying the dashboard does not install a music service or a second host agent. The browser renders the display separately from Docker.
+
+| Requirement | In the Observatory image | What the host supplies |
+| --- | --- | --- |
+| Application runtime | Python, application modules, OpenSSH client, static browser assets | Docker Engine with Docker Compose; permission to run the container |
+| Agent activity | Read-only Herdr socket/SSH collector | Existing Herdr installation and running session; its socket directory mounted into the container |
+| Remote machines | Probe sent over SSH without remote installation | Existing SSH/Tailscale connectivity, Python 3.11+ and Herdr on each collector host |
+| OS theme | Palette reader and validated palette transport | Existing Omarchy palette files mounted read-only; no Omarchy API, hook or theme modification |
+| Display | Bundled JavaScript, WASM and Nerd Font served locally | A browser; Canvas and WASM rendering consume browser resources outside the container |
+| Optional music | cliamp observer, persistent SSH publisher and receiver module | An already-running native cliamp v2 user player with its Unix socket; optional read-only socket-directory mount |
+| Optional Codex/Pi telemetry | Reporter and adapter installer/payloads | Tiny event-triggered shell/Pi adapters, harness configuration and Docker CLI access from the harness environment |
+| Private deployment settings | No embedded secrets or machine-specific configuration | Private config, SSH credentials where required, verified known-host records and Compose environment files outside the image |
+
+The optional harness adapters are the small host-side additions described below. Music needs no Observatory daemon installer, database, browser audio playback or audio capture. Existing cliamp remains the user's player, and Docker remains the application's service manager.
+
 ## Architecture and daily operation
 
 Both Personal and Work installations run the same dedicated, versioned Observatory image under Docker Compose. The Personal instance collects the fleet and sends a Work-only projection plus the active palette to the office instance over Tailscale SSH. The office instance also collects its own local agents independently. Neither depends on a development checkout or an interactive SSH session.
@@ -100,7 +117,7 @@ Use your SSH config for users, Tailscale routing, ProxyCommand and keys. Verify 
 
 `herdr` defaults to PATH, then `~/.local/bin/herdr`. Optional `session` chooses a named Herdr session; configure separate host IDs for multiple sessions. Each host has an independent worker. Snapshot polling is compatible with tested Herdr 0.9.0 and 0.9.1, avoiding terminal attach or takeover.
 
-`theme_host` selects the machine supplying the palette. The collector reads `~/.local/state/omarchy/current/theme/colors.toml` and `theme.name`, falling back to the older `~/.config/omarchy/current` location. Valid colour changes appear on the next refresh. Missing colours use Tokyo Night defaults. No Omarchy hooks or config edits are needed. Fonts use installed JetBrains Mono / Cascadia Code with a monospace fallback; no external fonts are downloaded.
+`theme_host` selects the machine supplying the palette. The collector reads `~/.local/state/omarchy/current/theme/colors.toml` and `theme.name`, falling back to the older `~/.config/omarchy/current` location. Valid colour changes appear on the next refresh. Missing colours use Tokyo Night defaults. No Omarchy hooks or config edits are needed. The image bundles JetBrainsMono Nerd Font, served locally to the browser with a monospace fallback; no external font download or host font installation is required.
 
 ## Work display and Tailscale
 
@@ -306,7 +323,7 @@ Health checks test the HTTP service, not whether every source is online: offline
 
 ## Container integration boundaries
 
-HTTP stays on 127.0.0.1:8789 via host networking. Containers run as the socket owner's UID, with read-only root, no capabilities and no Docker socket. Only configuration, Herdr's directory, the selected theme directory and the feed subdirectory are mounted. Mount the socket's containing directory so replacing the socket does not strand an old inode.
+HTTP stays on 127.0.0.1:8789 via host networking. Containers run as the socket owner's UID, with read-only root, no capabilities and no Docker socket. The base deployment mounts configuration, Herdr's directory, the selected theme directory and the feed subdirectory. Optional music adds only the existing cliamp socket directory through `compose.music.yaml`; it does not mount audio devices or the player's entire home directory. Mount the socket's containing directory so replacing the socket does not strand an old inode.
 
 A read-only mount does not make a Unix socket read-only: code with socket access has Herdr's socket authority. Collectors send only `session.snapshot` and HTTP exposes no mutation endpoint. Explicitly installed harness adapters invoke the image reporter, which also reads `pane.get` and writes only owned, expiring `pane.report_metadata` presentation fields. It never reports lifecycle/session authority or sends agent input. The socket directory can contain Herdr logs/config; it is narrower than a home mount but not a separate read-only API permission. SSH credentials are similarly trusted integration authority.
 
@@ -317,7 +334,7 @@ CPU/RAM come from the Linux kernel, network from the shared host namespace and d
 ```sh
 python -m unittest discover -s tests -v
 node --check web/app.js
-node --test tests/test_ui.cjs tests/test_wasm.mjs
+node --test tests/test_ui.cjs tests/test_wasm.mjs tests/test_background.mjs tests/test_title.mjs
 openspec validate --all --strict
 ```
 
@@ -335,7 +352,7 @@ The browser composes live and animated scenes from the same filtered `/api/state
 
 The server permits only explicit asset paths, serves WASM as `application/wasm`, and uses `script-src 'self' 'wasm-unsafe-eval'` without JavaScript eval or external scripts. The former `/api/text-frames` endpoint and native adapter have been removed. If WASM loading or execution fails, the live card display remains available and retries only on a new eligible event after the configured cooldown. Licences and attribution remain in `web/vendor/LICENSE` and `web/vendor/NOTICE`.
 
-Run `python -m unittest discover -s tests -v`, `node --check web/app.js`, `node --test tests/test_ui.cjs tests/test_wasm.mjs`, and `openspec validate --all --strict`. The WASM tests verify artifact hashes and run every effect to completion using a synthetic single-line event.
+Run `python -m unittest discover -s tests -v`, `node --check web/app.js`, `node --test tests/test_ui.cjs tests/test_wasm.mjs tests/test_background.mjs tests/test_title.mjs`, and `openspec validate --all --strict`. The WASM tests verify artifact hashes and run every effect to completion using a synthetic single-line event.
 
 ### Further Herdr API coverage
 
@@ -370,7 +387,21 @@ Add this private source configuration alongside the existing hosts:
 
 The receiver configuration uses `"music": {"path": "/feeds/music.json"}`. Its existing `/feeds` directory must exist and be writable. Omit `publish` for local-only music; omit `music` entirely to disable observation. This is an explicit disclosure choice separate from Work project classification. Only title, artist, playback state, bounded spectrum bands and capture time are shared, never file paths, artwork URLs, provider metadata or audio. Changing the Work filter does not change authorised music sharing.
 
-One persistent SSH channel invokes the receiver module in the existing image and replaces a private latest-sample file. It reconnects after failure. Source timestamps are preserved and music expires after three seconds; stopped or missing music clears the widget and paused music has no audio-driven motion. This does not interrupt Herdr collection. The browser polls the loopback-only `/api/music` endpoint about ten times per second while visible. No new listener port or external browser connection is added.
+One observer thread inside the source container performs two read-only IPC calls (`state.get` and `spectrum.get`) per sample, up to 15 samples per second. When publication is enabled, one persistent SSH child process inside that container invokes the receiver module in the existing image and replaces a private latest-sample file. It reconnects after failure. Source timestamps are preserved and music expires after three seconds; stopped or missing music clears the widget and paused music has no audio-driven motion. This does not interrupt Herdr collection. The browser polls the loopback-only `/api/music` endpoint about ten times per second while visible. No new listener port or external browser connection is added.
+
+Music collection and forwarding continue when the dashboard browser is closed. Closing the browser stops that browser's music polling and Canvas/WASM rendering, not the container's observer or persistent SSH forwarding. Container statistics therefore cover collection and publication, but exclude browser rendering costs. The sample and polling rates describe the implementation, not a measured CPU or memory budget; compare browser and container resource use separately when assessing impact.
+
+A read-only audit on iapetus on 22 September 2026, running release `baa42fe` with music playing, measured:
+
+| Measurement | Result | Scope |
+| --- | --- | --- |
+| Whole container, 30 seconds in ten 3-second windows | Mean 10.6% of one logical CPU, range 1.8–22.8%; 26–38 MiB cgroup memory | Includes existing Herdr collection, requests, probes and forwarding; this is not music-only overhead |
+| Temporary music reader, 450 samples over 30 seconds | 0.45% of one logical CPU | Two read-only cliamp requests per sample; publication disabled; excludes player-side IPC work and SSH |
+| Current music payload | About 4.4 KiB/s at 15 Hz | Ten measured bands and permitted metadata; excludes SSH/Tailscale framing and other dashboard traffic |
+
+The whole-container mean is about 0.11 of one core (roughly 0.66% of this 16-logical-CPU machine's aggregate CPU time). These are short workload-dependent observations, not limits or a controlled on/off comparison. Browser visualisation and cliamp's playback CPU are additional and were not measured here. The temporary benchmark process was removed; it is not part of the installation. The steady process snapshot showed Docker init, Python and its music SSH child, with no matching separate Observatory/cliamp user services. Normal collector requests can create short-lived child processes inside the container.
+
+To disable the integration completely, remove the `music` block from both source and receiver private configurations. On the source, remove `compose.music.yaml` from `COMPOSE_FILE` and remove `CLIAMP_DIRECTORY` from its `.env`. Recreate both Observatory containers from their deployment directories with `docker compose up -d --force-recreate --wait`. This stops observation and forwarding and removes the optional socket mount. It leaves the cliamp player installed and running. To retain local music without forwarding instead, keep the source `music.socket_path` and optional mount, omit its `publish` block, and remove the receiver's `music` block.
 
 Apply changed configuration using `docker compose up -d --force-recreate --wait`. For rollback after enabling music, restore both the previous image selection and private configuration, and omit the music override if the previous release predates this integration.
 
