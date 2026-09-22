@@ -17,10 +17,22 @@ function updateStamp(now=performance.now()) {
 }
 let width = 0, height = 0, lastFrame = 0, manualPage = null, category = 'all';
 let palette = {background:'#101318',foreground:'#c0caf5',blue:'#7aa2f7',green:'#9ece6a',yellow:'#e0af68',red:'#f7768e',cyan:'#7dcfff'};
-const clean = (value, limit=160) => String(value ?? '—').replace(/[\x00-\x1f\x7f-\x9f]/g,' ').slice(0,limit);
+const clean = (value, limit=160) => Array.from(String(value ?? '—').replace(/[\x00-\x1f\x7f-\x9f]/g,' ')).slice(0,limit).join('');
 const number = value => Number.isSafeInteger(value) && value >= 0 ? String(value) : '—';
 const statusKind = status => ({working:'EXEC',done:'DONE',blocked:'INPUT',idle:'IDLE',unknown:'UNKNOWN'}[status] || 'UNKNOWN');
 const colour = kind => palette[{EXEC:'cyan',DONE:'green',INPUT:'yellow',LOST:'red',DETACH:'yellow',LINK:'blue',ATTACH:'blue'}[kind] || 'foreground'];
+const FONT_FACE='"Observatory Nerd", "JetBrainsMono Nerd Font", monospace';
+let nerdFontReady=false;
+const GLYPHS={terminal:'\uea85',host:'\uf233',threads:'\uf126',feed:'\uf0ca',clock:'\uf017',branch:'\ue0a0',working:'\uf04b',done:'\uf00c',blocked:'\uf071',idle:'\uf04c',unknown:'\uf128'};
+function icon(name) {return nerdFontReady?GLYPHS[name] || '·':({terminal:'›',host:'◇',threads:'≡',feed:'≡',clock:'◷',branch:'⑂',working:'▶',done:'✓',blocked:'!',idle:'Ⅱ',unknown:'?'}[name] || '·');}
+async function loadFont() {
+  try {const loaded=await document.fonts?.load('16px "Observatory Nerd"');nerdFontReady=Boolean(loaded?.length);}
+  catch {nerdFontReady=false;}
+  draw();
+}
+function padded(value,length) {const text=clean(value,length);return text+' '.repeat(Math.max(0,length-Array.from(text).length));}
+function fields(entries) {let row='';for(const [column,value] of entries){row=padded(row,column)+value;}return clean(row,GRID.columns);}
+function meter(value) {if(!Number.isFinite(value))return '░░░░░░   ?';const n=Math.round(Math.max(0,Math.min(100,value))/100*6);return '▰'.repeat(n)+'▱'.repeat(6-n)+' '+padded(Math.round(value)+'%',4);}
 function record(kind, text, now) {
   const entry = {id:++serial,kind,text:clean(text),at:now,born:performance.now()};
   scrollDistance=Math.min(10,scrollOffset(entry.born)+1);scrollStarted=entry.born;
@@ -175,51 +187,66 @@ function paintEffect(frame,x,y,cell,line) {
   }
   ctx.globalAlpha=1;
 }
-function eventLine(entry) {return `${new Date(entry.at).toISOString().slice(11,23)}Z [${entry.kind}] ${entry.text}`;}
+function eventLine(entry) {const state={EXEC:'working',DONE:'done',INPUT:'blocked',IDLE:'idle'}[entry.kind];return `${new Date(entry.at).toISOString().slice(11,23)}  ${icon(state || 'feed')} ${padded(entry.kind,8)} ${entry.text}`;}
 function sceneRows(now=performance.now(),showArt=true) {
   const rows=Array(GRID.rows).fill('');
   const put=(row,value)=>{rows[row]=clean(value,GRID.columns);};
-  put(0,'+'+'-'.repeat(GRID.columns-2)+'+');
-  put(1,`| HERDR / ${snapshot?.profile || 'connecting'} / ${disconnected?'DISCONNECTED':'READ ONLY'} / OBSERVED ${new Date().toISOString().slice(11,19)}Z / theme:${snapshot?.theme?.name || 'default'}`);
+  const rule=label=>'╭─ '+label+' '+'─'.repeat(Math.max(0,GRID.columns-Array.from(label).length-5))+'╮';
+  put(0,` ${icon('terminal')}  herdr observatory  ${nerdFontReady?'':'›'}  ${snapshot?.profile || 'connecting'}                                 ${disconnected?'○ disconnected':'● observing'}  ·  ${new Date().toISOString().slice(11,19)} UTC`);
   for(const [i,h] of (snapshot?.hosts || []).slice(0,3).entries()){
-    const live=previous.get(h.id)?.live && !disconnected,m=live?h.metrics:null,pct=v=>Number.isFinite(v)?Math.round(v)+'%':'?';
-    put(2+i,`| ${clean(h.id,15).padEnd(15)} ${live?'ONLINE':'OFFLINE'} P${number(h.protocol)} cpu ${pct(m?.cpu_percent)} ram ${pct(m?.memory?.total?m.memory.used/m.memory.total*100:null)} gpu ${pct(m?.gpu?.percent)} disk ${pct(m?.disk?.total?m.disk.used/m.disk.total*100:null)} rx ${Number.isFinite(m?.rx_rate)?Math.round(m.rx_rate/1024)+'K/s':'?'} tx ${Number.isFinite(m?.tx_rate)?Math.round(m.tx_rate/1024)+'K/s':'?'} / ${live?'capture '+Math.max(0,Math.floor(Date.now()/1000-h.sampled_at))+'s ago':'activity unknown'} / ${m?.scope || 'unavailable'}`);
+    const live=previous.get(h.id)?.live && !disconnected,m=live?h.metrics:null;
+    const pct=v=>Number.isFinite(v)?Math.round(v)+'%':'?';
+    put(2+i,fields([[1,icon('host')+'  '+padded(h.id,15)],[20,live?'● online':'○ offline'],[31,'cpu '+meter(m?.cpu_percent)],[49,'ram '+meter(m?.memory?.total?m.memory.used/m.memory.total*100:null)],[67,'gpu '+pct(m?.gpu?.percent)],[76,'disk '+pct(m?.disk?.total?m.disk.used/m.disk.total*100:null)],[86,'↓'+(Number.isFinite(m?.rx_rate)?Math.round(m.rx_rate/1024)+'K/s':'?')],[96,'↑'+(Number.isFinite(m?.tx_rate)?Math.round(m.tx_rate/1024)+'K/s':'?')],[106,live?Math.max(0,Math.floor(Date.now()/1000-h.sampled_at))+'s':'unknown'],[114,'p'+number(h.protocol)],[120,clean(m?.scope || 'unavailable',20)]]));
   }
-  put(5,`+ THREADS / ${agents.filter(a=>a.status==='working').length} working / ${agents.filter(a=>a.status==='blocked').length} need input / ${agents.length} total `+'-'.repeat(GRID.columns));
-  put(6,'| STATE     HOST           ENGINE       READY LAUNCH FOCUS  REV / SEQ       PROJECT / THREAD');
-  const shown=filteredAgents().slice(currentPage()*12,currentPage()*12+12),flag=v=>v===true?'yes':v===false?'no ':' ? ';
-  shown.forEach((a,i)=>{const t=a.technical || {};put(7+i,`| ${statusKind(a.status).padEnd(9)} ${clean(a.host,14).padEnd(14)} ${clean(a.harness,12).padEnd(12)} ${flag(t.interactive_ready)}   ${flag(t.launch_pending)}   ${flag(t.focused)}   ${(number(t.revision)+'/'+number(t.state_change_seq)).padEnd(15)} ${a.project} / ${a.title}`);});
-  if(!shown.length)put(7,'| '+(disconnected?'Connection lost; current thread state unavailable.':'No permitted threads in this view.'));
-  put(19,`| ${category} / page ${filteredAgents().length?currentPage()+1:0}/${Math.ceil(filteredAgents().length/12)} [PgUp PgDn] pages [R] rotate [C] category`);
+  put(5,rule(`${icon('threads')} Threads  ·  ${agents.filter(a=>a.status==='working').length} running  ·  ${agents.filter(a=>a.status==='blocked').length} need input  ·  ${agents.length} total`));
+  put(6,fields([[5,'State'],[15,'Project'],[35,'Thread'],[77,'Engine'],[92,'Host'],[108,'R L F'],[118,'Rev / Seq']]));
+  const shown=filteredAgents().slice(currentPage()*12,currentPage()*12+12),flag=v=>v===true?'●':v===false?'·':'?';
+  shown.forEach((a,i)=>{const t=a.technical || {};put(7+i,fields([[2,icon(a.status)],[5,padded(statusKind(a.status),8)],[15,padded(a.project,18)],[35,padded(a.title,40)],[77,padded(a.harness,12)],[92,padded(a.host,14)],[108,`${flag(t.interactive_ready)} ${flag(t.launch_pending)} ${flag(t.focused)}`],[118,number(t.revision)+' / '+number(t.state_change_seq)]]));});
+  if(!shown.length)put(7,'  '+(disconnected?'Connection lost · current thread state unavailable':'No permitted threads in this view'));
+  put(19,`╰─ ${category}  ·  ${filteredAgents().length?currentPage()+1:0}/${Math.ceil(filteredAgents().length/12)}  ·  PgUp/PgDn page   r rotate   c category   ${'─'.repeat(8)}   R ready · L launching · F focused`);
   const stamp=showArt?updateStamp(now):null,art=stamp && typeof STAMP_ART!=='undefined'?STAMP_ART[stamp.kind]:null;
-  if(art && !paused && !reduced.matches)art.forEach((row,i)=>put(20+i,'| '+row));
+  if(art && !paused && !reduced.matches)art.forEach((row,i)=>put(20+i,'   '+row));
   else {
-    put(21,'| EVENT REGISTER / observed transitions; no raw shell output');
+    put(21,`  ${icon('branch')} Recent transitions`);
     const milestones=records.filter(r=>!['SAMPLE','PANE','BOOT'].includes(r.kind)).slice(-5);
-    milestones.forEach((r,i)=>put(23+i,'| '+eventLine(r)));
+    milestones.forEach((r,i)=>put(23+i,'  '+eventLine(r)));
+    if(!milestones.length)put(24,'    Watching for state changes · baseline captured');
   }
-  if(stamp)put(29,'| '+eventLine(stamp));
-  put(30,'+ CLI FEED / TIMESTAMPED SAMPLED OBSERVATIONS '+'-'.repeat(GRID.columns));
-  records.slice(-GRID.feedRows).forEach((r,i)=>put(GRID.feedStart+GRID.feedRows-Math.min(records.length,GRID.feedRows)+i,'| '+eventLine(r)));
-  put(41,'| observer@fleet:~$ follow');
-  put(42,'+'+'-'.repeat(GRID.columns-2)+'+');
-  put(43,`${paused?'FX PAUSED':reduced.matches?'REDUCED MOTION':'LIVE'} / FX HOLD ${holdSeconds}s [LEFT -1s / RIGHT +1s] / sample ${snapshot?.interval || '?'}s / observations, not a complete event stream`);
+  if(stamp)put(29,'  '+eventLine(stamp));
+  put(30,rule(`${icon('feed')} Activity stream  ·  sampled observations`));
+  records.slice(-GRID.feedRows).forEach((r,i)=>put(GRID.feedStart+GRID.feedRows-Math.min(records.length,GRID.feedRows)+i,'  '+eventLine(r)));
+  put(41,'╰'+'─'.repeat(GRID.columns-2)+'╯');
+  put(42,` ${icon('terminal')}  follow  ${nerdFontReady?'':'›'}  ${paused?'paused':reduced.matches?'reduced motion':'live'}  ·  ${snapshot?.theme?.name || 'default'}                                  ${icon('clock')}  FX hold ${holdSeconds}s   ← / → adjust`);
+  put(43,`  Read only · ${snapshot?.interval || '?'}s samples · intermediate transitions may be missed`);
   return rows;
 }
 function draw(now=performance.now()) {
   if(!ctx)return;
   const {font,cell,line,margin,top}=geometry(width,height);
   ctx.globalAlpha=1;ctx.fillStyle=palette.background;ctx.fillRect(0,0,width,height);
-  ctx.font=`${font}px "DejaVu Sans Mono", "Cascadia Code", monospace`;ctx.textBaseline='top';
+  ctx.font=`${font}px ${FONT_FACE}`;ctx.textBaseline='top';
   const playing=animationIndex>=0 && framesCurrent() && !reduced.matches;
   document.getElementById('controls').hidden=playing;
   if(playing){paintEffect(effectFrame,margin,top,cell,line);return;}
   const rows=sceneRows(now);
-  function text(value,row,tint=palette.foreground){ctx.fillStyle=tint;let col=0;for(const glyph of clean(value,GRID.columns)){ctx.fillText(glyph,margin+col*cell,top+row*line,cell);col++;}}
-  rows.forEach((row,i)=>{if(i<GRID.feedStart || i>=GRID.feedStart+GRID.feedRows)text(row,i,/INPUT|OFFLINE/.test(row)?palette.yellow:/EXEC/.test(row)?palette.cyan:activeStamp && i>=20 && i<=28?colour(activeStamp.kind):palette.foreground);});
+  function text(value,row,tint=palette.foreground,from=0,to=GRID.columns){let col=0;for(const glyph of clean(value,GRID.columns)){if(col>=from && col<to){ctx.fillStyle=tint;ctx.fillText(glyph,margin+col*cell,top+row*line,cell);}col++;}}
+  function band(row,alpha,tint=palette.foreground){ctx.globalAlpha=alpha;ctx.fillStyle=tint;ctx.fillRect(margin,top+row*line,width-margin*2,line);ctx.globalAlpha=1;}
+  for(const row of [0,42])band(row,.13,palette.blue);
+  band(6,.055);
+  rows.forEach((row,i)=>{
+    if(i>=GRID.feedStart && i<GRID.feedStart+GRID.feedRows)return;
+    if(i>=7 && i<=18 && row){
+      const state=filteredAgents()[currentPage()*12+i-7]?.status;
+      if(state){const tint=colour(statusKind(state));band(i,state==='blocked'?.09:i%2?.025:.045,state==='blocked'?palette.yellow:palette.foreground);text(row,i,palette.foreground,35,75);text(row,i,tint,0,14);text(row,i,palette.blue,15,33);ctx.globalAlpha=.65;text(row,i,palette.foreground,77);ctx.globalAlpha=1;return;}
+    }
+    const muted=[6,19,43].includes(i);
+    ctx.globalAlpha=muted?.58:1;
+    text(row,i,[0,5,21,30,42].includes(i)?palette.blue:activeStamp && i>=20 && i<=28?colour(activeStamp.kind):palette.foreground);
+    ctx.globalAlpha=1;
+  });
   ctx.save();ctx.beginPath();ctx.rect(margin,top+GRID.feedStart*line,width-margin*2,GRID.feedRows*line);ctx.clip();
   const feed=records.slice(-(GRID.feedRows+1)),start=GRID.feedStart+GRID.feedRows-feed.length,offset=scrollOffset(now);
-  feed.forEach((r,i)=>text('| '+eventLine(r),start+i+offset,colour(r.kind)));
+  feed.forEach((r,i)=>text('  '+eventLine(r),start+i+offset,colour(r.kind)));
   ctx.restore();
 }
 function frame(now) {if(!document.hidden && now-lastFrame>=33){drainFeed(now);advanceEffects(Math.min(100,now-lastFrame));draw();lastFrame=now;}if(document.hidden)lastFrame=now;requestAnimationFrame(frame);}
@@ -228,11 +255,11 @@ async function refresh() {
   catch {disconnect();}
   setTimeout(refresh,2000);
 }
-function pause() {paused=!paused;document.getElementById('pause').setAttribute('aria-pressed',String(paused));document.getElementById('pause').textContent=paused?'[SPACE] resume FX':'[SPACE] pause FX';}
+function pause() {paused=!paused;document.getElementById('pause').setAttribute('aria-pressed',String(paused));document.getElementById('pause').textContent=paused?'Space resume':'Space pause';}
 async function fullscreen(){try{if(document.fullscreenElement)await document.exitFullscreen();else await document.documentElement.requestFullscreen();}catch{record('INFO','Use browser fullscreen (F11)',Date.now(),false);}}
  document.getElementById('pause').addEventListener('click',pause);
 document.getElementById('fullscreen').addEventListener('click',fullscreen);
 addEventListener('keydown',event=>{if(event.target?.tagName==='BUTTON' && event.code==='Space')return;if(event.code==='Space'){event.preventDefault();pause();}if(event.key==='f')fullscreen();if(event.key==='ArrowRight'){event.preventDefault();adjustHold(1);}if(event.key==='ArrowLeft'){event.preventDefault();adjustHold(-1);}if(event.key==='PageDown')manualPage=currentPage()+1;if(event.key==='PageUp')manualPage=Math.max(0,currentPage()-1);if(event.key==='r')manualPage=null;if(event.key==='c' && snapshot?.profile==='personal'){category=['all','work','personal'][(['all','work','personal'].indexOf(category)+1)%3];manualPage=0;}});
 addEventListener('resize',resize);
 setInterval(()=>{if(received && Date.now()-received>12000)disconnect();if(!disconnected)reconcile();},1000);
-resize();requestAnimationFrame(frame);refresh();
+resize();loadFont();requestAnimationFrame(frame);refresh();

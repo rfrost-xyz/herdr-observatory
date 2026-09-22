@@ -58,6 +58,11 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(headers['Content-Type'],'application/wasm')
         self.assertIn("'wasm-unsafe-eval'",headers['Content-Security-Policy'])
         self.assertNotIn("'unsafe-eval'",headers['Content-Security-Policy'])
+        status,font,headers=self.request('/fonts/JetBrainsMonoNerdFont-Regular.ttf')
+        self.assertEqual(status,200)
+        self.assertTrue(font.startswith(b'\x00\x01\x00\x00'))
+        self.assertEqual(headers['Content-Type'],'font/ttf')
+        self.assertEqual(self.request('/fonts/OFL.txt')[0],404)
         for path in ('/effects.mjs','/vendor/engine.mjs','/stamps.js'):
             self.assertEqual(self.request(path)[0],200)
         for path in ('/api/text-frames','/vendor/../config.local.json','/vendor/manifest.json'):

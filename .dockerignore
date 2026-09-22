@@ -14,3 +14,8 @@
 !web/vendor/NOTICE
 !web/vendor/manifest.json
 !web/vendor/STAMPS-NOTICE
+!web/fonts/
+!web/fonts/JetBrainsMonoNerdFont-Regular.ttf
+!web/fonts/OFL.txt
+!web/fonts/NERD-FONTS-LICENSE
+!web/fonts/NOTICE

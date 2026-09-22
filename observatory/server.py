@@ -14,6 +14,7 @@ WEB = Path(__file__).resolve().parent.parent / 'web'
 
 ASSETS = {'/': ('index.html','text/html'), '/app.js': ('app.js','text/javascript'),
           '/style.css': ('style.css','text/css'), '/stamps.js': ('stamps.js','text/javascript'), '/effects.mjs': ('effects.mjs','text/javascript'),
+          '/fonts/JetBrainsMonoNerdFont-Regular.ttf': ('fonts/JetBrainsMonoNerdFont-Regular.ttf','font/ttf'),
           '/vendor/engine.mjs': ('vendor/engine.mjs','text/javascript'),
           '/vendor/effects.wasm': ('vendor/effects.wasm','application/wasm')}
 
@@ -47,7 +48,7 @@ def handler(observatory):
                 self.send_error(404)
                 return
             self.send_response(200)
-            self.send_header('Content-Type', kind if kind == 'application/wasm' else kind + '; charset=utf-8')
+            self.send_header('Content-Type', kind if kind in ('application/wasm','font/ttf') else kind + '; charset=utf-8')
             self.send_header('Content-Length', str(len(content)))
             self.send_header('Cache-Control', 'no-store')
             self.send_header('X-Content-Type-Options', 'nosniff')
