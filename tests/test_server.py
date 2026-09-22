@@ -44,7 +44,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(self.request('/../config.local.json')[0], 404)
 
     def test_assets_and_security_headers(self):
-        for path in ('/', '/style.css', '/app.js'):
+        for path in ('/', '/style.css', '/app.js', '/background.mjs'):
             status, body, headers = self.request(path)
             self.assertEqual(status, 200)
             self.assertGreater(len(body), 100)
@@ -74,3 +74,10 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status,200)
         self.assertNotIn(b'PRIVATE',body)
         self.assertIn('terminal_text',json.loads(body))
+
+    def test_music_disabled_and_origin_boundary(self):
+        status, body, _ = self.request('/api/music')
+        self.assertEqual(status, 200)
+        self.assertFalse(json.loads(body)['available'])
+        self.assertEqual(self.request('/api/music', {'Origin': 'https://evil.test'})[0], 403)
+        self.assertEqual(self.request('/api/music', method='POST')[0], 501)

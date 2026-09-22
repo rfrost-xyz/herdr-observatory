@@ -77,6 +77,8 @@ def validate_config(config):
         fields = ('path',) if container else ('directory', 'path')
         if any(not isinstance(publication.get(k), str) or not publication[k].startswith('/') for k in fields):
             raise ValueError('Publisher directory and path must be absolute')
+    from .music import validate_config as validate_music
+    validate_music(config.get("music"))
     return config
 
 
@@ -192,6 +194,8 @@ class Observatory:
             raise ValueError('Profile must be personal or work')
         self.config = validate_config(config)
         self.profile = profile
+        from .music import Music
+        self.music = Music(config.get("music"))
         self.collector = collector
         self.lock = threading.Lock()
         self.stop = threading.Event()
@@ -253,6 +257,7 @@ class Observatory:
             self.stop.wait(self.config.get('interval', 5))
 
     def start(self):
+        self.music.start()
         self.pool = ThreadPoolExecutor(max_workers=len(self.config['hosts']))
         for host in self.config['hosts']:
             self.pool.submit(self.worker, host)
@@ -263,6 +268,7 @@ class Observatory:
 
     def close(self):
         self.stop.set()
+        self.music.close()
         if self.pool:
             self.pool.shutdown(wait=True)
         if self.publisher:

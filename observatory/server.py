@@ -13,7 +13,7 @@ import time
 WEB = Path(__file__).resolve().parent.parent / 'web'
 
 ASSETS = {'/': ('index.html','text/html'), '/app.js': ('app.js','text/javascript'),
-          '/style.css': ('style.css','text/css'), '/effects.mjs': ('effects.mjs','text/javascript'),
+          '/style.css': ('style.css','text/css'), '/background.mjs': ('background.mjs','text/javascript'), '/effects.mjs': ('effects.mjs','text/javascript'),
           '/fonts/JetBrainsMonoNerdFont-Regular.ttf': ('fonts/JetBrainsMonoNerdFont-Regular.ttf','font/ttf'),
           '/vendor/engine.mjs': ('vendor/engine.mjs','text/javascript'),
           '/vendor/effects.wasm': ('vendor/effects.wasm','application/wasm')}
@@ -41,6 +41,9 @@ def handler(observatory):
                 state['terminal_text']=lines_for(state,time.time(),page,category,hold)[1]
                 content=json.dumps(state,allow_nan=False).encode()
                 kind='application/json'
+            elif path == '/api/music':
+                content = json.dumps(observatory.music.snapshot(), allow_nan=False).encode()
+                kind = 'application/json'
             elif path in ASSETS:
                 name,kind = ASSETS[path]
                 content = (WEB / name).read_bytes()

@@ -58,7 +58,7 @@ cp config.example.json config.local.json
 python -m observatory --config config.local.json --profile personal
 ```
 
-Open **http://127.0.0.1:8789**. Use F or F11 for fullscreen. The card display fills one 16:9 browser viewport at 720p or 1080p, with a compact activity header and fleet strip above eight prominent thread cards. A small recent-activity area sits below them. Pane pages rotate every 15 seconds; Page Up/Down selects a page and holds it, R resumes rotation. C cycles All/Work/Personal on the Personal display. Space pauses visual effects. Left/Right changes the minimum cooldown between eligible incoming status-line effects in one-second increments (default 120 seconds; range 0–300). Collection continues while effects are paused. Ctrl+C stops a foreground server.
+Open **http://127.0.0.1:8789**. Use F or F11 for fullscreen. The card display fills one 16:9 browser viewport at 720p or 1080p, with a compact activity header and fleet strip above eight prominent thread cards. A small recent-activity area sits below them. Pane pages rotate every 15 seconds; Page Up/Down selects a page and holds it, R resumes rotation. C cycles All/Work/Personal on the Personal display. Auto-paging is enabled by default when more than eight permitted threads exist. The display has no pause or effect-timer controls; the OS reduced-motion preference suppresses animation. Ctrl+C stops a foreground server.
 
 For a work display:
 
@@ -156,7 +156,7 @@ The header's “Observed activity” indicator responds to fresh state and hook 
 
 The fleet strip labels processor, memory, graphics, storage, network traffic and sample age in plain language. The active OS theme colours backgrounds, card surfaces, borders, typography and status accents. Its name is visible in the header. Existing theme transport is unchanged: the host OS supplies the palette, and the Personal instance forwards it with the permitted Work feed. The browser does not modify the OS theme or need another service.
 
-A separate recent-activity area shows four single-line observations: time, project, Herdr state, native pane identifier and pertinent update. Occasional text effects run only on an eligible incoming line here, never on thread cards. Effects finish naturally, then apply a 120-second default cooldown (Left/Right or the visible controls adjust it from 0–300 seconds). Events received during playback or cooldown display immediately, without a backlog of animations. Quiet periods do not replay previous output. Source loss or the line leaving the visible recent history cancels obsolete playback. No decorative project-name artwork or travelling horizontal bands remain.
+A separate recent-activity area shows four single-line observations: time, project, Herdr state, native pane identifier and pertinent update. Occasional text effects run only on an eligible incoming line here, never on thread cards. Effects finish naturally, then apply a fixed internal 120-second cooldown. Events received during playback or cooldown display immediately, without a backlog of animations. Quiet periods do not replay previous output. Source loss or the line leaving the visible recent history cancels obsolete playback. No decorative project-name artwork or travelling horizontal bands remain.
 
 The bundled JetBrainsMono Nerd Font supplies the same typography on Linux and Windows without external requests. Readable words remain if it fails to load. Font source, checksum and licences live in `web/fonts/`.
 
@@ -346,3 +346,32 @@ The next useful transport is [`events.subscribe`](https://herdr.dev/docs/socket-
 Other documented opportunities are worktree lifecycle/provenance and typed metadata tokens. These need deliberate allowlisting: branch/worktree names and arbitrary agent-reported labels can expose personal information. `agent.explain` could provide state-detection diagnostics after schema and disclosure review. Raw `pane.read` output and control methods remain outside this passive display.
 
 Thread cards use Herdr's Working, Blocked, Done, Idle and Unknown states. Hook-derived hints supplement those states without overriding Herdr. Refresh an already-open dashboard after an image update to load the latest browser code.
+
+### Shared music and pixel background
+
+The background is an independently written Omarchy-inspired pixel field. It uses the synchronised OS palette, reacts to real music spectrum and produces local impulses when you click exposed background space. Cards and controls do not trigger these impulses. Text effects remain confined to occasional incoming event lines. Reduced motion makes the field stationary, and hidden tabs stop animation and music polling.
+
+The current installation follows **cliamp on iapetus**, including track title and artist, on both displays. The application reads cliamp v2 `state.get` and `spectrum.get` over its Unix socket at up to 15 samples per second. It does not start a player, capture a microphone, play sound or install a daemon. Playback through cliamp's Spotify provider uses this same path. The standalone Spotify desktop/web player is not an audio source for this integration: track metadata alone is not a sound spectrum.
+
+Enable the optional `deploy/compose.music.yaml` override on the source host, append it to `COMPOSE_FILE`, and set `CLIAMP_DIRECTORY` to the existing directory containing `cliamp.sock` (normally `~/.config/cliamp`). The directory is mounted read-only at `/music` so replacing the socket does not require a container restart. Socket access still confers IPC authority; the observer hardcodes only the two read methods. The observer UID must be allowed to open the socket. No entire home directory or Docker socket is mounted.
+
+Add this private source configuration alongside the existing hosts:
+
+```json
+"music": {
+  "socket_path": "/music/cliamp.sock",
+  "publish": {
+    "target": "user@office-host",
+    "container": "herdr-observatory",
+    "path": "/feeds/music.json"
+  }
+}
+```
+
+The receiver configuration uses `"music": {"path": "/feeds/music.json"}`. Its existing `/feeds` directory must exist and be writable. Omit `publish` for local-only music; omit `music` entirely to disable observation. This is an explicit disclosure choice separate from Work project classification. Only title, artist, playback state, bounded spectrum bands and capture time are shared, never file paths, artwork URLs, provider metadata or audio. Changing the Work filter does not change authorised music sharing.
+
+One persistent SSH channel invokes the receiver module in the existing image and replaces a private latest-sample file. It reconnects after failure. Source timestamps are preserved and music expires after three seconds; stopped or missing music clears the widget and paused music has no audio-driven motion. This does not interrupt Herdr collection. The browser polls the loopback-only `/api/music` endpoint about ten times per second while visible. No new listener port or external browser connection is added.
+
+Apply changed configuration using `docker compose up -d --force-recreate --wait`. For rollback after enabling music, restore both the previous image selection and private configuration, and omit the music override if the previous release predates this integration.
+
+Fleet percentage gauges show processor, memory, graphics and storage usage. A dashed gauge means unavailable, distinct from a measured zero. Network arrows denote direction; their values remain measured rates. Thread identities label Agent (harness), Pane (Herdr's native workspace/pane identifier) and Host explicitly.
