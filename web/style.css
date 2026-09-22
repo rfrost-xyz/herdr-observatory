@@ -13,3 +13,5 @@
 #pixel-field{position:fixed;inset:0;width:100%;height:100%;pointer-events:none;z-index:0}#observatory{position:relative;z-index:1}#music-widget{min-width:0;max-width:28%;font-size:.85em}#music-title,#music-detail{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}#music-title{color:var(--green)}#music-detail{font-size:.85em}header{gap:18px}.activity-widget{flex-shrink:0}.brand{font-size:1em}#music-widget:empty{display:none}
 
 @media(max-height:800px){.host-row{height:29px}.metric{flex-wrap:nowrap;min-width:0;gap:4px}.metric dd{overflow:hidden;text-overflow:ellipsis}.network-direction{display:none}.metric dt{font-size:9px}}
+/* Keep the upstream music field behind readable foreground text. */
+header,#fleet,#activity,.thread-section>.section-heading{background:color-mix(in srgb,var(--background) 94%,transparent)}

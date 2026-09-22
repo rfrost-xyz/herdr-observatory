@@ -8,7 +8,7 @@ Read cliamp v2 IPC with two hardcoded read methods over a persistent Unix socket
 
 A separate persistent SSH process carries bounded NDJSON to the receiver module in the existing ws-255 image. An atomic ephemeral latest-sample file is read through an explicitly configured path. This avoids SSH connection creation per frame and does not broaden the Work agent feed. Publication is opt-in and the user explicitly selected sharing titles from iapetus. Music expires after three seconds independently of Herdr. The browser polls a small separate endpoint and never plays or captures audio.
 
-Implement a new Canvas2D pixel field using standard procedural noise/dither techniques, independently of the unlicensed Omarchy site source. Use the synchronised palette, pointer glow and bounded click impulses. Real spectrum affects pixels; absence/paused/expired playback removes audio energy. The field remains behind cards; no text effects enter cards. Reduced motion and hidden views suppress animation.
+At the user’s explicit request, adapt the actual Canvas2D field from pinned omacom/omarchy-site revision 2af2bcdc41c1eba20a2f4d6a98b9521f5d014dc8. Preserve its noise, ordered dithering, music columns and click stamps while replacing React/site-specific lifecycle and playback with the existing display and real cliamp samples. Retain source attribution without inventing an upstream licence. Use the synchronised palette, pointer glow and bounded click impulses. Real spectrum affects pixels; absence/paused/expired playback removes audio energy. The field remains behind cards; no text effects enter cards. Reduced motion and hidden views suppress animation.
 
 ## Risks / Trade-offs
 - SSH outage: bounded nonblocking writes, process cleanup and reconnection; stale data expires.

@@ -3,7 +3,7 @@
 ## 1. Display
 - [ ] 1.1 Add visual metrics, labelled identities and default auto-paging; verify UI tests and 720p/1080p geometry.
 - [ ] 1.2 Remove timer/pause controls and retain cooldown/reduced-motion safeguards; verify regression tests.
-- [ ] 1.3 Add independently authored themed pixel background, real music and click reactions; verify renderer tests and browser.
+- [ ] 1.3 Add upstream-adapted themed pixel background, real music and click reactions; verify renderer tests and browser.
 
 ## 2. Music transport
 - [ ] 2.1 Add bounded read-only cliamp IPC, sanitisation, expiry and optional persistent SSH relay; verify protocol/failure tests.
