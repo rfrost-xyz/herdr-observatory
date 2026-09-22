@@ -81,3 +81,15 @@ header{padding-bottom:8px}.brand{justify-content:center}.totals{gap:7px}.total{m
 
 /* Larger desktop instruments keep exact values legible without changing 720p. */
 @media(min-height:900px){.usage-value{font-size:13px;line-height:1.3}.usage-label{font-size:10px;line-height:1.3}.usage-exact{font-size:10px;line-height:1.25}.thread-meta .identity{font-size:10px;line-height:1.5}.thread-meta .model-name{font-size:12px}.thread-freshness{font-size:10px;line-height:1.4}.coverage{font-size:10px}.checkout,.card-activity{font-size:12px}.project{font-size:16px}.state{font-size:11px}.metric dt{font-size:10px!important}.metric dd{font-size:12px!important}.metric-graph{font-size:14px;line-height:19px;height:19px}.host-row{grid-template-rows:10px minmax(0,1fr);gap:3px}.host-metrics{gap:5px 10px}}
+
+/* Capacity and composition have different gauges; token totals remain plain labelled values. */
+.usage-tile[data-kind=context] .usage-value{color:var(--state);font-size:12px}
+.usage-tile[data-kind=balance] .usage-value{color:var(--blue)}
+.usage-tile[data-kind=balance] .usage-exact{color:var(--cyan)}
+.usage-tile[data-kind=balance] .usage-bar{display:flex;background:none;mask-image:repeating-linear-gradient(90deg,#000 0 3px,transparent 3px 4px)}
+.usage-tile[data-kind=balance] .usage-bar i{flex:none;mask-image:none;background:var(--blue)}
+.usage-tile[data-kind=balance] .usage-bar .usage-remainder{background:var(--cyan)}
+.usage-tile:not([data-kind=balance]) .usage-remainder{display:none}
+.usage-tile[data-kind=context] .usage-exact,.usage-tile[data-kind=balance] .usage-exact{font-variant-numeric:tabular-nums}
+@media(max-height:800px){.usage-tile[data-kind=context] .usage-value{font-size:10px}}
+@media(min-height:900px){.usage-tile[data-kind=context] .usage-value{font-size:14px}}
