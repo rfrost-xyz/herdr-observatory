@@ -9,7 +9,7 @@
 ## Checks
 
 - 75 Python tests passed, including socket fixtures.
-- All six JavaScript suites passed; focused final UI rerun passed 57 tests after the focus correction.
+- All 163 JavaScript tests passed across six files, including 57 UI tests after the focus correction.
 - JavaScript syntax, strict OpenSpec validation and whitespace checks passed.
 - Synthetic eight-thread browser fixture: exact document/viewport dimensions at 1280x720 and 1920x1080; all eight cards have matching client/scroll heights. Inspector opens, updates and Escape restores focus with dynamic details cleared.
 - Independent backend and frontend reviews resolved stale numeric timestamp handling, Pi persistence races and inspector privacy/focus findings. Final reviews clean.
@@ -22,3 +22,5 @@ Release `d3cf8ec`, image `sha256:1796e9c38e630d4f4fe56a2e8bb277d075b100c70e55624
 Live iapetus snapshots contain fresh Codex numeric enrichment. Both currently permitted Work threads were Idle with no recent hook usage, correctly retaining unknown metrics. All Work agents remain classified Work, both hosts are online, and Tokyo Night/theme plus music feeds are available. No Pi session was active during release validation; reload or start Pi to load its updated extension. Existing Codex shell entrypoints already invoke the updated helper.
 
 Previous `23eee37` image and `.env.previous`/`config.json.previous` retained for rollback. Synthetic browser server and tab removed after geometry/interaction checks. No Windows desktop browser visual verification was performed; ws-255 service and assets were checked over SSH.
+
+The refreshed live browser has the inspector and artist canvas, omits the sampling label, fits its viewport and renders Working in Tokyo Night amber. PR #1 is published and ready for review, unmerged. Hosted checks passed on the release evidence commit. Current and immediate rollback image tags are the only retained Observatory tags on either engine.
