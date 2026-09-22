@@ -10,5 +10,7 @@
 
 ## 3. Delivery
 - [x] 3.1 Document architecture, field coverage, setup, activation and removal; pass all repository gates and independent review.
-- [ ] 3.2 Deploy and install on both authorised hosts; verify health, actual metadata round trip, installed hooks and retained rollback, then remove task artifacts and superseded image.
-- [ ] 3.3 Reconcile evidence and clean final review, synchronise/archive specs and publish the ready PR with passing checks.
+- [x] 3.2 Deploy and install on both authorised hosts; verify health, actual metadata round trip, installed hooks and retained rollback, then remove task artifacts and superseded image.
+- [x] 3.3 Reconcile deployment evidence and obtain a clean final review; verify strict specs and published implementation checks.
+
+Archive/spec synchronisation and final PR publication are lifecycle operations recorded in evidence, after this implementation acceptance checklist.
