@@ -1,0 +1,5 @@
+## Delivery
+- [ ] Implement compact lines, anchored arrival effects and impulse-only row highlights; remove artwork.
+- [ ] Verify rendering, lifecycle safety and the complete effect catalogue; update README.
+- [ ] Complete independent review and deploy verified image to both hosts with rollback.
+- [ ] Record evidence, synchronise specs, archive and publish the reviewed change.
