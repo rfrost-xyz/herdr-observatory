@@ -14,6 +14,6 @@
 
 ## 3. Acceptance and delivery
 
-- [ ] 3.1 Pass full repository gates and independent adversarial review; record requirement evidence.
-- [ ] 3.2 Verify 720p/1080p geometry, interactions and live both-host allowance data; deploy one tested image and refreshed adapters to both machines.
-- [ ] 3.3 Synchronise specs, archive, publish merge-ready PR and clean task-owned artefacts; verify remote parity and retained rollback.
+- [x] 3.1 Pass full repository gates and independent adversarial review; record requirement evidence.
+- [x] 3.2 Verify 720p/1080p geometry, interactions and live both-host allowance data; deploy one tested image and refreshed adapters to both machines.
+- [x] 3.3 Synchronise specs, archive, publish merge-ready PR and clean task-owned artefacts; verify remote parity and retained rollback.
