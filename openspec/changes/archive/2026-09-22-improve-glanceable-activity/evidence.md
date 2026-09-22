@@ -12,4 +12,8 @@
 
 ## Deployment
 
-Pending release verification; do not treat local checks as deployment evidence.
+Both hosts run herdr-observatory:23eee37, identical image sha256:7b8e92ef6d44b65b7f3ffdee1286bcd5ba29eab8dc6254fec79b0a3c377d64a6, healthy with unless-stopped. The final image also passes all 66 Python tests. HTTP app.js/style.css/index.html/music-title.mjs hashes match checkout on both hosts. Work profile contains only Work agents, checkout values contain no paths, palette equality holds and music is available on both.
+
+Display identities verified as iapetus Host and ws-255 Client. Existing browser shows the new DOM. Existing idempotent installer updated owned SubagentStart/SubagentStop registrations on both harness hosts, preserving native/unrelated entries and the same adapter files. Fresh sessions/reload are required; no live child hook execution was forced into ongoing user sessions. Hook lifecycle is verified by tests and registration checks, not claimed as observed in a fresh live harness.
+
+.env.previous and config/config.json.previous preserve compatible baa42fe rollback configuration. Only current23eee37 and rollback baa42fe Observatory image tags remain on each engine; obsolete9826783 removed without global pruning. Temporary synthetic server stopped, QA tab closed and browser viewport reset. No new persistent service, mount or port installed. Temporary audit/test files removed before final publication.

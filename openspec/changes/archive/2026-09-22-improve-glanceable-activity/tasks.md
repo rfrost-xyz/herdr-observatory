@@ -5,5 +5,5 @@
 
 ## 2. Delivery
 - [x] 2.1 Update README/AGENTS, run required checks and independent review; fix all findings.
-- [ ] 2.2 Publish and deploy the same image on both hosts, verify assets/privacy/health, preserve rollback and remove task artefacts.
-- [ ] 2.3 Synchronise specs, archive evidence and publish the ready PR with clean remote parity.
+- [x] 2.2 Publish and deploy the same image on both hosts, verify assets/privacy/health, preserve rollback and remove task artefacts.
+- [x] 2.3 Synchronise specs, archive evidence and publish the ready PR with clean remote parity.
