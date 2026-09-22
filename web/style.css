@@ -100,3 +100,4 @@ header{padding-bottom:8px}.brand{justify-content:center}.totals{gap:7px}.total{m
 .thread-freshness{display:flex;flex-wrap:wrap;gap:1px 8px;white-space:normal;overflow:visible}
 .thread-freshness .freshness-part{white-space:nowrap}
 .card-activity[data-historical=true] .tool-name{max-width:28%}
+@media(max-height:800px){.thread-card{gap:2px}.card-metrics{row-gap:0}.usage-tile{padding-bottom:2px}.usage-label,.usage-value{line-height:1.15}.usage-value{margin-top:0}.usage-exact{margin-top:1px}}
