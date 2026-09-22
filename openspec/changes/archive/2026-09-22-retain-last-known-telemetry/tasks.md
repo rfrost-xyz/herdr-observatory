@@ -4,4 +4,4 @@
 
 ## 2. Verify and deliver
 - [x] 2.1 Pass focused and full checks, resolve independent review, and record evidence.
-- [ ] 2.2 Synchronise specifications, archive, publish the PR and deploy the image to both hosts with rollback preserved.
+- [x] 2.2 Deploy the same image and adapter payloads to both hosts, verify live data boundaries and preserve rollback.
