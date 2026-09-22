@@ -13,6 +13,7 @@ None.
 ### Modified Capabilities
 - `activity-dashboard`: metric presentation, header and card interaction.
 - `harness-telemetry`: cumulative usage and harness-aligned context accounting.
+- `office-display`: preserve palette synchronisation while removing the visible theme name.
 
 ## Impact
 Existing browser assets and image-supplied harness adapters. No new daemon, provider request, session mount or control of Herdr. Existing Work filtering, bounded execution and theme sync remain requirements.
