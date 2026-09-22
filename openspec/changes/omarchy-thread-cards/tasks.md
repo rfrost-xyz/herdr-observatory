@@ -1,0 +1,5 @@
+## Delivery
+- [ ] Replace terminal presentation with theme-driven header, labelled fleet and prominent thread cards.
+- [ ] Preserve hook/state safety and restrict occasional effects to the separate activity area; verify tests and browser layout.
+- [ ] Update README, complete independent review and deploy to both hosts with rollback.
+- [ ] Record evidence, synchronise specifications, archive and publish the reviewed change.
