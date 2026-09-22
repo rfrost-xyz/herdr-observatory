@@ -180,6 +180,9 @@ class InstallerTests(unittest.TestCase):
         original = {'extra': 42, 'hooks': {'SessionStart': [{'matcher': 'startup', 'hooks': [{'type': 'command', 'command': 'native-herdr'}]}], 'Other': []}}
         command = "sh '/home/test user/hooks/codex.sh'"
         updated = installer.merge_hooks(original, command)
+        for name in ('Interrupt', 'SessionEnd'):
+            self.assertEqual(updated['hooks'][name][-1]['hooks'][0]['timeout'], 3)
+        self.assertEqual(updated['hooks']['SessionStart'][-1]['hooks'][0]['timeout'], 9)
         self.assertEqual(installer.merge_hooks(updated, command), updated)
         self.assertEqual(installer.merge_hooks(updated, command, True), original)
         self.assertEqual(original['hooks']['SessionStart'][0]['hooks'][0]['command'], 'native-herdr')

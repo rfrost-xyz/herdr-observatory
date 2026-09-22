@@ -43,7 +43,8 @@ def merge_hooks(config, command, uninstall=False):
             if remaining or not entry['hooks']:
                 kept.append({**entry, 'hooks': remaining})
         if not uninstall:
-            kept.append({'hooks': [{'type': 'command', 'command': command, 'timeout': 9}]})
+            timeout = 3 if event in ('Interrupt', 'SessionEnd') else 9
+            kept.append({'hooks': [{'type': 'command', 'command': command, 'timeout': timeout}]})
         if kept: hooks[event] = kept
         else: hooks.pop(event, None)
     return result
