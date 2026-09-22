@@ -20,11 +20,11 @@ class EffectsTests(unittest.TestCase):
         state=self.state();state['hosts'][0]['agents'][0]['title']='\x1b[31m'+ 'x'*1000
         _,text=lines_for(state,time.time())
         self.assertNotIn('\x1b',text)
-        self.assertLessEqual(len(text),4356)
+        self.assertLessEqual(len(text),6204)
 
     def test_full_terminal_page_and_hold(self):
         state=self.state()
         _,text=lines_for(state,time.time(),hold=11)
-        self.assertEqual(len(text.splitlines()),36)
+        self.assertEqual(len(text.splitlines()),44)
         for label in ('THREADS','CLI FEED','FX HOLD 11s','allowed'):
             self.assertIn(label,text)

@@ -6,10 +6,10 @@ def lines_for(state, now, page=0, category='all', hold=10):
     hosts=[h for h in state['hosts'] if h['online'] and isinstance(h.get('sampled_at'),(int,float)) and now-h['sampled_at'] < state['interval']+20]
     agents=[a for h in hosts for a in h['agents']]
     visible=[a for a in agents if category=='all' or a.get('category')==category]
-    rows=['']*36
+    rows=['']*44
     def put(index,text):
-        rows[index]=''.join(c if 32<=ord(c)<127 else '?' for c in text)[:120]
-    put(0,'+'+'-'*118+'+')
+        rows[index]=''.join(c if 32<=ord(c)<127 else '?' for c in text)[:140]
+    put(0,'+'+'-'*138+'+')
     put(1,f"| HERDR / {state.get('profile','work').upper()} / READ ONLY / CAPTURED {time.strftime('%H:%M:%S UTC',time.gmtime(now))} / theme:{(state.get('theme') or {}).get('name','default')}")
     def pct(v):return str(round(v))+'%' if isinstance(v,(int,float)) else '?'
     def ratio(v):return pct(v['used']/v['total']*100) if v and v.get('total') else '?'
@@ -24,12 +24,12 @@ def lines_for(state, now, page=0, category='all', hold=10):
         status='INPUT' if a['status']=='blocked' else a['status'].upper()
         put(7+i,f"| {status:<9} {a['host'][:14]:<14} {a['harness'][:12]:<12} {a['project']} / {a['title']}")
     put(19,f"| {len(agents)} threads / {category} / page {page+1}/{count}")
-    put(26,'+ CLI FEED / SAMPLED OBSERVATIONS '+'-'*86+'+')
-    for i,a in enumerate(visible[page*12:page*12+6]):
+    put(30,'+ CLI FEED / SAMPLED OBSERVATIONS '+'-'*86+'+')
+    for i,a in enumerate(visible[page*12:page*12+10]):
         t=a.get('technical') or {}
-        put(27+i,f"| {a['host']}/{a['project']} {a['status'].upper()} rev={t.get('revision','?')} seq={t.get('state_change_seq','?')} / {a['title']}")
-    put(33,'| observer@fleet:~$ follow')
-    put(34,'+'+'-'*118+'+')
-    put(35,f'LIVE / FX HOLD {hold}s [LEFT -1s / RIGHT +1s] / sample {state["interval"]}s')
+        put(31+i,f"| {a['host']}/{a['project']} {a['status'].upper()} rev={t.get('revision','?')} seq={t.get('state_change_seq','?')} / {a['title']}")
+    put(41,'| observer@fleet:~$ follow')
+    put(42,'+'+'-'*138+'+')
+    put(43,f'LIVE / FX HOLD {hold}s [LEFT -1s / RIGHT +1s] / sample {state["interval"]}s')
     key=hashlib.sha256(repr([(h['id'],h['sampled_at']) for h in hosts]).encode()+repr((page,category,hold,state.get('theme'))).encode()).hexdigest()[:20]
     return key if hosts else '', '\n'.join(rows)

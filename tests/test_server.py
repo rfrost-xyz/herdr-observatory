@@ -58,7 +58,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(headers['Content-Type'],'application/wasm')
         self.assertIn("'wasm-unsafe-eval'",headers['Content-Security-Policy'])
         self.assertNotIn("'unsafe-eval'",headers['Content-Security-Policy'])
-        for path in ('/effects.mjs','/vendor/engine.mjs'):
+        for path in ('/effects.mjs','/vendor/engine.mjs','/stamps.js'):
             self.assertEqual(self.request(path)[0],200)
         for path in ('/api/text-frames','/vendor/../config.local.json','/vendor/manifest.json'):
             self.assertEqual(self.request(path)[0],404)
