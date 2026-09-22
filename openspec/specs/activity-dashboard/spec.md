@@ -79,7 +79,7 @@ The music tile SHALL emphasise track title and artist and play bounded, theme-aw
 - **THEN** both title and artist effects can play, without interrupting active playback, queuing repeats or changing the music player.
 
 ### Requirement: Herdr state roles and thread inspection
-The display SHALL use the active theme's semantic Herdr state roles, with Working amber/yellow, Blocked red, Done green and Idle muted like its header total. Cards SHALL persistently show bounded current technical detail with readable labels and visual instruments. Hover and focus SHALL provide visual emphasis only; no information SHALL depend on hover or open a separate click inspector. Clicking or keyboard-activating a tile SHALL play a brief local decorative response respecting reduced motion, using a bounded decorative glitch without synthetic activity or Herdr input. Detail SHALL clear when its permitted source disappears. The footer SHALL omit the sampling disclaimer and music SHALL omit the source playback label.
+The display SHALL use the active theme's semantic Herdr state roles, with Working amber/yellow, Blocked red, Done green and Idle muted like its header total. Cards SHALL persistently show bounded technical detail with readable labels and visual instruments. Hook activity and numeric usage SHALL retain independent source ages; a fresh hook SHALL NOT make older usage appear fresh or dim freshly measured values. Older hook activity SHALL be worded as a dated observation without changing Herdr state. Hover and focus SHALL provide visual emphasis only; no information SHALL depend on hover or open a separate click inspector. Clicking or keyboard-activating a tile SHALL play a brief local decorative response respecting reduced motion, using a bounded decorative glitch without synthetic activity or Herdr input. Detail SHALL clear when its permitted source disappears. The footer SHALL omit the sampling disclaimer and music SHALL omit the source playback label.
 
 #### Scenario: Inspect a thread
 - **WHEN** a permitted card is visible and observations arrive
@@ -95,12 +95,20 @@ The display SHALL use the active theme's semantic Herdr state roles, with Workin
 - **WHEN** the pane closes, its session binding changes or a newer report replaces the metadata
 - **THEN** the previous values no longer appear on that thread.
 
+#### Scenario: Independent hook and usage ages
+- **WHEN** a fresh hook carries older Codex usage or Pi last-response usage
+- **THEN** hook activity and usage have separate visible ages, only values from the older source receive last-known styling, and fresh Pi context and cumulative totals retain their current-hook presentation.
+
+#### Scenario: Historical tool observation
+- **WHEN** the latest hook activity is older than two minutes while the pane remains present
+- **THEN** the activity is labelled as a past observation with its age, while the state badge continues to show Herdr's current state.
+
 #### Scenario: Decorative activation
 - **WHEN** a card is clicked or activated by keyboard
 - **THEN** a bounded local effect responds without opening a dialogue or generating an activity observation.
 
 ### Requirement: Compact measured metric panels
-Fleet machines SHALL show CPU, memory, disk and network in subtly coloured theme-aware bordered panels with instruments using their available height inspired by the supplied terminal monitor. Histories SHALL contain distinct measured samples, stay bounded and stop showing live traces for stale sources. Thread panels SHALL prioritise available session totals, context percentage and cache/compaction data with readable scope, compact visible counts and exact accessible values. A complete cache-read balance SHALL include a percentage of total input tokens, without implying request hit/miss counts. The display SHALL retain eight-card paging, no document scrolling at 720p and 1080p, and reduced-motion support.
+Fleet machines SHALL show CPU, memory, disk and network in subtly coloured theme-aware bordered panels with instruments using their available height inspired by the supplied terminal monitor. Histories SHALL contain distinct measured samples, stay bounded and stop showing live traces for stale sources. Thread panels SHALL prioritise available session totals, context percentage and cache/compaction data with readable scope, compact visible counts and exact accessible values. A complete cache-read balance SHALL explicitly name total input as the percentage denominator and show separate read, uncached and cache-write parts when writes are reported, without implying request hit/miss counts. The display SHALL retain eight-card paging, readable labels without document scrolling at 720p and 1080p, and reduced-motion support.
 
 #### Scenario: Measured fleet history
 - **WHEN** successive fresh host samples arrive
@@ -109,3 +117,7 @@ Fleet machines SHALL show CPU, memory, disk and network in subtly coloured theme
 #### Scenario: Thread usage
 - **WHEN** a fresh harness reports cumulative input/output, context and cache counters
 - **THEN** the card displays their distinct scopes and a source-grounded cache-read token percentage without presenting last-response counters as totals or cached tokens as request counts.
+
+#### Scenario: Cache writes
+- **WHEN** Pi reports a complete input balance containing cache writes
+- **THEN** read, uncached and write token counts remain separately labelled and the three gauge segments add to the reported input total.
