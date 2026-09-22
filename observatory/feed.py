@@ -12,7 +12,7 @@ import tempfile
 import threading
 import time
 
-from .core import STATUSES, clean, sanitise_metrics, theme, ssh_command, technical, counter
+from .core import STATUSES, clean, sanitise_metrics, theme, ssh_command, technical, counter, safe_checkout
 
 MAX_BYTES = 1024 * 1024
 MAX_AGE = 30
@@ -39,6 +39,7 @@ def validate_feed(raw, expected_host=None):
         ids.add(item['id'])
         agent = {key: clean(item.get(key)) for key in ('id', 'host', 'category', 'project', 'harness', 'status', 'title')}
         agent['technical'] = technical(item.get('technical'))
+        agent['checkout'] = safe_checkout(item.get('checkout'))
         agents.append(agent)
     raw_theme = raw.get('theme')
     palette = theme(raw_theme)

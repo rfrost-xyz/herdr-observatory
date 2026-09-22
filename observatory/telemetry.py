@@ -14,7 +14,8 @@ from .probe import TELEMETRY_NUMBERS, session_binding, telemetry_view
 CODEX_EVENTS = {'SessionStart': ('session', 'ready'), 'UserPromptSubmit': ('turn', 'working'),
                 'PreToolUse': ('tool-start', 'tool'), 'PostToolUse': ('tool-end', 'working'),
                 'PreCompact': ('compact-start', 'compacting'), 'PostCompact': ('compact-end', 'working'),
-                'Stop': ('idle', 'idle'), 'Interrupt': ('interrupt', 'interrupted'), 'SessionEnd': ('end', 'ended')}
+                'Stop': ('idle', 'idle'), 'Interrupt': ('interrupt', 'interrupted'), 'SessionEnd': ('end', 'ended'),
+                'SubagentStart': ('subagent-start', 'working'), 'SubagentStop': ('subagent-stop', 'working')}
 KEYS = ('v', 'bind', 'seq', 'event', 'phase', 'tool', 'model', 'result') + TELEMETRY_NUMBERS
 
 

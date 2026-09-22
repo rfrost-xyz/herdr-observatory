@@ -107,10 +107,16 @@ def technical(raw):
     return result
 
 
+def safe_checkout(value):
+    value = clean(value)
+    return value[:80] if value not in ('.', '..') and '/' not in value and '\\' not in value else ''
+
+
 def normalise(snapshot, host, profile):
     if not isinstance(snapshot, dict) or not isinstance(snapshot.get('agents'), list) or not isinstance(snapshot.get('workspaces'), list):
         raise ValueError('Invalid Herdr snapshot')
     spaces = {w['workspace_id']: clean(w.get('label'), 'Untitled') for w in snapshot['workspaces'] if isinstance(w, dict) and isinstance(w.get('workspace_id'), str)}
+    checkouts = {w['workspace_id']: w.get('checkout_path') for w in snapshot['workspaces'] if isinstance(w, dict) and isinstance(w.get('workspace_id'), str)}
     agents = []
     for entry in snapshot['agents']:
         if not isinstance(entry, dict) or not isinstance(entry.get('pane_id'), str):
@@ -118,9 +124,13 @@ def normalise(snapshot, host, profile):
         category = classification(entry.get('cwd'), host)
         if profile == 'work' and category != 'work':
             continue
+        checkout_path = checkouts.get(entry.get('workspace_id'))
+        # A Work pane may have changed directory inside a Personal workspace.
+        # Never disclose that workspace's checkout identity through the pane.
+        checkout = probe.checkout_label(checkout_path) if classification(checkout_path, host) == category else ''
         status = entry.get('agent_status')
         agents.append({'id': host['id'] + ':' + clean(entry['pane_id']), 'host': host['id'], 'category': category,
-            'technical': technical(entry),
+            'technical': technical(entry), 'checkout': safe_checkout(checkout or probe.checkout_label(entry.get('cwd'))),
             'project': spaces.get(entry.get('workspace_id'), 'Untitled'), 'harness': clean(entry.get('agent'), 'unknown'),
             'status': status if status in STATUSES else 'unknown', 'title': clean(entry.get('terminal_title_stripped'), 'No task title reported')})
     return agents
@@ -277,6 +287,8 @@ class Observatory:
     def snapshot(self):
         with self.lock:
             result = copy.deepcopy({'profile': self.profile, 'at': time.time(), 'interval': self.config.get('interval', 5), 'theme': self.palette, 'hosts': list(self.hosts.values()), 'history': self.history, 'publication': self.publication})
+            local = next((h for h in self.config['hosts'] if h.get('transport', 'local') == 'local'), None)
+            result['display'] = {'host': local['id'] if local else '', 'role': 'Client' if any(h.get('transport') == 'file' for h in self.config['hosts']) else 'Host'}
             feeds = {h['id'] for h in self.config['hosts'] if h.get('transport') == 'file'}
             for host in result['hosts']:
                 if host['id'] in feeds and host['sampled_at'] is not None and time.time() - host['sampled_at'] > 30:

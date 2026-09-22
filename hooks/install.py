@@ -11,7 +11,7 @@ import subprocess
 import tempfile
 
 MARKER = 'herdr-observatory adapter v1'
-EVENTS = ('SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'PreCompact', 'PostCompact', 'Stop', 'Interrupt', 'SessionEnd')
+EVENTS = ('SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'PreCompact', 'PostCompact', 'Stop', 'Interrupt', 'SessionEnd', 'SubagentStart', 'SubagentStop')
 
 
 def atomic(path, data, mode=0o600):

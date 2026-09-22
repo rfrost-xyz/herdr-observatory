@@ -167,7 +167,7 @@ The PowerShell launcher opens the display; the independently running container s
 
 ## Technical display and what the numbers mean
 
-The display takes visual inspiration from [Omarchy](https://omarchy.org): crisp mono typography, pixel accents, thin borders and the current OS palette. Eight thread cards occupy most of the screen, with automatic and manual paging for additional threads. Each shows project, task title, normal Herdr state, native pane identifier, harness and host. Supported hook data adds phase, tool, model and context/usage details. Missing data remains explicitly unavailable.
+The display takes visual inspiration from [Omarchy](https://omarchy.org): crisp mono typography, pixel accents, thin borders and the current OS palette. Eight thread cards occupy most of the screen, with automatic and manual paging for additional threads. Each shows project, safe worktree/checkout label, normal Herdr state, native pane identifier, harness and host. Supported hook data adds phase, tool, model and context/usage details. Missing fields are represented by one coverage note, with no empty metric tiles.
 
 Each card affected by a fresh state or hook change receives a brief impulse; working state indicators remain local to their card. Repeated unchanged samples do not restart the impulse. Hidden, reduced-motion and unavailable views suppress animation.
 
@@ -182,11 +182,11 @@ Records are timestamped when the browser observes a transition, not when the und
 | Card field | Meaning | When absent |
 | --- | --- | --- |
 | State | Herdr's authoritative lifecycle state | Unknown |
-| Activity / Tool | Latest supported hook phase and tool name | Unavailable |
-| Model | Explicit, sanitised hook-reported model name | Unavailable, never inferred |
-| Context | Approximate hook-reported tokens and window | Unavailable |
-| Last response | Input/output tokens for the reported response | Unavailable |
-| Cache read / write | Reported response cache tokens | Unavailable |
+| Activity / Tool | Latest supported hook phase and tool name | Falls back to Herdr state; missing tool omitted |
+| Model | Explicit, sanitised hook-reported model name | Omitted, never inferred |
+| Context | Approximate hook-reported tokens and window | Omitted with coverage note |
+| Last response | Input/output tokens for the reported response | Omitted with coverage note |
+| Cache read / write | Reported response cache tokens | Omitted with coverage note |
 | Sample age | Age of the fleet source sample | Unavailable and agents excluded when stale |
 
 Custom Herdr token/label maps, native session identifiers and terminal contents are not exported. Model, context and usage fields require supported hook reports. Herdr snapshots alone do not provide these metrics. A recognised harness running Qwen appears as an agent; a model name appears only when explicitly reported. Cost and token throughput are not inferred. Other machines can be added once SSH and Herdr are configured; there is no automatic fleet discovery.
@@ -334,7 +334,7 @@ CPU/RAM come from the Linux kernel, network from the shared host namespace and d
 ```sh
 python -m unittest discover -s tests -v
 node --check web/app.js
-node --test tests/test_ui.cjs tests/test_wasm.mjs tests/test_background.mjs tests/test_title.mjs
+node --test tests/test_ui.cjs tests/test_wasm.mjs tests/test_background.mjs tests/test_title.mjs tests/test_music_title.mjs
 openspec validate --all --strict
 ```
 
@@ -352,7 +352,7 @@ The browser composes live and animated scenes from the same filtered `/api/state
 
 The server permits only explicit asset paths, serves WASM as `application/wasm`, and uses `script-src 'self' 'wasm-unsafe-eval'` without JavaScript eval or external scripts. The former `/api/text-frames` endpoint and native adapter have been removed. If WASM loading or execution fails, the live card display remains available and retries only on a new eligible event after the configured cooldown. Licences and attribution remain in `web/vendor/LICENSE` and `web/vendor/NOTICE`.
 
-Run `python -m unittest discover -s tests -v`, `node --check web/app.js`, `node --test tests/test_ui.cjs tests/test_wasm.mjs tests/test_background.mjs tests/test_title.mjs`, and `openspec validate --all --strict`. The WASM tests verify artifact hashes and run every effect to completion using a synthetic single-line event.
+Run `python -m unittest discover -s tests -v`, `node --check web/app.js`, `node --test tests/test_ui.cjs tests/test_wasm.mjs tests/test_background.mjs tests/test_title.mjs tests/test_music_title.mjs`, and `openspec validate --all --strict`. The WASM tests verify artifact hashes and run every effect to completion using a synthetic single-line event.
 
 ### Further Herdr API coverage
 
@@ -405,10 +405,23 @@ To disable the integration completely, remove the `music` block from both source
 
 Apply changed configuration using `docker compose up -d --force-recreate --wait`. For rollback after enabling music, restore both the previous image selection and private configuration, and omit the music override if the previous release predates this integration.
 
-Fleet percentage gauges show processor, memory, graphics and storage usage. A dashed gauge means unavailable, distinct from a measured zero. Network arrows denote direction; their values remain measured rates. Thread identities label Agent (harness), Pane (Herdr's native workspace/pane identifier) and Host explicitly.
+Fleet percentage gauges show processor, memory, graphics and storage usage. A dashed gauge means unavailable, distinct from a measured zero. Network arrows denote direction; their values remain measured rates. Thread identity lines show harness, host and native pane identifier; the tooltip labels each field explicitly.
 
 ### Personal title and observations
 
 The header shows a small **Rich** mark in Delta Corps Priest 1 artwork. Click it (or activate its button with the keyboard) to play a text effect. It also animates automatically every minute while visible, without interrupting an effect already running. The title has its own bounded effect session, independent of recent-event effects and their 120-second cooldown. Hidden/reduced-motion views keep static artwork without queuing missed animations; renderer failure retains a readable title. Font attribution is in `web/vendor/STAMPS-NOTICE`.
 
 The redundant Observed activity widget is removed. Thread cards retain their state/hook impulses. The theme label shows its name alone. Recent observations use coloured semantic icons for working, blocked, completed, idle, tool, compaction, usage and source changes, while keeping each observation to one line. Event text effects leave the icon visible and remain aligned to the text itself.
+
+
+### Reading thread activity
+
+Cards emphasise project, native state and worktree/checkout name. The checkout is a directory label supplied by Herdr (or the pane's current-directory leaf), not a claimed Git branch. Full paths are omitted, and Personal checkout names cannot pass through a Work pane. The label beside Rich identifies the configured local machine: Host for direct collection, Client when consuming a received fleet feed. These labels do not alter Personal/Work filtering.
+
+Cards retain a slight state tint: Working uses the theme accent, Blocked yellow, Done green. Recent observations follow the associated state colour too. Larger header totals include all permitted threads, including other pages. Available context and usage appear as compact tiles with exact values in their tooltips. Context is an estimate; response and cache counters cover the last reported response. Missing fields are not zero and are summarised in one coverage note.
+
+Codex hooks currently provide activity, tools, model and compaction markers, but no context/cache/token counters. Pi supplies these when its provider and extension context report them. Both expire after 120 seconds without a fresh hook. Codex SubagentStart/SubagentStop hooks add the latest observed child activity under the matching parent; they do not provide a complete live roster or a running-child count. Stopped does not assert permanent termination. Pi has no general equivalent lifecycle event; extension-specific instrumentation is not installed. No transcript reading or additional observer process is used.
+
+After upgrading the image, re-run the existing hook installer on each harness host to add the two Codex event registrations. Existing Codex sessions need restart/reload before the new registrations take effect. The adapter paths and number of installed adapter files are unchanged.
+
+The music tile gives title and artist separate lines. A track identity change triggers an in-place title effect using the bundled renderer. Initial connection, duplicate samples, pause/resume and stale recovery do not trigger it. Rapid changes retain at most the latest pending track; reduced motion and source loss preserve plain readable text.

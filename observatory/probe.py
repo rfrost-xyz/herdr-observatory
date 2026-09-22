@@ -13,7 +13,7 @@ import tomllib
 
 # This code also travels with the read-only SSH probe: no package imports here.
 TELEMETRY_EVENTS = {'session', 'turn', 'tool-start', 'tool-end', 'thinking', 'output',
-                    'compact-start', 'compact-end', 'compact-failed', 'idle', 'interrupt', 'end', 'model'}
+                    'compact-start', 'compact-end', 'compact-failed', 'idle', 'interrupt', 'end', 'model', 'subagent-start', 'subagent-stop'}
 TELEMETRY_PHASES = {'ready', 'working', 'tool', 'thinking', 'output', 'compacting', 'idle', 'interrupted', 'ended'}
 TELEMETRY_NUMBERS = ('input', 'output_tokens', 'cache_read', 'cache_write', 'context', 'window')
 TELEMETRY_TTL = 120
@@ -63,6 +63,19 @@ def telemetry_from_agent(agent, now=None):
         value = raw[key]
         raw[key] = int(value) if isinstance(value, str) and re.fullmatch(r'[0-9]{1,16}', value) else None
     return telemetry_view(raw, now)
+
+
+def checkout_label(value):
+    """Export one directory leaf, never a full native checkout path."""
+    if not isinstance(value, str) or not value.startswith('/') or '..' in value.split('/'):
+        return ''
+    return re.sub(r'[\x00-\x1f\x7f-\x9f]', '', value.rstrip('/').rsplit('/', 1)[-1])[:80]
+
+
+def workspace_view(workspace):
+    worktree = workspace.get('worktree')
+    path = worktree.get('checkout_path') if isinstance(worktree, dict) else None
+    return {k: workspace.get(k) for k in ('workspace_id', 'label')} | {'checkout_path': path if isinstance(path, str) else None}
 
 
 def palette(directory=None):
@@ -147,7 +160,7 @@ def sample(binary='herdr', session=None, socket_path=None, theme_path=None, disk
         # Do not export terminal buffers, process arguments or native session IDs.
         result['snapshot'] = {'version': raw.get('version', 'unknown'), 'protocol': raw.get('protocol'),
             'agents': [{k: a.get(k) for k in ('pane_id', 'workspace_id', 'agent', 'agent_status', 'cwd', 'terminal_title_stripped', 'revision', 'state_change_seq', 'focused', 'interactive_ready', 'launch_pending')} | {'telemetry': telemetry_from_agent(a)} for a in raw['agents']],
-            'workspaces': [{k: w.get(k) for k in ('workspace_id', 'label')} for w in raw['workspaces']]}
+            'workspaces': [workspace_view(w) for w in raw['workspaces']]}
     except (OSError, ValueError, KeyError, TypeError, AttributeError, subprocess.SubprocessError):
         result['error'] = 'Herdr unavailable or incompatible'
     return result

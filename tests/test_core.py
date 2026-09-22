@@ -156,3 +156,35 @@ class CoreTests(unittest.TestCase):
         app.collector = lambda h: copy.deepcopy(RAW)
         app.poll(HOST)
         self.assertEqual(app.snapshot()['hosts'][0]['trend'][-1]['working'], 1)
+
+
+class CheckoutTests(unittest.TestCase):
+    def test_safe_checkout_and_display_identity(self):
+        from observatory.core import safe_checkout
+        from observatory.probe import workspace_view
+        self.assertEqual(workspace_view({'worktree': {'checkout_path': '/work/project/feature-one'}})['checkout_path'], '/work/project/feature-one')
+        for value in ('/secret/path', '..', 'a/b', 'C:\\secret'):
+            self.assertEqual(safe_checkout(value), '')
+        raw = copy.deepcopy(RAW)
+        raw['snapshot']['workspaces'][0]['checkout_path'] = '/work/feature-one'
+        app = Observatory({'hosts': [HOST]}, 'personal', lambda _: raw)
+        app.poll(HOST)
+        view = app.snapshot()
+        self.assertEqual(view['display'], {'host': HOST['id'], 'role': 'Host'})
+        self.assertEqual(view['hosts'][0]['agents'][0]['checkout'], 'feature-one')
+        from observatory.feed import project_work, validate_feed
+        feed = project_work(view, HOST['id'])
+        self.assertEqual(feed['agents'][0]['checkout'], 'feature-one')
+        feed['agents'][0]['checkout'] = '/secret/path'
+        self.assertEqual(validate_feed(feed)['agents'][0]['checkout'], '')
+        self.assertNotIn('/private', json.dumps(view))
+
+    def test_personal_checkout_is_not_disclosed_by_work_pane(self):
+        raw = copy.deepcopy(RAW)
+        raw['snapshot']['workspaces'][0]['checkout_path'] = '/personal/PRIVATE-CHECKOUT'
+        app = Observatory({'hosts': [HOST]}, 'work', lambda _: raw)
+        app.poll(HOST)
+        from observatory.feed import project_work
+        view = app.snapshot()
+        self.assertEqual(view['hosts'][0]['agents'][0]['checkout'], 'app')
+        self.assertNotIn('PRIVATE', json.dumps(project_work(view, HOST['id'])))

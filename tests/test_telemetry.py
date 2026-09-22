@@ -82,6 +82,13 @@ class TelemetryTests(unittest.TestCase):
                     self.assertFalse(report('codex', {'session_id': 'native-secret', 'hook_event_name': 'PreToolUse'}, pane, event()['seq'], config))
                     call.assert_not_called()
 
+    def test_subagent_hooks_discard_child_identity_and_content(self):
+        for name, expected in [('SubagentStart', 'subagent-start'), ('SubagentStop', 'subagent-stop')]:
+            view = event_view('codex', {'hook_event_name': name, 'agent_id': 'SECRET', 'agent_type': 'SECRET', 'last_assistant_message': 'SECRET', 'agent_transcript_path': '/SECRET'}, event()['seq'])
+            self.assertEqual(view['event'], expected)
+            self.assertNotIn('SECRET', json.dumps(view))
+            self.assertIn(name, installer.EVENTS)
+
     def test_pi_native_path_binding(self):
         a = agent('pi');a['agent_session'].update(kind='path', value='/private/session.jsonl')
         with tempfile.TemporaryDirectory() as directory:

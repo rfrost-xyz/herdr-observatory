@@ -40,6 +40,7 @@ configuration before acting. Historical release hashes are not deployment author
 | Display | `web/app.js`, `index.html`, `style.css` | Persistent thread cards, state/event reconciliation, paging, icons, colours, footer layout and browser polling |
 | Background | `web/background.mjs` | Pinned Omarchy renderer adaptation, real spectrum, muted theme accent, pointer/click reactions and reduced-motion guards |
 | Text effects | `web/effects.mjs`, `web/vendor/` | Pinned WASM sessions; event-line and title-specific bounded factories; source/checksum/licence notices |
+| Track title | `web/music-title.mjs` | Track-change-only effects, latest-only pending identity, accessible text and stale/reduced-motion guards |
 | Personal title | `web/title.mjs` | Small Rich artwork, independent click/minute schedule, complete playback and static fallback |
 | Deployment | `Dockerfile`, `.dockerignore`, `deploy/` | Versioned image, minimal build context, Compose variants and manual Windows browser launcher |
 
@@ -175,7 +176,7 @@ Run the repository checks for runtime changes and before a runtime release:
 ```sh
 python -m unittest discover -s tests -v
 node --check web/app.js
-node --test tests/test_ui.cjs tests/test_wasm.mjs tests/test_background.mjs tests/test_title.mjs
+node --test tests/test_ui.cjs tests/test_wasm.mjs tests/test_background.mjs tests/test_title.mjs tests/test_music_title.mjs
 openspec validate --all --strict
 ```
 
@@ -204,3 +205,12 @@ cliamp and host services. A whole-container reading is not music-only overhead.
 Reader-only benchmarks exclude SSH and player-side IPC work. Do not publish live
 metadata while profiling. Remove task-owned fixtures, test processes and stale
 Observatory release tags after acceptance; do not prune unrelated Docker assets.
+
+
+### Glanceable cards and hook coverage
+
+Project and safe checkout leaf replace the terminal title in cards. The private probe keeps native checkout paths only until classification; the HTTP/Work projection exports a leaf only when its category matches the pane. Never add project mounts or infer a branch from its directory label. Work feed receipt revalidates leaf labels. Display Host/Client identity derives from the configured local host and file-feed presence, not Docker hostname or privacy profile.
+
+Numeric tiles appear only for fresh supported values, with zero distinct from missing. Codex hooks do not expose usage counters; Pi coverage depends on provider usage/context. Codex SubagentStart/SubagentStop are latest parent-session-bound observations only. Drop child IDs/types/transcript paths/content, do not construct roster counts or interpret stop as permanent completion. Updating registrations requires the existing image-supplied hook installer on both harness hosts and harness restart/reload. No new persistent process is permitted.
+
+Music title effects are separate from Rich and event effects, use the bounded single-line factory, and trigger only after a fresh track baseline changes. Preserve the sr-only track equivalent while the visual title is hidden. On rapid changes finish the session without displaying stale metadata and retain only the latest pending track; hidden/reduced-motion/stale paths cancel and reset the baseline.
