@@ -101,3 +101,13 @@ header{padding-bottom:8px}.brand{justify-content:center}.totals{gap:7px}.total{m
 .thread-freshness .freshness-part{white-space:nowrap}
 .card-activity[data-historical=true] .tool-name{max-width:28%}
 @media(max-height:800px){.thread-card{gap:2px}.card-metrics{row-gap:0}.usage-tile{padding-bottom:2px}.usage-label,.usage-value{line-height:1.15}.usage-value{margin-top:0}.usage-exact{margin-top:1px}}
+@media(max-height:800px){#threads{grid-template-rows:repeat(2,minmax(172px,1fr));overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--border) transparent}}
+/* A local nine-block sweep marks connection work; measured gauges use larger, fixed blocks. */
+#connection-status{display:inline-flex;align-items:center;gap:7px}
+.blocks-loader{display:grid;grid-template-columns:repeat(3,3px);grid-template-rows:repeat(3,3px);gap:2px;width:13px;height:13px;color:var(--blue)}
+.blocks-loader i{display:block;background:currentColor;animation:blocks-sweep 1300ms ease-in-out infinite;animation-delay:calc(var(--block)*90ms)}
+.blocks-loader i:nth-child(1){--block:0}.blocks-loader i:nth-child(2){--block:1}.blocks-loader i:nth-child(3){--block:2}.blocks-loader i:nth-child(4){--block:1}.blocks-loader i:nth-child(5){--block:2}.blocks-loader i:nth-child(6){--block:3}.blocks-loader i:nth-child(7){--block:2}.blocks-loader i:nth-child(8){--block:3}.blocks-loader i:nth-child(9){--block:4}
+@keyframes blocks-sweep{0%,100%{opacity:.3;transform:scale(.55)}45%{opacity:1;transform:scale(1)}}
+.usage-bar,.usage-tile[data-kind=balance] .usage-bar{height:5px;mask-image:repeating-linear-gradient(90deg,#000 0 6px,transparent 6px 9px)}
+.usage-bar{background:var(--border)}.usage-bar i{mask-image:none}
+@media(prefers-reduced-motion:reduce){.blocks-loader i{opacity:.8;transform:none}}

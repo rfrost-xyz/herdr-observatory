@@ -157,6 +157,8 @@ manual. Never change lock-screen, firewall or VPN policy to make the display wor
 
 - One 16:9 viewport at 1280x720 or 1920x1080, no document scrolling. Eight cards
   per page, default 15-second auto-paging only when more than eight are present.
+- At shorter viewport heights, keep each card tall enough for its details and
+  scroll within the thread area rather than clipping metrics or the age line.
 - Use Herdr's Working, Blocked, Done, Idle and Unknown labels. Preserve per-card
   impulses only for observed changes; no travelling bars or literal heartbeats.
 - The pixel canvas ends at the full-width opaque footer. All background inks,

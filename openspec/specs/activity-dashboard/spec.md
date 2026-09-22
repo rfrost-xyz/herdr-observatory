@@ -41,6 +41,14 @@ The dashboard SHALL adopt valid active Omarchy palette changes without modifying
 - **WHEN** the selected theme source publishes a different valid palette
 - **THEN** the next successful refresh updates dashboard colours; missing or malformed colours use safe defaults.
 
+#### Scenario: Short display viewport
+- **WHEN** the viewport cannot fit two full rows of thread details
+- **THEN** thread cards retain enough height for their metrics and source ages, and the thread area scrolls without clipping the footer.
+
+#### Scenario: Initial connection
+- **WHEN** the browser is waiting for its first state sample
+- **THEN** the connection label has a reduced-motion-aware block loading indicator that disappears when that wait ends; measured percentages remain determinate gauges.
+
 ### Requirement: Local access boundary
 The service SHALL bind to loopback and reject browser requests with untrusted Host or Origin headers and expose no agent mutation endpoints.
 
