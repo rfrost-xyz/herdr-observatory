@@ -42,8 +42,10 @@ class TelemetryTests(unittest.TestCase):
                 self.assertEqual([c.args[1] for c in call.call_args_list], ['pane.get', 'pane.report_metadata'])
                 params = call.call_args.args[2]
                 self.assertEqual(params['tokens']['obs_bind'], session_binding(a))
-                self.assertIsNone(params['tokens']['obs_input'])
-                self.assertLessEqual(len(params['tokens']), 23)
+                self.assertNotIn('obs_input', params['tokens'])
+                self.assertEqual(params['tokens']['obs_n0'], ',,,')
+                self.assertLessEqual(len(params['tokens']), 16)
+                self.assertTrue(all(value is None or len(value)<=80 for value in params['tokens'].values()))
                 self.assertEqual(params['ttl_ms'], 120000)
                 self.assertNotIn('SECRET', json.dumps(params))
                 a['tokens'] = params['tokens']
@@ -233,3 +235,41 @@ class CumulativeConsistencyTests(unittest.TestCase):
         result=telemetry_view({'seq':100000000,'event':'tool-start','phase':'tool','total_input':3,'total_cache_read':4,'total_uncached_input':0,'total_output':2},100)
         for key in ('total_input','total_cache_read','total_uncached_input'): self.assertIsNone(result[key])
         self.assertEqual(result['total_output'],2)
+
+class CompactTelemetryTests(unittest.TestCase):
+    def test_v2_atomic_groups_and_legacy_migration(self):
+        from observatory.probe import TELEMETRY_V2_GROUPS
+        a=agent();seq=event()['seq']
+        raw={'seq':str(seq),'event':'tool-start','phase':'tool','v':'2','bind':session_binding(a),'usage_source':'codex-rollout'}
+        tokens={'obs_'+key:value for key,value in raw.items()}
+        values={'input':0,'usage_seq':seq,'total_input':21700000,'total_output':4200,'total_cache_read':20000000,'total_uncached_input':1700000,'context_percent':70,'compactions':3}
+        for index,fields in enumerate(TELEMETRY_V2_GROUPS):tokens['obs_n'+str(index)]=','.join(str(values[key]) if key in values else '' for key in fields)
+        a['tokens']={**tokens,'obs_input':'999','obs_total_input':'999'}
+        view=telemetry_from_agent(a)
+        self.assertEqual(view['input'],0);self.assertEqual(view['total_input'],21700000);self.assertEqual(view['compactions'],3)
+        self.assertLessEqual(len(tokens),16);self.assertTrue(all(len(v)<=80 for v in tokens.values()))
+        for bad in ({'obs_n0':None},{'obs_n0':'1,2'},{'obs_n0':'1,2,3,-1'},{'obs_n0':'1,2,3,9007199254740992'},{'obs_n0':'1,2,3,NaN'},{'obs_v':'3'}):
+            a['tokens']={**tokens,**bad,'obs_input':'999'}
+            self.assertIsNone(telemetry_from_agent(a))
+        a['tokens']={key:value for key,value in tokens.items() if key!='obs_n3'}
+        self.assertIsNone(telemetry_from_agent(a))
+    def test_v1_flat_read_compatibility(self):
+        a=agent();seq=event()['seq'];a['tokens']={'obs_v':'1','obs_bind':session_binding(a),'obs_seq':str(seq),'obs_event':'tool-start','obs_phase':'tool','obs_input':'0'}
+        self.assertEqual(telemetry_from_agent(a)['input'],0)
+    def test_maximum_safe_numeric_groups_fit_native_value_limit(self):
+        from observatory.probe import TELEMETRY_V2_GROUPS
+        for fields in TELEMETRY_V2_GROUPS:
+            packed=','.join('9007199254740991' for _ in fields)
+            self.assertLessEqual(len(packed),67)
+
+    def test_report_roundtrip_transports_cumulative_numbers_atomically(self):
+        a=agent();seq=event()['seq']
+        usage={'usage_source':'codex-rollout','usage_seq':seq,'input':0,'total_input':21700000,'total_output':4200,'total_cache_read':20000000,'total_uncached_input':1700000,'compactions':3,'context':185000,'window':258400,'context_percent':70}
+        with tempfile.TemporaryDirectory() as directory:
+            config=Path(directory)/'config.json';config.write_text(json.dumps({'hosts':[{'socket_path':'/herdr/herdr.sock'}]}))
+            with patch('observatory.telemetry.rpc',side_effect=[{'pane':a},{}]) as call:
+                self.assertTrue(report('codex',{'session_id':'native-secret','hook_event_name':'PreToolUse','observatory_usage':usage},'w1:p1',seq,config))
+                tokens=call.call_args.args[2]['tokens'];self.assertEqual(tokens['obs_v'],'2');self.assertEqual(len(tokens),13)
+                self.assertTrue(all(value is None or len(value)<=80 for value in tokens.values()))
+                a['tokens']=tokens;decoded=telemetry_from_agent(a)
+                for key in ('input','total_input','total_output','compactions','context_percent'):self.assertEqual(decoded[key],usage[key])

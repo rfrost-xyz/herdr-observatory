@@ -17,10 +17,12 @@ Context uses the last active usage and the harness's baseline-adjusted percentag
 
 ## Gates and browser acceptance
 
-85 Python and 169 JavaScript tests pass. Syntax, strict OpenSpec and whitespace checks pass. Independent reviews resolved context/cache consistency, Pi missing auxiliary usage, hover density/freshness, accessible percentage and stale history handling. Final independent review clean.
+89 Python and 170 JavaScript tests pass. Syntax, strict OpenSpec and whitespace checks pass. Independent reviews resolved context/cache consistency, Pi missing auxiliary usage, hover density/freshness, accessible percentage and stale history handling. Final independent review clean.
 
 Synthetic three-host/eight-thread browser checks pass at 1280x720 and 1920x1080. Document dimensions equal viewport dimensions. Every card, fleet panel and hover detail has matching client/scroll heights. Keyboard activation opens no dialogue and preserves card-local details; the old inspector is absent. No live private content is included in these fixtures.
 
 ## Deployment
 
-Pending image and both-host live verification.
+The first deployment exposed Herdr's native 16-key report limit: the expanded flat report was rejected. A direct current-session reporter check returned `invalid_metadata_token`. The corrective atomic v2 format sends 13 keys with four immutable numeric groups, each at most 67 characters. Tests now enforce native key/value limits, complete populated roundtrip, retained-v1 migration and malformed-group rejection. Final live acceptance is pending the corrected image.
+
+Native contract: https://herdr.dev/docs/socket-api/#agent-state-reporting

@@ -195,13 +195,14 @@ function cardTelemetry(a,t){
   if(has('total_cache_read') || has('total_uncached_input'))tiles.push({label:'Cached / uncached',value:`${compactNumber(t.total_cache_read)} / ${compactNumber(t.total_uncached_input)}`,detail:`${number(t.total_cache_read)} cached / ${number(t.total_uncached_input)} uncached input tokens (session)`,ratio:has('total_cache_read') && has('total_uncached_input') && t.total_cache_read+t.total_uncached_input>0?t.total_cache_read/(t.total_cache_read+t.total_uncached_input):null});
   else if(has('cache_read') || has('cache_write'))tiles.push({label:'Cache R / W',value:`${compactNumber(t.cache_read)} / ${compactNumber(t.cache_write)}`,detail:`${number(t.cache_read)} read / ${number(t.cache_write)} written tokens (last response)`});
   if(has('compactions'))tiles.push({label:'Compactions',value:number(t.compactions),detail:`${number(t.compactions)} reported session compactions`});
+  else if(tiles.length)tiles.push({label:'Compactions',value:'—',detail:'Complete compaction history unavailable'});
   const subagent=t?.event==='subagent-start'?'Subagent started':t?.event==='subagent-stop'?'Subagent stopped':null;
   const phase=t?phaseLabel(t.phase):'';
   const toolEnd=t?.event==='tool-end'?(t.result==='error'?'Tool error':t.result==='cancelled'?'Tool cancelled':'Tool finished'):null;
   const activity=subagent || toolEnd || (!['Working','Idle','Ready','Ended'].includes(phase)?phase:'');
   const note=!t?'No fresh hook sample':!tiles.length?'Waiting for reported usage':!['context','window','input','output_tokens','cache_read','cache_write'].every(has)?'Partial usage coverage':'';
   for(const tile of tiles){
-    tile.hover=tile.label==='Session tokens'?`Session: ${number(t.total_input)} in · ${number(t.total_output)} out`:tile.label==='Last response'?`Response: ${number(t.input)} in · ${number(t.output_tokens)} out`:tile.label==='Cached / uncached'?`Cache: ${number(t.total_cache_read)} read · ${number(t.total_uncached_input)} uncached`:tile.label==='Cache R / W'?`Response cache: ${number(t.cache_read)} read · ${number(t.cache_write)} write`:tile.label==='Compactions'?`Compactions: ${number(t.compactions)}`:`Context: ~${number(t.context)} / ${number(t.window)}`;
+    tile.hover=tile.label==='Session tokens'?`Session: ${number(t.total_input)} in · ${number(t.total_output)} out`:tile.label==='Last response'?`Response: ${number(t.input)} in · ${number(t.output_tokens)} out`:tile.label==='Cached / uncached'?`Cache: ${number(t.total_cache_read)} read · ${number(t.total_uncached_input)} uncached`:tile.label==='Cache R / W'?`Response cache: ${number(t.cache_read)} read · ${number(t.cache_write)} write`:tile.label==='Compactions'?(has('compactions')?`Compactions: ${number(t.compactions)}`:'Compactions: full history unavailable'):`Context: ~${number(t.context)} / ${number(t.window)}`;
   }
   return {activity,tool:t?.tool || '',model:t?.model || '',tiles,note,subagent:Boolean(subagent)};
 }

@@ -16,6 +16,13 @@ TELEMETRY_EVENTS = {'session', 'turn', 'tool-start', 'tool-end', 'thinking', 'ou
                     'compact-start', 'compact-end', 'compact-failed', 'idle', 'interrupt', 'end', 'model', 'subagent-start', 'subagent-stop'}
 TELEMETRY_PHASES = {'ready', 'working', 'tool', 'thinking', 'output', 'compacting', 'idle', 'interrupted', 'ended'}
 TELEMETRY_NUMBERS = ('input', 'output_tokens', 'cache_read', 'cache_write', 'context', 'window', 'usage_seq', 'total_input', 'total_output', 'total_cache_read', 'total_cache_write', 'total_uncached_input', 'compactions', 'context_percent')
+# Wire v2 order is immutable. A new field/order requires a new wire version.
+TELEMETRY_V2_GROUPS = (
+    ('input', 'output_tokens', 'cache_read', 'cache_write'),
+    ('context', 'window', 'usage_seq', 'total_input'),
+    ('total_output', 'total_cache_read', 'total_cache_write', 'total_uncached_input'),
+    ('compactions', 'context_percent'),
+)
 TELEMETRY_TTL = 120
 
 
@@ -64,12 +71,31 @@ def telemetry_view(raw, now=None):
 
 def telemetry_from_agent(agent, now=None):
     tokens = agent.get('tokens')
-    if not isinstance(tokens, dict) or tokens.get('obs_v') != '1' or not session_binding(agent) or tokens.get('obs_bind') != session_binding(agent):
+    if not isinstance(tokens, dict) or tokens.get('obs_v') not in ('1', '2') or not session_binding(agent) or tokens.get('obs_bind') != session_binding(agent):
         return None
-    raw = {k: tokens.get('obs_' + k) for k in ('seq', 'event', 'phase', 'tool', 'model', 'result', 'usage_source') + TELEMETRY_NUMBERS}
-    for key in ('seq',) + TELEMETRY_NUMBERS:
-        value = raw[key]
-        raw[key] = int(value) if isinstance(value, str) and re.fullmatch(r'[0-9]{1,16}', value) else None
+    raw = {k: tokens.get('obs_' + k) for k in ('seq', 'event', 'phase', 'tool', 'model', 'result', 'usage_source')}
+    value = raw['seq']
+    raw['seq'] = int(value) if isinstance(value, str) and re.fullmatch(r'[0-9]{1,16}', value) else None
+    if tokens['obs_v'] == '2':
+        # A partial or malformed atomic record never falls back to retained v1 keys.
+        for index, fields in enumerate(TELEMETRY_V2_GROUPS):
+            packed = tokens.get('obs_n' + str(index))
+            if not isinstance(packed, str) or len(packed)>67:
+                return None
+            values = packed.split(',')
+            if len(values) != len(fields):
+                return None
+            for key, value in zip(fields, values):
+                if value == '':
+                    raw[key] = None
+                elif re.fullmatch(r'[0-9]{1,16}', value) and int(value)<=9007199254740991:
+                    raw[key] = int(value)
+                else:
+                    return None
+    else:
+        for key in TELEMETRY_NUMBERS:
+            value = tokens.get('obs_' + key)
+            raw[key] = int(value) if isinstance(value, str) and re.fullmatch(r'[0-9]{1,16}', value) else None
     return telemetry_view(raw, now)
 
 

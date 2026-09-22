@@ -11,3 +11,6 @@ No session directory mount, new daemon, raw message export or provider API reque
 
 ## Delivery
 Test both adapters and all browser modes; independently review, build one immutable image and deploy it and its payloads to both hosts. Preserve rollback image/config, verify Work disclosure and real numeric coverage, update documentation, synchronise/archive and publish the existing unmerged PR.
+
+## Native metadata limit found during deployment
+Herdr rejects more than 16 token updates per report, including null clears. Expanded metrics therefore use an atomic versioned numeric encoding with four bounded groups alongside identity/event fields. Each group remains within the native 80-character value limit; the public normalised schema remains individual numeric fields. Version 1 reading remains supported during migration, while version 2 ignores retained legacy numeric tokens and rejects malformed/missing groups. Never split a sample across reports sharing a sequence.
