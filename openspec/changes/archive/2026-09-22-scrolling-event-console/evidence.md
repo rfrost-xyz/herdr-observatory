@@ -1,6 +1,6 @@
 # Verification evidence
 
-Runtime commit: recorded below after packaging.
+Runtime commit: `ed536f9`.
 
 | Requirement scenario | Implementation | Verification |
 | --- | --- | --- |
@@ -14,3 +14,9 @@ Runtime commit: recorded below after packaging.
 Independent review approved after fixing temporary banner capture during long effects. Renewed review approved the final monotonic scroll-clock fix, with no actionable findings. Browser QA caught an RAF/performance clock mismatch; the renderer now uses the event clock and bounded interpolation.
 
 README documents the layout, stamps, metadata and polling limitations. events.subscribe and agent.explain are documented opportunities, not implemented integrations. Existing Work filtering and Docker boundaries are unchanged.
+
+## Deployment and cleanup
+
+Packaged Python tests passed (42). Deployment verification covered both profiles, current browser assets, online sources, Work-category filtering and exclusion of personal-project data. Container hardening and restart policy remain unchanged.
+
+One previous-image rollback was retained per deployment. The synthetic QA server was stopped and its browser profiles, screenshots and task temporary files removed. No host service or browser autostart was added. Host identifiers and operational deployment details are omitted from this public evidence record.

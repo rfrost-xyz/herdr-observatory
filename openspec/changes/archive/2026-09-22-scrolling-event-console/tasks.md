@@ -4,4 +4,4 @@
 - [x] 1.2 Apply shared denser geometry and padding; verify Python layout, all WASM effects and browser rendering at 720p/1080p.
 ## 2. Delivery
 - [x] 2.1 Document API opportunities and current sampling limits, pass repository gates and independent review.
-- [ ] 2.2 Deploy both profiles, verify privacy/health, retain one rollback, clean task artifacts, synchronise/archive and publish.
+- [x] 2.2 Deploy both profiles, verify privacy/health, retain one rollback, clean task artifacts, synchronise/archive and publish.
