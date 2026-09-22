@@ -37,7 +37,7 @@ The display SHALL show an unbranded live thread TUI alongside text effects confi
 
 #### Scenario: In-place playback
 - **WHEN** an incoming status event receives an effect
-- **THEN** only that line animates at its existing left edge and scrolling row, without horizontal or vertical block centring or covering adjacent records.
+- **THEN** only that line animates at its existing left edge and scrolling row, without horizontal or vertical block centring or covering adjacent records; if the line scrolls out of view, its playback is discarded without later replay.
 
 ### Requirement: Scrolling observation console
 The live terminal SHALL scroll timestamped, bounded observations only as notable agent lifecycle/status and source-availability changes are observed. Duplicate samples SHALL NOT create duplicate transitions. Status stamps SHALL distinguish observed state changes from raw events or tool execution. The current thread list SHALL remain separate and readable. Readiness, launch flags and revision/sequence changes SHALL use only sanitised available metadata in the live table. The CLI SHALL use one bounded line per event containing observation time, project, Herdr state, available thread number and pertinent status update without inventing activity. Unavailable fields SHALL be marked unavailable.
@@ -52,7 +52,7 @@ The live terminal SHALL scroll timestamped, bounded observations only as notable
 
 #### Scenario: Animation accessibility and disclosure
 - **WHEN** motion is paused, reduced motion is requested, a source expires, or a CLI effect is playing
-- **THEN** no fabricated activity is added, effects retain their completion semantics, obsolete pending stamps are discarded, and current disclosed state remains accessible.
+- **THEN** no fabricated activity is added, effects retain their completion semantics, obsolete pending effect starts are discarded, and current disclosed state remains accessible.
 
 #### Scenario: Denser padded terminal
 - **WHEN** the browser renders at 720p or 1080p

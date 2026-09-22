@@ -5,16 +5,9 @@ const reduced = matchMedia('(prefers-reduced-motion: reduce)');
 let snapshot = null, received = 0, disconnected = false, initialised = false, paused = false;
 let rowActivity = new Map();
 let previous = new Map(), agents = [], records = [], serial = 0;
-let scrollStarted=0, scrollDistance=0, stampCandidate=null, activeStamp=null, lastStamp=-Infinity;
+let scrollStarted=0, scrollDistance=0;
 const GRID={columns:140,rows:44,feedStart:17,feedRows:24,threadRows:8};
 function scrollOffset(now=performance.now()) {return paused || reduced.matches ? 0 : scrollDistance*Math.max(0,Math.min(1,1-(now-scrollStarted)/260));}
-function stampCurrent(entry) {return entry && !disconnected && previous.get(entry.host)?.live && previous.get(entry.host).agents.get(entry.agent)?.status===entry.status;}
-function updateStamp(now=performance.now()) {
-  if(activeStamp && (!stampCurrent(activeStamp) || now-activeStamp.shown>=8000))activeStamp=null;
-  if(stampCandidate && (!stampCurrent(stampCandidate) || now-stampCandidate.born>=30000))stampCandidate=null;
-  if(!activeStamp && stampCandidate && !paused && !reduced.matches && now-lastStamp>=60000){activeStamp={...stampCandidate,shown:now};stampCandidate=null;lastStamp=now;}
-  return activeStamp;
-}
 let width = 0, height = 0, lastFrame = 0, manualPage = null, category = 'all';
 let palette = {background:'#101318',foreground:'#c0caf5',blue:'#7aa2f7',green:'#9ece6a',yellow:'#e0af68',red:'#f7768e',cyan:'#7dcfff'};
 const clean = (value, limit=160) => Array.from(String(value ?? '—').replace(/[\x00-\x1f\x7f-\x9f]/g,' ')).slice(0,limit).join('');
@@ -34,9 +27,10 @@ function padded(value,length) {const text=clean(value,length);return text+' '.re
 function fields(entries) {let row='';for(const [column,value] of entries){row=padded(row,column)+value;}return clean(row,GRID.columns);}
 function meter(value) {if(!Number.isFinite(value))return '░░░░░░   ?';const n=Math.round(Math.max(0,Math.min(100,value))/100*6);return '▰'.repeat(n)+'▱'.repeat(6-n)+' '+padded(Math.round(value)+'%',4);}
 function record(kind, text, now, context={}) {
-  const entry = {id:++serial,kind,text:clean(text),at:now,born:performance.now(),project:clean(context.project || ''),detail:clean(context.detail || ''),host:clean(context.host || '')};
+  const entry = {id:++serial,kind,text:clean(text),at:now,born:performance.now(),project:clean(context.project || ''),detail:clean(context.detail || ''),host:clean(context.host || ''),state:clean(context.state || '—'),thread:clean(context.thread || '—'),eligible:Boolean(context.eligible)};
   scrollDistance=Math.min(10,scrollOffset(entry.born)+1);scrollStarted=entry.born;
   records.push(entry); records = records.slice(-60);
+  if(entry.eligible && !document.hidden && !paused && !reduced.matches && !disconnected && animationIndex<0 && !loadingFrames && !pendingEffect && holdElapsed>=holdSeconds*1000)pendingEffect=entry;
 }
 function observe(data, now=Date.now()) {
   snapshot=data; received=now;
@@ -45,7 +39,8 @@ function observe(data, now=Date.now()) {
   for (const [key,value] of Object.entries(data.theme?.colours || {})) if ((key in palette || key==='accent') && /^#[0-9a-f]{6}$/i.test(value)) {palette[key]=value;if(key==='accent'){palette.blue=value;palette.cyan=value;}}
   reconcile(now,recovery);
 }
-function agentEvent(kind,a,now,action) {record(kind,`${a.project} · ${action}`,now,{project:a.project,detail:a.title,host:a.host});}
+function paneNumber(a) {const prefix=a.host+':';return clean(a.id?.startsWith(prefix)?a.id.slice(prefix.length):a.id,24);}
+function agentEvent(kind,a,now,action) {record(kind,action,now,{project:a.project,detail:a.title,host:a.host,state:statusKind(a.status),thread:paneNumber(a),eligible:true});}
 function telemetryFor(a,now=Date.now()) {
   const t=a.technical?.telemetry;
   return t && Number.isSafeInteger(t.seq) && now-t.seq/1000>=0 && now-t.seq/1000<=120000?t:null;
@@ -62,7 +57,7 @@ function telemetryEvent(a,before,now) {
   if(!action)return;
   const details=[t.model,t.result,t.context!=null?`context ~${number(t.context)} / ${number(t.window)}`:null,
     t.input!=null?`last response in ${number(t.input)} out ${number(t.output_tokens)} cache R ${number(t.cache_read)} W ${number(t.cache_write)}`:null].filter(Boolean).join(' · ');
-  record(action==='response received'?'USAGE':t.event.startsWith('compact')?'COMPACT':'TOOL',`${a.project} · ${action}${t.tool?' · '+t.tool:''}`,now,{project:a.project,detail:details,host:a.host});
+  record(action==='response received'?'USAGE':t.event.startsWith('compact')?'COMPACT':'TOOL',`${action}${t.tool?' · '+t.tool:''}`,now,{project:a.project,detail:details,host:a.host,state:statusKind(a.status),thread:paneNumber(a),eligible:true});
 }
 
 function reconcile(now=Date.now(), reset=false) {
@@ -82,7 +77,6 @@ function reconcile(now=Date.now(), reset=false) {
         if (!before) agentEvent('ATTACH',a,now,'thread joined');
         else if (before.status!==a.status) {
           agentEvent(statusKind(a.status),a,now,({working:'started working',blocked:'needs your input',done:'completed',idle:'became idle'}[a.status] || 'state unknown'));
-          if(['blocked','done'].includes(a.status))stampCandidate={...records.at(-1),host:host.id,agent:id,status:a.status};
         }
       }
       for (const [id,a] of old.agents) if (!current.has(id)) agentEvent('DETACH',a,now,'thread left');
@@ -91,6 +85,8 @@ function reconcile(now=Date.now(), reset=false) {
   }
   for (const [id,old] of previous) if (!next.has(id) && old.live && !reset) record('LOST',`${id} · source removed`,now);
   previous=next;
+  if(pendingEffect && (!previous.get(pendingEffect.host)?.live || !records.slice(-GRID.feedRows).some(r=>r.id===pendingEffect.id)))pendingEffect=null;
+  if((loadingFrames || animationIndex>=0) && !framesCurrent())stopEffect();
   const present=new Set(agents.map(a=>a.id));
   for(const id of rowActivity.keys())if(!present.has(id))rowActivity.delete(id);
   if (!initialised) { record('BOOT',`Watching ${agents.length} threads · ${snapshot.profile}`,now,false); initialised=true; }
@@ -98,12 +94,12 @@ function reconcile(now=Date.now(), reset=false) {
 }
 function disconnect(now=Date.now()) {
   if (!disconnected) record('LOST','Connection lost · activity unknown',now);
-  disconnected=true; agents=[];rowActivity.clear();
+  disconnected=true; agents=[];rowActivity.clear();pendingEffect=null;stopEffect();
   // Preserve source baseline until transport recovery, without inventing per-pane exits.
   accessible();
 }
 function accessible() {
-  document.getElementById('transcript').textContent=[`HERDR OBSERVATORY / ${snapshot?.profile || 'connecting'} / ${disconnected?'disconnected':'sampled observations'}`,...agents.map(a=>`${clean(a.host)}/${clean(a.project)} ${statusKind(a.status)} ${clean(a.title)} · ${clean(telemetryBrief(a))}`),...(typeof textFrames!=='undefined' && animationIndex>=0 && framesCurrent()?['Animated capture: '+textFrames.text]:[]),...records.map(r=>`${new Date(r.at).toISOString()} ${r.kind} ${r.text}`)].join('\n');
+  document.getElementById('transcript').textContent=[`HERDR OBSERVATORY / ${snapshot?.profile || 'connecting'} / ${disconnected?'disconnected':'sampled observations'}`,...agents.map(a=>`${clean(a.host)}/${clean(a.project)} ${statusKind(a.status)} ${clean(a.title)} · ${clean(telemetryBrief(a))}`),...(typeof textFrames!=='undefined' && animationIndex>=0 && framesCurrent()?['Animated capture: '+textFrames.text]:[]),...records.map(r=>eventLine(r))].join('\n');
 }
 function resize() {
   width=innerWidth; height=innerHeight;
@@ -119,43 +115,41 @@ function geometry(w,h) {
 }
 function threadMotion(a,now=performance.now(),wall=Date.now()) {
   const host=snapshot?.hosts.find(h=>h.id===a.host);
-  if(paused || reduced.matches || disconnected || !host?.online || !Number.isFinite(host.sampled_at) || wall/1000-host.sampled_at>=snapshot.interval+20)return {moving:false,progress:0,flash:0,glyph:icon(a.status)};
+  if(paused || reduced.matches || disconnected || !host?.online || !Number.isFinite(host.sampled_at) || wall/1000-host.sampled_at>=snapshot.interval+20)return {moving:false,flash:0,glyph:icon(a.status)};
   const hash=Array.from(a.id).reduce((n,c)=>(Math.imul(n,31)+c.codePointAt(0))>>>0,0);
-  const moving=a.status==='working',period=2800+hash%1700;
+  const moving=a.status==='working';
   const elapsed=now-(rowActivity.get(a.id) ?? -Infinity);
-  return {moving,progress:((now+hash%period)%period)/period,
+  return {moving,
     flash:Math.max(0,1-elapsed/1800),
     glyph:moving?Array.from('⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏')[Math.floor((now+hash%1000)/130)%10]:icon(a.status)};
 }
-function effectText(now=performance.now()) {
-  return sceneRows(now,false).slice(GRID.feedStart,GRID.feedStart+GRID.feedRows).map(row=>padded(row,GRID.columns)).join('\n');
-}
-
 function filteredAgents(){return agents.filter(a=>category==='all'||snapshot?.profile==='work'||a.category===category);}
 function currentPage(now=Date.now()) {return (manualPage ?? Math.floor(now/15000))%Math.max(1,Math.ceil(filteredAgents().length/geometry(width,height).processRows));}
-let textFrames={text:'',sources:[]}, effectSession=null, effectFrame=null, effectLibrary=null, effectBag=[];
-let holdSeconds=120, holdElapsed=0, lastEffect='', animationIndex=-1, frameElapsed=0, loadingFrames=false;
-function framesCurrent() {return !disconnected && textFrames.sources?.length>0 && textFrames.sources.every(source=>previous.get(source.id)?.live);}
-function stopEffect() {effectSession?.free();effectSession=null;effectFrame=null;animationIndex=-1;holdElapsed=0;}
+let textFrames={text:'',sources:[]}, effectSession=null, effectFrame=null, effectLibrary=null, effectBag=[],pendingEffect=null;
+let effectGeneration=0;
+let holdSeconds=120, holdElapsed=Infinity, lastEffect='', animationIndex=-1, frameElapsed=0, loadingFrames=false;
+function framesCurrent() {return !disconnected && textFrames.sources?.length>0 && textFrames.sources.every(source=>previous.get(source.id)?.live) && records.slice(-GRID.feedRows).some(r=>r.id===textFrames.recordId);}
+function stopEffect() {effectGeneration++;effectSession?.free();effectSession=null;effectFrame=null;animationIndex=-1;holdElapsed=0;}
 async function refreshFrames() {
-  if(loadingFrames || animationIndex>=0 || paused || reduced.matches || disconnected || !snapshot?.terminal_text || !snapshot.hosts.some(h=>previous.get(h.id)?.live))return;
-  loadingFrames=true;
+  const entry=pendingEffect;pendingEffect=null;
+  if(!entry || loadingFrames || animationIndex>=0 || paused || reduced.matches || disconnected)return;
+  loadingFrames=true;const generation=effectGeneration;
+  // This arrival is consumed even if loading fails. Only a subsequent new event can retry.
+  textFrames={text:eventLine(entry),recordId:entry.id,sources:[{id:entry.host}]};
   try {
     effectLibrary ??= await import('./effects.mjs').then(module=>module.loadEffects().then(lib=>({...lib,next:module.nextEffect})));
-    if(paused || reduced.matches || disconnected)return;
+    if(generation!==effectGeneration || document.hidden || paused || reduced.matches || !framesCurrent())return;
     const effect=effectLibrary.next(effectLibrary.catalogue,effectBag,lastEffect);
-    textFrames={text:effectText(performance.now()),sources:snapshot.hosts.filter(h=>previous.get(h.id)?.live).map(h=>({id:h.id}))};
-    if(!framesCurrent())return;
     effectSession=effectLibrary.create(textFrames.text,effect,{...palette});
     effectFrame=effectSession.next();
     if(!effectFrame){stopEffect();return;}
     animationIndex=0;frameElapsed=0;lastEffect=effect;accessible();
-  } catch {stopEffect(); /* Keep the live terminal readable on renderer failure. */}
+  } catch {stopEffect(); /* Keep the live event readable on renderer failure. */}
   finally {loadingFrames=false;holdElapsed=0;}
 }
 function advanceEffects(delta) {
-  if(disconnected || (animationIndex>=0 && !framesCurrent())){stopEffect();return;}
-  if(paused || reduced.matches)return;
+  if(disconnected || ((animationIndex>=0 || loadingFrames) && !framesCurrent())){pendingEffect=null;stopEffect();return;}
+  if(paused || reduced.matches){pendingEffect=null;return;}
   if(animationIndex>=0){
     frameElapsed+=delta;
     if(frameElapsed>=1000/30){
@@ -163,7 +157,7 @@ function advanceEffects(delta) {
       try {const next=effectSession.next();if(next){effectFrame=next;animationIndex++;}else stopEffect();}
       catch {stopEffect();}
     }
-  }else if(!loadingFrames){holdElapsed+=delta;if(holdElapsed>=holdSeconds*1000)refreshFrames();}
+  }else if(!loadingFrames){holdElapsed+=delta;if(pendingEffect)refreshFrames();}
 }
 function adjustHold(change){holdSeconds=Math.max(0,Math.min(300,holdSeconds+change));}
 function themedColour(value, fallback) {
@@ -194,18 +188,15 @@ function paintEffect(frame,x,y,cell,line) {
   }
   ctx.globalAlpha=1;
 }
-function eventLine(entry) {const state={Working:'working',Done:'done',Blocked:'blocked',Idle:'idle'}[entry.kind];return `${new Date(entry.at).toISOString().slice(11,19)}  ${icon(state || 'feed')}  ${entry.text}`;}
-function eventDetail(entry) {return '             '+[entry.detail,entry.host].filter(Boolean).join(' · ');}
-function cliLayout(now=performance.now(),showArt=true) {
-  const stamp=showArt?updateStamp(now):null;
-  const label=stamp && (stamp.project.replace(/[^a-z ]/ig,' ').trim() || stamp.kind);
-  const art=stamp && !paused && !reduced.matches && typeof renderStamp==='function'?renderStamp(label):null;
-  const start=GRID.feedStart+(art?11:0),capacity=Math.floor((41-start)/2);
-  const feed=records.slice(-(capacity+1));
-  return {stamp,art,start,capacity,feed,first:41-feed.length*2};
+function eventLine(entry) {
+  const project=clean(entry.project || '—',24),state=clean(entry.state,8),thread=clean(entry.thread,24);
+  return clean(`${new Date(entry.at).toISOString().slice(11,19)} ${project} ${state} ${thread} ${entry.text}${entry.kind==='USAGE'?' · '+entry.detail:''}`,GRID.columns-2);
 }
-function arrival(entry,now) {return paused || reduced.matches?1:Math.max(0,Math.min(1,(now-entry.born)/650));}
-function sceneRows(now=performance.now(),showArt=true) {
+function cliLayout() {
+  const feed=records.slice(-(GRID.feedRows+1));
+  return {start:GRID.feedStart,capacity:GRID.feedRows,feed,first:41-feed.length};
+}
+function sceneRows(now=performance.now()) {
   const rows=Array(GRID.rows).fill('');
   const put=(row,value)=>{rows[row]=clean(value,GRID.columns);};
   const rule=label=>'╭─ '+label+' '+'─'.repeat(Math.max(0,GRID.columns-Array.from(label).length-5))+'╮';
@@ -218,15 +209,14 @@ function sceneRows(now=performance.now(),showArt=true) {
   put(5,rule(`${icon('threads')} Threads  ·  ${agents.filter(a=>a.status==='working').length} working  ·  ${agents.filter(a=>a.status==='blocked').length} blocked  ·  ${agents.length} total`));
   put(6,fields([[5,'State'],[15,'Project'],[35,'Thread'],[77,'Engine'],[92,'Host'],[108,'R L F'],[118,'Rev / Seq']]));
   const shown=filteredAgents().slice(currentPage()*GRID.threadRows,currentPage()*GRID.threadRows+GRID.threadRows),flag=v=>v===true?'●':v===false?'·':'?';
-  shown.forEach((a,i)=>{const t=a.technical || {};put(7+i,fields([[2,threadMotion(a,now).glyph],[5,padded(statusKind(a.status),8)],[15,padded(a.project,18)],[35,padded(telemetryBrief(a),40)],[77,padded(a.harness,12)],[92,padded(a.host,14)],[108,`${flag(t.interactive_ready)} ${flag(t.launch_pending)} ${flag(t.focused)}`],[118,number(t.revision)+' / '+number(t.state_change_seq)]]));});
+  shown.forEach((a,i)=>{const t=a.technical || {};put(7+i,fields([[2,threadMotion(a,now).glyph],[5,padded(statusKind(a.status),8)],[15,padded(a.project,18)],[35,padded(paneNumber(a)+' '+telemetryBrief(a),40)],[77,padded(a.harness,12)],[92,padded(a.host,14)],[108,`${flag(t.interactive_ready)} ${flag(t.launch_pending)} ${flag(t.focused)}`],[118,number(t.revision)+' / '+number(t.state_change_seq)]]));});
   if(!shown.length)put(7,'  '+(disconnected?'Connection lost · current thread state unavailable':'No permitted threads in this view'));
   put(15,`╰─ ${category}  ·  ${filteredAgents().length?currentPage()+1:0}/${Math.ceil(filteredAgents().length/GRID.threadRows)}  ·  PgUp/PgDn page   r rotate   c category   ${'─'.repeat(8)}   R ready · L launching · F focused`);
   put(16,rule(`${icon('feed')} Notable events · sampled  ·  state changes and connections`));
-  const cli=cliLayout(now,showArt);
-  if(cli.art){cli.art.forEach((row,i)=>put(17+i,'   '+row));put(26,'  '+eventLine(cli.stamp));}
-  cli.feed.slice(-cli.capacity).forEach((r,i,list)=>{const row=41-list.length*2+i*2;put(row,'  '+eventLine(r));put(row+1,eventDetail(r));});
+  const cli=cliLayout();
+  cli.feed.slice(-cli.capacity).forEach((r,i,list)=>put(41-list.length+i,'  '+eventLine(r)));
   put(41,'╰'+'─'.repeat(GRID.columns-2)+'╯');
-  put(42,` ${icon('terminal')}  follow  ${nerdFontReady?'':'›'}  ${paused?'paused':reduced.matches?'reduced motion':'live'}  ·  ${snapshot?.theme?.name || 'default'}                                  ${icon('clock')}  FX hold ${holdSeconds}s   ← / → adjust`);
+  put(42,` ${icon('terminal')}  follow  ${nerdFontReady?'':'›'}  ${paused?'paused':reduced.matches?'reduced motion':'live'}  ·  ${snapshot?.theme?.name || 'default'}                                  ${icon('clock')}  FX cooldown ${holdSeconds}s   ← / → adjust`);
   put(43,`  Read only · ${snapshot?.interval || '?'}s samples · intermediate transitions may be missed`);
   return rows;
 }
@@ -237,7 +227,7 @@ function draw(now=performance.now()) {
   ctx.font=`${font}px ${FONT_FACE}`;ctx.textBaseline='top';
   const playing=animationIndex>=0 && framesCurrent() && !reduced.matches;
   document.getElementById('controls').hidden=false;
-  const rows=sceneRows(now,!playing);
+  const rows=sceneRows(now);
   function text(value,row,tint=palette.foreground,from=0,to=GRID.columns){let col=0;for(const glyph of clean(value,GRID.columns)){if(col>=from && col<to){ctx.fillStyle=tint;ctx.fillText(glyph,margin+col*cell,top+row*line,cell);}col++;}}
   function band(row,alpha,tint=palette.foreground){ctx.globalAlpha=alpha;ctx.fillStyle=tint;ctx.fillRect(margin,top+row*line,width-margin*2,line);ctx.globalAlpha=1;}
   for(const row of [0,42])band(row,.13,palette.blue);
@@ -248,7 +238,6 @@ function draw(now=performance.now()) {
       const state=filteredAgents()[currentPage()*GRID.threadRows+i-7]?.status;
       if(state){const a=filteredAgents()[currentPage()*GRID.threadRows+i-7],motion=threadMotion(a,now),tint=colour(statusKind(state));
         band(i,(state==='blocked'?.09:i%2?.025:.045)+motion.flash*.12,motion.flash?tint:state==='blocked'?palette.yellow:palette.foreground);
-        if(motion.moving){const span=(width-margin*2-cell*8),x=margin+motion.progress*span;ctx.fillStyle=tint;ctx.globalAlpha=.055;ctx.fillRect(x,top+i*line,cell*8,line);ctx.globalAlpha=.35;ctx.fillRect(x,top+(i+.9)*line,cell*4,line*.07);ctx.globalAlpha=1;}
         text(row,i,palette.foreground,35,75);text(row,i,tint,0,14);text(row,i,palette.blue,15,33);ctx.globalAlpha=.65;text(row,i,palette.foreground,77);ctx.globalAlpha=1;return;}
     }
     const muted=[6,15,43].includes(i);
@@ -256,25 +245,15 @@ function draw(now=performance.now()) {
     text(row,i,[0,5,16,42].includes(i)?palette.blue:palette.foreground);
     ctx.globalAlpha=1;
   });
-  if(playing){
-    ctx.save();ctx.beginPath();ctx.rect(margin,top+GRID.feedStart*line,width-margin*2,GRID.feedRows*line);ctx.clip();
-    paintEffect(effectFrame,margin,top+GRID.feedStart*line,cell,line);
-    ctx.restore();return;
-  }
-  const cli=cliLayout(now);
-  if(cli.art){
-    const progress=paused || reduced.matches?1:Math.min(1,(now-cli.stamp.shown)/750);
-    cli.art.forEach((row,i)=>text('   '+clean(row,Math.ceil(GRID.columns*progress)),17+i,colour(cli.stamp.kind)));
-    text('  '+eventLine(cli.stamp),26,colour(cli.stamp.kind));
-  }
-  ctx.save();ctx.beginPath();ctx.rect(margin,top+cli.start*line,width-margin*2,(41-cli.start)*line);ctx.clip();
-  const offset=scrollOffset(now)*2;
+  const cli=cliLayout();
+  ctx.save();ctx.beginPath();ctx.rect(margin,top+cli.start*line,width-margin*2,GRID.feedRows*line);ctx.clip();
+  const offset=scrollOffset(now);
   cli.feed.forEach((r,i)=>{
-    const row=cli.first+i*2+offset,progress=arrival(r,now);
-    if(progress<1){ctx.globalAlpha=(1-progress)*.14;ctx.fillStyle=colour(r.kind);ctx.fillRect(margin,top+row*line,(width-margin*2)*progress,line*2);ctx.globalAlpha=1;}
-    const message='  '+eventLine(r),detail=eventDetail(r);
-    text(clean(message,Math.ceil(Array.from(message).length*progress)),row,colour(r.kind));
-    ctx.globalAlpha=.6;text(clean(detail,Math.ceil(Array.from(detail).length*progress)),row+1);ctx.globalAlpha=1;
+    const row=cli.first+i+offset;
+    if(playing && r.id===textFrames.recordId){
+      ctx.save();ctx.beginPath();ctx.rect(margin+2*cell,top+row*line,(GRID.columns-2)*cell,line);ctx.clip();
+      paintEffect(effectFrame,margin+2*cell,top+row*line,cell,line);ctx.restore();
+    }else text('  '+eventLine(r),row,colour(r.kind));
   });
   ctx.restore();
 }
@@ -284,11 +263,12 @@ async function refresh() {
   catch {disconnect();}
   setTimeout(refresh,2000);
 }
-function pause() {paused=!paused;document.getElementById('pause').setAttribute('aria-pressed',String(paused));document.getElementById('pause').textContent=paused?'Space resume':'Space pause';}
+function pause() {paused=!paused;if(paused){pendingEffect=null;effectGeneration++;}document.getElementById('pause').setAttribute('aria-pressed',String(paused));document.getElementById('pause').textContent=paused?'Space resume':'Space pause';}
 async function fullscreen(){try{if(document.fullscreenElement)await document.exitFullscreen();else await document.documentElement.requestFullscreen();}catch{record('INFO','Use browser fullscreen (F11)',Date.now(),false);}}
  document.getElementById('pause').addEventListener('click',pause);
 document.getElementById('fullscreen').addEventListener('click',fullscreen);
 addEventListener('keydown',event=>{if(event.target?.tagName==='BUTTON' && event.code==='Space')return;if(event.code==='Space'){event.preventDefault();pause();}if(event.key==='f')fullscreen();if(event.key==='ArrowRight'){event.preventDefault();adjustHold(1);}if(event.key==='ArrowLeft'){event.preventDefault();adjustHold(-1);}if(event.key==='PageDown')manualPage=currentPage()+1;if(event.key==='PageUp')manualPage=Math.max(0,currentPage()-1);if(event.key==='r')manualPage=null;if(event.key==='c' && snapshot?.profile==='personal'){category=['all','work','personal'][(['all','work','personal'].indexOf(category)+1)%3];manualPage=0;}});
+reduced.addEventListener?.('change',()=>{if(reduced.matches){pendingEffect=null;effectGeneration++;}});
 addEventListener('resize',resize);
 setInterval(()=>{if(received && Date.now()-received>12000)disconnect();if(!disconnected)reconcile();},1000);
 resize();loadFont();requestAnimationFrame(frame);refresh();
