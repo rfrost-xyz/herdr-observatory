@@ -62,7 +62,7 @@ The activity strip SHALL scroll timestamped, bounded observations only as notabl
 - **THEN** the event stays on one line without decorative project-name artwork, and may receive an in-place text effect when eligible.
 
 #### Scenario: Animation accessibility and disclosure
-- **WHEN** motion is paused, reduced motion is requested, a source expires, or a activity-line effect is playing
+- **WHEN** motion is paused, reduced motion is requested, a source expires, or an activity-line effect is playing
 - **THEN** no fabricated activity is added, effects stay outside thread cards and retain their completion semantics, obsolete pending effect starts are discarded, and current disclosed state remains accessible.
 
 #### Scenario: Denser padded terminal

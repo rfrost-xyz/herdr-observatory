@@ -1,14 +1,13 @@
 'use strict';
-const canvas = document.getElementById('scene');
+const canvas = document.getElementById('event-effect');
 const ctx = canvas.getContext('2d');
 const reduced = matchMedia('(prefers-reduced-motion: reduce)');
 let snapshot = null, received = 0, disconnected = false, initialised = false, paused = false;
 let rowActivity = new Map();
 let previous = new Map(), agents = [], records = [], serial = 0;
-let scrollStarted=0, scrollDistance=0;
-const GRID={columns:140,rows:44,feedStart:17,feedRows:24,threadRows:8};
-function scrollOffset(now=performance.now()) {return paused || reduced.matches ? 0 : scrollDistance*Math.max(0,Math.min(1,1-(now-scrollStarted)/260));}
-let width = 0, height = 0, lastFrame = 0, manualPage = null, category = 'all';
+let latestActivity=null;
+const GRID={columns:140,feedRows:4,threadRows:8};
+let lastFrame=0,manualPage=null,category='all';
 let palette = {background:'#101318',foreground:'#c0caf5',blue:'#7aa2f7',green:'#9ece6a',yellow:'#e0af68',red:'#f7768e',cyan:'#7dcfff'};
 const clean = (value, limit=160) => Array.from(String(value ?? '—').replace(/[\x00-\x1f\x7f-\x9f]/g,' ')).slice(0,limit).join('');
 const number = value => Number.isSafeInteger(value) && value >= 0 ? String(value) : '—';
@@ -23,12 +22,9 @@ async function loadFont() {
   catch {nerdFontReady=false;}
   draw();
 }
-function padded(value,length) {const text=clean(value,length);return text+' '.repeat(Math.max(0,length-Array.from(text).length));}
-function fields(entries) {let row='';for(const [column,value] of entries){row=padded(row,column)+value;}return clean(row,GRID.columns);}
-function meter(value) {if(!Number.isFinite(value))return '░░░░░░   ?';const n=Math.round(Math.max(0,Math.min(100,value))/100*6);return '▰'.repeat(n)+'▱'.repeat(6-n)+' '+padded(Math.round(value)+'%',4);}
 function record(kind, text, now, context={}) {
   const entry = {id:++serial,kind,text:clean(text),at:now,born:performance.now(),project:clean(context.project || ''),detail:clean(context.detail || ''),host:clean(context.host || ''),state:clean(context.state || '—'),thread:clean(context.thread || '—'),eligible:Boolean(context.eligible)};
-  scrollDistance=Math.min(10,scrollOffset(entry.born)+1);scrollStarted=entry.born;
+  if(entry.eligible)latestActivity={born:entry.born,host:entry.host};
   records.push(entry); records = records.slice(-60);
   if(entry.eligible && !document.hidden && !paused && !reduced.matches && !disconnected && animationIndex<0 && !loadingFrames && !pendingEffect && holdElapsed>=holdSeconds*1000)pendingEffect=entry;
 }
@@ -72,7 +68,7 @@ function reconcile(now=Date.now(), reset=false) {
     if (initialised && !reset && live && old?.live) {
       for (const [id,a] of current) {
         const before=old.agents.get(id);
-        if (before && (before.status!==a.status || (telemetryFor(a,now)?.seq && telemetryFor(a,now).seq!==before.technical?.telemetry?.seq))) rowActivity.set(id,performance.now());
+        if (before && (before.status!==a.status || (telemetryFor(a,now)?.seq && telemetryFor(a,now).seq!==before.technical?.telemetry?.seq))) {rowActivity.set(id,performance.now());latestActivity={born:performance.now(),host:host.id};}
         if (before) telemetryEvent(a,before,now);
         if (!before) agentEvent('ATTACH',a,now,'thread joined');
         else if (before.status!==a.status) {
@@ -101,21 +97,9 @@ function disconnect(now=Date.now()) {
 function accessible() {
   document.getElementById('transcript').textContent=[`HERDR OBSERVATORY / ${snapshot?.profile || 'connecting'} / ${disconnected?'disconnected':'sampled observations'}`,...agents.map(a=>`${clean(a.host)}/${clean(a.project)} ${statusKind(a.status)} ${clean(a.title)} · ${clean(telemetryBrief(a))}`),...(typeof textFrames!=='undefined' && animationIndex>=0 && framesCurrent()?['Animated capture: '+textFrames.text]:[]),...records.map(r=>eventLine(r))].join('\n');
 }
-function resize() {
-  width=innerWidth; height=innerHeight;
-  const ratio=Math.min(devicePixelRatio || 1,2);
-  canvas.width=Math.round(width*ratio);canvas.height=Math.round(height*ratio);
-  ctx?.setTransform(ratio,0,0,ratio,0,0);
-  draw(performance.now());
-}
-function geometry(w,h) {
-  const margin=Math.max(20,Math.min(40,w*.025)),top=16,cell=Math.max(1,(w-margin*2)/GRID.columns),line=Math.max(1,(h-top*2)/GRID.rows);
-  const font=Math.min(cell/.61,line*.85);
-  return {font,cell,line,margin,top,columns:GRID.columns,processRows:GRID.threadRows,logRows:GRID.feedRows};
-}
 function threadMotion(a,now=performance.now(),wall=Date.now()) {
   const host=snapshot?.hosts.find(h=>h.id===a.host);
-  if(paused || reduced.matches || disconnected || !host?.online || !Number.isFinite(host.sampled_at) || wall/1000-host.sampled_at>=snapshot.interval+20)return {moving:false,flash:0,glyph:icon(a.status)};
+  if(document.hidden || paused || reduced.matches || disconnected || !host?.online || !Number.isFinite(host.sampled_at) || wall/1000-host.sampled_at>=snapshot.interval+20)return {moving:false,flash:0,glyph:icon(a.status)};
   const hash=Array.from(a.id).reduce((n,c)=>(Math.imul(n,31)+c.codePointAt(0))>>>0,0);
   const moving=a.status==='working';
   const elapsed=now-(rowActivity.get(a.id) ?? -Infinity);
@@ -124,7 +108,7 @@ function threadMotion(a,now=performance.now(),wall=Date.now()) {
     glyph:moving?Array.from('⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏')[Math.floor((now+hash%1000)/130)%10]:icon(a.status)};
 }
 function filteredAgents(){return agents.filter(a=>category==='all'||snapshot?.profile==='work'||a.category===category);}
-function currentPage(now=Date.now()) {return (manualPage ?? Math.floor(now/15000))%Math.max(1,Math.ceil(filteredAgents().length/geometry(width,height).processRows));}
+function currentPage(now=Date.now()) {return (manualPage ?? Math.floor(now/15000))%Math.max(1,Math.ceil(filteredAgents().length/GRID.threadRows));}
 let textFrames={text:'',sources:[]}, effectSession=null, effectFrame=null, effectLibrary=null, effectBag=[],pendingEffect=null;
 let effectGeneration=0;
 let holdSeconds=120, holdElapsed=Infinity, lastEffect='', animationIndex=-1, frameElapsed=0, loadingFrames=false;
@@ -192,70 +176,76 @@ function eventLine(entry) {
   const project=clean(entry.project || '—',24),state=clean(entry.state,8),thread=clean(entry.thread,24);
   return clean(`${new Date(entry.at).toISOString().slice(11,19)} ${project} ${state} ${thread} ${entry.text}${entry.kind==='USAGE'?' · '+entry.detail:''}`,GRID.columns-2);
 }
-function cliLayout() {
-  const feed=records.slice(-(GRID.feedRows+1));
-  return {start:GRID.feedStart,capacity:GRID.feedRows,feed,first:41-feed.length};
+function phaseLabel(value){return ({ready:'Ready',working:'Working',tool:'Running tool',thinking:'Thinking',output:'Responding',compacting:'Compacting context',idle:'Idle',interrupted:'Interrupted',ended:'Ended'}[value] || 'Unavailable');}
+function percent(value){return Number.isFinite(value)?Math.round(value)+'%':'Unavailable';}
+function rate(value){return Number.isFinite(value)?(value/1024).toFixed(1)+' KiB/s':'Unavailable';}
+function activityBars(now=performance.now()) {
+  if(document.hidden || paused || reduced.matches || disconnected || !latestActivity || !previous.get(latestActivity.host)?.live)return Array(12).fill(0);
+  const age=now-latestActivity.born,level=Math.max(0,1-age/5000);
+  return Array.from({length:12},(_,i)=>Math.round(level*(2+Math.abs(Math.sin(age/180+i*1.7))*6)));
 }
-function sceneRows(now=performance.now()) {
-  const rows=Array(GRID.rows).fill('');
-  const put=(row,value)=>{rows[row]=clean(value,GRID.columns);};
-  const rule=label=>'╭─ '+label+' '+'─'.repeat(Math.max(0,GRID.columns-Array.from(label).length-5))+'╮';
-  put(0,` ${icon('terminal')}  herdr observatory  ${nerdFontReady?'':'›'}  ${snapshot?.profile || 'connecting'}                                 ${disconnected?'○ disconnected':'● observing'}  ·  ${new Date().toISOString().slice(11,19)} UTC`);
-  for(const [i,h] of (snapshot?.hosts || []).slice(0,3).entries()){
-    const live=previous.get(h.id)?.live && !disconnected,m=live?h.metrics:null;
-    const pct=v=>Number.isFinite(v)?Math.round(v)+'%':'?';
-    put(2+i,fields([[1,icon('host')+'  '+padded(h.id,15)],[20,live?'● online':'○ offline'],[31,'cpu '+meter(m?.cpu_percent)],[49,'ram '+meter(m?.memory?.total?m.memory.used/m.memory.total*100:null)],[67,'gpu '+pct(m?.gpu?.percent)],[76,'disk '+pct(m?.disk?.total?m.disk.used/m.disk.total*100:null)],[86,'↓'+(Number.isFinite(m?.rx_rate)?Math.round(m.rx_rate/1024)+'K/s':'?')],[96,'↑'+(Number.isFinite(m?.tx_rate)?Math.round(m.tx_rate/1024)+'K/s':'?')],[106,live?Math.max(0,Math.floor(Date.now()/1000-h.sampled_at))+'s':'unknown'],[114,'p'+number(h.protocol)],[120,clean(m?.scope || 'unavailable',20)]]));
-  }
-  put(5,rule(`${icon('threads')} Threads  ·  ${agents.filter(a=>a.status==='working').length} working  ·  ${agents.filter(a=>a.status==='blocked').length} blocked  ·  ${agents.length} total`));
-  put(6,fields([[5,'State'],[15,'Project'],[35,'Thread'],[77,'Engine'],[92,'Host'],[108,'R L F'],[118,'Rev / Seq']]));
-  const shown=filteredAgents().slice(currentPage()*GRID.threadRows,currentPage()*GRID.threadRows+GRID.threadRows),flag=v=>v===true?'●':v===false?'·':'?';
-  shown.forEach((a,i)=>{const t=a.technical || {};put(7+i,fields([[2,threadMotion(a,now).glyph],[5,padded(statusKind(a.status),8)],[15,padded(a.project,18)],[35,padded(paneNumber(a)+' '+telemetryBrief(a),40)],[77,padded(a.harness,12)],[92,padded(a.host,14)],[108,`${flag(t.interactive_ready)} ${flag(t.launch_pending)} ${flag(t.focused)}`],[118,number(t.revision)+' / '+number(t.state_change_seq)]]));});
-  if(!shown.length)put(7,'  '+(disconnected?'Connection lost · current thread state unavailable':'No permitted threads in this view'));
-  put(15,`╰─ ${category}  ·  ${filteredAgents().length?currentPage()+1:0}/${Math.ceil(filteredAgents().length/GRID.threadRows)}  ·  PgUp/PgDn page   r rotate   c category   ${'─'.repeat(8)}   R ready · L launching · F focused`);
-  put(16,rule(`${icon('feed')} Notable events · sampled  ·  state changes and connections`));
-  const cli=cliLayout();
-  cli.feed.slice(-cli.capacity).forEach((r,i,list)=>put(41-list.length+i,'  '+eventLine(r)));
-  put(41,'╰'+'─'.repeat(GRID.columns-2)+'╯');
-  put(42,` ${icon('terminal')}  follow  ${nerdFontReady?'':'›'}  ${paused?'paused':reduced.matches?'reduced motion':'live'}  ·  ${snapshot?.theme?.name || 'default'}                                  ${icon('clock')}  FX cooldown ${holdSeconds}s   ← / → adjust`);
-  put(43,`  Read only · ${snapshot?.interval || '?'}s samples · intermediate transitions may be missed`);
-  return rows;
+function viewModel(now=performance.now(),wall=Date.now()) {
+  const shown=filteredAgents().slice(currentPage(wall)*8,currentPage(wall)*8+8);
+  return {
+    profile:snapshot?.profile || 'Connecting',theme:snapshot?.theme?.name || 'Unavailable',
+    connection:disconnected?'Connection lost':snapshot?(snapshot.hosts.some(h=>previous.get(h.id)?.live)?'Observing':'Sources unavailable'):'Connecting',
+    total:agents.length,visibleTotal:filteredAgents().length,
+    working:agents.filter(a=>a.status==='working').length,blocked:agents.filter(a=>a.status==='blocked').length,
+    bars:activityBars(now),page:filteredAgents().length?currentPage(wall)+1:0,pages:Math.ceil(filteredAgents().length/8),
+    hosts:(snapshot?.hosts || []).slice(0,3).map(h=>{const live=!disconnected && previous.get(h.id)?.live,m=live?h.metrics:null;return {id:h.id,label:clean(h.label || h.id),online:Boolean(live),metrics:[
+      ['Processor',percent(m?.cpu_percent)],['Memory',percent(m?.memory?.total?m.memory.used/m.memory.total*100:null)],
+      ['Graphics',percent(m?.gpu?.percent)],['Storage',percent(m?.disk?.total?m.disk.used/m.disk.total*100:null)],
+      ['Network down',rate(m?.rx_rate)],['Network up',rate(m?.tx_rate)],['Sample age',live?Math.max(0,Math.floor(wall/1000-h.sampled_at))+'s':'Unavailable']
+    ]};}),
+    cards:shown.map(a=>{const t=telemetryFor(a,wall),motion=threadMotion(a,now,wall);return {
+      id:a.id,project:clean(a.project),title:clean(a.title),state:statusKind(a.status),harness:clean(a.harness),pane:paneNumber(a),host:clean(a.host),motion,
+      details:[['Activity',phaseLabel(t?.phase)],['Tool',clean(t?.tool || 'Unavailable')],['Model',clean(t?.model || 'Unavailable')],
+        ['Context',t?.context!=null && t?.window?`~${number(t.context)} / ${number(t.window)}`:'Unavailable'],
+        ['Last response',t?.input!=null?`${number(t.input)} in / ${number(t.output_tokens)} out`:'Unavailable'],
+        ['Cache read / write',t?.cache_read!=null || t?.cache_write!=null?`${number(t.cache_read)} / ${number(t.cache_write)}`:'Unavailable']]
+    };}),
+    events:records.slice(-GRID.feedRows).map(r=>({id:r.id,line:eventLine(r),kind:r.kind})),
+    empty:disconnected?'Current threads unavailable while disconnected':snapshot && !snapshot.hosts.some(h=>previous.get(h.id)?.live)?'Current threads unavailable. Waiting for a source.':'No permitted threads in this view'
+  };
+}
+function node(tag,className,text){const element=document.createElement(tag);element.className=className;if(text!==undefined)element.textContent=text;return element;}
+function setText(element,text){if(element.textContent!==String(text))element.textContent=text;}
+let cardNodes=[],hostNodes=[],eventNodes=[],barNodes=[];
+function buildView(){
+  barNodes=Array.from({length:12},()=>{const n=node('i','pixel-bar');document.getElementById('equaliser').append(n);return n;});
+  cardNodes=Array.from({length:8},()=>{
+    const card=node('article','thread-card'),head=node('div','card-top'),project=node('h3','project'),status=node('span','state'),glyph=node('span','state-glyph'),state=node('span','state-word');status.append(glyph,state);head.append(project,status);
+    const title=node('p','thread-title'),identity=node('p','identity'),details=node('dl','details');const fields=Array.from({length:6},()=>{const label=node('dt',''),value=node('dd','');details.append(label,value);return {label,value};});
+    card.append(head,title,identity,details);document.getElementById('threads').append(card);return {card,project,glyph,state,title,identity,fields};
+  });
+  hostNodes=Array.from({length:3},()=>{const row=node('article','host-row'),name=node('strong','host-name'),status=node('span','host-status'),metrics=node('dl','host-metrics');const fields=Array.from({length:7},()=>{const pair=node('div','metric'),label=node('dt',''),value=node('dd','');pair.append(label,value);metrics.append(pair);return {label,value};});row.append(name,status,metrics);document.getElementById('fleet').append(row);return {row,name,status,fields};});
+  eventNodes=Array.from({length:4},()=>{const row=node('div','event-row'),text=node('span','event-text');row.append(text);document.getElementById('events').append(row);return {row,text};});
+}
+function applyTheme(){
+  const root=document.documentElement;
+  for(const [key,value] of Object.entries(palette))root.style.setProperty('--'+key,value);
+  const rgb=palette.background.slice(1).match(/../g).map(x=>parseInt(x,16));
+  root.style.colorScheme=(rgb[0]*.2126+rgb[1]*.7152+rgb[2]*.0722)>150?'light':'dark';
 }
 function draw(now=performance.now()) {
-  if(!ctx)return;
-  const {font,cell,line,margin,top}=geometry(width,height);
-  ctx.globalAlpha=1;ctx.fillStyle=palette.background;ctx.fillRect(0,0,width,height);
-  ctx.font=`${font}px ${FONT_FACE}`;ctx.textBaseline='top';
-  const playing=animationIndex>=0 && framesCurrent() && !reduced.matches;
-  document.getElementById('controls').hidden=false;
-  const rows=sceneRows(now);
-  function text(value,row,tint=palette.foreground,from=0,to=GRID.columns){let col=0;for(const glyph of clean(value,GRID.columns)){if(col>=from && col<to){ctx.fillStyle=tint;ctx.fillText(glyph,margin+col*cell,top+row*line,cell);}col++;}}
-  function band(row,alpha,tint=palette.foreground){ctx.globalAlpha=alpha;ctx.fillStyle=tint;ctx.fillRect(margin,top+row*line,width-margin*2,line);ctx.globalAlpha=1;}
-  for(const row of [0,42])band(row,.13,palette.blue);
-  band(6,.055);
-  rows.forEach((row,i)=>{
-    if(i>=GRID.feedStart && i<GRID.feedStart+GRID.feedRows)return;
-    if(i>=7 && i<7+GRID.threadRows && row){
-      const state=filteredAgents()[currentPage()*GRID.threadRows+i-7]?.status;
-      if(state){const a=filteredAgents()[currentPage()*GRID.threadRows+i-7],motion=threadMotion(a,now),tint=colour(statusKind(state));
-        band(i,(state==='blocked'?.09:i%2?.025:.045)+motion.flash*.12,motion.flash?tint:state==='blocked'?palette.yellow:palette.foreground);
-        text(row,i,palette.foreground,35,75);text(row,i,tint,0,14);text(row,i,palette.blue,15,33);ctx.globalAlpha=.65;text(row,i,palette.foreground,77);ctx.globalAlpha=1;return;}
-    }
-    const muted=[6,15,43].includes(i);
-    ctx.globalAlpha=muted?.58:1;
-    text(row,i,[0,5,16,42].includes(i)?palette.blue:palette.foreground);
-    ctx.globalAlpha=1;
-  });
-  const cli=cliLayout();
-  ctx.save();ctx.beginPath();ctx.rect(margin,top+cli.start*line,width-margin*2,GRID.feedRows*line);ctx.clip();
-  const offset=scrollOffset(now);
-  cli.feed.forEach((r,i)=>{
-    const row=cli.first+i+offset;
-    if(playing && r.id===textFrames.recordId){
-      ctx.save();ctx.beginPath();ctx.rect(margin+2*cell,top+row*line,(GRID.columns-2)*cell,line);ctx.clip();
-      paintEffect(effectFrame,margin+2*cell,top+row*line,cell,line);ctx.restore();
-    }else text('  '+eventLine(r),row,colour(r.kind));
-  });
-  ctx.restore();
+  const view=viewModel(now);applyTheme();
+  setText(document.getElementById('profile'),view.profile);
+  setText(document.getElementById('working-count'),view.working+' working');setText(document.getElementById('blocked-count'),view.blocked+' blocked');
+  setText(document.getElementById('theme'),view.theme==='Unavailable'?'Theme unavailable':view.theme+' · OS theme');setText(document.getElementById('connection'),view.connection);
+  setText(document.getElementById('activity-state'),view.bars.some(Boolean)?'New observations':'Quiet');
+  barNodes.forEach((bar,i)=>bar.style.setProperty('--level',view.bars[i]));
+  hostNodes.forEach((host,i)=>{const model=view.hosts[i];host.row.hidden=!model;if(!model)return;setText(host.name,model.label);host.name.title=model.label;setText(host.status,model.online?'Online':'Offline');host.status.dataset.online=String(model.online);host.fields.forEach((f,j)=>{setText(f.label,model.metrics[j][0]);setText(f.value,model.metrics[j][1]);});});
+  cardNodes.forEach((card,i)=>{const model=view.cards[i];card.card.hidden=!model;if(!model)return;card.card.dataset.state=model.state.toLowerCase();card.card.dataset.thread=model.id;card.card.style.setProperty('--impulse',model.motion.flash.toFixed(3));setText(card.project,model.project);card.project.title=model.project;setText(card.glyph,model.motion.glyph);setText(card.state,model.state);setText(card.title,model.title);card.title.title=model.title;setText(card.identity,`${model.harness} · ${model.pane} · ${model.host}`);card.identity.title=card.identity.textContent;card.fields.forEach((f,j)=>{setText(f.label,model.details[j][0]);setText(f.value,model.details[j][1]);f.value.title=model.details[j][1];});});
+  const empty=document.getElementById('empty');empty.hidden=Boolean(view.cards.length);setText(empty,view.empty);
+  setText(document.getElementById('thread-total'),view.visibleTotal===view.total?view.total+' total':view.visibleTotal+' of '+view.total);
+  setText(document.getElementById('page'),`${view.page} / ${view.pages}`);setText(document.getElementById('category'),`Category: ${category}`);document.getElementById('category').hidden=snapshot?.profile!=='personal';
+  setText(document.getElementById('rotate'),manualPage===null?'Rotation: on':'Rotation: off');
+  setText(document.getElementById('cooldown'),`${holdSeconds}s effects`);setText(document.getElementById('sampling'),`Read only · ${snapshot?.interval || '?'}s samples · intermediate changes may be missed`);
+  const playing=Boolean(ctx) && animationIndex>=0 && framesCurrent() && !reduced.matches;
+  let target=null;
+  eventNodes.forEach((event,i)=>{const model=view.events[i];event.row.hidden=!model;if(!model)return;setText(event.text,model.line);event.text.style.visibility=playing && model.id===textFrames.recordId?'hidden':'visible';event.row.style.color=colour(model.kind);if(playing && model.id===textFrames.recordId)target=event.row;});
+  canvas.hidden=!target;
+  if(target && ctx){const rect=target.getBoundingClientRect(),container=document.getElementById('activity').getBoundingClientRect(),ratio=Math.min(devicePixelRatio || 1,2);canvas.style.left=(rect.left-container.left)+'px';canvas.style.top=(rect.top-container.top)+'px';canvas.style.width=rect.width+'px';canvas.style.height=rect.height+'px';canvas.width=Math.round(rect.width*ratio);canvas.height=Math.round(rect.height*ratio);ctx.setTransform(ratio,0,0,ratio,0,0);ctx.clearRect(0,0,rect.width,rect.height);const font=parseFloat(getComputedStyle(target).fontSize);ctx.font=`${font}px ${FONT_FACE}`;const cell=ctx.measureText?.('M').width || font*.6;ctx.textBaseline='top';paintEffect(effectFrame,0,Math.max(0,(rect.height-font)/2),cell,rect.height);}
 }
 function frame(now) {if(!document.hidden && now-lastFrame>=33){advanceEffects(Math.min(100,now-lastFrame));draw();lastFrame=now;}if(document.hidden)lastFrame=now;requestAnimationFrame(frame);}
 async function refresh() {
@@ -263,12 +253,13 @@ async function refresh() {
   catch {disconnect();}
   setTimeout(refresh,2000);
 }
-function pause() {paused=!paused;if(paused){pendingEffect=null;effectGeneration++;}document.getElementById('pause').setAttribute('aria-pressed',String(paused));document.getElementById('pause').textContent=paused?'Space resume':'Space pause';}
+function pause() {paused=!paused;if(paused){pendingEffect=null;effectGeneration++;}document.getElementById('pause').setAttribute('aria-pressed',String(paused));document.getElementById('pause').textContent=paused?'Resume motion':'Pause motion';}
 async function fullscreen(){try{if(document.fullscreenElement)await document.exitFullscreen();else await document.documentElement.requestFullscreen();}catch{record('INFO','Use browser fullscreen (F11)',Date.now(),false);}}
- document.getElementById('pause').addEventListener('click',pause);
-document.getElementById('fullscreen').addEventListener('click',fullscreen);
-addEventListener('keydown',event=>{if(event.target?.tagName==='BUTTON' && event.code==='Space')return;if(event.code==='Space'){event.preventDefault();pause();}if(event.key==='f')fullscreen();if(event.key==='ArrowRight'){event.preventDefault();adjustHold(1);}if(event.key==='ArrowLeft'){event.preventDefault();adjustHold(-1);}if(event.key==='PageDown')manualPage=currentPage()+1;if(event.key==='PageUp')manualPage=Math.max(0,currentPage()-1);if(event.key==='r')manualPage=null;if(event.key==='c' && snapshot?.profile==='personal'){category=['all','work','personal'][(['all','work','personal'].indexOf(category)+1)%3];manualPage=0;}});
-reduced.addEventListener?.('change',()=>{if(reduced.matches){pendingEffect=null;effectGeneration++;}});
-addEventListener('resize',resize);
+function changePage(delta){manualPage=Math.max(0,currentPage()+delta);draw();}
+function cycleCategory(){if(snapshot?.profile==='personal'){category=['all','work','personal'][(['all','work','personal'].indexOf(category)+1)%3];manualPage=0;draw();}}
+for(const [id,action] of Object.entries({pause,fullscreen,previous:()=>changePage(-1),next:()=>changePage(1),rotate:()=>{manualPage=manualPage===null?currentPage():null;draw();},category:cycleCategory,'less-effects':()=>{adjustHold(-1);draw();},'more-effects':()=>{adjustHold(1);draw();}}))document.getElementById(id).addEventListener('click',action);
+addEventListener('keydown',event=>{if(event.target?.tagName==='BUTTON' && event.code==='Space')return;if(event.code==='Space'){event.preventDefault();pause();}if(event.key==='f')fullscreen();if(event.key==='ArrowRight'){event.preventDefault();adjustHold(1);}if(event.key==='ArrowLeft'){event.preventDefault();adjustHold(-1);}if(event.key==='PageDown')changePage(1);if(event.key==='PageUp')changePage(-1);if(event.key==='r'){manualPage=null;draw();}if(event.key==='c')cycleCategory();});
+reduced.addEventListener?.('change',()=>{if(reduced.matches){pendingEffect=null;effectGeneration++;}draw();});
+addEventListener('resize',()=>draw());
 setInterval(()=>{if(received && Date.now()-received>12000)disconnect();if(!disconnected)reconcile();},1000);
-resize();loadFont();requestAnimationFrame(frame);refresh();
+buildView();draw();loadFont();requestAnimationFrame(frame);refresh();
