@@ -6,7 +6,7 @@ Provide a continuously visible, private office activity display that operates in
 ## Requirements
 
 ### Requirement: Single-screen activity
-The display SHALL fit 1280x720 and 1920x1080 16:9 viewports without document scrolling, with bounded process pages and a count of all permitted live panes. Thread cards SHALL occupy the majority of the viewport, with a compact activity header, labelled fleet strip and small recent-activity area, including after resize.
+The display SHALL fit 1280x720 and 1920x1080 16:9 viewports without document scrolling, with bounded process pages and a count of all permitted live panes. Thread cards SHALL occupy the majority of the viewport, with a compact personal-title header, labelled fleet strip and small recent-activity area, including after resize.
 
 #### Scenario: Many agents
 - **WHEN** more agents exist than fit on one page
@@ -63,7 +63,7 @@ The display SHALL show readable fleet resource metrics and available typed hook 
 - **THEN** unavailable fields remain marked unavailable and excluded metadata never reaches the Work feed or display.
 
 ### Requirement: Reactive rendered terminal
-The display SHALL show an unbranded live thread-card display alongside text effects confined to individual incoming status-event lines in the recent-activity strip. Effects SHALL use current theme colours, complete naturally without replacement by routine updates, and never repeat consecutively. A fixed internal 120-second cooldown SHALL begin after completion. The display SHALL omit effect-timer and pause controls. Renderer failure SHALL fall back to the live display. All 37 bundled effects SHALL be available in a shuffled rotation, generated locally in the browser from disclosed event lines without animation-frame downloads. Profile filtering, accessibility and reduced-motion support SHALL remain.
+The display SHALL show an unbranded live thread-card display alongside event text effects confined to individual incoming status-event lines in the recent-activity footer. Effects SHALL use current theme colours, complete naturally without replacement by routine updates, and never repeat consecutively. A fixed internal 120-second cooldown SHALL begin after completion. The display SHALL omit effect-timer and pause controls. Renderer failure SHALL fall back to the live display. All 37 bundled effects SHALL be available in a shuffled rotation, generated locally in the browser from disclosed event lines without animation-frame downloads. Profile filtering, accessibility and reduced-motion support SHALL remain.
 
 #### Scenario: Agent milestone
 - **WHEN** an agent appears, changes status or disappears from a fresh source
@@ -102,7 +102,7 @@ The display SHALL show an unbranded live thread-card display alongside text effe
 - **THEN** only that line animates at its existing left edge and scrolling row, without horizontal or vertical block centring or covering adjacent records; if the line scrolls out of view, its playback is discarded without later replay.
 
 ### Requirement: Scrolling observation console
-The activity strip SHALL scroll timestamped, bounded observations only as notable agent lifecycle/status and source-availability changes are observed. Duplicate samples SHALL NOT create duplicate transitions. Status stamps SHALL distinguish observed state changes from raw events or tool execution. The current thread cards SHALL remain separate and readable. Readiness, launch flags and revision/sequence changes SHALL use only sanitised available metadata in the thread cards. The activity strip SHALL use up to four recent events, each on one bounded line containing observation time, project, Herdr state, available thread number and pertinent status update without inventing activity. Unavailable fields SHALL be marked unavailable.
+The activity strip SHALL scroll timestamped, bounded observations only as notable agent lifecycle/status and source-availability changes are observed. Duplicate samples SHALL NOT create duplicate transitions. Status stamps SHALL distinguish observed state changes from raw events or tool execution. The current thread cards SHALL remain separate and readable. Readiness, launch flags and revision/sequence changes SHALL use only sanitised available metadata in the thread cards. The activity strip SHALL sit inside an opaque full-width footer excluded from the music visualiser and use up to four recent events with semantic icons and theme-derived colours, each on one bounded line containing observation time, project, Herdr state, available thread number and pertinent status update without inventing activity. Unavailable fields SHALL be marked unavailable.
 
 #### Scenario: Fresh and duplicate observations
 - **WHEN** an agent changes between idle, working, blocked or done and a duplicate snapshot follows
@@ -136,7 +136,7 @@ The display SHALL provide a modern Omarchy-inspired card composition with locall
 - **THEN** prominent cards, a compact activity header and labelled fleet strip retain clear thread state above the recent-activity strip, within the existing padded viewport.
 
 ### Requirement: State-driven thread motion
-Thread cards SHALL use Herdr's Working, Blocked, Done, Idle and Unknown state names. Working state indicators SHALL animate independently, and newly observed state or telemetry changes SHALL briefly highlight the affected card. Unchanged samples SHALL NOT retrigger arrival highlights. Card impulses and a compact header activity indicator SHALL respond only to observed state or supported hook changes and settle when quiet. Text effects SHALL NOT run inside cards. Motion SHALL stop for stale/disconnected and reduced-motion views, without obscuring state text or using travelling horizontal highlights.
+Thread cards SHALL use Herdr's Working, Blocked, Done, Idle and Unknown state names. Working state indicators SHALL animate independently, and newly observed state or telemetry changes SHALL briefly highlight the affected card. Unchanged samples SHALL NOT retrigger arrival highlights. Card impulses SHALL respond only to observed state or supported hook changes and settle when quiet. Text effects SHALL NOT run inside cards. Motion SHALL stop for stale/disconnected and reduced-motion views, without obscuring state text or using travelling horizontal highlights.
 
 #### Scenario: Independent working rows
 - **WHEN** multiple permitted working threads are current
@@ -151,7 +151,7 @@ Thread cards SHALL use Herdr's Working, Blocked, Done, Idle and Unknown state na
 - **THEN** the affected card receives one bounded highlight, without duplicate samples restarting it.
 
 ### Requirement: Readable fleet and theme integration
-Fleet information SHALL use clear labels for processor, memory, graphics, storage, network traffic and sample age, retaining host identity and Online/Offline state. Processor, memory, graphics and storage SHALL have bounded percentage gauges; unknown values SHALL be visually distinct from zero. Thread identity SHALL label its harness, native pane ID and host. The synchronised OS theme SHALL colour the entire display, including surfaces, borders and status accents, with a visible theme name and readable light and dark presentations.
+Fleet information SHALL use clear labels for processor, memory, graphics, storage, network traffic and sample age, retaining host identity and Online/Offline state. Processor, memory, graphics and storage SHALL have bounded percentage gauges; unknown values SHALL be visually distinct from zero. Thread identity SHALL label its harness, native pane ID and host. The synchronised OS theme SHALL colour the entire display, including surfaces, borders and status accents, with a visible theme name without an OS theme suffix and readable light and dark presentations.
 
 #### Scenario: Missing fleet metrics
 - **WHEN** a source or metric is unavailable
@@ -181,7 +181,7 @@ An explicitly configured music source SHALL provide only bounded playback state,
 - **THEN** extra fields never reach a client and unconfigured music is not collected or published.
 
 ### Requirement: Theme-aware interactive pixel field
-The display SHALL render a bounded Omarchy-inspired pixel field behind its content, using the synchronised theme. Background pointer and click interactions SHALL produce local bounded reactions without triggering through cards or controls. Real music spectrum SHALL influence the field only while fresh and playing. Motion SHALL be suppressed in hidden and reduced-motion views, preserving readable foreground state and one-screen geometry.
+The display SHALL render a bounded Omarchy-inspired pixel field behind its content, using muted inks derived from the synchronised theme accent, mixed towards the theme background even during music or click peaks. Its canvas SHALL end above the observations footer. Background pointer and click interactions SHALL produce local bounded reactions without triggering through cards or controls. Real music spectrum SHALL influence the field only while fresh and playing. Motion SHALL be suppressed in hidden and reduced-motion views, preserving readable foreground state and one-screen geometry.
 
 #### Scenario: Background interaction
 - **WHEN** the user clicks an exposed background area
@@ -190,3 +190,18 @@ The display SHALL render a bounded Omarchy-inspired pixel field behind its conte
 #### Scenario: Motion accessibility
 - **WHEN** reduced motion is requested or the tab is hidden
 - **THEN** background animation and music-driven motion stop without interrupting collection or changing playback.
+
+### Requirement: Personal title artwork
+The header SHALL display a compact Rich mark in scaled Delta Corps Priest 1 artwork, replacing the generic title and observed-activity widget. The mark SHALL play a local text effect when clicked and once per minute while visible. Title effects SHALL remain isolated from thread cards, event effects and music, complete without click interruption and avoid consecutive repeats. Static artwork and an accessible Rich label SHALL remain available on renderer failure or reduced motion; hidden views SHALL suspend or cancel animation without queuing missed automatic effects.
+
+#### Scenario: Title activation
+- **WHEN** the title is clicked or a visible minute elapses
+- **THEN** an effect plays within the small title area; clicks during playback do not interrupt it or queue another effect.
+
+#### Scenario: Unavailable animation
+- **WHEN** reduced motion is requested, the tab is hidden or the renderer fails
+- **THEN** the title retains a static accessible identity, releases obsolete effect resources and does not replay missed intervals on return.
+
+#### Scenario: Independent presentation
+- **WHEN** title effects run while agents are quiet or disconnected
+- **THEN** only the title animates and no agent event, state or observation is fabricated.
