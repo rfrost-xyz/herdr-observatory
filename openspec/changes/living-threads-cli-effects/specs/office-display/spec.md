@@ -43,7 +43,7 @@ The live terminal SHALL scroll timestamped, bounded observations only as notable
 - **THEN** a brief themed Delta Corps Priest 1 project-name stamp may appear inside the expanded CLI, with event context and a cooldown preventing repeated large banners, without covering thread rows; ordinary observations use normal terminal text.
 
 #### Scenario: Animation accessibility and disclosure
-- **WHEN** motion is paused, reduced motion is requested, a source expires, or a whole-terminal effect is playing
+- **WHEN** motion is paused, reduced motion is requested, a source expires, or a CLI effect is playing
 - **THEN** no fabricated activity is added, effects retain their completion semantics, obsolete pending stamps are discarded, and current disclosed state remains accessible.
 
 #### Scenario: Denser padded terminal

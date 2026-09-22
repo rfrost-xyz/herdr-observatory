@@ -3,6 +3,7 @@ const canvas = document.getElementById('scene');
 const ctx = canvas.getContext('2d');
 const reduced = matchMedia('(prefers-reduced-motion: reduce)');
 let snapshot = null, received = 0, disconnected = false, initialised = false, paused = false;
+let rowActivity = new Map();
 let previous = new Map(), agents = [], records = [], serial = 0;
 let scrollStarted=0, scrollDistance=0, stampCandidate=null, activeStamp=null, lastStamp=-Infinity;
 const GRID={columns:140,rows:44,feedStart:17,feedRows:24,threadRows:8};
@@ -18,8 +19,8 @@ let width = 0, height = 0, lastFrame = 0, manualPage = null, category = 'all';
 let palette = {background:'#101318',foreground:'#c0caf5',blue:'#7aa2f7',green:'#9ece6a',yellow:'#e0af68',red:'#f7768e',cyan:'#7dcfff'};
 const clean = (value, limit=160) => Array.from(String(value ?? '—').replace(/[\x00-\x1f\x7f-\x9f]/g,' ')).slice(0,limit).join('');
 const number = value => Number.isSafeInteger(value) && value >= 0 ? String(value) : '—';
-const statusKind = status => ({working:'EXEC',done:'DONE',blocked:'INPUT',idle:'IDLE',unknown:'UNKNOWN'}[status] || 'UNKNOWN');
-const colour = kind => palette[{EXEC:'cyan',DONE:'green',INPUT:'yellow',LOST:'red',DETACH:'yellow',LINK:'blue',ATTACH:'blue'}[kind] || 'foreground'];
+const statusKind = status => ({working:'Working',done:'Done',blocked:'Blocked',idle:'Idle',unknown:'Unknown'}[status] || 'Unknown');
+const colour = kind => palette[{Working:'cyan',Done:'green',Blocked:'yellow',LOST:'red',DETACH:'yellow',LINK:'blue',ATTACH:'blue'}[kind] || 'foreground'];
 const FONT_FACE='"Observatory Nerd", "JetBrainsMono Nerd Font", monospace';
 let nerdFontReady=false;
 const GLYPHS={terminal:'\uea85',host:'\uf233',threads:'\uf126',feed:'\uf0ca',clock:'\uf017',branch:'\ue0a0',working:'\uf04b',done:'\uf00c',blocked:'\uf071',idle:'\uf04c',unknown:'\uf128'};
@@ -76,6 +77,7 @@ function reconcile(now=Date.now(), reset=false) {
     if (initialised && !reset && live && old?.live) {
       for (const [id,a] of current) {
         const before=old.agents.get(id);
+        if (before && (before.status!==a.status || (telemetryFor(a,now)?.seq && telemetryFor(a,now).seq!==before.technical?.telemetry?.seq))) rowActivity.set(id,performance.now());
         if (before) telemetryEvent(a,before,now);
         if (!before) agentEvent('ATTACH',a,now,'thread joined');
         else if (before.status!==a.status) {
@@ -89,12 +91,14 @@ function reconcile(now=Date.now(), reset=false) {
   }
   for (const [id,old] of previous) if (!next.has(id) && old.live && !reset) record('LOST',`${id} · source removed`,now);
   previous=next;
+  const present=new Set(agents.map(a=>a.id));
+  for(const id of rowActivity.keys())if(!present.has(id))rowActivity.delete(id);
   if (!initialised) { record('BOOT',`Watching ${agents.length} threads · ${snapshot.profile}`,now,false); initialised=true; }
   accessible();
 }
 function disconnect(now=Date.now()) {
   if (!disconnected) record('LOST','Connection lost · activity unknown',now);
-  disconnected=true; agents=[];
+  disconnected=true; agents=[];rowActivity.clear();
   // Preserve source baseline until transport recovery, without inventing per-pane exits.
   accessible();
 }
@@ -113,6 +117,20 @@ function geometry(w,h) {
   const font=Math.min(cell/.61,line*.85);
   return {font,cell,line,margin,top,columns:GRID.columns,processRows:GRID.threadRows,logRows:GRID.feedRows};
 }
+function threadMotion(a,now=performance.now(),wall=Date.now()) {
+  const host=snapshot?.hosts.find(h=>h.id===a.host);
+  if(paused || reduced.matches || disconnected || !host?.online || !Number.isFinite(host.sampled_at) || wall/1000-host.sampled_at>=snapshot.interval+20)return {moving:false,progress:0,flash:0,glyph:icon(a.status)};
+  const hash=Array.from(a.id).reduce((n,c)=>(Math.imul(n,31)+c.codePointAt(0))>>>0,0);
+  const moving=a.status==='working',period=2800+hash%1700;
+  const elapsed=now-(rowActivity.get(a.id) ?? -Infinity);
+  return {moving,progress:((now+hash%period)%period)/period,
+    flash:Math.max(0,1-elapsed/1800),
+    glyph:moving?Array.from('⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏')[Math.floor((now+hash%1000)/130)%10]:icon(a.status)};
+}
+function effectText(now=performance.now()) {
+  return sceneRows(now,false).slice(GRID.feedStart,GRID.feedStart+GRID.feedRows).map(row=>padded(row,GRID.columns)).join('\n');
+}
+
 function filteredAgents(){return agents.filter(a=>category==='all'||snapshot?.profile==='work'||a.category===category);}
 function currentPage(now=Date.now()) {return (manualPage ?? Math.floor(now/15000))%Math.max(1,Math.ceil(filteredAgents().length/geometry(width,height).processRows));}
 let textFrames={text:'',sources:[]}, effectSession=null, effectFrame=null, effectLibrary=null, effectBag=[];
@@ -126,7 +144,7 @@ async function refreshFrames() {
     effectLibrary ??= await import('./effects.mjs').then(module=>module.loadEffects().then(lib=>({...lib,next:module.nextEffect})));
     if(paused || reduced.matches || disconnected)return;
     const effect=effectLibrary.next(effectLibrary.catalogue,effectBag,lastEffect);
-    textFrames={text:sceneRows(performance.now(),false).join('\n'),sources:snapshot.hosts.filter(h=>previous.get(h.id)?.live).map(h=>({id:h.id}))};
+    textFrames={text:effectText(performance.now()),sources:snapshot.hosts.filter(h=>previous.get(h.id)?.live).map(h=>({id:h.id}))};
     if(!framesCurrent())return;
     effectSession=effectLibrary.create(textFrames.text,effect,{...palette});
     effectFrame=effectSession.next();
@@ -176,7 +194,7 @@ function paintEffect(frame,x,y,cell,line) {
   }
   ctx.globalAlpha=1;
 }
-function eventLine(entry) {const state={EXEC:'working',DONE:'done',INPUT:'blocked',IDLE:'idle'}[entry.kind];return `${new Date(entry.at).toISOString().slice(11,19)}  ${icon(state || 'feed')}  ${entry.text}`;}
+function eventLine(entry) {const state={Working:'working',Done:'done',Blocked:'blocked',Idle:'idle'}[entry.kind];return `${new Date(entry.at).toISOString().slice(11,19)}  ${icon(state || 'feed')}  ${entry.text}`;}
 function eventDetail(entry) {return '             '+[entry.detail,entry.host].filter(Boolean).join(' · ');}
 function cliLayout(now=performance.now(),showArt=true) {
   const stamp=showArt?updateStamp(now):null;
@@ -197,10 +215,10 @@ function sceneRows(now=performance.now(),showArt=true) {
     const pct=v=>Number.isFinite(v)?Math.round(v)+'%':'?';
     put(2+i,fields([[1,icon('host')+'  '+padded(h.id,15)],[20,live?'● online':'○ offline'],[31,'cpu '+meter(m?.cpu_percent)],[49,'ram '+meter(m?.memory?.total?m.memory.used/m.memory.total*100:null)],[67,'gpu '+pct(m?.gpu?.percent)],[76,'disk '+pct(m?.disk?.total?m.disk.used/m.disk.total*100:null)],[86,'↓'+(Number.isFinite(m?.rx_rate)?Math.round(m.rx_rate/1024)+'K/s':'?')],[96,'↑'+(Number.isFinite(m?.tx_rate)?Math.round(m.tx_rate/1024)+'K/s':'?')],[106,live?Math.max(0,Math.floor(Date.now()/1000-h.sampled_at))+'s':'unknown'],[114,'p'+number(h.protocol)],[120,clean(m?.scope || 'unavailable',20)]]));
   }
-  put(5,rule(`${icon('threads')} Threads  ·  ${agents.filter(a=>a.status==='working').length} running  ·  ${agents.filter(a=>a.status==='blocked').length} need input  ·  ${agents.length} total`));
+  put(5,rule(`${icon('threads')} Threads  ·  ${agents.filter(a=>a.status==='working').length} working  ·  ${agents.filter(a=>a.status==='blocked').length} blocked  ·  ${agents.length} total`));
   put(6,fields([[5,'State'],[15,'Project'],[35,'Thread'],[77,'Engine'],[92,'Host'],[108,'R L F'],[118,'Rev / Seq']]));
   const shown=filteredAgents().slice(currentPage()*GRID.threadRows,currentPage()*GRID.threadRows+GRID.threadRows),flag=v=>v===true?'●':v===false?'·':'?';
-  shown.forEach((a,i)=>{const t=a.technical || {};put(7+i,fields([[2,icon(a.status)],[5,padded(statusKind(a.status),8)],[15,padded(a.project,18)],[35,padded(telemetryBrief(a),40)],[77,padded(a.harness,12)],[92,padded(a.host,14)],[108,`${flag(t.interactive_ready)} ${flag(t.launch_pending)} ${flag(t.focused)}`],[118,number(t.revision)+' / '+number(t.state_change_seq)]]));});
+  shown.forEach((a,i)=>{const t=a.technical || {};put(7+i,fields([[2,threadMotion(a,now).glyph],[5,padded(statusKind(a.status),8)],[15,padded(a.project,18)],[35,padded(telemetryBrief(a),40)],[77,padded(a.harness,12)],[92,padded(a.host,14)],[108,`${flag(t.interactive_ready)} ${flag(t.launch_pending)} ${flag(t.focused)}`],[118,number(t.revision)+' / '+number(t.state_change_seq)]]));});
   if(!shown.length)put(7,'  '+(disconnected?'Connection lost · current thread state unavailable':'No permitted threads in this view'));
   put(15,`╰─ ${category}  ·  ${filteredAgents().length?currentPage()+1:0}/${Math.ceil(filteredAgents().length/GRID.threadRows)}  ·  PgUp/PgDn page   r rotate   c category   ${'─'.repeat(8)}   R ready · L launching · F focused`);
   put(16,rule(`${icon('feed')} Notable events · sampled  ·  state changes and connections`));
@@ -218,9 +236,8 @@ function draw(now=performance.now()) {
   ctx.globalAlpha=1;ctx.fillStyle=palette.background;ctx.fillRect(0,0,width,height);
   ctx.font=`${font}px ${FONT_FACE}`;ctx.textBaseline='top';
   const playing=animationIndex>=0 && framesCurrent() && !reduced.matches;
-  document.getElementById('controls').hidden=playing;
-  if(playing){paintEffect(effectFrame,margin,top,cell,line);return;}
-  const rows=sceneRows(now);
+  document.getElementById('controls').hidden=false;
+  const rows=sceneRows(now,!playing);
   function text(value,row,tint=palette.foreground,from=0,to=GRID.columns){let col=0;for(const glyph of clean(value,GRID.columns)){if(col>=from && col<to){ctx.fillStyle=tint;ctx.fillText(glyph,margin+col*cell,top+row*line,cell);}col++;}}
   function band(row,alpha,tint=palette.foreground){ctx.globalAlpha=alpha;ctx.fillStyle=tint;ctx.fillRect(margin,top+row*line,width-margin*2,line);ctx.globalAlpha=1;}
   for(const row of [0,42])band(row,.13,palette.blue);
@@ -229,13 +246,21 @@ function draw(now=performance.now()) {
     if(i>=GRID.feedStart && i<GRID.feedStart+GRID.feedRows)return;
     if(i>=7 && i<7+GRID.threadRows && row){
       const state=filteredAgents()[currentPage()*GRID.threadRows+i-7]?.status;
-      if(state){const tint=colour(statusKind(state));band(i,state==='blocked'?.09:i%2?.025:.045,state==='blocked'?palette.yellow:palette.foreground);text(row,i,palette.foreground,35,75);text(row,i,tint,0,14);text(row,i,palette.blue,15,33);ctx.globalAlpha=.65;text(row,i,palette.foreground,77);ctx.globalAlpha=1;return;}
+      if(state){const a=filteredAgents()[currentPage()*GRID.threadRows+i-7],motion=threadMotion(a,now),tint=colour(statusKind(state));
+        band(i,(state==='blocked'?.09:i%2?.025:.045)+motion.flash*.12,motion.flash?tint:state==='blocked'?palette.yellow:palette.foreground);
+        if(motion.moving){const span=(width-margin*2-cell*8),x=margin+motion.progress*span;ctx.fillStyle=tint;ctx.globalAlpha=.055;ctx.fillRect(x,top+i*line,cell*8,line);ctx.globalAlpha=.35;ctx.fillRect(x,top+(i+.9)*line,cell*4,line*.07);ctx.globalAlpha=1;}
+        text(row,i,palette.foreground,35,75);text(row,i,tint,0,14);text(row,i,palette.blue,15,33);ctx.globalAlpha=.65;text(row,i,palette.foreground,77);ctx.globalAlpha=1;return;}
     }
     const muted=[6,15,43].includes(i);
     ctx.globalAlpha=muted?.58:1;
     text(row,i,[0,5,16,42].includes(i)?palette.blue:palette.foreground);
     ctx.globalAlpha=1;
   });
+  if(playing){
+    ctx.save();ctx.beginPath();ctx.rect(margin,top+GRID.feedStart*line,width-margin*2,GRID.feedRows*line);ctx.clip();
+    paintEffect(effectFrame,margin,top+GRID.feedStart*line,cell,line);
+    ctx.restore();return;
+  }
   const cli=cliLayout(now);
   if(cli.art){
     const progress=paused || reduced.matches?1:Math.min(1,(now-cli.stamp.shown)/750);

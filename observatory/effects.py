@@ -21,7 +21,7 @@ def lines_for(state, now, page=0, category='all', hold=120):
     put(6,'| STATE     HOST           ENGINE       PROJECT / THREAD')
     count=max(1,(len(visible)+7)//8);page%=count
     for i,a in enumerate(visible[page*8:(page+1)*8]):
-        status='INPUT' if a['status']=='blocked' else a['status'].upper()
+        status=a['status'].capitalize()
         put(7+i,f"| {status:<9} {a['host'][:14]:<14} {a['harness'][:12]:<12} {a['project']} / {a['title']}")
     put(15,f"| {len(agents)} threads / {category} / page {page+1}/{count}")
     put(16,'+ NOTABLE EVENTS '+'-'*122+'+')
