@@ -1,21 +1,6 @@
-# Account allowances
+# Spec delta
 
-## Purpose
-
-Provide passive, account-bound visibility of Codex subscription allowances and reset passes across the existing private fleet.
-
-## Requirements
-
-### Requirement: Account-bound allowance observation
-The service SHALL expose only explicitly labelled accounts, deduplicate the same account across machines, and use the actual source account identity rather than the source host as account authority. Browser output SHALL contain only labels, plan, bounded allowance values and timestamps, with no raw account identifiers, email, credentials or session material. Collection SHALL be read-only and SHALL NOT redeem resets, change login, mount credentials or install a persistent host process.
-
-#### Scenario: Account moves machine
-- **WHEN** an account is signed in on another configured host
-- **THEN** the same configured Personal or Work label applies and duplicate observations produce one account panel.
-
-#### Scenario: Unrecognised account
-- **WHEN** a source reports an account not explicitly mapped in private configuration
-- **THEN** its allowance data is absent from browser responses and publication.
+## MODIFIED Requirements
 
 ### Requirement: Honest allowance instruments
 The footer SHALL persistently show Personal and Work panels. Each SHALL lead with the reported weekly percentage remaining, a visual remaining-share bar, scheduled reset and sample age. When a fresh future reset falls inside the seven-day window, the same bar SHALL mark time remaining and name the percentage-point difference as reserve, deficit or on pace. This comparison SHALL NOT imply future depletion time or a token quota. The panel SHALL NOT invent a session window. Available reset passes SHALL remain distinct, with expiry accessible. Missing or stale data SHALL remain unknown; passing a scheduled reset SHALL NOT fabricate a refreshed balance.
@@ -35,13 +20,6 @@ The footer SHALL persistently show Personal and Work panels. Each SHALL lead wit
 #### Scenario: Missing or expired data
 - **WHEN** the source fails, the sample expires or a scheduled reset passes
 - **THEN** balance and pace become unknown without a fabricated refill or pass.
-
-### Requirement: Explicit allowance sharing
-Account allowance sharing SHALL be separately configured from project disclosure and limited to selected labelled numeric account summaries over existing authenticated transport. Work project exclusions SHALL remain unchanged, including when both account allowances are intentionally shown on the office display.
-
-#### Scenario: Office allowance display
-- **WHEN** allowance sharing is enabled for Personal and Work accounts
-- **THEN** both permitted summaries can appear on the office display without publishing Personal agents, project names or transcripts.
 
 ### Requirement: Account token activity
 The service SHALL read supported ChatGPT-backed account token-activity summaries and daily buckets through its authenticated, read-only account source, bind them to explicit account mapping and keep them separate from local session cache usage. It SHALL export only bounded numeric totals, valid bucket dates, account labels and sample times. The panel MAY show a bounded daily-token histogram and sum for reported dates, with its observed-day count and account scope explicit. Missing dates SHALL NOT appear as zero or contribute to the sum. Activity SHALL NOT be converted into a remaining quota, cost or depletion forecast. Missing, unsupported, stale or malformed account usage SHALL remain unavailable without hiding a valid weekly allowance. Existing explicit sharing boundaries SHALL apply.

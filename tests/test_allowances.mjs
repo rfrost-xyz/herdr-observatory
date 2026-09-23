@@ -1,16 +1,81 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {allowanceView, relativeTime, createAllowancePanel} from '../web/allowances.mjs';
+
 const now=1_800_000_000_000;
-const sample={label:'Personal',plan:'pro',available:true,sampled_at:now/1000-60,weekly_remaining:26,weekly_resets_at:now/1000+90000,reset_count:1,reset_expires_at:now/1000+180000};
-test('weekly and reset passes retain their separate meaning and relative times',()=>{const v=allowanceView(sample,{now});assert.equal(v.weekly,'26%');assert.equal(v.reset,'in 1d 1h');assert.equal(v.passes,'1');assert.equal(v.expiry,'in 2d 2h');assert.equal(v.status,'Checked 1m ago');});
-test('missing and zero are distinct; unavailable source cannot look live',()=>{assert.equal(allowanceView({...sample,weekly_remaining:0,reset_count:0},{now}).weekly,'0%');assert.equal(allowanceView({...sample,reset_count:0},{now}).expiry,'None');for(const s of [{...sample,sampled_at:now/1000-601},{...sample,sampled_at:now/1000+1},{...sample,available:false}]){const v=allowanceView(s,{now});assert.equal(v.weekly,'—');assert.equal(v.passes,'—');}assert.equal(allowanceView(sample,{now,disconnected:true}).status,'Disconnected');});
-test('scheduled reset passing never fabricates a refilled weekly allowance',()=>{assert.equal(allowanceView({...sample,weekly_resets_at:now/1000-1},{now}).weekly,'—');assert.equal(relativeTime(null,now),'Unknown');assert.equal(relativeTime(now/1000-600,now),'10m ago');});
-test('invalid values cannot populate numeric instruments',()=>{const v=allowanceView({...sample,weekly_remaining:101,reset_count:-1,reset_expires_at:null},{now});assert.equal(v.weekly,'—');assert.equal(v.passes,'—');assert.equal(v.expiry,'Unknown');});
-test('two persistent account panels update only when visible values change',()=>{let renders=0;const make=()=>({children:[],style:{},append(...xs){this.children.push(...xs);},setAttribute(){}});const root={ownerDocument:{createElement:make},replaceChildren(...xs){this.children=xs;renders++;}};const panel=createAllowancePanel({root});panel.update([sample],{now});assert.equal(root.children.length,2);panel.update([sample],{now});assert.equal(renders,1);panel.update([sample],{now:now+60000});assert.equal(renders,2);});
+const sample={label:'Personal',plan:'pro',available:true,sampled_at:now/1000-60,
+  weekly_remaining:26,weekly_resets_at:now/1000+90000,reset_count:1,reset_expires_at:now/1000+180000};
+const nodes=root=>{const walk=node=>[node,...node.children.flatMap(walk)];return walk(root);};
+function fixture(){
+  let renders=0;
+  const make=tag=>({tag,children:[],style:{},attrs:{},textContent:'',append(...xs){this.children.push(...xs);},setAttribute(key,value){this.attrs[key]=value;}});
+  const root={ownerDocument:{createElement:make},replaceChildren(...xs){this.children=xs;renders++;}};
+  return {root,panel:createAllowancePanel({root}),renders:()=>renders};
+}
 
-test('elapsed reset-pass expiry invalidates the old count without inventing zero',()=>{const v=allowanceView({...sample,reset_expires_at:now/1000-60},{now});assert.equal(v.passes,'—');assert.equal(v.expiry,'1m ago');});
+test('weekly balance, reset and passes are distinct facts',()=>{
+  const v=allowanceView(sample,{now});
+  assert.equal(v.weekly,'26%');assert.equal(v.reset,'in 1d 1h');assert.equal(v.passes,'1');
+  assert.equal(v.expiry,'in 2d 2h');assert.equal(v.status,'Checked 1m ago');
+  assert.equal(relativeTime(now/1000-600,now),'10m ago');
+});
 
-test('native business plan names are readable without losing their tier',()=>{assert.equal(allowanceView({...sample,plan:'self_serve_business_prolite'},{now}).plan,'Business Pro Lite');});
-test('account facts do not depend on reported token activity or elapsed window',()=>{const activity={...sample,daily_usage:[{date:'2026-09-22',tokens:9000}]};const view=allowanceView(activity,{now});assert.equal(view.weekly,'26%');assert.equal(view.reset,'in 1d 1h');assert.equal('runway' in view,false);assert.equal('burnPerDay' in view,false);assert.equal('roomPerDay' in view,false);assert.equal('daily' in view,false);assert.equal(allowanceView({...activity,weekly_resets_at:now/1000-1},{now}).weekly,'—');});
-test('account card presents facts without forecasts or token activity',()=>{const make=(tag)=>({tag,children:[],style:{},attrs:{},textContent:'',append(...xs){this.children.push(...xs);},setAttribute(key,value){this.attrs[key]=value;}});const root={ownerDocument:{createElement:make},replaceChildren(...xs){this.children=xs;}};const panel=createAllowancePanel({root});panel.update([{...sample,weekly_remaining:10,weekly_resets_at:now/1000+3.25*86400,daily_usage:[{date:'2026-09-22',tokens:763322638}]}],{now});const card=root.children[0];const walk=node=>[node,...node.children.flatMap(walk)];const nodes=walk(card);assert.ok(nodes.some(node=>node.className==='allowance-percent'&&node.textContent==='10%'));assert.ok(nodes.some(node=>node.className==='allowance-gauge'&&node.children[0].style.width==='10%'));assert.ok(nodes.some(node=>node.className==='allowance-reset-time'&&node.textContent==='Reset in 3d 6h'));assert.ok(card.attrs['aria-label'].includes('pass expiry in 2d 2h'));assert.equal(nodes.some(node=>['allowance-outlook','allowance-pace','pace-row'].includes(node.className)),false);assert.equal(nodes.some(node=>String(node.textContent).includes('763,322,638')||node.textContent==='Daily tokens'),false);panel.update([{...sample,reset_expires_at:now/1000-60}],{now});assert.ok(root.children[0].attrs['aria-label'].includes('pass expiry 1m ago'));panel.update([{...sample,reset_count:0}],{now});assert.ok(root.children[0].attrs['aria-label'].includes('pass expiry None'));});
+test('weekly pace compares remaining allowance with time remaining on one scale',()=>{
+  const aligned=allowanceView({...sample,weekly_remaining:73,weekly_resets_at:now/1000+5.1*86400},{now});
+  assert.equal(aligned.pace,'on');assert.equal(aligned.paceLabel,'On pace');
+  assert.ok(Math.abs(aligned.timeRemaining-5.1/7*100)<1e-9);
+  const deficit=allowanceView({...sample,weekly_remaining:10,weekly_resets_at:now/1000+3.25*86400},{now});
+  assert.equal(deficit.pace,'deficit');assert.equal(deficit.paceLabel,'36 percentage points in deficit');
+  const reserve=allowanceView(sample,{now});assert.equal(reserve.pace,'reserve');
+  assert.equal(reserve.paceLabel,'11 percentage points in reserve');
+  assert.equal('runway' in deficit,false);assert.equal('burnPerDay' in deficit,false);
+});
+
+test('missing, expired and inconsistent windows never imply a pace or refill',()=>{
+  for(const changed of [{...sample,weekly_resets_at:null},{...sample,weekly_resets_at:now/1000+8*86400}]){
+    const v=allowanceView(changed,{now});assert.equal(v.weekly,'26%');assert.equal(v.pace,'unknown');assert.equal(v.timeRemaining,null);
+  }
+  for(const changed of [{...sample,sampled_at:now/1000-601},{...sample,sampled_at:now/1000+1},
+    {...sample,available:false},{...sample,weekly_resets_at:now/1000-1}]){
+    const v=allowanceView(changed,{now});assert.equal(v.weekly,'—');assert.equal(v.pace,'unknown');
+  }
+  assert.equal(allowanceView({...sample,weekly_resets_at:now/1000-1},{now}).passes,'1');
+  assert.equal(allowanceView({...sample,sampled_at:now/1000-601},{now}).passes,'—');
+  assert.equal(allowanceView(sample,{now,disconnected:true}).status,'Disconnected');
+  assert.equal(allowanceView({...sample,weekly_remaining:0,reset_count:0},{now}).weekly,'0%');
+  assert.equal(allowanceView({...sample,reset_count:0},{now}).expiry,'None');
+  assert.equal(allowanceView({...sample,reset_expires_at:now/1000-60},{now}).expiry,'1m ago');
+});
+
+test('daily token chart uses only reported dates and never defines quota pace',()=>{
+  const daily_usage=[{date:'2026-09-20',tokens:0},{date:'2026-09-22',tokens:9000}];
+  const v=allowanceView({...sample,daily_usage},{now});
+  assert.equal(v.activity.count,2);assert.equal(v.activity.total,'9K');assert.equal(v.activity.exact,'9,000');
+  assert.deepEqual(v.activity.daily.map(row=>row.date),['2026-09-20','2026-09-22']);
+  assert.equal(v.activity.daily[0].height,0);assert.equal(v.activity.daily[1].height,100);
+  assert.equal(v.pace,allowanceView(sample,{now}).pace);
+  for(const invalid of [[{date:'bad',tokens:1}],[{date:'2026-09-22',tokens:-1}],
+    [{date:'2026-09-22',tokens:1},{date:'2026-09-22',tokens:2}]]){
+    assert.equal(allowanceView({...sample,daily_usage:invalid},{now}).activity,null);
+  }
+  assert.equal(allowanceView({...sample,sampled_at:now/1000-601,daily_usage},{now}).activity,null);
+});
+
+test('fallback cards render pace marker, observed activity and honest pass age',()=>{
+  const {root,panel,renders}=fixture();const daily_usage=[{date:'2026-09-20',tokens:0},{date:'2026-09-22',tokens:9000}];
+  panel.update([{...sample,weekly_remaining:10,weekly_resets_at:now/1000+3.25*86400,daily_usage}],{now});
+  const card=root.children[0],all=nodes(card),gauge=all.find(node=>node.className==='allowance-gauge');
+  assert.equal(root.children.length,2);assert.equal(card.attrs['data-pace'],'deficit');
+  assert.equal(gauge.children[0].style.width,'10%');assert.ok(gauge.children[1].style.left.startsWith('46.'));
+  assert.ok(all.some(node=>node.className==='allowance-pace-label'&&node.children.some(child=>child.textContent==='36 percentage points in deficit')));
+  assert.ok(all.some(node=>node.className==='activity-summary'&&node.textContent==='9K tokens · 2 reported days'));
+  assert.equal(all.filter(node=>node.tag==='i'&&node.style.height!==undefined).length,2);
+  assert.ok(card.attrs['aria-label'].includes('9,000 tokens across 2 reported dates'));
+  assert.equal(all.some(node=>node.className==='allowance-outlook'||node.className==='pace-row'),false);
+  panel.update([{...sample,weekly_remaining:10,weekly_resets_at:now/1000+3.25*86400,daily_usage}],{now});
+  assert.equal(renders(),1);
+  panel.update([{...sample,reset_expires_at:now/1000-60}],{now});
+  assert.ok(root.children[0].attrs['aria-label'].includes('pass expiry 1m ago'));
+  panel.update([{...sample,reset_count:0}],{now});
+  assert.ok(root.children[0].attrs['aria-label'].includes('pass expiry None'));
+});

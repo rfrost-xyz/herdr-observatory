@@ -77,11 +77,19 @@ The service SHALL bind to loopback and reject browser requests with untrusted Ho
 - **THEN** the service denies it without returning activity data.
 
 ### Requirement: Glanceable activity presentation
-The display SHALL give thread cards persistent subtle semantic state colour, prominent native state labels, project and checkout identity instead of terminal titles, and compact visual telemetry. Missing hook fields SHALL be explained as one coverage note rather than repeated empty rows. Unknown subagent counts SHALL never appear as zero. Recent observations SHALL use the associated native state colour when available. The header SHALL omit host-role and theme-name labels and retain Idle, Working, Blocked and Done totals in subtle persistent boxes. Cards SHALL avoid repeating the native state as their hook activity and omit meaningless bare-repository checkout labels.
+The display SHALL give thread cards persistent semantic state colour, prominent native state and project identity, compact checkout/model identity, a current activity cue and visual context/cache telemetry when validated. Exact counts, source ages and coverage SHALL remain accessible without filling the card with repeated detail text. Missing usage SHALL have one visible cue and SHALL NOT appear as zero. Unknown subagent counts SHALL NOT become zero. Recent observations SHALL use native state colour when available. The header SHALL retain Idle, Working, Blocked and Done totals. Cards SHALL avoid repeating native state as hook activity and omit meaningless bare-repository checkout labels.
 
 #### Scenario: Partial hook coverage
-- **WHEN** a fresh hook sample has a tool and phase but no usage counters
-- **THEN** the card shows its available activity with a concise coverage explanation and no fabricated counters or repeated Unavailable rows.
+- **WHEN** a fresh hook sample has activity but no usage counters
+- **THEN** its card preserves activity and shows a single pending-usage cue without invented gauges.
+
+#### Scenario: Valid telemetry
+- **WHEN** context, session token and cache composition values are valid
+- **THEN** a card gives their labelled visual summary with exact values and provenance accessible.
+
+#### Scenario: Stale usage
+- **WHEN** usage counters are retained after the last usage observation
+- **THEN** they remain visibly dated and cannot appear live because the native state is Working.
 
 #### Scenario: Completed thread
 - **WHEN** a thread is Done, including a tool observation associated with that state
