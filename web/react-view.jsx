@@ -63,10 +63,13 @@ function ThreadCard({model, index, now, cardClicks, disconnected, reduced, icon,
 function Account({sample, now, disconnected}) {
   const row=allowanceView(sample,{now,disconnected});
   const daily=row.daily;
+  const room=row.roomPerDay===null?'—':`${new Intl.NumberFormat('en-GB',{maximumFractionDigits:1}).format(row.roomPerDay)}%/day`;
+  const burn=row.burnPerDay===null?'—':`${new Intl.NumberFormat('en-GB',{maximumFractionDigits:1}).format(row.burnPerDay)}%/day`;
   return <article className="allowance-card"><h3 className="allowance-name">{row.label}<span className="allowance-plan"> · {row.plan}</span></h3>
     <div className="allowance-weekly"><strong className="allowance-percent">{row.weekly}</strong><span>weekly left</span><span className="allowance-gauge" aria-hidden="true"><i style={{width:`${row.remaining??0}%`}}/></span></div>
     <dl className="allowance-details"><dt>Resets</dt><dd>{row.reset}</dd><dt>Reset passes</dt><dd>{row.passes}</dd><dt>Next expiry</dt><dd>{row.expiry}</dd>
-      <dt>Lifetime tokens</dt><dd>{number(row.lifetime)}</dd><dt>Peak day</dt><dd>{number(row.peak)}</dd></dl>
+      <dt title="Weekly percentage remaining divided by time until reset. Even-use guide, not a token quota.">Room/day</dt><dd title="Even-use guide in percentage points of the weekly allowance per day.">{room}</dd>
+      <dt title="Weekly percentage used divided by elapsed time in the seven-day window. Average so far, not a token count or forecast.">Burn/day</dt><dd title="Average weekly allowance use so far, in percentage points per day.">{burn}</dd></dl>
     <div className="allowance-activity" aria-label={daily?`ChatGPT account token activity, latest ${daily.length} days`: 'ChatGPT account token activity unavailable'}>
       <span>Daily tokens</span><strong>{daily?.length?number(daily.at(-1).tokens):'—'}</strong>
       <span className="allowance-spark" aria-hidden="true">{daily?.map(item=>item.glyph).join('')||'·'}</span></div>
