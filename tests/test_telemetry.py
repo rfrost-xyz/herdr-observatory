@@ -137,6 +137,58 @@ class TelemetryTests(unittest.TestCase):
             self.assertNotIn('SECRET', json.dumps(view))
             self.assertIn(name, installer.EVENTS)
 
+    def test_current_turn_subagent_observations_survive_other_hooks_and_reset(self):
+        a = agent()
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / 'config.json'
+            config.write_text('{"hosts":[{"socket_path":"/herdr/herdr.sock"}]}')
+            base = event()['seq']
+            def fake_rpc(_path, method, params):
+                if method == 'pane.get':
+                    return {'pane': a}
+                a['tokens'] = params['tokens']
+                self.assertLessEqual(len(params['tokens']), 16)
+                self.assertTrue(all(value is None or len(value) <= 80 for value in params['tokens'].values()))
+                return {}
+            with patch('observatory.telemetry.rpc', side_effect=fake_rpc):
+                for offset, hook, counts in ((0, 'UserPromptSubmit', (0, 0)), (1, 'SubagentStart', (1, 0)),
+                                             (2, 'SubagentStart', (2, 0)), (3, 'SubagentStop', (2, 1)),
+                                             (4, 'PreToolUse', (2, 1)), (5, 'UserPromptSubmit', (0, 0))):
+                    self.assertTrue(report('codex', {'session_id': 'native-secret', 'hook_event_name': hook,
+                                                     'agent_id': 'PRIVATE', 'last_assistant_message': 'PRIVATE'},
+                                           'w1:p1', base + offset, config))
+                    view = telemetry_from_agent(a)
+                    self.assertEqual((view['subagent_starts'], view['subagent_stops']), counts)
+                    self.assertNotIn('PRIVATE', json.dumps(a['tokens']))
+                    if offset == 4:
+                        self.assertEqual(view['subagent_seq'], base + 3)
+                self.assertIsNone(telemetry_from_agent(a)['subagent_seq'])
+                a['agent_session']['value'] = 'new-session'
+                self.assertIsNone(telemetry_from_agent(a))
+
+    def test_missing_or_malformed_subagent_baseline_remains_unknown(self):
+        a = agent()
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / 'config.json'
+            config.write_text('{"hosts":[{"socket_path":"/herdr/herdr.sock"}]}')
+            with patch('observatory.telemetry.rpc', side_effect=[{'pane': a}, {}]) as call:
+                self.assertTrue(report('codex', {'session_id': 'native-secret', 'hook_event_name': 'SubagentStart'},
+                                       'w1:p1', event()['seq'], config))
+                self.assertIsNone(call.call_args.args[2]['tokens']['obs_children'])
+                a['tokens'] = {**call.call_args.args[2]['tokens'], 'obs_children': 'malformed-private'}
+            self.assertIsNone(telemetry_from_agent(a)['subagent_starts'])
+            with patch('observatory.telemetry.rpc', side_effect=[{'pane': a}, {}]) as call:
+                self.assertTrue(report('codex', {'session_id': 'native-secret', 'hook_event_name': 'PreToolUse'},
+                                       'w1:p1', event()['seq'] + 1, config))
+                self.assertIsNone(call.call_args.args[2]['tokens']['obs_children'])
+        now = event()['seq']
+        for row in ({'subagent_starts': 1, 'subagent_stops': 0},
+                    {'subagent_starts': 1000, 'subagent_stops': 0, 'subagent_seq': now},
+                    {'subagent_starts': 1, 'subagent_stops': 0, 'subagent_seq': now + 1}):
+            view = telemetry_view({'seq': now, 'event': 'tool-start', 'phase': 'tool', **row})
+            self.assertIsNone(view['subagent_starts'])
+            self.assertIsNone(view['subagent_stops'])
+
     def test_codex_numeric_enrichment_preserves_reported_source_age(self):
         seq = event()['seq']
         raw = {'hook_event_name': 'PostToolUse', 'observatory_usage': {'input': 100, 'output_tokens': 20, 'cache_read': 0, 'cache_write': 4, 'context': 120, 'window': 1000, 'usage_seq': seq-1000000, 'usage_source': 'codex-rollout', 'secret': 'PRIVATE'}}
@@ -189,13 +241,18 @@ class TelemetryTests(unittest.TestCase):
 
     def test_work_filter_and_feed_resanitise(self):
         raw = copy.deepcopy(RAW)
-        raw['snapshot']['agents'][0]['telemetry'] = {**event(), 'input': 12, 'secret': 'PRIVATE VALUE'}
+        seq = event()['seq']
+        raw['snapshot']['agents'][0]['telemetry'] = {**event(), 'input': 12, 'subagent_starts': 2,
+                                                     'subagent_stops': 1, 'subagent_seq': seq,
+                                                     'agent_id': 'PRIVATE VALUE'}
         raw['snapshot']['agents'][1]['telemetry'] = {**event(), 'model': 'PRIVATE-MODEL'}
         app = Observatory({'hosts': [HOST]}, 'personal', lambda _: raw);app.poll(HOST)
         feed = project_work(app.snapshot(), HOST['id'])
         text = json.dumps(feed)
         self.assertNotIn('PRIVATE', text)
         self.assertEqual(feed['agents'][0]['technical']['telemetry']['input'], 12)
+        self.assertEqual(feed['agents'][0]['technical']['telemetry']['subagent_starts'], 2)
+        self.assertEqual(feed['agents'][0]['technical']['telemetry']['subagent_stops'], 1)
 
     def test_rpc_real_unix_roundtrip_and_error(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -316,7 +373,7 @@ class CompactTelemetryTests(unittest.TestCase):
             config=Path(directory)/'config.json';config.write_text(json.dumps({'hosts':[{'socket_path':'/herdr/herdr.sock'}]}))
             with patch('observatory.telemetry.rpc',side_effect=[{'pane':a},{}]) as call:
                 self.assertTrue(report('codex',{'session_id':'native-secret','hook_event_name':'PreToolUse','observatory_usage':usage},'w1:p1',seq,config))
-                tokens=call.call_args.args[2]['tokens'];self.assertEqual(tokens['obs_v'],'2');self.assertEqual(len(tokens),13)
+                tokens=call.call_args.args[2]['tokens'];self.assertEqual(tokens['obs_v'],'2');self.assertEqual(len(tokens),14)
                 self.assertTrue(all(value is None or len(value)<=80 for value in tokens.values()))
                 a['tokens']=tokens;decoded=telemetry_from_agent(a)
                 for key in ('input','total_input','total_output','compactions','context_percent'):self.assertEqual(decoded[key],usage[key])

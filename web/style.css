@@ -305,3 +305,7 @@ header .summary{margin-left:0}
 .allowance-reading>.allowance-variance[data-direction=ahead]{color:var(--green)}
 .allowance-reading>.allowance-variance[data-direction=behind]{color:var(--red)}
 .allowance-reading>.allowance-variance[data-direction=even]{color:var(--muted)}
+.thread-card .card-top:has(>.subagent-summary:not([hidden])){grid-template-rows:minmax(0,1fr) auto auto}
+.thread-card .card-top>.subagent-summary{grid-column:1/-1;grid-row:3;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--foreground);font-size:9px;line-height:1.2;font-variant-numeric:tabular-nums;padding:0 5px}
+.thread-card .card-top>.subagent-summary[data-last-known=true]{color:var(--muted)}
+@media(max-height:800px){.thread-card .card-top>.subagent-summary{font-size:8px}}

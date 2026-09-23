@@ -58,6 +58,14 @@ def telemetry_view(raw, now=None):
     for key in TELEMETRY_NUMBERS:
         value = raw.get(key)
         result[key] = value if type(value) is int and 0 <= value <= 9007199254740991 else None
+    children = [raw.get(key) for key in ('subagent_starts', 'subagent_stops')]
+    child_time = raw.get('subagent_seq')
+    valid_children = all(type(value) is int and 0 <= value <= 999 for value in children)
+    valid_child_time = child_time is None or (type(child_time) is int and 0 <= child_time <= seq)
+    if not valid_children or not valid_child_time or (any(children) and child_time is None):
+        children, child_time = [None, None], None
+    result['subagent_starts'], result['subagent_stops'] = children
+    result['subagent_seq'] = child_time
     result['usage_source'] = raw.get('usage_source') if raw.get('usage_source') in ('codex-rollout','pi-extension') else None
     supplied_usage_time = raw.get('usage_seq') is not None or raw.get('usage_source') is not None
     if supplied_usage_time and (result['usage_seq'] is None or now - result['usage_seq'] / 1_000_000 < 0):
@@ -95,6 +103,12 @@ def telemetry_from_agent(agent, now=None):
                     raw[key] = int(value)
                 else:
                     return None
+        children = tokens.get('obs_children')
+        match = re.fullmatch(r'([0-9]{1,3}),([0-9]{1,3}),([0-9]{0,16})', children) if isinstance(children, str) else None
+        if match:
+            raw['subagent_starts'] = int(match[1])
+            raw['subagent_stops'] = int(match[2])
+            raw['subagent_seq'] = int(match[3]) if match[3] else None
     else:
         for key in TELEMETRY_NUMBERS:
             value = tokens.get('obs_' + key)

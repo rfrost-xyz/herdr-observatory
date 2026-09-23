@@ -96,8 +96,20 @@ def report(harness, raw, pane_id, seq, config_path='/config/config.json'):
             if previous and previous['usage_source'] == 'codex-rollout' and previous['usage_seq'] is not None and (event['usage_seq'] is None or event['usage_seq'] <= previous['usage_seq']):
                 for key in TELEMETRY_NUMBERS + ('usage_source',):
                     event[key] = previous[key]
+            if event['event'] == 'turn':
+                event.update(subagent_starts=0, subagent_stops=0, subagent_seq=None)
+            elif previous and previous['subagent_starts'] is not None and previous['subagent_stops'] is not None:
+                event.update(subagent_starts=previous['subagent_starts'], subagent_stops=previous['subagent_stops'], subagent_seq=previous['subagent_seq'])
+                counter = 'subagent_starts' if event['event'] == 'subagent-start' else 'subagent_stops' if event['event'] == 'subagent-stop' else None
+                if counter:
+                    event[counter] += 1
+                    event['subagent_seq'] = event['seq']
+                    if event[counter] > 999:
+                        event.update(subagent_starts=None, subagent_stops=None, subagent_seq=None)
         owned = {k: event.get(k) for k in KEYS}
         owned.update(v='2', bind=session_binding(agent))
+        owned['children'] = (f"{event['subagent_starts']},{event['subagent_stops']},{event['subagent_seq'] or ''}"
+                             if harness == 'codex' and event.get('subagent_starts') is not None and event.get('subagent_stops') is not None else None)
         for index, fields in enumerate(TELEMETRY_V2_GROUPS):
             owned['n' + str(index)] = ','.join(str(event[key]) if event.get(key) is not None else '' for key in fields)
         params = {'pane_id': pane_id, 'source': 'user:observatory', 'agent': harness,
