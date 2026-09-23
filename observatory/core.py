@@ -147,13 +147,19 @@ def sanitise_metrics(raw):
     if not number(at):
         raise ValueError('Invalid metric timestamp')
     result = {'at': at, 'scope': clean(raw.get('scope'), 'Unknown scope')}
-    for key, fields in {'cpu': ('total', 'idle'), 'memory': ('used', 'total'), 'disk': ('used', 'total'), 'network': ('rx', 'tx'), 'gpu': ('percent', 'used', 'total')}.items():
+    for key, fields in {'cpu': ('total', 'idle'), 'memory': ('used', 'total'), 'disk': ('used', 'total'), 'network': ('rx', 'tx')}.items():
         item = raw.get(key)
         result[key] = {f: item[f] for f in fields} if isinstance(item, dict) and all(number(item.get(f)) for f in fields) else None
         if result[key] and 'total' in fields and (item['total'] <= 0 or item.get('used', item.get('idle', 0)) > item['total']):
             result[key] = None
-        if key == 'gpu' and result[key] and item['percent'] > 100:
-            result[key] = None
+    gpu = raw.get('gpu')
+    result['gpu'] = None
+    if isinstance(gpu, dict) and number(gpu.get('percent')) and gpu['percent'] <= 100:
+        source = gpu.get('source')
+        if source == 'intel-xe-pmu' and 'used' not in gpu and 'total' not in gpu:
+            result['gpu'] = {'percent': gpu['percent'], 'source': source}
+        elif source in (None, 'nvidia-visible') and number(gpu.get('used')) and number(gpu.get('total')) and 0 < gpu['total'] and gpu['used'] <= gpu['total']:
+            result['gpu'] = {key: gpu[key] for key in ('percent', 'used', 'total')} | {'source': 'nvidia-visible'}
     return result
 
 

@@ -1,6 +1,7 @@
 """One read-only sample, also executable over SSH stdin without installation."""
 import json
 import hashlib
+import math
 import re
 import os
 from pathlib import Path
@@ -122,6 +123,25 @@ def palette(directory=None):
     return None
 
 
+def xe_gpu(path='/gpu/metrics.json', now=None):
+    """Consume only a fresh, aggregate sample from the isolated XE monitor."""
+    now = time.time() if now is None else now
+    try:
+        source = Path(path)
+        if source.stat().st_size > 512:
+            return None
+        sample = json.loads(source.read_text())
+        at, percent = sample['at'], sample['percent']
+        if (type(at) not in (int, float) or abs(at) > 1e12 or not math.isfinite(at) or
+                type(percent) not in (int, float) or not 0 <= percent <= 100 or not math.isfinite(percent) or
+                not 0 <= now - at <= 10 or
+                sample.get('source') != 'intel-xe-pmu'):
+            return None
+        return {'percent': percent, 'source': 'intel-xe-pmu'}
+    except (OSError, ValueError, KeyError, TypeError, OverflowError):
+        return None
+
+
 def metrics(disk_path=None):
     result = {'scope': 'Container / Linux kernel' if Path('/.dockerenv').exists() else 'Linux / WSL kernel',
               'at': time.time(), 'cpu': None, 'memory': None, 'disk': None, 'network': None, 'gpu': None}
@@ -146,10 +166,12 @@ def metrics(disk_path=None):
         try:
             output = subprocess.run([gpu_bin, '--query-gpu=utilization.gpu,memory.used,memory.total', '--format=csv,noheader,nounits'], capture_output=True, text=True, timeout=2, check=True)
             rows = [list(map(float, line.split(','))) for line in output.stdout.splitlines()]
-            if rows and all(len(row) == 3 for row in rows):
-                result['gpu'] = {'percent': sum(r[0] for r in rows) / len(rows), 'used': sum(r[1] for r in rows) * 1048576, 'total': sum(r[2] for r in rows) * 1048576}
+            if rows and all(len(row) == 3 and all(math.isfinite(value) for value in row) and 0 <= row[0] <= 100 and 0 <= row[1] <= row[2] and row[2] > 0 for row in rows):
+                result['gpu'] = {'percent': sum(r[0] for r in rows) / len(rows), 'used': sum(r[1] for r in rows) * 1048576, 'total': sum(r[2] for r in rows) * 1048576, 'source': 'nvidia-visible'}
         except (OSError, ValueError, subprocess.SubprocessError):
             pass
+    if result['gpu'] is None:
+        result['gpu'] = xe_gpu()
     return result
 
 

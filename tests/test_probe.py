@@ -7,6 +7,28 @@ from test_core import SNAP
 
 
 class ProbeTests(unittest.TestCase):
+    def test_xe_gpu_requires_fresh_bounded_aggregate(self):
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / 'metrics.json'
+            path.write_text(json.dumps({'at': 100, 'percent': 25.5, 'source': 'intel-xe-pmu'}))
+            self.assertEqual(probe.xe_gpu(path, now=105), {'percent': 25.5, 'source': 'intel-xe-pmu'})
+            self.assertIsNone(probe.xe_gpu(path, now=111))
+            for sample in ({'at': 106, 'percent': 1, 'source': 'intel-xe-pmu'}, {'at': 100, 'percent': 101, 'source': 'intel-xe-pmu'}, {'at': 100, 'percent': 0, 'source': 'unknown'}):
+                path.write_text(json.dumps(sample))
+                self.assertIsNone(probe.xe_gpu(path, now=105))
+            path.write_text('x' * 513)
+            self.assertIsNone(probe.xe_gpu(path, now=105))
+            path.write_text(json.dumps({'at': 10 ** 400, 'percent': 1, 'source': 'intel-xe-pmu'}))
+            self.assertIsNone(probe.xe_gpu(path, now=105))
+
+    @patch('observatory.probe.shutil.which', return_value='/bin/nvidia-smi')
+    @patch('observatory.probe.subprocess.run')
+    def test_valid_nvidia_sample_names_visible_scope(self, run, _which):
+        run.return_value = SimpleNamespace(stdout='12, 100, 200\n')
+        self.assertEqual(probe.metrics()['gpu'], {'percent': 12.0, 'used': 104857600.0, 'total': 209715200.0, 'source': 'nvidia-visible'})
+
     @patch('observatory.probe.palette', return_value=None)
     @patch('observatory.probe.metrics', return_value={'at': 1})
     @patch('observatory.probe.shutil.which', return_value='/bin/herdr')
