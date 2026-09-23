@@ -13,4 +13,4 @@
 - Strict OpenSpec: five items passed.
 - Browser: eight cards, no card, thread or document scroll, no instrument overlap or footer collision at 1280×720, 1280×800, 1920×1080 and 1920×1200. Narrow 580×445 tile keeps internal thread scroll and no document horizontal scroll. Input/output rows and cached percentage remain visible.
 - Docker preview: packaged CSS, React bundle, app labels and server import passed.
-- Independent review: pending.
+- Independent review: clean at `88c3468d103ae2ac6d4938312ddac106da8c5dd1`; no actionable findings.
