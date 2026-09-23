@@ -1,0 +1,9 @@
+# Evidence
+
+| Requirement and scenario | Implementation | Verification |
+| --- | --- | --- |
+| Honest allowance instruments: supported, exhausted, missing or expired | `web/allowances.mjs`, `web/react-view.jsx`, `web/style.css` | `tests/test_allowances.mjs` checks fresh facts, zero, stale, elapsed reset and fallback card. Browser fixture showed the same accessible fact summary at 1280×720 and 580×445. |
+| Account token activity: supported, partial, expired and office sharing | `observatory/allowances.py` retained; account presentation drops derived rates and token totals | Python allowance tests pass; `tests/test_allowances.mjs` confirms daily token activity does not affect the card. |
+| Omarchy display: short and narrow viewports | `web/style.css` content-sized thread rows and in-flow metric bars | Chromium layout fixture with eight full cards and three sparse cards at 1280×720, 1920×1080 and 580×445: each card's `scrollHeight` equalled `clientHeight`, grid scrolling was available when rows exceeded the area, and no horizontal document overflow occurred. At 1280×720, three cards filled one 328px row without needless scrolling; eight cards scrolled within the 328px thread area. The footer remained at 720px. |
+
+`npm ci --ignore-scripts`, `npm run build:web`, JavaScript syntax and UI/WASM suites passed. Full Python suite: 122 tests passed with local socket access. `openspec validate --all --strict` passed. The final `herdr-observatory:review-preview` image built and a container smoke test verified the bundled allowance and grid assets. Chromium also verified fresh and expired pass labels in the bundled React renderer. An independent read-only review found an expired-pass announcement issue; it was corrected in both renderers and the repeat review had no actionable findings.

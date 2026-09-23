@@ -2,14 +2,6 @@
 const clean = value => String(value ?? '').replace(/[\x00-\x1f\x7f-\x9f]/g, ' ').slice(0, 40);
 const planLabel = value => ({prolite:'Pro Lite',self_serve_business_prolite:'Business Pro Lite',self_serve_business_usage_based:'Business usage',enterprise_cbp_automation:'Enterprise automation',enterprise_cbp_usage_based:'Enterprise usage',ent26:'Enterprise',edu_plus:'Education Plus',edu_pro:'Education Pro',unknown:'Plan unknown'}[value] || clean(value).replaceAll('_', ' ') || 'Plan unknown');
 const validTime = value => Number.isFinite(value) && value > 0;
-const day = 86400000;
-const rateFormat=new Intl.NumberFormat('en-GB',{maximumFractionDigits:1});
-export const rateLabel = value => value === null ? '—' : `${rateFormat.format(value)}%/day`;
-function remainingTime(milliseconds) {
-  if (milliseconds < 3600000) return '<1h';
-  const hours=Math.round(milliseconds/3600000);
-  return hours<24?`${hours}h`:`${Math.floor(hours/24)}d${hours%24?` ${hours%24}h`:''}`;
-}
 export function relativeTime(seconds, now = Date.now()) {
   if (!validTime(seconds)) return 'Unknown';
   const delta = seconds * 1000 - now, minutes = Math.floor(Math.abs(delta) / 60000);
@@ -25,17 +17,6 @@ export function allowanceView(sample, {now = Date.now(), disconnected = false} =
     && (!validTime(sample.weekly_resets_at) || sample.weekly_resets_at * 1000 > now) ? sample.weekly_remaining : null;
   const count = fresh && Number.isSafeInteger(sample.reset_count) && sample.reset_count >= 0
     && (!validTime(sample.reset_expires_at) || sample.reset_expires_at * 1000 > now) ? sample.reset_count : null;
-  const buckets=fresh && Array.isArray(sample.daily_usage) && sample.daily_usage.length<=30 && sample.daily_usage.every(item=>/^\d{4}-\d{2}-\d{2}$/.test(item?.date||'') && Number.isSafeInteger(item.tokens) && item.tokens>=0)?sample.daily_usage:null;
-  const peak=buckets?.length?Math.max(1,...buckets.map(item=>item.tokens)):1;
-  const untilReset=remaining!==null && validTime(sample.weekly_resets_at)?sample.weekly_resets_at*1000-now:null;
-  const windowValid=untilReset!==null && untilReset>0 && untilReset<=7*day;
-  const roomPerDay=windowValid?remaining*day/untilReset:null;
-  const elapsed=windowValid?7*day-untilReset:null;
-  const burnPerDay=elapsed!==null && elapsed>=3600000?(100-remaining)*day/elapsed:null;
-  const paceScale=Math.max(25,roomPerDay??0,burnPerDay??0);
-  const pace=burnPerDay===null || roomPerDay===null?'unknown':burnPerDay>roomPerDay?'over':'within';
-  const runwayMs=!windowValid?null:remaining===0?0:burnPerDay===0?Infinity:burnPerDay>0?remaining/burnPerDay*day:null;
-  const runway=runwayMs===null?'—':runwayMs===0?'0h left':runwayMs>=untilReset?'Beyond reset':`~${remainingTime(runwayMs)} left`;
   return {
     label: clean(sample?.label) || 'Account', plan: planLabel(sample?.plan),
     remaining, weekly: remaining === null ? '—' : `${Math.round(remaining)}%`,
@@ -43,8 +24,6 @@ export function allowanceView(sample, {now = Date.now(), disconnected = false} =
     passes: count === null ? '—' : String(count),
     expiry: fresh && count !== 0 ? relativeTime(sample.reset_expires_at, now) : count === 0 ? 'None' : 'Unknown',
     status: fresh ? `Checked ${relativeTime(sample.sampled_at, now)}` : disconnected ? 'Disconnected' : 'Awaiting account sample',
-    roomPerDay,burnPerDay,paceScale,pace,runway,
-    daily:buckets?.map(item=>({...item,glyph:'▁▂▃▄▅▆▇█'[Math.min(7,Math.floor(item.tokens/peak*7))]}))||null,
   };
 }
 export function createAllowancePanel({root}) {
@@ -56,33 +35,23 @@ export function createAllowancePanel({root}) {
     const next = JSON.stringify(rows);if (next === signature)return;signature = next;
     const panels = rows.map(row => {
       const panel = element('article', 'allowance-card');
-      panel.setAttribute('data-pace',row.pace);
       panel.setAttribute('data-low',String(row.remaining!==null&&row.remaining<=15));
-      const paceLabel=row.pace==='over'?'Over pace':row.pace==='within'?'Within pace':'Pace unknown';
-      panel.setAttribute('aria-label',`${row.label}: ${row.weekly} of weekly allowance left; at the average burn, ${row.runway}; burn ${rateLabel(row.burnPerDay)}; room ${rateLabel(row.roomPerDay)}; ${paceLabel}; reset ${row.reset}; ${row.passes} reset passes; ${row.status}.`);
+      panel.setAttribute('aria-label',`${row.label}: ${row.weekly} of weekly allowance left; reset ${row.reset}; ${row.passes} reset passes; pass expiry ${row.expiry}; ${row.status}.`);
       const heading = element('h3', 'allowance-name', row.label);
       heading.append(element('span', 'allowance-plan', ` · ${row.plan}`));
-      const head=element('div','allowance-head'),reading=element('div','allowance-reading'),outlook=element('div','allowance-outlook');
+      const head=element('div','allowance-head'),reading=element('div','allowance-reading');
       reading.append(element('strong','allowance-percent',row.weekly),element('span','','weekly left'));
-      outlook.title='Estimated from the average weekly allowance used per day so far. Future usage may differ.';
-      outlook.append(element('span','','At average burn'),element('strong','',row.runway));head.append(reading,outlook);
+      head.append(reading);
       const gauge = element('span', 'allowance-gauge');
       const fill = element('i', '');fill.style.width = `${row.remaining ?? 0}%`;gauge.append(fill);
       gauge.setAttribute('role','meter');gauge.setAttribute('aria-label','Weekly allowance remaining');gauge.setAttribute('aria-valuemin','0');gauge.setAttribute('aria-valuemax','100');gauge.setAttribute('aria-valuetext',row.weekly);
       if(row.remaining!==null)gauge.setAttribute('aria-valuenow',String(row.remaining));
-      const pace=element('div','allowance-pace');
-      pace.setAttribute('aria-label',`Burn ${rateLabel(row.burnPerDay)}; room ${rateLabel(row.roomPerDay)}. ${paceLabel}.`);
-      for(const [name,value,detail] of [['Burn',row.burnPerDay,'Average weekly allowance used per day so far. This is not a token count or forecast.'],['Room',row.roomPerDay,'Weekly allowance left divided by time until reset. An even-use guide in the same units as burn.']]){
-        const line=element('div',`pace-row pace-${name.toLowerCase()}`),track=element('span','pace-track'),bar=element('i','');
-        line.title=detail;track.setAttribute('aria-hidden','true');bar.style.width=`${value===null?0:value/row.paceScale*100}%`;track.append(bar);
-        line.append(element('span','',name),track,element('strong','',rateLabel(value)));pace.append(line);
-      }
       const foot=element('div','allowance-foot');foot.append(element('span','allowance-reset-time',`Reset ${row.reset}`));
       if(row.passes!=='—'&&row.passes!=='0'){
         const passes=element('span','allowance-passes',`${row.passes} passes`);passes.title=`Reset passes: ${row.passes}. Next expiry: ${row.expiry}`;foot.append(passes);
       }
       foot.append(element('small','allowance-age',row.status));
-      panel.append(heading,head,gauge,pace,foot);
+      panel.append(heading,head,gauge,foot);
       return panel;
     });
     root.replaceChildren(...panels);
