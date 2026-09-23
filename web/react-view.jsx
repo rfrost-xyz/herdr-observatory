@@ -13,7 +13,8 @@ function Machine({host, history, sparkline, rate}) {
       const measured=values.filter(Number.isFinite), scale=index>=4?Math.max(1,...measured):100;
       const graphTitle=`${measured.length} measured samples · ${values.length-measured.length} missing${index>=4?(measured.length?' · peak '+rate(Math.max(...measured)):' · peak unavailable'):' · 0–100% scale'}`;
       const known=index<4 && value.endsWith('%');
-      return <div className="metric" key={label}><dt>{label}</dt><dd title={value} aria-label={value}>{value==='Unavailable'?'—':value}</dd>
+      const detail=index===2 && host.graphicsScope?`${value} · ${host.graphicsScope}`:value;
+      return <div className="metric" key={label}><dt>{label}</dt><dd title={detail} aria-label={detail}>{value==='Unavailable'?'—':value}</dd>
         {index<4 && <span className="metric-gauge" data-known={String(known)} aria-hidden="true"><i className="metric-fill" style={{width:`${known?Math.max(0,Math.min(100,parseFloat(value))):0}%`}}/></span>}
         {(index===4 || index===5) && <span className="network-direction" data-known={String(value!=='Unavailable')} aria-hidden="true">{index===4?'↓':'↑'}</span>}
         {index<=5 && <span className="metric-graph" title={graphTitle} aria-label={graphTitle}>{sparkline(values,scale)}</span>}
