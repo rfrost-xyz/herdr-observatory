@@ -367,7 +367,7 @@ function buildView(){
     activity.title='Latest observed hook activity; the state icon is Herdr’s current state';activity.append(activityText,tool);
     pendingGlyph.setAttribute('aria-hidden','true');pending.append(pendingGlyph,pendingText);
     const fields=Array.from({length:4},()=>{const tile=node('div','usage-tile'),label=node('span','usage-label'),value=node('strong','usage-value'),exact=node('small','usage-exact'),bar=node('span','usage-bar'),fill=node('i',''),remainder=node('i','usage-remainder'),write=node('i','usage-write');tile.setAttribute('role','group');bar.append(fill,remainder,write);bar.setAttribute('aria-hidden','true');tile.append(label,value,exact,bar);metrics.append(tile);return {tile,label,value,exact,bar,fill,remainder,write};});
-    const detail=node('div','thread-meta'),footer=node('div','card-footer'),freshness=node('p','thread-freshness'),compactionAge=node('span','freshness-part'),hookAge=node('span','freshness-part'),usageAge=node('span','freshness-part'),accessibleMetrics=node('span','sr-only');accessibleMetrics.id=`thread-metrics-${index}`;projectPanel.append(project,checkout);statePanel.append(status);head.append(projectPanel,statePanel,activity);detail.append(identity);freshness.append(compactionAge,hookAge,usageAge);footer.append(detail,coverage,freshness);card.append(head,metrics,pending,recent,footer,accessibleMetrics);document.getElementById('threads').append(card);return {card,project,glyph,state:status,checkout,identity,detail,footer,freshness,compactionAge,hookAge,usageAge,activity,activityText,tool,metrics,pending,pendingText,recent,coverage,accessibleMetrics,fields};
+    const detail=node('div','thread-meta'),footer=node('div','card-footer'),accessibleMetrics=node('span','sr-only');accessibleMetrics.id=`thread-metrics-${index}`;projectPanel.append(project,checkout);statePanel.append(status);head.append(projectPanel,statePanel,activity);detail.append(identity);footer.append(detail);card.append(head,metrics,pending,recent,footer,accessibleMetrics);document.getElementById('threads').append(card);return {card,project,glyph,state:status,checkout,identity,detail,footer,activity,activityText,tool,metrics,pending,pendingText,recent,accessibleMetrics,fields};
   });
   hostNodes=Array.from({length:3},()=>{const row=node('article','host-row'),name=node('strong','host-name'),status=node('span','host-status'),metrics=node('dl','host-metrics');const fields=Array.from({length:7},(_,i)=>{const pair=node('div','metric'),graph=node('span','metric-graph'),label=node('dt',''),value=node('dd',''),gauge=node('span','metric-gauge'),fill=node('i','metric-fill'),direction=node('span','network-direction',i===4?'↓':i===5?'↑':'');gauge.setAttribute('aria-hidden','true');direction.setAttribute('aria-hidden','true');gauge.append(fill);gauge.hidden=i>=4;direction.hidden=i<4 || i>5;pair.append(label,value,gauge,direction,graph);metrics.append(pair);return {label,value,gauge,fill,direction,graph};});row.append(name,status,metrics);document.getElementById('fleet').append(row);return {row,name,status,fields};});
   eventNodes=Array.from({length:60},()=>{const row=node('div','event-row'),glyph=node('span','event-icon'),text=node('span','event-text');glyph.setAttribute('aria-hidden','true');row.append(glyph,text);document.getElementById('events').append(row);return {row,glyph,text};});
@@ -397,15 +397,15 @@ function draw(now=performance.now()) {
   setText(document.getElementById('connection'),view.connection);
   document.getElementById('connection-loader').hidden=view.connection!=='Connecting';
   if(!reactRenderer){hostNodes.forEach((host,i)=>{const model=view.hosts[i];host.row.hidden=!model;if(!model)return;setText(host.name,model.label);host.name.title=model.label;setText(host.status,model.online?'Online':'Offline');host.status.dataset.online=String(model.online);host.row.title='Sample age: '+model.metrics[6][1];host.fields.forEach((f,j)=>{setText(f.label,model.metrics[j][0]);setText(f.value,model.metrics[j][1]==='Unavailable'?'—':model.metrics[j][1]);const detail=j===2&&model.graphicsScope?`${model.metrics[j][1]} · ${model.graphicsScope}`:model.metrics[j][1];f.value.title=detail;f.value.setAttribute('aria-label',detail);if(j<4){const value=model.metrics[j][1],known=value.endsWith('%');f.gauge.dataset.known=String(known);f.fill.style.width=(known?Math.max(0,Math.min(100,parseFloat(value))):0)+'%';}if(j===4 || j===5)f.direction.dataset.known=String(model.metrics[j][1]!=='Unavailable');const values=model.online?(fleetHistory.get(model.id)?.rows || []).map(row=>row[j]):[];const scale=j>=4?Math.max(1,...values.filter(Number.isFinite)):100;f.graph.hidden=j>5;setText(f.graph,sparkline(values,scale));const measured=values.filter(Number.isFinite).length;f.graph.title=`${measured} measured samples · ${values.length-measured} missing${j>=4?(measured?' · peak '+rate(Math.max(...values.filter(Number.isFinite))):' · peak unavailable'):' · 0–100% scale'}`;f.graph.setAttribute('aria-label',f.graph.title);});});
-  cardNodes.forEach((card,i)=>{const model=view.cards[i];card.card.hidden=!model;if(!model){for(const field of ['project','checkout','identity','activityText','tool','recent','coverage','accessibleMetrics','compactionAge','hookAge','usageAge']){setText(card[field],'');card[field].title='';}card.freshness.title='';card.freshness.setAttribute('aria-label','');for(const f of card.fields){for(const part of ['label','value','exact'])setText(f[part],'');f.tile.title='';f.tile.setAttribute('aria-label','');}card.state.setAttribute('aria-label','');card.state.title='';setText(card.glyph,'');card.card.setAttribute('aria-label','');return;}
+  cardNodes.forEach((card,i)=>{const model=view.cards[i];card.card.hidden=!model;if(!model){for(const field of ['project','checkout','identity','activityText','tool','recent','accessibleMetrics']){setText(card[field],'');card[field].title='';}for(const f of card.fields){for(const part of ['label','value','exact'])setText(f[part],'');f.tile.title='';f.tile.setAttribute('aria-label','');}card.state.setAttribute('aria-label','');card.state.title='';setText(card.glyph,'');card.card.setAttribute('aria-label','');return;}
     card.card.dataset.state=model.state.toLowerCase();card.card.dataset.thread=model.id;card.card.setAttribute('aria-label',`${model.project}, ${model.state}. Activate for a brief visual effect`);card.card.setAttribute('aria-describedby',card.accessibleMetrics.id);const recent=model.recentCache,recentTitle=recent?`${groupedNumber(recent.read)} cached of ${groupedNumber(recent.input)} input tokens across ${recent.points.length} distinct intervals. M marks a model change; C marks compaction; ? marks an unavailable interval. Markers are observations, not cache-miss reasons.`:'';setText(card.accessibleMetrics,[`Host ${model.host}, Herdr pane ${model.pane}, harness ${model.harness}, model ${model.model || 'unavailable'}.`,model.freshness,model.usageAge?`${model.usageFreshness} (${model.usageSource})`:null,...model.tiles.map(tile=>`${tile.lastKnown?'Last known '+(tile.source==='usage'?model.usageAge:model.hookAge)+'. ':''}${tile.label}: ${tile.detail}`),model.compactions?`Compactions: ${model.compactions.detail}`:null,model.note,recentTitle].filter(Boolean).join(' '));const clickAge=now-(cardClicks.get(model.id) ?? -Infinity);const clickLevel=reduced.matches || document.hidden || disconnected?0:Math.max(0,1-clickAge/650);card.card.style.setProperty('--click',clickLevel.toFixed(3));card.card.style.setProperty('--glitch-x',(clickLevel>0?Math.sin(clickAge*.13)*2*clickLevel:0).toFixed(2)+'px');card.card.style.setProperty('--impulse',model.motion.flash.toFixed(3));
     setText(card.project,model.project);card.project.title=model.project;setText(card.glyph,model.motion.glyph);card.state.setAttribute('aria-label',model.state);card.state.title=model.state;
     const checkout=model.checkout && !['.bare','Checkout not reported',model.project].includes(model.checkout)?model.checkout:'';setText(card.checkout,checkout?`${icon('branch')} ${checkout}`:'');card.checkout.hidden=!checkout;card.checkout.title='Worktree / checkout: '+model.checkout;
-    setText(card.identity,`${model.host} · ${model.pane} · ${model.harness} · ${model.model || '—'}`);card.identity.title=`Host: ${model.host} · Herdr pane: ${model.pane} · Harness: ${model.harness} · Model: ${model.model || 'unavailable'}`;
+    setText(card.identity,`${model.host} · ${model.pane} · ${model.harness} · ${model.model || '—'}${model.compactions && model.compactions.value !== '—' ? ` · C ${model.compactions.value}` : ''}`);card.identity.title=`Host: ${model.host} · Herdr pane: ${model.pane} · Harness: ${model.harness} · Model: ${model.model || 'unavailable'}${model.compactions && model.compactions.value !== '—' ? ` · ${model.compactions.detail}` : ''}`;
     card.activity.hidden=!model.activity && !model.tool;card.activity.dataset.historical=String(model.historicalActivity);card.activity.title=model.historicalActivity?`${model.activity}${model.tool?` · ${model.tool}`:''}`:'Latest observed hook activity; the state icon is Herdr’s current state';setText(card.activityText,model.activity||'Tool observed');setText(card.tool,model.tool||'');card.tool.hidden=!model.tool;card.tool.title=model.tool;
     card.metrics.hidden=!model.instruments.length;card.pending.hidden=Boolean(model.instruments.length);setText(card.pendingText,model.note==='No hook sample'?'No hook sample':'Usage pending');card.pending.title=model.note;card.fields.forEach((f,j)=>{const tile=model.instruments[j];f.tile.hidden=!tile;if(!tile)return;f.tile.dataset.kind=tile.kind;f.tile.dataset.lastKnown=String(tile.lastKnown);f.tile.dataset.known=String(tile.ratio!=null);f.tile.style.setProperty('--ratio',`${Math.min(1,Math.max(0,tile.ratio??0))*100}%`);setText(f.label,tile.label);setText(f.value,tile.value);f.value.setAttribute('data-compact',tile.kind==='context'?tile.value.split(' ')[0]:'');setText(f.exact,tile.exact || '');f.exact.hidden=!tile.exact;f.tile.title=tile.detail;f.tile.setAttribute('aria-label',`${tile.lastKnown?'Last known. ':''}${tile.label}: ${tile.detail}`);f.bar.hidden=true;});
     setText(card.recent,recent?cacheTrend(recent):'');card.recent.hidden=!recent;card.recent.title=recentTitle;card.recent.setAttribute('aria-label',card.recent.title);
-    setText(card.coverage,model.note==='Partial usage coverage'?'Partial coverage':model.note);card.coverage.hidden=!model.note || !model.tiles.length;card.coverage.title=model.note;setText(card.compactionAge,model.compactions?`Compactions ${model.compactions.value}`:'');card.compactionAge.hidden=!model.compactions;card.compactionAge.setAttribute('data-short',model.compactions?`C ${model.compactions.value}`:'');setText(card.hookAge,model.freshness);card.hookAge.setAttribute('data-short',`H ${model.hookAge?.replace(' ago','')||'?'}`);setText(card.usageAge,model.usageFreshness);card.usageAge.setAttribute('data-short',`U ${model.usageAge?.replace(' ago','')||'?'}`);card.freshness.setAttribute('aria-label',[model.compactions?`Compactions ${model.compactions.value}`:null,model.freshness,model.usageFreshness].filter(Boolean).join('. '));card.freshness.title=[model.compactions?.detail,model.usageAge?`Usage source: ${model.usageSource}`:null].filter(Boolean).join(' · ');
+
   });}
   const empty=document.getElementById('empty');empty.hidden=Boolean(view.cards.length);setText(empty,view.empty);
   setText(document.getElementById('thread-total'),view.visibleTotal===view.total?view.total+' total':view.visibleTotal+' of '+view.total);
@@ -433,26 +433,44 @@ async function refresh() {
   catch {disconnect();}
   setTimeout(refresh,2000);
 }
-let observationNativeFullscreen=false;
+let observationOwnsFullscreen=false;
+function updateFullscreenControls(){
+  const expanded=document.getElementById('observatory').dataset.observationsExpanded==='true';
+  const observationButton=document.getElementById('fullscreen'),dashboardButton=document.getElementById('dashboard-fullscreen');
+  observationButton.setAttribute('aria-pressed',String(expanded));
+  observationButton.setAttribute('aria-label',expanded?'Collapse observations':'Expand observations');
+  observationButton.title=expanded?'Collapse observations':'Expand observations';
+  const dashboardFull=Boolean(document.fullscreenElement) && !expanded;
+  dashboardButton.setAttribute('aria-pressed',String(dashboardFull));
+  dashboardButton.setAttribute('aria-label',dashboardFull?'Exit dashboard fullscreen':'Enter dashboard fullscreen');
+  dashboardButton.title=`${dashboardFull?'Exit':'Enter'} dashboard fullscreen (F)`;
+}
 async function fullscreen(){
-  const root=document.getElementById('observatory'),button=document.getElementById('fullscreen');
-  const expand=root.dataset.observationsExpanded!=='true';
+  const root=document.getElementById('observatory'),expand=root.dataset.observationsExpanded!=='true';
   root.dataset.observationsExpanded=String(expand);
-  button.setAttribute('aria-pressed',String(expand));
-  button.setAttribute('aria-label',expand?'Collapse observations':'Expand observations');
-  button.title=`${expand?'Collapse':'Expand'} observations (F)`;
-  draw();
+  draw();updateFullscreenControls();
   try {
-    if(expand && !document.fullscreenElement && document.documentElement.requestFullscreen){await document.documentElement.requestFullscreen();observationNativeFullscreen=true;}
-    else if(!expand && observationNativeFullscreen && document.fullscreenElement){observationNativeFullscreen=false;await document.exitFullscreen();}
-  } catch {observationNativeFullscreen=false;}
+    if(expand && !document.fullscreenElement && document.documentElement.requestFullscreen){observationOwnsFullscreen=true;await document.documentElement.requestFullscreen();}
+    else if(!expand && observationOwnsFullscreen && document.fullscreenElement){observationOwnsFullscreen=false;await document.exitFullscreen();}
+  } catch {observationOwnsFullscreen=false;}
+  updateFullscreenControls();
+}
+async function dashboardFullscreen(){
+  const root=document.getElementById('observatory');
+  const wasObservations=root.dataset.observationsExpanded==='true';
+  if(wasObservations){root.dataset.observationsExpanded='false';observationOwnsFullscreen=false;draw();}
+  try {
+    if(document.fullscreenElement && !wasObservations)await document.exitFullscreen();
+    else if(!document.fullscreenElement && document.documentElement.requestFullscreen)await document.documentElement.requestFullscreen();
+  } catch {}
+  updateFullscreenControls();
 }
 function changePage(delta){manualPage=Math.max(0,currentPage()+delta);draw();}
 function cycleCategory(){if(snapshot?.profile==='personal'){category=['all','work','personal'][(['all','work','personal'].indexOf(category)+1)%3];manualPage=0;draw();}}
-for(const [id,action] of Object.entries({fullscreen,previous:()=>changePage(-1),next:()=>changePage(1),rotate:()=>{manualPage=manualPage===null?currentPage():null;draw();},category:cycleCategory}))document.getElementById(id).addEventListener('click',action);
+for(const [id,action] of Object.entries({fullscreen,'dashboard-fullscreen':dashboardFullscreen,previous:()=>changePage(-1),next:()=>changePage(1),rotate:()=>{manualPage=manualPage===null?currentPage():null;draw();},category:cycleCategory}))document.getElementById(id).addEventListener('click',action);
 addEventListener('keydown',event=>{
   const expanded=document.getElementById('observatory').dataset.observationsExpanded==='true';
-  if(event.key==='f')fullscreen();
+  if(event.key.toLowerCase?.()==='f' && !event.altKey && !event.ctrlKey && !event.metaKey && !['INPUT','TEXTAREA'].includes(event.target?.tagName)){event.preventDefault?.();dashboardFullscreen();}
   if(event.key==='Escape' && expanded)fullscreen();
   if(event.key==='PageDown' || event.key==='PageUp'){
     const events=document.getElementById('events');
@@ -463,7 +481,7 @@ addEventListener('keydown',event=>{
   if(event.key==='r'){manualPage=null;draw();}
   if(event.key==='c')cycleCategory();
 });
-addEventListener('fullscreenchange',()=>{if(observationNativeFullscreen && !document.fullscreenElement && document.getElementById('observatory').dataset.observationsExpanded==='true'){observationNativeFullscreen=false;fullscreen();}});
+addEventListener('fullscreenchange',()=>{if(!document.fullscreenElement){observationOwnsFullscreen=false;const root=document.getElementById('observatory');if(root.dataset.observationsExpanded==='true'){root.dataset.observationsExpanded='false';draw();}}updateFullscreenControls();});
 reduced.addEventListener?.('change',()=>{if(reduced.matches){pendingEffect=null;effectGeneration++;}draw();});
 addEventListener('resize',()=>{fitBackground();pixelField?.resize();titleMark?.resize();draw();});
 setInterval(()=>{if(received && Date.now()-received>12000)disconnect();if(!disconnected)reconcile();},1000);

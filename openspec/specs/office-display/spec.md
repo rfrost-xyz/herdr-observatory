@@ -114,7 +114,7 @@ The display SHALL show an unbranded live thread-card display alongside event tex
 - **THEN** only that line animates at its existing left edge and scrolling row, without horizontal or vertical block centring or covering adjacent records; if the line scrolls out of view, its playback is discarded without later replay.
 
 ### Requirement: Scrolling observation console
-The activity strip SHALL scroll timestamped, bounded observations only as notable agent lifecycle/status and source-availability changes are observed. Duplicate samples SHALL NOT create duplicate transitions. Status stamps SHALL distinguish observed state changes from raw events or tool execution. The current thread cards SHALL remain separate and readable. Readiness, launch flags and revision/sequence changes SHALL use only sanitised available metadata in the thread cards. The activity strip SHALL sit inside an opaque full-width footer split horizontally between observations and account allowances and excluded from the music visualiser and show a compact view of recent events while retaining up to 60 bounded records for mouse-wheel and keyboard scrolling, with semantic icons and theme-derived colours, each on one bounded line containing observation time, project, Herdr state, available thread number and pertinent status update without inventing activity. Unavailable fields SHALL be marked unavailable.
+The activity strip SHALL scroll timestamped, bounded observations only as notable agent lifecycle/status and source-availability changes are observed. Duplicate samples SHALL NOT create duplicate transitions. Status stamps SHALL distinguish observed state changes from raw events or tool execution. The current thread cards SHALL remain separate and readable. Readiness, launch flags and revision/sequence changes SHALL use only sanitised available metadata in the thread cards. The activity strip SHALL sit inside an opaque full-width footer split horizontally between observations and account allowances and excluded from the music visualiser and show a compact view of recent events while retaining up to 60 bounded records for mouse-wheel and keyboard scrolling, with semantic icons and theme-derived colours, each on one bounded line containing observation time, project, Herdr state, available thread number and pertinent status update without inventing activity. Unavailable fields SHALL be marked unavailable. The header SHALL provide a separate icon to toggle native fullscreen for the complete dashboard, including thread state totals. F SHALL activate that dashboard control. The observation icon SHALL independently expand observations below the retained header and enter native fullscreen.
 
 #### Scenario: Fresh and duplicate observations
 - **WHEN** an agent changes between idle, working, blocked or done and a duplicate snapshot follows
@@ -139,6 +139,14 @@ The activity strip SHALL scroll timestamped, bounded observations only as notabl
 #### Scenario: Expand observations
 - **WHEN** the icon-only observation control is activated
 - **THEN** observations fill the screen below the retained title, music and thread-state totals while fleet, cards and allowance panels are hidden; the control exposes its state and can restore the dashboard.
+
+#### Scenario: Dashboard fullscreen
+- **WHEN** the header fullscreen icon or F is activated
+- **THEN** the complete dashboard enters or exits native fullscreen without hiding fleet, threads or allowances.
+
+#### Scenario: Independent observation focus
+- **WHEN** the observation icon is activated
+- **THEN** observations expand beneath the retained header, independently of the dashboard control; exiting restores the prior dashboard view and both controls report their current state.
 
 ### Requirement: Modern glyph-capable terminal
 The display SHALL provide a modern Omarchy-inspired card composition with locally served Nerd Font glyphs, Unicode separators, clear thread-state labels and consistent typography in live and animated views. Icons SHALL supplement readable words. Font availability SHALL NOT prevent current state from rendering.

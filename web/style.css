@@ -291,3 +291,17 @@ header{padding-bottom:8px}.brand{justify-content:center}.totals{gap:7px}.total{m
 #observatory[data-observations-expanded=true] #events .event-row{height:clamp(29px,2.1vw,39px);line-height:1.3;padding:4px 10px}
 @media(max-height:800px){#observatory[data-observations-expanded=true]{grid-template-rows:52px minmax(0,1fr)}}
 @media(max-width:1000px){#observatory[data-observations-expanded=true]{grid-template-rows:auto minmax(0,1fr)}#observatory[data-observations-expanded=true] #activity{margin:0 calc(-1 * var(--inset-x)) calc(-1 * var(--inset-y));overflow:hidden}}
+
+/* Dashboard and observation focus have separate controls. */
+header .summary{margin-left:0}
+#dashboard-fullscreen{width:32px;height:32px;display:grid;place-items:center;flex:none;font-size:20px;line-height:1;color:var(--muted)}
+#dashboard-fullscreen[aria-pressed=true]{color:var(--blue);border-color:var(--blue)}
+.thread-card .card-footer{display:block;min-height:0;overflow:hidden}
+.thread-card .card-footer .thread-meta{display:block;width:100%;overflow:hidden}
+.thread-card .card-footer .identity{font-size:9px;line-height:1.3}
+@media(min-width:1280px){.thread-card{grid-template-rows:70px minmax(0,1fr) 14px}}
+@media(min-width:1280px) and (min-height:900px){.thread-card{grid-template-rows:94px minmax(0,1fr) 18px}.thread-card .card-footer .identity{font-size:10px}}
+.allowance-reading>.allowance-variance{font-size:clamp(11px,.9vw,15px);font-variant-numeric:tabular-nums}
+.allowance-reading>.allowance-variance[data-direction=ahead]{color:var(--green)}
+.allowance-reading>.allowance-variance[data-direction=behind]{color:var(--red)}
+.allowance-reading>.allowance-variance[data-direction=even]{color:var(--muted)}

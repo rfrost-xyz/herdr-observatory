@@ -48,8 +48,10 @@ export function allowanceView(sample, {now = Date.now(), disconnected = false} =
   const paceKnown = remaining !== null && untilReset !== null && untilReset > 0 && untilReset <= week;
   const timeRemaining = paceKnown ? untilReset / week * 100 : null;
   const paceDifference = paceKnown ? remaining - timeRemaining : null;
+  const roundedDifference = paceDifference === null ? null : Math.round(Math.abs(paceDifference));
+  const displayDifference = roundedDifference === null ? null : roundedDifference === 0 ? 0 : Math.sign(paceDifference) * roundedDifference;
   const pace = paceDifference === null ? 'unknown' : paceDifference > 3 ? 'reserve' : paceDifference < -3 ? 'deficit' : 'on';
-  const paceLabel = pace === 'unknown' ? 'Pace unknown' : pace === 'on' ? 'On pace' : `${Math.round(Math.abs(paceDifference))} percentage points in ${pace}`;
+  const paceLabel = displayDifference === null ? 'Pace unknown' : displayDifference === 0 ? 'On pace' : `${Math.abs(displayDifference)} percentage ${Math.abs(displayDifference)===1?'point':'points'} ${displayDifference>0?'ahead of':'behind'} even pace`;
   return {
     label: clean(sample?.label) || 'Account', plan: planLabel(sample?.plan),
     remaining, weekly: remaining === null ? '—' : `${Math.round(remaining)}%`,
@@ -57,7 +59,7 @@ export function allowanceView(sample, {now = Date.now(), disconnected = false} =
     passes: count === null ? '—' : String(count),
     expiry: fresh && count !== 0 ? relativeTime(sample.reset_expires_at, now) : count === 0 ? 'None' : 'Unknown',
     status: fresh ? `Checked ${relativeTime(sample.sampled_at, now)}` : disconnected ? 'Disconnected' : 'Awaiting account sample',
-    pace, paceLabel, timeRemaining, paceDifference, activity: reportedActivity(sample, fresh, now),
+    pace, paceLabel, timeRemaining, paceDifference, displayDifference, activity: reportedActivity(sample, fresh, now),
   };
 }
 export function createAllowancePanel({root}) {
@@ -75,7 +77,8 @@ export function createAllowancePanel({root}) {
       const heading = element('h3', 'allowance-name', row.label);
       heading.append(element('span', 'allowance-plan', ` · ${row.plan}`));
       const head=element('div','allowance-head'),reading=element('div','allowance-reading'),reset=element('span','allowance-reset-head',`Reset ${row.reset}`);
-      reading.append(element('strong','allowance-percent',row.weekly),element('span','','weekly left'));
+      reading.append(element('strong','allowance-percent',row.weekly));
+      if(row.displayDifference!==null){const variance=element('span','allowance-variance',`${row.displayDifference>0?'+':''}${row.displayDifference}%`);variance.setAttribute('data-direction',row.displayDifference>0?'ahead':row.displayDifference<0?'behind':'even');variance.title=row.paceLabel;variance.setAttribute('aria-label',row.paceLabel);reading.append(variance);}
       head.append(reading,reset);
       const gauge = element('span', 'allowance-gauge');
       const fill = element('i', '');fill.style.width = `${row.remaining ?? 0}%`;gauge.append(fill);

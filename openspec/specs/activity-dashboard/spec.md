@@ -77,11 +77,11 @@ The service SHALL bind to loopback and reject browser requests with untrusted Ho
 - **THEN** the service denies it without returning activity data.
 
 ### Requirement: Glanceable activity presentation
-The display SHALL give thread cards persistent semantic state colour and a two-column top bar, with project and safe branch in the larger left region and a large icon-only native state in the right region. Current activity and reported tool SHALL occupy a full-width strip beneath the project and icon row while remaining distinct from the native state. The branch SHALL sit in a subbox under the project name and inherit the state colour. Host, Herdr pane, harness and model metadata SHALL appear in that order on one line in the card footer, with full values accessible if a narrow card truncates the line. Compaction and source ages SHALL remain separate below it. Cards SHALL show validated context as the only dial, and cumulative session input, cumulative session output and cumulative cache-read share as three equally prominent non-dial readings beside context. Last-response counters MAY replace a missing cumulative instrument only with explicit response scope; they SHALL NOT repeat available session totals. Exact counts, source ages and coverage SHALL remain accessible. Missing usage SHALL have one visible cue and SHALL NOT appear as zero. Unknown subagent counts SHALL NOT become zero. Recent observations SHALL use native state colour when available. The header SHALL retain Idle, Working, Blocked and Done totals. Cards SHALL omit meaningless bare-repository checkout labels.
+The display SHALL give thread cards persistent semantic state colour and a two-column top bar, with project and safe branch in the larger left region and a large icon-only native state in the right region. Current activity and reported tool SHALL occupy a full-width strip beneath the project and icon row while remaining distinct from the native state. The branch SHALL sit in a subbox under the project name and inherit the state colour. Host, Herdr pane, harness, model and reported compaction count SHALL appear in that order on one line in the card footer, with full values accessible if a narrow card truncates the line. Source ages and coverage SHALL remain accessible without a separate visual footer row. Cards SHALL show validated context as the only dial, and cumulative session input, cumulative session output and cumulative cache-read share as three equally prominent non-dial readings beside context. Last-response counters MAY replace a missing cumulative instrument only with explicit response scope; they SHALL NOT repeat available session totals. Exact counts, source ages and coverage SHALL remain accessible. Missing usage SHALL have one visible cue and SHALL NOT appear as zero. Unknown subagent counts SHALL NOT become zero. Recent observations SHALL use native state colour when available. The header SHALL retain Idle, Working, Blocked and Done totals. Cards SHALL omit meaningless bare-repository checkout labels.
 
 #### Scenario: Status header and footer
 - **WHEN** a permitted thread has project, branch, state, activity and model metadata
-- **THEN** the top bar gives the project two thirds with a state-coloured branch subbox, and gives the icon-only state one third; activity and tool have a full-width strip beneath the top row, and host, Herdr pane, harness and model occupy one ordered footer line above age detail.
+- **THEN** the top bar gives the project two thirds with a state-coloured branch subbox, and gives the icon-only state one third; activity and tool have a full-width strip beneath the top row, and host, Herdr pane, harness, model and reported compactions occupy one ordered footer line.
 
 #### Scenario: Valid telemetry
 - **WHEN** context, cumulative session tokens and cache composition are valid
@@ -106,6 +106,10 @@ The display SHALL give thread cards persistent semantic state colour and a two-c
 #### Scenario: Checkout disclosure
 - **WHEN** a permitted thread has a reported checkout directory
 - **THEN** only its sanitised leaf label reaches the browser and Work feed; full paths and excluded projects remain undisclosed.
+
+#### Scenario: Unknown compactions
+- **WHEN** compaction count is not reported
+- **THEN** the footer does not imply zero, while accessible detail explains its coverage.
 
 ### Requirement: Track change presentation
 The music tile SHALL emphasise track title and artist and play bounded, theme-aware in-place text effects on both lines on an observed track change or explicit title/artist activation. Duplicate samples, initial connection, pause/resume and stale-source recovery SHALL NOT trigger automatic track-change effects. Effects SHALL remain outside thread cards, have no consecutive repeats, finish normally before another starts, and release resources on hidden/reduced-motion/stale/error paths with readable text retained.
