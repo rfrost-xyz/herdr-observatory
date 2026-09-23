@@ -66,8 +66,9 @@ test('fallback cards render pace marker, observed activity and honest pass age',
   panel.update([{...sample,weekly_remaining:10,weekly_resets_at:now/1000+3.25*86400,daily_usage}],{now});
   const card=root.children[0],all=nodes(card),gauge=all.find(node=>node.className==='allowance-gauge');
   assert.equal(root.children.length,2);assert.equal(card.attrs['data-pace'],'deficit');
-  assert.equal(gauge.children[0].style.width,'10%');assert.ok(gauge.children[1].style.left.startsWith('46.'));
-  assert.ok(all.some(node=>node.className==='allowance-pace-label'&&node.children.some(child=>child.textContent==='36 percentage points in deficit')));
+  assert.equal(gauge.children[0].style.width,'10%');assert.equal(gauge.children[1].style.left,'10%');assert.ok(gauge.children[1].style.width.startsWith('36.'));assert.ok(gauge.children[2].style.left.startsWith('46.'));
+  assert.equal(all.some(node=>node.className==='allowance-pace-label'),false);
+  assert.ok(card.attrs['aria-label'].includes('36 percentage points in deficit'));
   assert.ok(all.some(node=>node.className==='activity-summary'&&node.textContent==='9K tokens · 2 reported days'));
   assert.equal(all.filter(node=>node.tag==='i'&&node.style.height!==undefined).length,2);
   assert.ok(card.attrs['aria-label'].includes('9,000 tokens across 2 reported dates'));
