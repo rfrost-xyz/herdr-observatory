@@ -9,7 +9,7 @@ import socket
 import sys
 import time
 
-from .probe import TELEMETRY_NUMBERS, TELEMETRY_V2_GROUPS, session_binding, telemetry_view
+from .probe import TELEMETRY_NUMBERS, TELEMETRY_V2_GROUPS, session_binding, telemetry_from_agent, telemetry_view
 
 CODEX_EVENTS = {'SessionStart': ('session', 'ready'), 'UserPromptSubmit': ('turn', 'working'),
                 'PreToolUse': ('tool-start', 'tool'), 'PostToolUse': ('tool-end', 'working'),
@@ -91,6 +91,11 @@ def report(harness, raw, pane_id, seq, config_path='/config/config.json'):
         old = tokens.get('obs_seq', '')
         if isinstance(old, str) and old.isdigit() and int(old) >= seq:
             return False
+        if harness == 'codex':
+            previous = telemetry_from_agent(agent)
+            if previous and previous['usage_source'] == 'codex-rollout' and previous['usage_seq'] is not None and (event['usage_seq'] is None or event['usage_seq'] <= previous['usage_seq']):
+                for key in TELEMETRY_NUMBERS + ('usage_source',):
+                    event[key] = previous[key]
         owned = {k: event.get(k) for k in KEYS}
         owned.update(v='2', bind=session_binding(agent))
         for index, fields in enumerate(TELEMETRY_V2_GROUPS):

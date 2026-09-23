@@ -65,6 +65,42 @@ class TelemetryTests(unittest.TestCase):
                 self.assertTrue(report('codex',raw,'w1:p1',event()['seq'],config))
                 self.assertIn('ctx~72%',call.call_args.args[2]['display_agent'])
 
+    def test_codex_hook_without_usage_retains_last_bound_sample_and_age(self):
+        a = agent()
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / 'config.json'
+            config.write_text('{"hosts":[{"socket_path":"/herdr/herdr.sock"}]}')
+            stamp = int((time.time() - 180) * 1e6)
+            first = stamp + 1
+            usage = {'usage_source': 'codex-rollout', 'usage_seq': stamp,
+                     'input': 42, 'total_input': 100, 'context': 80, 'window': 1000}
+
+            def send(seq, reported=None):
+                raw = {'session_id': 'native-secret', 'hook_event_name': 'PreToolUse',
+                       'tool_name': 'Bash'}
+                if reported is not None:
+                    raw['observatory_usage'] = reported
+                with patch('observatory.telemetry.rpc', side_effect=[{'pane': a}, {}]) as call:
+                    self.assertTrue(report('codex', raw, 'w1:p1', seq, config))
+                    a['tokens'] = call.call_args.args[2]['tokens']
+                return telemetry_from_agent(a)
+
+            self.assertEqual(send(first, usage)['input'], 42)
+            retained = send(first + 1)
+            self.assertEqual(retained['input'], 42)
+            self.assertEqual(retained['usage_seq'], stamp)
+            self.assertEqual(retained['total_input'], 100)
+            self.assertEqual(retained['event'], 'tool-start')
+            self.assertEqual(send(first + 2, {**usage, 'usage_seq': stamp - 1, 'input': 1})['input'], 42)
+            self.assertEqual(send(first + 3, {**usage, 'input': 1, 'total_input': None})['input'], 42)
+            self.assertEqual(send(first + 4, {**usage, 'usage_seq': stamp + 2, 'input': 55})['input'], 55)
+
+            a['agent_session']['value'] = 'replacement'
+            with patch('observatory.telemetry.rpc', side_effect=[{'pane': a}, {}]) as call:
+                self.assertTrue(report('codex', {'session_id': 'replacement', 'hook_event_name': 'PreToolUse'}, 'w1:p1', first + 5, config))
+                a['tokens'] = call.call_args.args[2]['tokens']
+            self.assertIsNone(telemetry_from_agent(a)['usage_seq'])
+
     def test_replaced_out_of_order_and_wrong_harness_reports_are_dropped(self):
         with tempfile.TemporaryDirectory() as directory:
             config = Path(directory) / 'config.json'
