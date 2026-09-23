@@ -183,35 +183,16 @@ header{padding-bottom:8px}.brand{justify-content:center}.totals{gap:7px}.total{m
 .card-metrics .usage-tile[data-last-known=true]{opacity:.55}
 @media(min-width:1280px){
   #threads{grid-template-columns:repeat(4,minmax(0,1fr));grid-template-rows:repeat(2,minmax(0,1fr));grid-auto-rows:0;overflow:hidden;align-content:stretch}
-  .thread-card{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));grid-template-rows:20px 13px 19px minmax(0,1fr) 13px;gap:2px 6px;padding:7px 9px;min-height:0;max-height:100%;overflow:hidden}
-  .thread-card .card-top{grid-column:1/-1;grid-row:1;min-width:0}
-  .thread-card .project{font-size:12px;line-height:18px}
-  .thread-card .state{font-size:9px;line-height:14px;padding:2px 4px;align-self:center}
-  .thread-card .checkout{grid-column:1;grid-row:2;margin:0;line-height:13px;font-size:9px}
-  .thread-card .thread-meta{grid-column:2;grid-row:2;min-width:0;justify-content:flex-end}
-  .thread-card .thread-meta .identity{font-size:8px;line-height:13px;margin:0;text-align:right}
-  .thread-card .model-name{display:none}
-  .thread-card .card-activity{grid-column:1/-1;grid-row:3;margin:0;padding:0;line-height:17px;font-size:10px;min-width:0}
-  .thread-card .card-metrics{grid-column:1/-1;grid-row:4;min-height:0;align-items:center}
-  .thread-card .thread-freshness{grid-column:2;grid-row:5;display:flex;flex-wrap:nowrap;justify-content:flex-end;gap:5px;align-self:center;min-width:0;overflow:hidden}
+  .thread-card{display:grid;min-height:0;max-height:100%;overflow:hidden}
+  .thread-card .thread-freshness{display:flex;flex-wrap:nowrap;gap:5px;min-width:0;overflow:hidden}
   .thread-card .freshness-part{font-size:0!important;white-space:nowrap}
   .thread-card .freshness-part::after{content:attr(data-short);font-size:8px;color:var(--muted)}
-  .thread-card .coverage{grid-column:1;grid-row:5;align-self:center;margin:0;font-size:8px;line-height:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .thread-card .visual-pending{grid-column:1/-1;grid-row:4;display:flex;align-items:center;justify-content:center;gap:9px;min-height:0;border:1px dashed var(--border);border-radius:4px;color:var(--muted);font-size:10px}
+  .thread-card .visual-pending{display:flex;align-items:center;justify-content:center;gap:9px;min-height:0;border:1px dashed var(--border);border-radius:4px;color:var(--muted);font-size:10px}
   .thread-card .visual-pending span{display:grid;place-items:center;width:32px;height:32px;border:2px solid var(--border);border-radius:50%;font-size:17px}
-  .thread-card .cache-recent{display:none}
 }
 @media(min-width:1280px) and (max-height:800px){#observatory{grid-template-rows:52px 88px minmax(0,1fr) 132px;padding:14px}}
 @media(min-width:1280px) and (min-height:900px){
-  .thread-card{grid-template-rows:30px 20px 28px minmax(0,1fr) 20px;gap:5px 10px;padding:13px 15px}
-  .thread-card .project{font-size:17px;line-height:26px}
-  .thread-card .state{font-size:11px}
-  .thread-card .checkout,.thread-card .thread-meta .identity{font-size:11px;line-height:18px}
-  .thread-card .card-activity{font-size:13px;line-height:25px}
-  .thread-card .usage-label{font-size:11px}
-  .thread-card .usage-value{font-size:14px}
-  .thread-card .usage-tile[data-flow=true] .usage-value::before,.thread-card .usage-tile[data-flow=true] .usage-value::after{font-size:14px;padding:5px 7px}
-  .thread-card .freshness-part::after,.thread-card .coverage{font-size:10px}
+  .thread-card .freshness-part::after{font-size:10px}
   .thread-card .visual-pending{font-size:13px}
   .thread-card .visual-pending span{width:48px;height:48px;font-size:24px}
 }
@@ -234,53 +215,61 @@ header{padding-bottom:8px}.brand{justify-content:center}.totals{gap:7px}.total{m
 .allowance-age{margin-left:auto}
 @media(max-width:640px){.allowance-card{min-height:140px}}
 
-/* Thread hierarchy: compact identity, one context dial and two peer data blocks. */
-.thread-card .card-top{min-width:0;display:flex;align-items:baseline;justify-content:space-between;gap:8px}
-.thread-card .card-top .project{flex:0 1 auto;max-width:56%;min-width:0}
-.thread-card .card-top .identity{flex:1 1 auto;min-width:0;margin:0;text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block;color:var(--muted);font-size:clamp(8px,.67vw,12px);line-height:1.3}
-.thread-card .status-group{display:flex;align-items:center;gap:7px;min-width:0;min-height:25px;padding:3px 6px;border-left:3px solid var(--state);background:color-mix(in srgb,var(--background),var(--state) 9%);border-radius:2px}
-.thread-card .status-group .state{flex:none;display:flex;align-items:center;gap:5px;padding:3px 6px;background:color-mix(in srgb,var(--background),var(--state) 18%);font-size:11px;line-height:1.2;font-weight:700}
-.thread-card .status-group .card-activity{flex:1;min-width:0;margin:0;padding:0;gap:5px;color:var(--foreground);font-size:11px;line-height:1.2}
-.thread-card .status-group .activity-glyph{color:var(--state)}
-.thread-card .status-group .activity-text{font-weight:600}
-.thread-card .status-group .tool-name{margin-left:auto;max-width:38%;padding:2px 4px;border:1px solid color-mix(in srgb,var(--border),var(--state) 24%);border-radius:2px;background:var(--background);color:var(--foreground);font-size:10px;font-weight:500}
-.thread-card .thread-meta{min-width:0;min-height:0}
-.thread-card .thread-meta .model-name{display:block;text-align:right;font-size:9px;line-height:13px}
+
+/* One state-coloured thread header, then measured instruments and source detail. */
+.thread-card .card-top{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:7px;min-width:0;min-height:62px;padding:5px 7px;border-bottom:1px solid color-mix(in srgb,var(--border),var(--state) 35%);border-radius:2px;background:color-mix(in srgb,var(--background),var(--state) 12%)}
+.thread-card .project-panel{min-width:0;display:flex;flex-direction:column;align-items:flex-start;justify-content:center;gap:5px}
+.thread-card .project-panel .project{max-width:100%;font-size:12px;line-height:1.2;color:var(--foreground)}
+.thread-card .project-panel .checkout{display:block;max-width:100%;margin:0;padding:2px 5px;border-left:2px solid var(--state);background:color-mix(in srgb,var(--background),var(--state) 15%);color:var(--state);font-size:9px;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.thread-card .state-panel{min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;padding-left:6px;border-left:1px solid color-mix(in srgb,var(--border),var(--state) 30%);text-align:center}
+.thread-card .state-panel .state{display:grid;place-items:center;flex:none;width:30px;height:28px;padding:0;border:0;background:none;color:var(--state)}
+.thread-card .state-panel .state-glyph{display:grid;place-items:center;width:auto;height:auto;font-size:27px;line-height:1}
+.thread-card .state-panel .state-glyph .ld-blocks{flex:none}
+.thread-card .state-panel .card-activity{display:flex;flex-direction:column;align-items:center;gap:0;min-width:0;max-width:100%;margin:0;padding:0;color:var(--foreground);line-height:1.1}
+.thread-card .state-panel .activity-text,.thread-card .state-panel .tool-name{display:block;width:100%;max-width:100%;margin:0;padding:0;border:0;background:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center;font-size:9px;font-weight:500}
+.thread-card .state-panel .tool-name{color:var(--state);font-size:9px}
+.thread-card .card-footer{display:grid;grid-template-columns:minmax(0,1fr) 92px;gap:5px;align-items:end;min-width:0;min-height:22px}
+.thread-card .card-footer .thread-meta{grid-column:1;grid-row:1;display:flex;flex-direction:column;align-items:flex-start;justify-content:flex-end;gap:0;min-width:0;min-height:0}
+.thread-card .card-footer .identity,.thread-card .card-footer .model-name,.thread-card .card-footer .coverage{display:block;max-width:100%;margin:0;color:var(--muted);font-size:8px;line-height:1.1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:left}
+.thread-card .card-footer .coverage{color:var(--state)}
+.thread-card .card-footer .thread-freshness{grid-column:2;grid-row:1;margin:0;align-self:end;justify-content:flex-end;min-width:0;max-width:100%;white-space:nowrap}
 .thread-card .card-metrics{display:grid;grid-template-columns:minmax(0,.8fr) repeat(2,minmax(0,1fr));gap:5px;min-width:0;min-height:0;align-items:stretch;margin:0;align-self:stretch}
-.thread-card .card-metrics .usage-tile{min-width:0;min-height:0;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:5px;padding:5px 4px;overflow:hidden;text-align:center;border:1px solid var(--border);border-radius:3px;background:color-mix(in srgb,var(--background),var(--foreground) 2%)}
+.thread-card .card-metrics .usage-tile{min-width:0;min-height:0;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:3px;padding:4px;overflow:hidden;text-align:center;border:1px solid var(--border);border-radius:3px;background:color-mix(in srgb,var(--background),var(--foreground) 2%)}
 .thread-card .card-metrics .usage-label{font-size:9px;line-height:1.15;color:var(--muted)}
 .thread-card .card-metrics .usage-value{margin:0;line-height:1.15}
 .thread-card .card-metrics .usage-tile[data-kind=context]{border-color:transparent;background:transparent;--instrument-colour:var(--state)}
-.thread-card .card-metrics .usage-tile[data-kind=context] .usage-value{width:clamp(43px,3.8vw,72px);height:clamp(43px,3.8vw,72px);display:grid;place-items:center;border-radius:50%;font-size:0;background:radial-gradient(circle,var(--background) 57%,transparent 59%),conic-gradient(var(--instrument-colour) var(--ratio),var(--border) 0)}
+.thread-card .card-metrics .usage-tile[data-kind=context] .usage-value{width:clamp(39px,3.2vw,65px);height:clamp(39px,3.2vw,65px);display:grid;place-items:center;border-radius:50%;font-size:0;background:radial-gradient(circle,var(--background) 57%,transparent 59%),conic-gradient(var(--instrument-colour) var(--ratio),var(--border) 0)}
 .thread-card .card-metrics .usage-tile[data-kind=context][data-known=false] .usage-value{background:radial-gradient(circle,var(--background) 57%,transparent 59%),var(--border)}
-.thread-card .card-metrics .usage-tile[data-kind=context] .usage-value::after{content:attr(data-compact);font-size:clamp(10px,.95vw,16px);color:var(--instrument-colour)}
+.thread-card .card-metrics .usage-tile[data-kind=context] .usage-value::after{content:attr(data-compact);font-size:clamp(10px,.9vw,15px);color:var(--instrument-colour)}
 .thread-card .card-metrics .usage-tile[data-kind=context][data-known=false] .usage-value::after{color:var(--muted)}
 .thread-card .card-metrics .usage-tile[data-kind=cache-hit] .usage-value{width:auto;height:auto;display:block;border-radius:0;background:none;font-size:clamp(14px,1.35vw,23px);font-variant-numeric:tabular-nums;color:var(--blue)}
 .thread-card .card-metrics .usage-tile[data-kind=cache-hit] .usage-value::after{content:none}
 .thread-card .card-metrics .usage-tile[data-kind=cache-hit][data-known=false] .usage-value{background:none;color:var(--muted)}
 .thread-card .card-metrics .usage-tile[data-flow=true] .usage-value{width:100%;font-size:0}
-.thread-card .card-metrics .usage-tile[data-flow=true] .usage-value::before,.thread-card .card-metrics .usage-tile[data-flow=true] .usage-value::after{display:block;padding:3px 4px;border-left:2px solid var(--blue);background:color-mix(in srgb,var(--background),var(--blue) 8%);font-size:12px;line-height:1.1;white-space:nowrap;text-align:left}
+.thread-card .card-metrics .usage-tile[data-flow=true] .usage-value::before,.thread-card .card-metrics .usage-tile[data-flow=true] .usage-value::after{display:block;padding:3px 4px;border-left:2px solid var(--blue);background:color-mix(in srgb,var(--background),var(--blue) 8%);font-size:11px;line-height:1.1;white-space:nowrap;text-align:left}
 .thread-card .card-metrics .usage-tile[data-flow=true] .usage-value::before{content:attr(data-input)}
 .thread-card .card-metrics .usage-tile[data-flow=true] .usage-value::after{content:attr(data-output);border-color:var(--cyan);background:color-mix(in srgb,var(--background),var(--cyan) 7%);color:var(--foreground)}
 @media(min-width:1280px){
-  .thread-card{grid-template-rows:21px 13px 27px minmax(0,1fr) 13px;gap:3px 6px}
-  .thread-card .card-top{grid-column:1/-1;grid-row:1}
-  .thread-card .checkout{grid-column:1;grid-row:2}
-  .thread-card .thread-meta{grid-column:2;grid-row:2}
-  .thread-card .status-group{grid-column:1/-1;grid-row:3}
-  .thread-card .card-metrics,.thread-card .visual-pending{grid-column:1/-1;grid-row:4;height:100%}
-  .thread-card .thread-freshness{grid-column:2;grid-row:5}
-  .thread-card .coverage{grid-column:1;grid-row:5}
+  .thread-card{grid-template-columns:minmax(0,1fr);grid-template-rows:62px minmax(0,1fr) 24px;gap:4px;padding:7px 9px}
+  .thread-card .card-top{grid-column:1;grid-row:1}
+  .thread-card .card-metrics,.thread-card .visual-pending{grid-column:1;grid-row:2;height:100%}
+  .thread-card .card-footer{grid-column:1;grid-row:3}
+  .thread-card .cache-recent{display:none}
 }
 @media(min-width:1280px) and (min-height:900px){
-  .thread-card{grid-template-rows:29px 18px 35px minmax(0,1fr) 18px;gap:4px 8px}
-  .thread-card .status-group .state{font-size:13px}
-  .thread-card .status-group .card-activity{font-size:12px}
-  .thread-card .status-group .tool-name{font-size:11px}
+  .thread-card{grid-template-rows:86px minmax(0,1fr) 34px;gap:6px;padding:13px 15px}
+  .thread-card .card-top{padding:8px 11px}
+  .thread-card .project-panel .project{font-size:17px}
+  .thread-card .project-panel .checkout{font-size:11px;padding:3px 7px}
+  .thread-card .state-panel .state{height:38px;width:40px}
+  .thread-card .state-panel .state-glyph{font-size:36px}
+  .thread-card .state-panel .activity-text,.thread-card .state-panel .tool-name{font-size:11px}
+  .thread-card .card-footer{grid-template-columns:minmax(0,1fr) 120px}
+  .thread-card .card-footer .identity,.thread-card .card-footer .model-name,.thread-card .card-footer .coverage{font-size:10px}
   .thread-card .card-metrics .usage-label{font-size:11px}
   .thread-card .card-metrics .usage-tile[data-flow=true] .usage-value::before,.thread-card .card-metrics .usage-tile[data-flow=true] .usage-value::after{font-size:13px;padding:5px 6px}
 }
 @media(max-width:1279px){
-  .thread-card .status-group{flex-shrink:0}
-  .thread-card .thread-meta:empty{display:none}
+  .thread-card .card-top,.thread-card .card-footer{flex-shrink:0}
+  .thread-card .card-metrics{flex-shrink:0}
 }
