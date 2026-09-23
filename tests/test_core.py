@@ -121,6 +121,9 @@ class CoreTests(unittest.TestCase):
         for config in ({'hosts': []}, {'hosts': [HOST, HOST]}, {'hosts': [dict(HOST, transport='ssh', target='-oProxyCommand=evil')]}, {'hosts': [dict(HOST, work_roots=['relative'])]}, {'hosts': [HOST], 'interval': 0}):
             with self.assertRaises(ValueError): validate_config(config)
         with self.assertRaises(ValueError): normalise({'agents': None}, HOST, 'work')
+        for host in (dict(HOST, gpu_state_port=8789), dict(HOST, transport='ssh', target='ws-255', gpu_state_port=True), dict(HOST, transport='ssh', target='ws-255', gpu_state_port=65536)):
+            with self.assertRaises(ValueError): validate_config({'hosts': [host]})
+        validate_config({'hosts': [dict(HOST, transport='ssh', target='ws-255', gpu_state_port=8789)]})
 
     @patch('observatory.core.subprocess.run')
     def test_ssh_uses_fixed_command_and_stdin(self, run):

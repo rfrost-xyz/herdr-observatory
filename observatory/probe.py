@@ -4,12 +4,15 @@ import hashlib
 import math
 import re
 import os
+import signal
 from pathlib import Path
 import shutil
 import socket
 import subprocess
 import time
 import tomllib
+import urllib.request
+import urllib.error
 
 
 # This code also travels with the read-only SSH probe: no package imports here.
@@ -142,7 +145,60 @@ def xe_gpu(path='/gpu/metrics.json', now=None):
         return None
 
 
-def metrics(disk_path=None):
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, response, code, message, headers, new_url):
+        return None
+
+
+def dashboard_gpu(port, host_id, now=None):
+    """Read only the named host's current GPU from its loopback dashboard."""
+    now = time.time() if now is None else now
+    if type(port) is not int or not 1 <= port <= 65535 or not isinstance(host_id, str) or not host_id:
+        return None
+    try:
+        # The SSH probe is a short-lived main-thread process. A socket timeout
+        # alone does not bound a peer that trickles one byte at a time.
+        prior_handler = signal.getsignal(signal.SIGALRM)
+        prior_timer = signal.getitimer(signal.ITIMER_REAL)
+        started = time.monotonic()
+        def deadline(_signum, _frame):
+            raise TimeoutError('Loopback GPU read deadline')
+        signal.signal(signal.SIGALRM, deadline)
+        signal.setitimer(signal.ITIMER_REAL, 2)
+        try:
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+            with opener.open(f'http://127.0.0.1:{port}/api/state', timeout=2) as response:
+                raw = response.read(1048577)
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, prior_handler)
+            if prior_timer[0] > 0:
+                signal.setitimer(signal.ITIMER_REAL, max(0.000001, prior_timer[0] - (time.monotonic() - started)), prior_timer[1])
+        if len(raw) > 1048576:
+            return None
+        for host in json.loads(raw).get('hosts', []):
+            if not isinstance(host, dict) or host.get('id') != host_id or host.get('online') is not True:
+                continue
+            metrics = host.get('metrics') or {}
+            sampled_at = host.get('sampled_at')
+            gpu = metrics.get('gpu')
+            if (type(sampled_at) not in (int, float) or abs(sampled_at) > 1e12 or
+                    not math.isfinite(sampled_at) or not 0 <= now - sampled_at <= 20 or
+                    not isinstance(gpu, dict) or gpu.get('source') != 'nvidia-visible'):
+                return None
+            percent, used, total = (gpu.get(key) for key in ('percent', 'used', 'total'))
+            if any(type(value) not in (int, float) or abs(value) > 1e15 or not math.isfinite(value)
+                   for value in (percent, used, total)) or not 0 <= percent <= 100 or not 0 <= used <= total or total <= 0:
+                return None
+            return {'percent': percent, 'used': used, 'total': total, 'source': 'nvidia-visible'}
+    except urllib.error.HTTPError as error:
+        error.close()
+    except (OSError, ValueError, TypeError, AttributeError, OverflowError, RecursionError):
+        pass
+    return None
+
+
+def metrics(disk_path=None, gpu_state_port=None, gpu_host_id=None):
     result = {'scope': 'Container / Linux kernel' if Path('/.dockerenv').exists() else 'Linux / WSL kernel',
               'at': time.time(), 'cpu': None, 'memory': None, 'disk': None, 'network': None, 'gpu': None}
     try:
@@ -172,6 +228,8 @@ def metrics(disk_path=None):
             pass
     if result['gpu'] is None:
         result['gpu'] = xe_gpu()
+    if result['gpu'] is None and gpu_state_port is not None:
+        result['gpu'] = dashboard_gpu(gpu_state_port, gpu_host_id)
     return result
 
 
@@ -198,12 +256,12 @@ def socket_snapshot(path):
         return response['result']['snapshot']
 
 
-def sample(binary='herdr', session=None, socket_path=None, theme_path=None, disk_path=None):
+def sample(binary='herdr', session=None, socket_path=None, theme_path=None, disk_path=None, gpu_state_port=None, gpu_host_id=None):
     resolved = shutil.which(binary) or str(Path(binary).expanduser())
     if binary == 'herdr' and not shutil.which(binary):
         resolved = str(Path.home() / '.local/bin/herdr')
     command = [resolved] + (['--session', session] if session else []) + ['api', 'snapshot']
-    result = {'metrics': metrics(disk_path) if disk_path else metrics(), 'theme': palette(theme_path) if theme_path else palette(), 'snapshot': None, 'error': None}
+    result = {'metrics': metrics(disk_path, gpu_state_port, gpu_host_id) if disk_path or gpu_state_port is not None else metrics(), 'theme': palette(theme_path) if theme_path else palette(), 'snapshot': None, 'error': None}
     try:
         if socket_path:
             raw = socket_snapshot(socket_path)

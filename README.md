@@ -295,6 +295,8 @@ The local host entry in `config/config.json` uses `socket_path: /herdr/herdr.soc
 
 For SSH collection/publication, place a dedicated `ssh_config` and verified `known_hosts` in `config/`. Set `UserKnownHostsFile /config/known_hosts`, `StrictHostKeyChecking yes` and `BatchMode yes`. Use a reachable Tailscale host address. Existing Tailscale SSH can authenticate without a private key; if ordinary SSH requires credentials, provision only a dedicated restricted credential. Do not mount the entire `.ssh` directory or disable host verification. Tailscale check-mode reauthentication remains an operator action.
 
+When an SSH target shell cannot see its GPU but runs its own Observatory service on loopback, add `"gpu_state_port": 8789` to that SSH host's private Personal configuration. The remote probe reads only `127.0.0.1:8789/api/state`, accepts the matching host's fresh NVIDIA aggregate and discards the rest. A missing or stale Work service leaves that one graphics value unavailable; SSH agent and other machine metrics continue. Do not enable this on a local or file host.
+
 Work `.env` for an existing named Herdr home volume:
 
 ```dotenv

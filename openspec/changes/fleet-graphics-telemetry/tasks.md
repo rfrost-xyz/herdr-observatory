@@ -4,6 +4,7 @@
 
 - [x] 1.1 Add isolated Intel Xe PMU sampling and bounded aggregate receipt, verifying measured, idle, missing, stale and reset cases with focused tests.
 - [x] 1.2 Preserve valid NVIDIA and Intel source labels through metric validation, and verify malformed graphics never hides other metrics or agents.
+- [x] 1.3 Add bounded loopback dashboard graphics receipt for SSH hosts, and verify host selection, expiry, malformed data and port validation.
 
 ## 2. Present and deploy graphics scope
 
@@ -13,4 +14,4 @@
 ## 3. Acceptance
 
 - [x] 3.1 Run Python, JavaScript, strict OpenSpec and diff checks; record requirement-to-evidence traceability.
-- [ ] 3.2 Build and deploy a versioned image to both hosts, verify live scoped graphics readings and preserve the previous image for rollback.
+- [ ] 3.2 Build and deploy a versioned image to both hosts, verify both machines show scoped graphics on both displays and preserve the previous image for rollback.

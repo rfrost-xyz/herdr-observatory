@@ -56,6 +56,8 @@ def validate_config(config):
                 raise ValueError('Project roots must be absolute POSIX paths without parent traversal')
         if host.get('socket_path') and host.get('session'):
             raise ValueError('Select a socket path or a CLI session, not both')
+        if 'gpu_state_port' in host and (host.get('transport') != 'ssh' or type(host['gpu_state_port']) is not int or not 1 <= host['gpu_state_port'] <= 65535):
+            raise ValueError('gpu_state_port requires an SSH host and a valid port')
         for key in ('herdr', 'session', 'socket_path', 'theme_path', 'disk_path'):
             if key in host and (not isinstance(host[key], str) or not host[key]):
                 raise ValueError(f'{key} must be a nonempty string')
@@ -192,6 +194,8 @@ def collect(host):
         return read_feed(host)
     options = {'binary': host.get('herdr', 'herdr'), 'session': host.get('session')}
     options.update({key: host[key] for key in ('socket_path', 'theme_path', 'disk_path') if key in host})
+    if 'gpu_state_port' in host:
+        options.update(gpu_state_port=host['gpu_state_port'], gpu_host_id=host['id'])
     script = Path(probe.__file__).read_text().split("if __name__ == '__main__':")[0]
     script += '\nprint(json.dumps(sample(**' + repr(options) + ')))\n'
     command = [sys.executable, '-']

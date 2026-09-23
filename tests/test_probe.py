@@ -1,4 +1,7 @@
 import json
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import threading
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -7,6 +10,75 @@ from test_core import SNAP
 
 
 class ProbeTests(unittest.TestCase):
+    def test_remote_gpu_does_not_follow_dashboard_redirects(self):
+        hits = []
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                hits.append(self.path)
+                if self.path == '/api/state':
+                    self.send_response(302)
+                    self.send_header('Location', '/private')
+                else:
+                    self.send_response(200)
+                self.end_headers()
+
+            def log_message(self, *_args):
+                pass
+
+        with ThreadingHTTPServer(('127.0.0.1', 0), Handler) as server:
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                self.assertIsNone(probe.dashboard_gpu(server.server_port, 'ws-255'))
+                self.assertEqual(hits, ['/api/state'])
+            finally:
+                server.shutdown()
+                thread.join()
+
+    def test_remote_gpu_has_wall_clock_deadline_for_slow_body(self):
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b'{')
+                self.wfile.flush()
+                time.sleep(3)
+
+            def log_message(self, *_args):
+                pass
+
+        with ThreadingHTTPServer(('127.0.0.1', 0), Handler) as server:
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                started = time.monotonic()
+                self.assertIsNone(probe.dashboard_gpu(server.server_port, 'ws-255'))
+                self.assertLess(time.monotonic() - started, 2.8)
+            finally:
+                server.shutdown()
+                thread.join()
+
+    @patch('observatory.probe.urllib.request.build_opener')
+    def test_remote_loopback_dashboard_gpu_is_host_bound_and_fresh(self, opener):
+        response = opener.return_value.open.return_value.__enter__.return_value
+        host = {'id': 'ws-255', 'online': True, 'sampled_at': 100,
+                'metrics': {'gpu': {'percent': 0, 'used': 100, 'total': 200, 'source': 'nvidia-visible'}}}
+        response.read.return_value = json.dumps({'hosts': [{'id': 'other', 'online': True, 'sampled_at': 100, 'metrics': {'gpu': {'percent': 99}}}, host]}).encode()
+        self.assertEqual(probe.dashboard_gpu(8789, 'ws-255', now=105), host['metrics']['gpu'])
+        opener.return_value.open.assert_called_with('http://127.0.0.1:8789/api/state', timeout=2)
+        host['sampled_at'] = 80
+        response.read.return_value = json.dumps({'hosts': [host]}).encode()
+        self.assertIsNone(probe.dashboard_gpu(8789, 'ws-255', now=105))
+        host['sampled_at'] = 100
+        host['metrics']['gpu']['percent'] = 101
+        response.read.return_value = json.dumps({'hosts': [host]}).encode()
+        self.assertIsNone(probe.dashboard_gpu(8789, 'ws-255', now=105))
+        response.read.return_value = b'x' * 1048577
+        self.assertIsNone(probe.dashboard_gpu(8789, 'ws-255', now=105))
+        response.read.return_value = ('[' * 600 + '0' + ']' * 600).encode()
+        self.assertIsNone(probe.dashboard_gpu(8789, 'ws-255', now=105))
+        self.assertIsNone(probe.dashboard_gpu(0, 'ws-255', now=105))
+
     def test_xe_gpu_requires_fresh_bounded_aggregate(self):
         from pathlib import Path
         from tempfile import TemporaryDirectory
