@@ -219,7 +219,7 @@ header{padding-bottom:8px}.brand{justify-content:center}.totals{gap:7px}.total{m
 /* One state-coloured thread header, then measured instruments and source detail. */
 .thread-card .card-top{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:7px;min-width:0;min-height:62px;padding:5px 7px;border-bottom:1px solid color-mix(in srgb,var(--border),var(--state) 35%);border-radius:2px;background:color-mix(in srgb,var(--background),var(--state) 12%)}
 .thread-card .project-panel{min-width:0;display:flex;flex-direction:column;align-items:flex-start;justify-content:center;gap:5px}
-.thread-card .project-panel .project{max-width:100%;font-size:12px;line-height:1.2;color:var(--foreground)}
+.thread-card .project-panel .project{max-width:100%;font-size:15px;line-height:1.2;color:var(--foreground)}
 .thread-card .project-panel .checkout{display:block;max-width:100%;margin:0;padding:2px 5px;border-left:2px solid var(--state);background:color-mix(in srgb,var(--background),var(--state) 15%);color:var(--state);font-size:9px;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .thread-card .state-panel{min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;padding-left:6px;border-left:1px solid color-mix(in srgb,var(--border),var(--state) 30%);text-align:center}
 .thread-card .state-panel .state{display:grid;place-items:center;flex:none;width:30px;height:28px;padding:0;border:0;background:none;color:var(--state)}
@@ -233,22 +233,21 @@ header{padding-bottom:8px}.brand{justify-content:center}.totals{gap:7px}.total{m
 .thread-card .card-footer .identity,.thread-card .card-footer .model-name,.thread-card .card-footer .coverage{display:block;max-width:100%;margin:0;color:var(--muted);font-size:8px;line-height:1.1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:left}
 .thread-card .card-footer .coverage{color:var(--state)}
 .thread-card .card-footer .thread-freshness{grid-column:2;grid-row:1;margin:0;align-self:end;justify-content:flex-end;min-width:0;max-width:100%;white-space:nowrap}
-.thread-card .card-metrics{display:grid;grid-template-columns:minmax(0,.8fr) repeat(2,minmax(0,1fr));gap:5px;min-width:0;min-height:0;align-items:stretch;margin:0;align-self:stretch}
+.thread-card .card-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:5px;min-width:0;min-height:0;align-items:stretch;margin:0;align-self:stretch}
 .thread-card .card-metrics .usage-tile{min-width:0;min-height:0;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:3px;padding:4px;overflow:hidden;text-align:center;border:1px solid var(--border);border-radius:3px;background:color-mix(in srgb,var(--background),var(--foreground) 2%)}
-.thread-card .card-metrics .usage-label{font-size:9px;line-height:1.15;color:var(--muted)}
-.thread-card .card-metrics .usage-value{margin:0;line-height:1.15}
+.thread-card .card-metrics .usage-label{font-size:9px;line-height:1.15;color:var(--muted);white-space:normal}
+.thread-card .card-metrics .usage-value{margin:0;line-height:1.15;font-size:clamp(11px,1.08vw,18px);font-variant-numeric:tabular-nums;white-space:nowrap}
 .thread-card .card-metrics .usage-tile[data-kind=context]{border-color:transparent;background:transparent;--instrument-colour:var(--state)}
 .thread-card .card-metrics .usage-tile[data-kind=context] .usage-value{width:clamp(39px,3.2vw,65px);height:clamp(39px,3.2vw,65px);display:grid;place-items:center;border-radius:50%;font-size:0;background:radial-gradient(circle,var(--background) 57%,transparent 59%),conic-gradient(var(--instrument-colour) var(--ratio),var(--border) 0)}
 .thread-card .card-metrics .usage-tile[data-kind=context][data-known=false] .usage-value{background:radial-gradient(circle,var(--background) 57%,transparent 59%),var(--border)}
 .thread-card .card-metrics .usage-tile[data-kind=context] .usage-value::after{content:attr(data-compact);font-size:clamp(10px,.9vw,15px);color:var(--instrument-colour)}
 .thread-card .card-metrics .usage-tile[data-kind=context][data-known=false] .usage-value::after{color:var(--muted)}
-.thread-card .card-metrics .usage-tile[data-kind=cache-hit] .usage-value{width:auto;height:auto;display:block;border-radius:0;background:none;font-size:clamp(14px,1.35vw,23px);font-variant-numeric:tabular-nums;color:var(--blue)}
+.thread-card .card-metrics .usage-tile[data-kind=cache-hit] .usage-value{width:auto;height:auto;display:block;border-radius:0;background:none;color:var(--blue)}
 .thread-card .card-metrics .usage-tile[data-kind=cache-hit] .usage-value::after{content:none}
 .thread-card .card-metrics .usage-tile[data-kind=cache-hit][data-known=false] .usage-value{background:none;color:var(--muted)}
-.thread-card .card-metrics .usage-tile[data-flow=true] .usage-value{width:100%;font-size:0}
-.thread-card .card-metrics .usage-tile[data-flow=true] .usage-value::before,.thread-card .card-metrics .usage-tile[data-flow=true] .usage-value::after{display:block;padding:3px 4px;border-left:2px solid var(--blue);background:color-mix(in srgb,var(--background),var(--blue) 8%);font-size:11px;line-height:1.1;white-space:nowrap;text-align:left}
-.thread-card .card-metrics .usage-tile[data-flow=true] .usage-value::before{content:attr(data-input)}
-.thread-card .card-metrics .usage-tile[data-flow=true] .usage-value::after{content:attr(data-output);border-color:var(--cyan);background:color-mix(in srgb,var(--background),var(--cyan) 7%);color:var(--foreground)}
+.thread-card .card-metrics .usage-tile[data-kind=input] .usage-value{color:var(--blue)}
+.thread-card .card-metrics .usage-tile[data-kind=output] .usage-value{color:var(--cyan)}
+.thread-card .card-metrics .usage-tile[data-kind=context] .usage-value{width:clamp(42px,3.35vw,68px);height:clamp(42px,3.35vw,68px)}
 @media(min-width:1280px){
   .thread-card{grid-template-columns:minmax(0,1fr);grid-template-rows:62px minmax(0,1fr) 24px;gap:4px;padding:7px 9px}
   .thread-card .card-top{grid-column:1;grid-row:1}
@@ -259,7 +258,7 @@ header{padding-bottom:8px}.brand{justify-content:center}.totals{gap:7px}.total{m
 @media(min-width:1280px) and (min-height:900px){
   .thread-card{grid-template-rows:86px minmax(0,1fr) 34px;gap:6px;padding:13px 15px}
   .thread-card .card-top{padding:8px 11px}
-  .thread-card .project-panel .project{font-size:17px}
+  .thread-card .project-panel .project{font-size:20px}
   .thread-card .project-panel .checkout{font-size:11px;padding:3px 7px}
   .thread-card .state-panel .state{height:38px;width:40px}
   .thread-card .state-panel .state-glyph{font-size:36px}
@@ -267,7 +266,7 @@ header{padding-bottom:8px}.brand{justify-content:center}.totals{gap:7px}.total{m
   .thread-card .card-footer{grid-template-columns:minmax(0,1fr) 120px}
   .thread-card .card-footer .identity,.thread-card .card-footer .model-name,.thread-card .card-footer .coverage{font-size:10px}
   .thread-card .card-metrics .usage-label{font-size:11px}
-  .thread-card .card-metrics .usage-tile[data-flow=true] .usage-value::before,.thread-card .card-metrics .usage-tile[data-flow=true] .usage-value::after{font-size:13px;padding:5px 6px}
+  .thread-card .card-metrics .usage-value{font-size:clamp(15px,1.1vw,21px)}
 }
 @media(max-width:1279px){
   .thread-card .card-top,.thread-card .card-footer{flex-shrink:0}
