@@ -14,7 +14,7 @@ See proposal.md. Herdr's Codex adapter already receives start and stop hooks and
 
 - Use a separate bounded `obs_children` value containing start count, stop count and latest subagent-hook time. The numeric usage groups and their source age remain untouched. A validated UserPromptSubmit establishes zero counts. Later hooks carry the summary forward under the existing lock and session binding. Missing or malformed prior data stays unknown.
 - Count hook observations, not distinct child identities. The current adapter strips child IDs before reporting, and the user wants a compact observation. A hook can be missed or repeated, so the UI always says “observed”. Stops are labelled stops, not completions.
-- Show one compact summary line near current activity, with an accessible explanation and last-known age. This keeps the state icon authoritative and avoids interpreting a ratio as completion.
+- Show a separate compact summary row beneath current activity, naming observed starts and stops in visible text, with an accessible explanation and last-known age. This keeps the state icon authoritative and avoids interpreting a ratio as completion.
 
 ## Risks / Trade-offs
 
