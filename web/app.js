@@ -107,12 +107,11 @@ function accessible() {
 function threadMotion(a,now=performance.now(),wall=Date.now()) {
   const host=snapshot?.hosts.find(h=>h.id===a.host);
   if(document.hidden || reduced.matches || disconnected || !host?.online || !Number.isFinite(host.sampled_at) || wall/1000-host.sampled_at>=snapshot.interval+20)return {moving:false,flash:0,glyph:icon(a.status)};
-  const hash=Array.from(a.id).reduce((n,c)=>(Math.imul(n,31)+c.codePointAt(0))>>>0,0);
   const moving=a.status==='working';
   const elapsed=now-(rowActivity.get(a.id) ?? -Infinity);
   return {moving,
     flash:Math.max(0,1-elapsed/1800),
-    glyph:moving?Array.from('⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏')[Math.floor((now+hash%1000)/130)%10]:icon(a.status)};
+    glyph:icon(a.status)};
 }
 function filteredAgents(){return agents.filter(a=>category==='all'||snapshot?.profile==='work'||a.category===category);}
 function currentPage(now=Date.now()) {return (manualPage ?? Math.floor(now/15000))%Math.max(1,Math.ceil(filteredAgents().length/GRID.threadRows));}

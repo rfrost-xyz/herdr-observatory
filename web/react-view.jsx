@@ -48,7 +48,7 @@ function ThreadCard({model, index, now, cardClicks, disconnected, reduced, icon,
   return <article className="thread-card" data-state={model.state.toLowerCase()} data-thread={model.id} role="button" tabIndex="0"
     aria-label={`${model.project}, ${model.state}. Activate for a brief visual effect`} aria-describedby={`thread-metrics-${index}`} style={style}
     onClick={()=>onPulse(model.id)} onKeyDown={event=>{if(['Enter',' '].includes(event.key)){event.preventDefault();onPulse(model.id);}}}>
-    <div className="card-top"><h3 className="project" title={model.project}>{model.project}</h3><span className="state"><span className="state-glyph">{model.motion.glyph}</span><span className="state-word">{model.state}</span></span></div>
+    <div className="card-top"><h3 className="project" title={model.project}>{model.project}</h3><span className="state"><span className="state-glyph" aria-hidden="true">{model.motion.moving?<Blocks size={13} color="var(--state)" playState="running"/>:model.motion.glyph}</span><span className="state-word">{model.state}</span></span></div>
     {checkout && <p className="checkout" title={`Worktree / checkout: ${model.checkout}`}>{icon('branch')} {checkout}</p>}
     <div className="thread-meta"><p className="identity" title={`Harness: ${model.harness} · Host: ${model.host} · Pane: ${model.pane}`}>{model.harness} · {model.host} · {model.pane}</p>
       {model.model && <p className="model-name" title={model.model}>{model.model}</p>}</div>
