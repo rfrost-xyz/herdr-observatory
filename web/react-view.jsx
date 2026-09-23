@@ -27,7 +27,7 @@ function UsageTile({tile}) {
   return <div className="usage-tile" data-kind={tile.kind} data-last-known={String(tile.lastKnown)} data-known={String(tile.ratio!=null)} data-flow={String(Boolean(tile.flowIn))} role="group"
     title={tile.detail} aria-label={`${tile.lastKnown?'Last known. ':''}${tile.label}: ${tile.detail}`}
     style={{'--ratio':`${Math.min(1,Math.max(0,tile.ratio??0))*100}%`}}>
-    <span className="usage-label">{tile.label}</span><strong className="usage-value" data-compact={tile.kind==='context'||tile.kind==='cache-hit'?tile.value.split(' ')[0]:undefined} data-input={tile.flowIn} data-output={tile.flowOut}>{tile.value}</strong>
+    <span className="usage-label">{tile.label}</span><strong className="usage-value" data-compact={tile.kind==='context'?tile.value.split(' ')[0]:undefined} data-input={tile.flowIn} data-output={tile.flowOut}>{tile.value}</strong>
     {tile.exact && <small className="usage-exact">{tile.exact}</small>}
   </div>;
 }
@@ -46,11 +46,11 @@ function ThreadCard({model, index, now, cardClicks, disconnected, reduced, icon,
   return <article className="thread-card" data-state={model.state.toLowerCase()} data-thread={model.id} role="button" tabIndex="0"
     aria-label={`${model.project}, ${model.state}. Activate for a brief visual effect`} aria-describedby={`thread-metrics-${index}`} style={style}
     onClick={()=>onPulse(model.id)} onKeyDown={event=>{if(['Enter',' '].includes(event.key)){event.preventDefault();onPulse(model.id);}}}>
-    <div className="card-top"><h3 className="project" title={model.project}>{model.project}</h3><span className="state"><span className="state-glyph" aria-hidden="true">{model.motion.moving?<Blocks size={13} color="var(--state)" playState="running"/>:model.motion.glyph}</span><span className="state-word">{model.state}</span></span></div>
+    <div className="card-top"><h3 className="project" title={model.project}>{model.project}</h3><span className="identity" title={`Harness: ${model.harness} · Host: ${model.host} · Pane: ${model.pane}`}>{model.harness} · {model.host} · {model.pane}</span></div>
     {checkout && <p className="checkout" title={`Worktree / checkout: ${model.checkout}`}>{icon('branch')} {checkout}</p>}
-    <div className="thread-meta"><p className="identity" title={`Harness: ${model.harness} · Host: ${model.host} · Pane: ${model.pane}`}>{model.harness} · {model.host} · {model.pane}</p>
-      {model.model && <p className="model-name" title={model.model}>{model.model}</p>}</div>
-    {(model.activity||model.tool) && <div className="card-activity" data-historical={String(model.historicalActivity)} title={model.historicalActivity?`${model.activity}${model.tool?` · ${model.tool}`:''}`:'Latest observed hook activity; the state badge is Herdr’s current state'}><span className="activity-glyph">{icon(model.subagent?'threads':model.tool?'tool':model.state.toLowerCase())}</span><strong className="activity-text">{model.activity||'Tool observed'}</strong>{model.tool && <span className="tool-name" title={model.tool}>· {model.tool}</span>}</div>}
+    <div className="thread-meta">{model.model && <p className="model-name" title={model.model}>{model.model}</p>}</div>
+    <div className="status-group"><span className="state"><span className="state-glyph" aria-hidden="true">{model.motion.moving?<Blocks size={13} color="var(--state)" playState="running"/>:model.motion.glyph}</span><span className="state-word">{model.state}</span></span>
+      {(model.activity||model.tool) && <div className="card-activity" data-historical={String(model.historicalActivity)} title={model.historicalActivity?`${model.activity}${model.tool?` · ${model.tool}`:''}`:'Latest observed hook activity; the state badge is Herdr’s current state'}><span className="activity-glyph">{icon(model.subagent?'threads':model.tool?'tool':model.state.toLowerCase())}</span><strong className="activity-text">{model.activity||'Tool observed'}</strong>{model.tool && <span className="tool-name" title={model.tool}>{model.tool}</span>}</div>}</div>
     {model.instruments.length>0 ? <div className="card-metrics">{model.instruments.map((tile,i)=><UsageTile key={`${tile.kind}-${i}`} tile={tile}/>)}</div>
       : <div className="visual-pending" title={model.note}><span aria-hidden="true">?</span><strong>{model.note==='No hook sample'?'No hook sample':'Usage pending'}</strong></div>}
     {recent && <p className="cache-recent" title={recentTitle} aria-label={recentTitle}>{cacheTrend(recent)}</p>}
