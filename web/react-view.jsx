@@ -25,8 +25,9 @@ function Machine({host, history, sparkline, rate}) {
 
 function UsageTile({tile}) {
   return <div className="usage-tile" data-kind={tile.kind} data-last-known={String(tile.lastKnown)} role="group"
-    title={tile.detail} aria-label={`${tile.lastKnown?'Last known. ':''}${tile.label}: ${tile.detail}`}>
-    <span className="usage-label">{tile.label}</span><strong className="usage-value">{tile.value}</strong>
+    title={tile.detail} aria-label={`${tile.lastKnown?'Last known. ':''}${tile.label}: ${tile.detail}`}
+    style={{'--ratio':`${Math.min(1,Math.max(0,tile.ratio??0))*100}%`}}>
+    <span className="usage-label">{tile.label}</span><strong className="usage-value" data-compact={tile.kind==='context'?tile.value.split(' ')[0]:undefined}>{tile.value}</strong>
     {tile.exact && <small className="usage-exact">{tile.exact}</small>}
     {tile.ratio!=null && <span className="usage-bar" aria-hidden="true"><i style={{width:`${Math.min(1,Math.max(0,tile.ratio))*100}%`}}/>
       {tile.kind==='balance' && <i className="usage-remainder" style={{width:`${(tile.uncachedRatio??1-tile.ratio)*100}%`}}/>}
@@ -42,7 +43,8 @@ function ThreadCard({model, index, now, cardClicks, disconnected, reduced, icon,
   const recentTitle=recent?`${groupedNumber(recent.read)} cached of ${groupedNumber(recent.input)} input tokens across ${recent.points.length} distinct intervals. M marks a model change; C marks compaction; ? marks an unavailable interval. Markers are observations, not cache-miss reasons.`:'';
   const metrics=[model.freshness,model.usageAge?`${model.usageFreshness} (${model.usageSource})`:null,
     ...model.tiles.map(tile=>`${tile.lastKnown?'Last known '+(tile.source==='usage'?model.usageAge:model.hookAge)+'. ':''}${tile.label}: ${tile.detail}`),
-    model.compactions?`Compactions: ${model.compactions.detail}`:null].filter(Boolean).join(' ');
+    model.compactions?`Compactions: ${model.compactions.detail}`:null,model.note,
+    recentTitle].filter(Boolean).join(' ');
   const style={'--click':clickLevel.toFixed(3),'--glitch-x':`${clickLevel>0?Math.sin(clickAge*.13)*2*clickLevel:0}px`,'--impulse':model.motion.flash.toFixed(3)};
   return <article className="thread-card" data-state={model.state.toLowerCase()} data-thread={model.id} role="button" tabIndex="0"
     aria-label={`${model.project}, ${model.state}. Activate for a brief visual effect`} aria-describedby={`thread-metrics-${index}`} style={style}
@@ -52,21 +54,24 @@ function ThreadCard({model, index, now, cardClicks, disconnected, reduced, icon,
     <div className="thread-meta"><p className="identity" title={`Harness: ${model.harness} · Host: ${model.host} · Pane: ${model.pane}`}>{model.harness} · {model.host} · {model.pane}</p>
       {model.model && <p className="model-name" title={model.model}>{model.model}</p>}</div>
     {(model.activity||model.tool) && <div className="card-activity" data-historical={String(model.historicalActivity)} title={model.historicalActivity?`${model.activity}${model.tool?` · ${model.tool}`:''}`:'Latest observed hook activity; the state badge is Herdr’s current state'}><span className="activity-glyph">{icon(model.subagent?'threads':model.tool?'tool':model.state.toLowerCase())}</span><strong className="activity-text">{model.activity}</strong>{model.tool && <span className="tool-name" title={model.tool}>{model.tool}</span>}</div>}
-    {model.tiles.length>0 && <div className="card-metrics">{model.tiles.map((tile,i)=><UsageTile key={`${tile.kind}-${i}`} tile={tile}/>)}</div>}
-    {recent && <p className="cache-recent" title={recentTitle} aria-label={recentTitle}>{model.usageLastKnown?'Last known ':''}recent cache {tokenPercent(recent.ratio)}  {cacheTrend(recent)}</p>}
-    <p className="thread-freshness" aria-label={[model.compactions?`Compactions ${model.compactions.value}`:null,model.freshness,model.usageFreshness].filter(Boolean).join('. ')} title={[model.compactions?.detail,model.usageAge?`Usage source: ${model.usageSource}`:null].filter(Boolean).join(' · ')}>{model.compactions && <span className="freshness-part">Compactions {model.compactions.value}</span>}<span className="freshness-part">{model.freshness}</span><span className="freshness-part">{model.usageFreshness}</span></p>
-    {model.note && <p className="coverage">{model.note}</p>}<span className="sr-only" id={`thread-metrics-${index}`}>{metrics}</span>
+    {model.tiles.length>0 ? <div className="card-metrics">{model.tiles.map((tile,i)=><UsageTile key={`${tile.kind}-${i}`} tile={tile}/>)}</div>
+      : <div className="visual-pending" title={model.note}><span aria-hidden="true">?</span><strong>{model.note==='No hook sample'?'No hook sample':'Usage pending'}</strong></div>}
+    {recent && <p className="cache-recent" title={recentTitle} aria-label={recentTitle}>{cacheTrend(recent)}</p>}
+    <p className="thread-freshness" aria-label={[model.compactions?`Compactions ${model.compactions.value}`:null,model.freshness,model.usageFreshness].filter(Boolean).join('. ')} title={[model.compactions?.detail,model.usageAge?`Usage source: ${model.usageSource}`:null].filter(Boolean).join(' · ')}>{model.compactions && <span className="freshness-part" data-short={`C ${model.compactions.value}`}>Compactions {model.compactions.value}</span>}<span className="freshness-part" data-short={`H ${model.hookAge?.replace(' ago','')||'?'}`}>{model.freshness}</span><span className="freshness-part" data-short={`U ${model.usageAge?.replace(' ago','')||'?'}`}>{model.usageFreshness}</span></p>
+    {model.note && model.tiles.length>0 && <p className="coverage" title={model.note}>{model.note==='Partial usage coverage'?'Partial coverage':model.note}</p>}<span className="sr-only" id={`thread-metrics-${index}`}>{metrics}</span>
   </article>;
 }
 
 function Account({sample, now, disconnected}) {
   const row=allowanceView(sample,{now,disconnected});
-  return <article className="allowance-card" data-low={String(row.remaining!==null&&row.remaining<=15)}
-    aria-label={`${row.label}: ${row.weekly} of weekly allowance left; reset ${row.reset}; ${row.passes} reset passes; pass expiry ${row.expiry}; ${row.status}.`}>
+  return <article className="allowance-card" data-low={String(row.remaining!==null&&row.remaining<=15)} data-pace={row.pace}
+    aria-label={`${row.label}: ${row.weekly} of weekly allowance left; ${row.paceLabel}; reset ${row.reset}; ${row.passes} reset passes; pass expiry ${row.expiry}; ${row.status}.${row.activity ? ` ${row.activity.exact} tokens across ${row.activity.count} reported dates.` : ' Account activity unavailable.'}`}>
     <h3 className="allowance-name">{row.label}<span className="allowance-plan"> · {row.plan}</span></h3>
-    <div className="allowance-head"><div className="allowance-reading"><strong className="allowance-percent">{row.weekly}</strong><span>weekly left</span></div></div>
-    <div className="allowance-gauge" role="meter" aria-label="Weekly allowance remaining" aria-valuemin="0" aria-valuemax="100" aria-valuenow={row.remaining??undefined} aria-valuetext={row.weekly}><i style={{width:`${row.remaining??0}%`}}/></div>
-    <div className="allowance-foot"><span className="allowance-reset-time">Reset {row.reset}</span>{row.passes!=='—'&&row.passes!=='0'&&<span className="allowance-passes" title={`Reset passes: ${row.passes}. Next expiry: ${row.expiry}`}>{row.passes} passes</span>}<small className="allowance-age">{row.status}</small></div>
+    <div className="allowance-head"><div className="allowance-reading"><strong className="allowance-percent">{row.weekly}</strong><span>weekly left</span></div><span className="allowance-reset-head">Reset {row.reset}</span></div>
+    <div className="allowance-gauge" role="meter" aria-label="Weekly allowance remaining" aria-valuemin="0" aria-valuemax="100" aria-valuenow={row.remaining??undefined} aria-valuetext={row.weekly}><i style={{width:`${row.remaining??0}%`}}/>{row.timeRemaining!==null&&<span className="allowance-time-marker" style={{left:`${row.timeRemaining}%`}} title={`${Math.round(row.timeRemaining)}% of week remaining`}/>}</div>
+    <div className="allowance-pace-label"><span>{row.paceLabel}</span>{row.timeRemaining!==null&&<small>│ time left</small>}</div>
+    <div className="allowance-activity">{row.activity?<><span className="activity-summary" title={`${row.activity.exact} tokens across ${row.activity.count} reported dates`}>{row.activity.total} tokens · {row.activity.count} reported days</span><span className="activity-bars" aria-hidden="true">{row.activity.daily.map(item=><i key={item.date} style={{height:`${item.height}%`}} title={`${item.date}: ${item.tokens.toLocaleString('en-GB')} tokens`}/>)}</span></>:<span className="activity-summary">Account activity unavailable</span>}</div>
+    <div className="allowance-foot">{row.passes!=='—'&&row.passes!=='0'&&<span className="allowance-passes" title={`Reset passes: ${row.passes}. Next expiry: ${row.expiry}`}>{row.passes} passes</span>}<small className="allowance-age">{row.status}</small></div>
   </article>;
 }
 

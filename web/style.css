@@ -177,3 +177,87 @@ header{padding-bottom:8px}.brand{justify-content:center}.totals{gap:7px}.total{m
 @media(max-width:1500px) and (min-width:1001px){#threads{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media(max-width:1000px){#threads{grid-template-rows:none;grid-auto-rows:max-content}.thread-card{min-height:230px}}
 @media(max-width:600px){.thread-card{min-height:185px}}
+
+/* The office page is a bounded eight-card instrument panel. */
+@media(min-width:1280px){
+  #threads{grid-template-columns:repeat(4,minmax(0,1fr));grid-template-rows:repeat(2,minmax(0,1fr));grid-auto-rows:0;overflow:hidden;align-content:stretch}
+  .thread-card{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));grid-template-rows:20px 13px 19px minmax(0,1fr) 13px;gap:2px 6px;padding:7px 9px;min-height:0;max-height:100%;overflow:hidden}
+  .thread-card .card-top{grid-column:1/-1;grid-row:1;min-width:0}
+  .thread-card .project{font-size:12px;line-height:18px}
+  .thread-card .state{font-size:9px;line-height:14px;padding:2px 4px;align-self:center}
+  .thread-card .checkout{grid-column:1;grid-row:2;margin:0;line-height:13px;font-size:9px}
+  .thread-card .thread-meta{grid-column:2;grid-row:2;min-width:0;justify-content:flex-end}
+  .thread-card .thread-meta .identity{font-size:8px;line-height:13px;margin:0;text-align:right}
+  .thread-card .model-name{display:none}
+  .thread-card .card-activity{grid-column:1/-1;grid-row:3;margin:0;padding:0;line-height:17px;font-size:10px;min-width:0}
+  .thread-card .tool-name{font-size:8px;padding:1px 4px}
+  .thread-card .card-metrics{grid-column:1/-1;grid-row:4;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));grid-template-rows:minmax(0,1fr) 24px;gap:3px 8px;margin:0;min-height:0;align-content:stretch}
+  .thread-card .usage-tile{min-height:0;padding:0;overflow:hidden;background:none;display:flex;flex-direction:column;gap:1px}
+  .thread-card .usage-label{font-size:8px;line-height:1.1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .thread-card .usage-value{font-size:10px;line-height:1.15;margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .thread-card .usage-exact{display:none}
+  .thread-card .usage-tile[data-kind=context]{grid-column:1;grid-row:1;display:grid;grid-template-columns:42px minmax(0,1fr);grid-template-rows:1fr 1fr;gap:0 5px;align-items:center}
+  .thread-card .usage-tile[data-kind=context] .usage-label{grid-column:2;grid-row:1;align-self:end}
+  .thread-card .usage-tile[data-kind=context] .usage-value{grid-column:1;grid-row:1/3;width:40px;height:40px;display:grid;place-items:center;border-radius:50%;background:radial-gradient(circle,var(--background) 54%,transparent 55%),conic-gradient(var(--state) var(--ratio),var(--border) 0);font-size:0}
+  .thread-card .usage-tile[data-kind=context] .usage-value::after{content:attr(data-compact);font-size:9px;color:var(--state)}
+  .thread-card .usage-tile[data-kind=context] .usage-bar{display:none}
+  .thread-card .usage-tile[data-kind=balance]{grid-column:2;grid-row:1}
+  .thread-card .usage-tile[data-kind=balance] .usage-label{font-size:8px}
+  .thread-card .usage-tile[data-kind=balance] .usage-value{font-size:11px;color:var(--cyan)}
+  .thread-card .usage-tile[data-kind=balance] .usage-bar{height:7px;margin-top:auto}
+  .thread-card .usage-tile[data-kind=session]{grid-column:1;grid-row:2}
+  .thread-card .usage-tile[data-kind=response]{grid-column:2;grid-row:2}
+  .thread-card .usage-tile[data-kind=session] .usage-label,.thread-card .usage-tile[data-kind=response] .usage-label{font-size:7px}
+  .thread-card .usage-tile[data-kind=session] .usage-value,.thread-card .usage-tile[data-kind=response] .usage-value{font-size:9px}
+  .thread-card .cache-recent{display:none}
+  .thread-card .thread-freshness{grid-column:2;grid-row:5;display:flex;flex-wrap:nowrap;justify-content:flex-end;gap:5px;align-self:center;min-width:0;overflow:hidden}
+  .thread-card .freshness-part{font-size:0!important;white-space:nowrap}
+  .thread-card .freshness-part::after{content:attr(data-short);font-size:8px;color:var(--muted)}
+  .thread-card .coverage{grid-column:1;grid-row:5;align-self:center;margin:0;font-size:8px;line-height:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .thread-card .usage-tile[data-last-known=true]{opacity:.55}
+  .thread-card .visual-pending{grid-column:1/-1;grid-row:4;display:flex;align-items:center;justify-content:center;gap:9px;min-height:0;border:1px dashed var(--border);border-radius:4px;color:var(--muted);font-size:10px}
+  .thread-card .visual-pending span{display:grid;place-items:center;width:32px;height:32px;border:2px solid var(--border);border-radius:50%;font-size:17px}
+}
+@media(min-width:1280px) and (max-height:800px){
+  #observatory{grid-template-rows:52px 88px minmax(0,1fr) 132px;padding:14px}
+}
+@media(min-width:1280px) and (min-height:900px){
+  .thread-card{grid-template-rows:30px 20px 28px minmax(0,1fr) 20px;gap:5px 10px;padding:13px 15px}
+  .thread-card .project{font-size:17px;line-height:26px}
+  .thread-card .state{font-size:11px}
+  .thread-card .checkout,.thread-card .thread-meta .identity{font-size:11px;line-height:18px}
+  .thread-card .card-activity{font-size:13px;line-height:25px}
+  .thread-card .usage-label{font-size:11px}
+  .thread-card .usage-value{font-size:13px}
+  .thread-card .usage-tile[data-kind=context]{grid-template-columns:64px minmax(0,1fr);gap:0 9px}
+  .thread-card .usage-tile[data-kind=context] .usage-value{width:60px;height:60px}
+  .thread-card .usage-tile[data-kind=context] .usage-value::after{font-size:13px}
+  .thread-card .usage-tile[data-kind=balance] .usage-label{font-size:11px}
+  .thread-card .usage-tile[data-kind=balance] .usage-value{font-size:15px}
+  .thread-card .usage-tile[data-kind=balance] .usage-bar{height:11px}
+  .thread-card .card-metrics{grid-template-rows:minmax(0,1fr) 34px;gap:7px 12px}
+  .thread-card .usage-tile[data-kind=session] .usage-label,.thread-card .usage-tile[data-kind=response] .usage-label{font-size:10px}
+  .thread-card .usage-tile[data-kind=session] .usage-value,.thread-card .usage-tile[data-kind=response] .usage-value{font-size:12px}
+  .thread-card .freshness-part::after,.thread-card .coverage{font-size:10px}
+  .thread-card .visual-pending{font-size:13px}
+  .thread-card .visual-pending span{width:48px;height:48px;font-size:24px}
+}
+
+/* Weekly capacity and elapsed time share one scale; activity is a separate observed series. */
+.allowance-card{display:grid;grid-template-rows:27px 11px 13px minmax(0,1fr) 11px;align-content:stretch;gap:3px;padding:12px 9px 5px}
+.allowance-head{grid-row:1;align-items:center}
+.allowance-reset-head{font-size:9px;white-space:nowrap;color:var(--muted)}
+.allowance-gauge{grid-row:2;position:relative;height:10px;overflow:visible}
+.allowance-gauge i{border-radius:1px}
+.allowance-time-marker{position:absolute;top:-3px;bottom:-3px;width:3px;transform:translateX(-50%);background:var(--foreground);border:1px solid var(--background);box-shadow:0 0 0 1px var(--border)}
+.allowance-pace-label{grid-row:3;display:flex;justify-content:space-between;font-size:9px;line-height:12px;color:var(--muted)}
+.allowance-pace-label small{font-size:8px;color:var(--muted)}
+.allowance-card[data-pace=reserve] .allowance-pace-label{color:var(--green)}
+.allowance-card[data-pace=deficit] .allowance-pace-label{color:var(--yellow)}
+.allowance-activity{grid-row:4;display:grid;grid-template-rows:12px minmax(0,1fr);min-height:0;gap:2px}
+.activity-summary{font-size:8px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.activity-bars{height:100%;display:flex;align-items:end;gap:2px;overflow:hidden}
+.activity-bars i{display:block;flex:1;max-width:12px;min-width:2px;background:var(--cyan);opacity:.75}
+.allowance-foot{grid-row:5;justify-content:space-between;line-height:11px}
+.allowance-age{margin-left:auto}
+@media(max-width:640px){.allowance-card{min-height:140px}}
