@@ -40,7 +40,7 @@ function ThreadCard({model, index, now, cardClicks, disconnected, reduced, icon,
   const recentTitle=recent?`${groupedNumber(recent.read)} cached of ${groupedNumber(recent.input)} input tokens across ${recent.points.length} distinct intervals. M marks a model change; C marks compaction; ? marks an unavailable interval. Markers are observations, not cache-miss reasons.`:'';
   const metrics=[`Host ${model.host}, Herdr pane ${model.pane}, harness ${model.harness}, model ${model.model || 'unavailable'}.`,model.freshness,model.usageAge?`${model.usageFreshness} (${model.usageSource})`:null,
     ...model.tiles.map(tile=>`${tile.lastKnown?'Last known '+(tile.source==='usage'?model.usageAge:model.hookAge)+'. ':''}${tile.label}: ${tile.detail}`),
-    model.compactions?`Compactions: ${model.compactions.detail}`:null,model.note,
+    model.compactions?`Compactions: ${model.compactions.detail}`:null,model.subagentSummary?.detail,model.note,
     recentTitle].filter(Boolean).join(' ');
   const style={'--click':clickLevel.toFixed(3),'--glitch-x':`${clickLevel>0?Math.sin(clickAge*.13)*2*clickLevel:0}px`,'--impulse':model.motion.flash.toFixed(3)};
   return <article className="thread-card" data-state={model.state.toLowerCase()} data-thread={model.id} role="button" tabIndex="0"
@@ -48,7 +48,8 @@ function ThreadCard({model, index, now, cardClicks, disconnected, reduced, icon,
     onClick={()=>onPulse(model.id)} onKeyDown={event=>{if(['Enter',' '].includes(event.key)){event.preventDefault();onPulse(model.id);}}}>
     <div className="card-top"><div className="project-panel"><h3 className="project" title={model.project}>{model.project}</h3>{checkout && <p className="checkout" title={`Worktree / checkout: ${model.checkout}`}>{icon('branch')} {checkout}</p>}</div>
       <div className="state-panel"><span className="state" role="img" aria-label={model.state} title={model.state}><span className="state-glyph" aria-hidden="true">{model.motion.moving?<Blocks size={30} color="var(--state)" playState="running"/>:model.motion.glyph}</span></span></div>
-      {(model.activity||model.tool) && <div className="card-activity" data-historical={String(model.historicalActivity)} title={model.historicalActivity?`${model.activity}${model.tool?` · ${model.tool}`:''}`:'Latest observed hook activity; the state icon is Herdr’s current state'}><strong className="activity-text">{model.activity||'Tool observed'}</strong>{model.tool && <span className="tool-name" title={model.tool}>{model.tool}</span>}</div>}</div>
+      {(model.activity||model.tool) && <div className="card-activity" data-historical={String(model.historicalActivity)} title={model.historicalActivity?`${model.activity}${model.tool?` · ${model.tool}`:''}`:'Latest observed hook activity; the state icon is Herdr’s current state'}><strong className="activity-text">{model.activity||'Tool observed'}</strong>{model.tool && <span className="tool-name" title={model.tool}>{model.tool}</span>}</div>}
+      {model.subagentSummary && <div className="subagent-summary" data-last-known={String(model.subagentSummary.lastKnown)} title={model.subagentSummary.detail}>{model.subagentSummary.label}</div>}</div>
     {model.instruments.length>0 ? <div className="card-metrics">{model.instruments.map((tile,i)=><UsageTile key={`${tile.kind}-${i}`} tile={tile}/>)}</div>
       : <div className="visual-pending" title={model.note}><span aria-hidden="true">?</span><strong>{model.note==='No hook sample'?'No hook sample':'Usage pending'}</strong></div>}
     {recent && <p className="cache-recent" title={recentTitle} aria-label={recentTitle}>{cacheTrend(recent)}</p>}
