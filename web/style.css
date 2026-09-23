@@ -217,22 +217,22 @@ header{padding-bottom:8px}.brand{justify-content:center}.totals{gap:7px}.total{m
 
 
 /* One state-coloured thread header, then measured instruments and source detail. */
-.thread-card .card-top{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:7px;min-width:0;min-height:62px;padding:5px 7px;border-bottom:1px solid color-mix(in srgb,var(--border),var(--state) 35%);border-radius:2px;background:color-mix(in srgb,var(--background),var(--state) 12%)}
+.thread-card .card-top{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);grid-template-rows:minmax(0,1fr) auto;column-gap:7px;row-gap:2px;min-width:0;min-height:70px;padding:5px 7px;border-bottom:1px solid color-mix(in srgb,var(--border),var(--state) 35%);border-radius:2px;background:color-mix(in srgb,var(--background),var(--state) 12%)}
 .thread-card .project-panel{min-width:0;display:flex;flex-direction:column;align-items:flex-start;justify-content:center;gap:5px}
 .thread-card .project-panel .project{max-width:100%;font-size:15px;line-height:1.2;color:var(--foreground)}
 .thread-card .project-panel .checkout{display:block;max-width:100%;margin:0;padding:2px 5px;border-left:2px solid var(--state);background:color-mix(in srgb,var(--background),var(--state) 15%);color:var(--state);font-size:9px;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.thread-card .state-panel{min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;padding-left:6px;border-left:1px solid color-mix(in srgb,var(--border),var(--state) 30%);text-align:center}
+.thread-card .state-panel{min-width:0;display:flex;align-items:center;justify-content:center;padding-left:6px;border-left:1px solid color-mix(in srgb,var(--border),var(--state) 30%);text-align:center}
 .thread-card .state-panel .state{display:grid;place-items:center;flex:none;width:30px;height:28px;padding:0;border:0;background:none;color:var(--state)}
 .thread-card .state-panel .state-glyph{display:grid;place-items:center;width:auto;height:auto;font-size:27px;line-height:1}
 .thread-card .state-panel .state-glyph .ld-blocks{flex:none}
-.thread-card .state-panel .card-activity{display:flex;flex-direction:column;align-items:center;gap:0;min-width:0;max-width:100%;margin:0;padding:0;color:var(--foreground);line-height:1.1}
-.thread-card .state-panel .activity-text,.thread-card .state-panel .tool-name{display:block;width:100%;max-width:100%;margin:0;padding:0;border:0;background:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center;font-size:9px;font-weight:500}
-.thread-card .state-panel .tool-name{color:var(--state);font-size:9px}
-.thread-card .card-footer{display:grid;grid-template-columns:minmax(0,1fr) 92px;gap:5px;align-items:end;min-width:0;min-height:22px}
-.thread-card .card-footer .thread-meta{grid-column:1;grid-row:1;display:flex;flex-direction:column;align-items:flex-start;justify-content:flex-end;gap:0;min-width:0;min-height:0}
-.thread-card .card-footer .identity,.thread-card .card-footer .model-name,.thread-card .card-footer .coverage{display:block;max-width:100%;margin:0;color:var(--muted);font-size:8px;line-height:1.1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:left}
-.thread-card .card-footer .coverage{color:var(--state)}
-.thread-card .card-footer .thread-freshness{grid-column:2;grid-row:1;margin:0;align-self:end;justify-content:flex-end;min-width:0;max-width:100%;white-space:nowrap}
+.thread-card .card-top>.card-activity{grid-column:1/-1;grid-row:2;display:flex;align-items:center;justify-content:space-between;gap:6px;min-width:0;margin:0;padding:3px 5px;border-top:1px solid color-mix(in srgb,var(--border),var(--state) 30%);background:color-mix(in srgb,var(--background),var(--state) 9%);line-height:1.1}
+.thread-card .card-top>.card-activity .activity-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--state);font-size:9px;font-weight:500}
+.thread-card .card-top>.card-activity .tool-name{flex:none;max-width:48%;margin:0;padding:0;border:0;background:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--foreground);font-size:9px;text-align:right}
+.thread-card .card-footer{display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-rows:11px 11px;column-gap:5px;align-items:center;min-width:0;min-height:22px}
+.thread-card .card-footer .thread-meta{grid-column:1/-1;grid-row:1;display:block;min-width:0;overflow:hidden}
+.thread-card .card-footer .identity{display:block;width:100%;margin:0;color:var(--muted);font-size:8px;line-height:1.1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:left}
+.thread-card .card-footer .coverage{grid-column:1;grid-row:2;min-width:0;margin:0;color:var(--state);font-size:8px;line-height:1.1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.thread-card .card-footer .thread-freshness{grid-column:2;grid-row:2;margin:0;align-self:center;justify-content:flex-end;min-width:0;white-space:nowrap}
 .thread-card .card-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:5px;min-width:0;min-height:0;align-items:stretch;margin:0;align-self:stretch}
 .thread-card .card-metrics .usage-tile{min-width:0;min-height:0;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:3px;padding:4px;overflow:hidden;text-align:center;border:1px solid var(--border);border-radius:3px;background:color-mix(in srgb,var(--background),var(--foreground) 2%)}
 .thread-card .card-metrics .usage-label{font-size:9px;line-height:1.15;color:var(--muted);white-space:normal}
@@ -249,22 +249,22 @@ header{padding-bottom:8px}.brand{justify-content:center}.totals{gap:7px}.total{m
 .thread-card .card-metrics .usage-tile[data-kind=output] .usage-value{color:var(--cyan)}
 .thread-card .card-metrics .usage-tile[data-kind=context] .usage-value{width:clamp(42px,3.35vw,68px);height:clamp(42px,3.35vw,68px)}
 @media(min-width:1280px){
-  .thread-card{grid-template-columns:minmax(0,1fr);grid-template-rows:62px minmax(0,1fr) 24px;gap:4px;padding:7px 9px}
+  .thread-card{grid-template-columns:minmax(0,1fr);grid-template-rows:70px minmax(0,1fr) 24px;gap:4px;padding:7px 9px}
   .thread-card .card-top{grid-column:1;grid-row:1}
   .thread-card .card-metrics,.thread-card .visual-pending{grid-column:1;grid-row:2;height:100%}
   .thread-card .card-footer{grid-column:1;grid-row:3}
   .thread-card .cache-recent{display:none}
 }
 @media(min-width:1280px) and (min-height:900px){
-  .thread-card{grid-template-rows:86px minmax(0,1fr) 34px;gap:6px;padding:13px 15px}
+  .thread-card{grid-template-rows:94px minmax(0,1fr) 34px;gap:6px;padding:13px 15px}
   .thread-card .card-top{padding:8px 11px}
   .thread-card .project-panel .project{font-size:20px}
   .thread-card .project-panel .checkout{font-size:11px;padding:3px 7px}
   .thread-card .state-panel .state{height:38px;width:40px}
   .thread-card .state-panel .state-glyph{font-size:36px}
-  .thread-card .state-panel .activity-text,.thread-card .state-panel .tool-name{font-size:11px}
-  .thread-card .card-footer{grid-template-columns:minmax(0,1fr) 120px}
-  .thread-card .card-footer .identity,.thread-card .card-footer .model-name,.thread-card .card-footer .coverage{font-size:10px}
+  .thread-card .card-top>.card-activity .activity-text,.thread-card .card-top>.card-activity .tool-name{font-size:11px}
+  .thread-card .card-footer{grid-template-rows:16px 16px}
+  .thread-card .card-footer .identity,.thread-card .card-footer .coverage{font-size:10px}
   .thread-card .card-metrics .usage-label{font-size:11px}
   .thread-card .card-metrics .usage-value{font-size:clamp(15px,1.1vw,21px)}
 }
@@ -272,3 +272,22 @@ header{padding-bottom:8px}.brand{justify-content:center}.totals{gap:7px}.total{m
   .thread-card .card-top,.thread-card .card-footer{flex-shrink:0}
   .thread-card .card-metrics{flex-shrink:0}
 }
+
+/* The compact footer follows recent events; wheel and keyboard scrolling reveal the bounded history. */
+.observations-panel{display:flex;flex-direction:column}
+#events{display:block;flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:var(--border) transparent}
+#events .event-row{height:20px;line-height:20px;white-space:nowrap}
+@media(min-height:900px){#events .event-row{height:24px;line-height:24px}}
+#events:focus-visible{outline:1px solid var(--blue);outline-offset:-1px}
+#fullscreen{width:30px;height:27px;display:grid;place-items:center;font-size:19px;line-height:1;color:var(--muted)}
+#fullscreen[aria-pressed=true]{color:var(--blue);border-color:var(--blue)}
+
+/* Observation focus fills the screen below the persistent title, music and state totals. */
+#observatory[data-observations-expanded=true]{grid-template-rows:68px minmax(0,1fr);overflow:hidden}
+#observatory[data-observations-expanded=true] #fleet,#observatory[data-observations-expanded=true] .thread-section,#observatory[data-observations-expanded=true] #allowances{display:none}
+#observatory[data-observations-expanded=true] #activity{grid-row:2;grid-template-columns:minmax(0,1fr);min-height:0}
+#observatory[data-observations-expanded=true] .observations-panel{min-height:0}
+#observatory[data-observations-expanded=true] #events{font-size:clamp(13px,1.15vw,21px)}
+#observatory[data-observations-expanded=true] #events .event-row{height:clamp(29px,2.1vw,39px);line-height:1.3;padding:4px 10px}
+@media(max-height:800px){#observatory[data-observations-expanded=true]{grid-template-rows:52px minmax(0,1fr)}}
+@media(max-width:1000px){#observatory[data-observations-expanded=true]{grid-template-rows:auto minmax(0,1fr)}#observatory[data-observations-expanded=true] #activity{margin:0 calc(-1 * var(--inset-x)) calc(-1 * var(--inset-y));overflow:hidden}}
