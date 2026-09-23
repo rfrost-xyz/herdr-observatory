@@ -14,4 +14,4 @@
 ## 3. Acceptance
 
 - [x] 3.1 Run Python, JavaScript, strict OpenSpec and diff checks; record requirement-to-evidence traceability.
-- [ ] 3.2 Build and deploy a versioned image to both hosts, verify both machines show scoped graphics on both displays and preserve the previous image for rollback.
+- [x] 3.2 Build and deploy a versioned image to both hosts, verify both machines show scoped graphics on both displays and preserve the previous image for rollback.
