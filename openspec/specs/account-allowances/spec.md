@@ -18,7 +18,7 @@ The service SHALL expose only explicitly labelled accounts, deduplicate the same
 - **THEN** its allowance data is absent from browser responses and publication.
 
 ### Requirement: Honest allowance instruments
-The footer SHALL persistently show Personal and Work panels. Each SHALL lead with the reported weekly percentage remaining, a full-panel-width remaining-share bar, scheduled reset and sample age. When a fresh future reset falls inside the seven-day window, the same bar SHALL mark time remaining and visually distinguish the percentage-point gap as reserve, deficit or on pace. The exact pace meaning and difference SHALL remain accessible without requiring a long visible pace sentence. This comparison SHALL NOT imply future depletion time or a token quota. The panel SHALL NOT invent a session window. Available reset passes SHALL remain distinct, with expiry accessible. Missing or stale data SHALL remain unknown; passing a scheduled reset SHALL NOT fabricate a refreshed balance.
+The footer SHALL persistently show Personal and Work panels. Each SHALL lead with the reported weekly percentage remaining without a redundant visible weekly-left label, a full-panel-width remaining-share bar, scheduled reset and sample age. When a fresh future reset falls inside the seven-day window, the same bar SHALL mark time remaining and visually distinguish the percentage-point gap as reserve, deficit or on pace. A smaller signed percentage-point variance from even weekly pace SHALL appear beside the percentage when both values are valid, green ahead and red behind. Unknown pace SHALL show no signed variance. The exact pace meaning and difference SHALL remain accessible without requiring a long visible pace sentence. This comparison SHALL NOT imply future depletion time or a token quota. The panel SHALL NOT invent a session window. Available reset passes SHALL remain distinct, with expiry accessible. Missing or stale data SHALL remain unknown; passing a scheduled reset SHALL NOT fabricate a refreshed balance.
 
 #### Scenario: Supported snapshot
 - **WHEN** the current account source reports a valid weekly percentage and future reset in its seven-day window
@@ -35,6 +35,10 @@ The footer SHALL persistently show Personal and Work panels. Each SHALL lead wit
 #### Scenario: Missing or expired data
 - **WHEN** the source fails, the sample expires or a scheduled reset passes
 - **THEN** balance and pace become unknown without a fabricated refill or pass.
+
+#### Scenario: Signed pace variance
+- **WHEN** remaining allowance and time to reset are valid
+- **THEN** the card shows a signed variance beside the remaining percentage with the correct colour and accessible explanation; unknown pace shows none.
 
 ### Requirement: Explicit allowance sharing
 Account allowance sharing SHALL be separately configured from project disclosure and limited to selected labelled numeric account summaries over existing authenticated transport. Work project exclusions SHALL remain unchanged, including when both account allowances are intentionally shown on the office display.
