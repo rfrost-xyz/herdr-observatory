@@ -6,6 +6,7 @@ import math
 import os
 from pathlib import Path, PurePosixPath
 import re
+import secrets
 import subprocess
 import sys
 import threading
@@ -104,6 +105,8 @@ def counter(value):
 def technical(raw):
     raw = raw if isinstance(raw, dict) else {}
     result = {key: counter(raw.get(key)) for key in ('revision', 'state_change_seq')}
+    if 'session_generation' in raw:
+        result['session_generation'] = counter(raw.get('session_generation'))
     result.update({key: raw[key] if type(raw.get(key)) is bool else None
                    for key in ('focused', 'interactive_ready', 'launch_pending')})
     if 'telemetry' in raw:
@@ -133,8 +136,10 @@ def normalise(snapshot, host, profile):
         # Never disclose that workspace's checkout identity through the pane.
         checkout = probe.checkout_label(checkout_path) if classification(checkout_path, host) == category else ''
         status = entry.get('agent_status')
+        metadata = technical(entry)
+        metadata.pop('session_generation', None)  # Only the collector assigns this value.
         agents.append({'id': host['id'] + ':' + clean(entry['pane_id']), 'host': host['id'], 'category': category,
-            'technical': technical(entry), 'checkout': safe_checkout(checkout or probe.checkout_label(entry.get('cwd'))),
+            'technical': metadata, 'checkout': safe_checkout(checkout or probe.checkout_label(entry.get('cwd'))),
             'project': spaces.get(entry.get('workspace_id'), 'Untitled'), 'harness': clean(entry.get('agent'), 'unknown'),
             'status': status if status in STATUSES else 'unknown', 'title': clean(entry.get('terminal_title_stripped'), 'No task title reported')})
     return agents
@@ -229,6 +234,8 @@ class Observatory:
         self.publication = None
         self.history = []
         self.previous_metrics = {}
+        self.session_bindings = {}
+        self.next_session_generation = secrets.randbelow(1 << 40)
         self.palette = theme(None)
         self.hosts = {h['id']: {'id': h['id'], 'label': clean(h.get('label', h['id'])), 'online': False, 'error': 'Awaiting first sample', 'sampled_at': None, 'agents': [], 'metrics': None, 'trend': []} for h in config['hosts']}
 
@@ -249,6 +256,23 @@ class Observatory:
                 error = 'Herdr unavailable or incompatible'
             with self.lock:
                 state = self.hosts[host['id']]
+                if not is_feed:
+                    bindings = {host['id'] + ':' + clean(entry['pane_id']): probe.session_binding(entry)
+                                for entry in raw['snapshot'].get('agents', [])
+                                if isinstance(entry, dict) and isinstance(entry.get('pane_id'), str)} if raw.get('snapshot') else {}
+                    for agent in agents:
+                        binding = bindings.get(agent['id'])
+                        if not binding:
+                            self.session_bindings.pop(agent['id'], None)
+                            continue
+                        old_binding = self.session_bindings.get(agent['id'])
+                        if old_binding is None or old_binding[0] != binding:
+                            self.next_session_generation += 1
+                            self.session_bindings[agent['id']] = (binding, self.next_session_generation)
+                        agent['technical']['session_generation'] = self.session_bindings[agent['id']][1]
+                    for identifier in list(self.session_bindings):
+                        if identifier.startswith(host['id'] + ':') and identifier not in bindings:
+                            del self.session_bindings[identifier]
                 if is_feed and state['sampled_at'] is not None:
                     if sampled_at < state['sampled_at']:
                         return

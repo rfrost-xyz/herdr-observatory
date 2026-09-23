@@ -3,9 +3,11 @@
 """Bounded, hook-time numeric enrichment. No transcript content leaves this process."""
 import datetime
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import subprocess
 import sys
@@ -120,11 +122,27 @@ def read_usage(raw, root=None, now=None):
     return {}
 
 
+def opaque_association(raw):
+    """Validate source-side turn/child keys without exporting native identifiers."""
+    if not isinstance(raw, dict):
+        return {}
+    session = raw.get('session_id')
+    if not isinstance(session, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', session):
+        return {}
+    result = {}
+    for source, target in (('turn_id', 'turn_key'), ('agent_id', 'child_key')):
+        value = raw.get(source)
+        if isinstance(value, str) and re.fullmatch(r'[A-Za-z0-9_-]{1,128}', value):
+            result[target] = hashlib.sha256(('observatory-association-v1:' + session + ':' + source + ':' + value).encode()).hexdigest()[:24]
+    return result
+
+
 def enrich(raw):
     if not isinstance(raw,dict): return None
     # Raw prompts, arguments, transcript paths and messages never cross Docker stdin.
     result={key:raw.get(key) for key in ('session_id','hook_event_name','tool_name','model')}
     result['observatory_usage']=read_usage(raw)
+    result['observatory_association']=opaque_association(raw)
     return result
 
 

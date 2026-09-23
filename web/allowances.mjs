@@ -17,6 +17,9 @@ export function allowanceView(sample, {now = Date.now(), disconnected = false} =
     && (!validTime(sample.weekly_resets_at) || sample.weekly_resets_at * 1000 > now) ? sample.weekly_remaining : null;
   const count = fresh && Number.isSafeInteger(sample.reset_count) && sample.reset_count >= 0
     && (!validTime(sample.reset_expires_at) || sample.reset_expires_at * 1000 > now) ? sample.reset_count : null;
+  const activity=value=>fresh && Number.isSafeInteger(value) && value>=0?value:null;
+  const buckets=fresh && Array.isArray(sample.daily_usage) && sample.daily_usage.length<=30 && sample.daily_usage.every(item=>/^\d{4}-\d{2}-\d{2}$/.test(item?.date||'') && Number.isSafeInteger(item.tokens) && item.tokens>=0)?sample.daily_usage:null;
+  const peak=buckets?.length?Math.max(1,...buckets.map(item=>item.tokens)):1;
   return {
     label: clean(sample?.label) || 'Account', plan: planLabel(sample?.plan),
     remaining, weekly: remaining === null ? '—' : `${Math.round(remaining)}%`,
@@ -24,6 +27,8 @@ export function allowanceView(sample, {now = Date.now(), disconnected = false} =
     passes: count === null ? '—' : String(count),
     expiry: fresh && count !== 0 ? relativeTime(sample.reset_expires_at, now) : count === 0 ? 'None' : 'Unknown',
     status: fresh ? `Checked ${relativeTime(sample.sampled_at, now)}` : disconnected ? 'Disconnected' : 'Awaiting account sample',
+    lifetime:activity(sample.lifetime_tokens),peak:activity(sample.peak_daily_tokens),
+    daily:buckets?.map(item=>({...item,glyph:'▁▂▃▄▅▆▇█'[Math.min(7,Math.floor(item.tokens/peak*7))]}))||null,
   };
 }
 export function createAllowancePanel({root}) {
@@ -42,10 +47,16 @@ export function createAllowancePanel({root}) {
       const gauge = element('span', 'allowance-gauge');gauge.setAttribute('aria-hidden', 'true');
       const fill = element('i', '');fill.style.width = `${row.remaining ?? 0}%`;gauge.append(fill);weekly.append(gauge);
       const details = element('dl', 'allowance-details');
-      for (const [label, value] of [['Resets', row.reset], ['Reset passes', row.passes], ['Next expiry', row.expiry]]) {
+      for (const [label, value] of [['Resets', row.reset], ['Reset passes', row.passes], ['Next expiry', row.expiry],
+        ['Lifetime tokens', row.lifetime?.toLocaleString('en-GB') ?? '—'], ['Peak day', row.peak?.toLocaleString('en-GB') ?? '—']]) {
         details.append(element('dt', '', label), element('dd', '', value));
       }
-      panel.append(heading, weekly, details, element('small', 'allowance-age', row.status));
+      const daily=element('div', 'allowance-activity');
+      daily.setAttribute('aria-label', row.daily ? `ChatGPT account token activity, latest ${row.daily.length} days` : 'ChatGPT account token activity unavailable');
+      daily.append(element('span', '', 'Daily tokens'), element('strong', '', row.daily?.length ? row.daily.at(-1).tokens.toLocaleString('en-GB') : '—'));
+      const spark=element('span', 'allowance-spark', row.daily?.map(item=>item.glyph).join('') || '·');
+      spark.setAttribute('aria-hidden', 'true');daily.append(spark);
+      panel.append(heading, weekly, details, daily, element('small', 'allowance-age', row.status));
       return panel;
     });
     root.replaceChildren(...panels);

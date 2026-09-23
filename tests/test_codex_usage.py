@@ -27,6 +27,15 @@ class UsageReaderTests(unittest.TestCase):
     def test_enrichment_drops_all_raw_content_and_paths(self):
         with patch.object(helper,'read_usage',return_value=self.read()):value=helper.enrich(self.raw)
         self.assertNotIn('SECRET',json.dumps(value));self.assertNotIn(str(self.file),json.dumps(value));self.assertNotIn('PRIVATE',json.dumps(value))
+    def test_opaque_turn_and_child_association_is_source_bound(self):
+        raw={**self.raw,'turn_id':'turn_123','agent_id':'agent_456','agent_transcript_path':'/SECRET'}
+        association=helper.opaque_association(raw)
+        self.assertEqual(set(association),{'turn_key','child_key'})
+        self.assertNotIn('turn_123',json.dumps(association))
+        self.assertNotIn('agent_456',json.dumps(association))
+        self.assertNotIn('SECRET',json.dumps(helper.enrich(raw)))
+        self.assertNotEqual(association,helper.opaque_association({**raw,'session_id':'other'}))
+        self.assertEqual(helper.opaque_association({**raw,'turn_id':'../unsafe','agent_id':[]}),{})
     def test_mismatch_symlink_traversal_and_wrong_owner_rejected(self):
         self.header['payload']['id']='another';self.write();self.assertEqual(self.read(),{})
         self.header['payload']['id']='example';self.write();link=self.root/'link.jsonl';link.symlink_to(self.file);self.raw['transcript_path']=str(link);self.assertEqual(self.read(),{})

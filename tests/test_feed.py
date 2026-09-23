@@ -26,6 +26,14 @@ class FeedTests(unittest.TestCase):
         for secret in ('PRIVATE', '/work/app', 'SECRET SESSION', 'history', 'cwd'):
             self.assertNotIn(secret, json.dumps(feed))
 
+    def test_numeric_session_generation_survives_work_validation(self):
+        app, feed = fixture()
+        feed['agents'][0]['technical']['session_generation'] = 123
+        feed['agents'][0]['technical']['session_id'] = 'PRIVATE'
+        validated = validate_feed(feed)
+        self.assertEqual(validated['agents'][0]['technical']['session_generation'], 123)
+        self.assertNotIn('PRIVATE', json.dumps(validated))
+
     def test_atomic_private_file_and_stale_theme(self):
         _app, feed = fixture()
         feed['theme'] = {'name': 'Source', 'colours': {'accent': '#123456'}}

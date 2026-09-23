@@ -21,7 +21,7 @@ configuration before acting. Historical release hashes are not deployment author
   audio, file paths, artwork URLs, provider metadata, secrets or raw IPC frames.
 - Keep unknown, stale and unavailable values explicit. Do not invent tokens,
   costs, context usage, tool output, reasoning, beats or intermediate events.
-- Use Python 3.11+ standard library, browser-native assets and pinned local WASM.
+- Use Python 3.11+ standard library, a pinned local React browser bundle and pinned local WASM.
   Do not introduce runtime package installation, a database, a host observer
   daemon, an Omarchy hook or an external asset dependency as a shortcut.
 - Do not commit private configuration, SSH material, live snapshots, personal
@@ -37,16 +37,17 @@ configuration before acting. Historical release hashes are not deployment author
 | Work feed | `feed.py` | Work-only projection, authenticated publication, bounded validation, atomic receipt and source expiry |
 | Music | `music.py` | Read-only cliamp IPC, independent freshness, persistent SSH stream and latest-sample receiver |
 | Harness metadata | `telemetry.py`, `hooks/` | Session-bound report validation, Codex/Pi adapters and selective idempotent installation |
-| Display | `web/app.js`, `index.html`, `style.css` | Persistent thread cards, state/event reconciliation, paging, icons, colours, footer layout and browser polling |
+| Display | `web/app.js`, `react-view.jsx`, `index.html`, `style.css` | State/event reconciliation, React presentation, paging, icons, colours, footer layout and browser polling |
 | Background | `web/background.mjs` | Pinned Omarchy renderer adaptation, real spectrum, muted theme accent, pointer/click reactions and reduced-motion guards |
 | Text effects | `web/effects.mjs`, `web/vendor/` | Pinned WASM sessions; event-line and title-specific bounded factories; source/checksum/licence notices |
 | Track title | `web/music-title.mjs` | Track-change and explicit click effects, latest-only pending identity, accessible text and stale/reduced-motion guards |
 | Personal title | `web/title.mjs` | Small Rich artwork, independent click/minute schedule, complete playback and static fallback |
 | Deployment | `Dockerfile`, `.dockerignore`, `deploy/` | Versioned image, minimal build context, Compose variants and manual Windows browser launcher |
 
-No npm build, React runtime or Rust toolchain is required to run the image.
-Python, OpenSSH, collectors, reporters, receivers, browser modules, font and WASM
-are inside it. The browser executes Canvas/WASM outside the container.
+The React bundle is built from pinned npm dependencies before image creation.
+No Node process, npm installation or Rust toolchain is required to run the image.
+Python, OpenSSH, collectors, reporters, receivers, local browser modules, font
+and WASM are inside it. The browser executes React and Canvas/WASM locally.
 
 ## Processes and data flow
 
@@ -214,7 +215,7 @@ Observatory release tags after acceptance; do not prune unrelated Docker assets.
 
 Project and safe checkout leaf replace the terminal title in cards. The private probe keeps native checkout paths only until classification; the HTTP/Work projection exports a leaf only when its category matches the pane. Never add project mounts or infer a branch from its directory label. Work feed receipt revalidates leaf labels. Configured Host/Client identity remains metadata, not a visible header label.
 
-Numeric panels show session-bound reported values, with zero distinct from missing and observations older than two minutes labelled last known. Cards show compact K/M token counts; exact counts remain in tooltips and accessible labels. Hook activity and usage age are independent: older activity is phrased as a dated observation, and only gauges with old sources are softened. Context uses a capacity gauge; cache-read percentage names total input as its denominator, and cache writes receive a third labelled segment when present. Cumulative input/output values have no progress bar. Hover/focus adds visual emphasis only, and click/keyboard activation is a bounded decorative glitch, never an inspector or agent command. Histories contain at most 24 distinct measured host samples and preserve missingness. The header has four persistent state boxes. Codex hooks gain optional numeric enrichment from the bounded host-local `hooks/codex_usage.py` helper; Pi coverage depends on provider usage/context. Preserve the exact-session header check, owner/no-symlink path walk, session-root restriction, 64 KiB header/line and 512 KiB tail bounds. Never forward transcript text or mount session directories into the image. Usage-source timestamps must retain their original age independently of newer hook sequence timestamps. Do not renew old values or infer current usage. Pi reload seeds timestamped active-branch assistant usage and must not replace newer live usage with a lagging persisted entry. Codex SubagentStart/SubagentStop are latest parent-session-bound observations only. Drop child IDs/types/transcript paths/content, do not construct roster counts or interpret stop as permanent completion. Updating registrations requires the existing image-supplied hook installer on both harness hosts and harness restart/reload. No new persistent process is permitted.
+Numeric panels show session-bound reported values, with zero distinct from missing and observations older than two minutes labelled last known. Cards show compact K/M token counts; exact counts remain in tooltips and accessible labels. Hook activity and usage age are independent: older activity is phrased as a dated observation, and only gauges with old sources are softened. Context uses a capacity gauge; cache-read percentage names total input as its denominator, and cache writes receive a third labelled segment when present. Cumulative input/output values have no progress bar. Hover/focus adds visual emphasis only, and click/keyboard activation is a bounded decorative glitch, never an inspector or agent command. Histories contain at most 24 distinct measured host samples and preserve missingness. The header has four persistent state boxes. Codex hooks gain optional numeric enrichment from the bounded host-local `hooks/codex_usage.py` helper; Pi coverage depends on provider usage/context. Preserve the exact-session header check, owner/no-symlink path walk, session-root restriction, 64 KiB header/line and 512 KiB tail bounds. Never forward transcript text or mount session directories into the image. Usage-source timestamps must retain their original age independently of newer hook sequence timestamps. Do not renew old values or infer current usage. Pi reload seeds timestamped active-branch assistant usage and must not replace newer live usage with a lagging persisted entry. Codex SubagentStart/SubagentStop are latest parent-session-bound observations only. Drop raw child IDs/types/transcript paths/content, do not construct roster counts or interpret stop as permanent completion. Opaque session-bound child and turn references may remain in the local adapter but are never published. Updating registrations requires the existing image-supplied hook installer on both harness hosts and harness restart/reload. No new persistent process is permitted.
 
 Music title and artist effects are separate from Rich and event effects, use the bounded single-line factory, and trigger after a fresh track baseline changes or explicit title/artist activation. Preserve the sr-only track equivalent while the visual title is hidden. On rapid changes finish the session without displaying stale metadata and retain only the latest pending track; hidden/reduced-motion/stale paths cancel and reset the baseline.
 
@@ -230,7 +231,7 @@ Herdr accepts at most 16 token keys in one metadata report, retains at most 32 p
 
 ### Account allowances
 
-`observatory/allowances_probe.py` is image-owned code copied beside the existing Codex helper by the installer. It runs a bounded ephemeral Codex app-server, sends only initialise and read-only account/rateLimits/read RPCs, hashes accountId with the versioned namespace, and emits only the allowlisted plan/counters/times. Never add redemption, login changes, auth-file parsing, pass IDs/titles, email or session mounts. The existing hook sends thread telemetry first, throttles allowance reads to one per minute with a private timestamp lock, and has an outer eight-second deadline. No host daemon is installed.
+`observatory/allowances_probe.py` is image-owned code copied beside the existing Codex helper by the installer. It runs a bounded ephemeral Codex app-server, sends only initialise and read-only account/rateLimits/read and account/usage/read RPCs, hashes accountId with the versioned namespace, and emits only allowlisted plan/counters/times and daily activity buckets. Never add redemption, login changes, auth-file parsing, pass IDs/titles, email or session mounts. The existing hook sends thread telemetry first, throttles allowance reads to one per minute with a private timestamp lock, and has an outer eight-second deadline. No host daemon is installed.
 
 `observatory/allowances.py` validates optional private account mappings, owns a four-record temporary cache with ten-minute source expiry, deduplicates by account hash and strips hashes from HTTP output. Account labels are explicit Personal/Work assignments, never inferred from host or plan. Remote cache reads and Work-feed publication are separately configured; both ends revalidate mapping and numeric fields. Removing an account mapping must stop its export as well as its browser output. Thread Work filtering is unchanged by allowance sharing.
 

@@ -1,5 +1,6 @@
 """Opt-in, account-bound allowance cache. No credentials or account IDs are stored."""
 import fcntl
+import datetime
 import json
 import math
 import os
@@ -62,6 +63,25 @@ def sanitise(raw, now=None):
         out['weekly_remaining'] = out['weekly_resets_at'] = None
     if out['reset_expires_at'] is not None and out['reset_expires_at'] <= now:
         out['reset_count'] = out['reset_expires_at'] = None
+    for key in ('lifetime_tokens', 'peak_daily_tokens'):
+        out[key] = integer(raw.get(key))
+    buckets = raw.get('daily_usage')
+    out['daily_usage'] = None
+    if isinstance(buckets, list) and len(buckets) <= 30:
+        daily = []
+        for item in buckets:
+            if not isinstance(item, dict) or not isinstance(item.get('date'), str) or integer(item.get('tokens')) is None:
+                daily = None; break
+            try:
+                date = datetime.date.fromisoformat(item['date'])
+                valid = date.isoformat() == item['date'] and date <= datetime.date.fromtimestamp(now)
+            except (ValueError, OverflowError):
+                valid = False
+            if not valid:
+                daily = None; break
+            daily.append({'date': item['date'], 'tokens': item['tokens']})
+        if daily is not None and len({item['date'] for item in daily}) == len(daily):
+            out['daily_usage'] = sorted(daily, key=lambda item: item['date'])
     return out
 
 
@@ -155,7 +175,8 @@ class Allowances:
         for key, label in self.config['accounts'].items():
             row = rows.get(key)
             public = {field: row.get(field) if row else None for field in
-                      ('plan', 'weekly_remaining', 'weekly_resets_at', 'reset_count', 'reset_expires_at', 'sampled_at')}
+                      ('plan', 'weekly_remaining', 'weekly_resets_at', 'reset_count', 'reset_expires_at',
+                       'sampled_at', 'lifetime_tokens', 'peak_daily_tokens', 'daily_usage')}
             result.append(dict(public, label=label, available=row is not None))
         return result
 
