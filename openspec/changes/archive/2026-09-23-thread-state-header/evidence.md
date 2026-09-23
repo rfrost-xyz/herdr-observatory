@@ -14,4 +14,4 @@
 - Strict OpenSpec: five items passed.
 - Browser: eight dense cards at 1280×720, 1280×800, 1920×1080 and 1920×1200 fit without card, thread or document scroll. Header, metrics and footer do not overlap; 580×445 uses internal thread scroll without horizontal page scroll.
 - Docker preview: packaged CSS, React bundle, fallback app and server import passed.
-- Independent review: pending.
+- Independent review: clean at `b6ae3eed6b59af9e0149bcbe4579d598c854aaf4`; no actionable findings.
