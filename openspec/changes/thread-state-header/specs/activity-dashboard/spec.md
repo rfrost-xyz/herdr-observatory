@@ -32,4 +32,3 @@ The display SHALL give thread cards persistent semantic state colour and a two-c
 #### Scenario: Checkout disclosure
 - **WHEN** a permitted thread has a reported checkout directory
 - **THEN** only its sanitised leaf label reaches the browser and Work feed; full paths and excluded projects remain undisclosed.
-
