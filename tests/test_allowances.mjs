@@ -25,9 +25,9 @@ test('weekly pace compares remaining allowance with time remaining on one scale'
   assert.equal(aligned.pace,'on');assert.equal(aligned.paceLabel,'On pace');
   assert.ok(Math.abs(aligned.timeRemaining-5.1/7*100)<1e-9);
   const deficit=allowanceView({...sample,weekly_remaining:10,weekly_resets_at:now/1000+3.25*86400},{now});
-  assert.equal(deficit.pace,'deficit');assert.equal(deficit.paceLabel,'36% in deficit');
+  assert.equal(deficit.pace,'deficit');assert.equal(deficit.paceLabel,'36 percentage points in deficit');
   const reserve=allowanceView(sample,{now});assert.equal(reserve.pace,'reserve');
-  assert.equal(reserve.paceLabel,'11% in reserve');
+  assert.equal(reserve.paceLabel,'11 percentage points in reserve');
   assert.equal('runway' in deficit,false);assert.equal('burnPerDay' in deficit,false);
 });
 
@@ -67,7 +67,7 @@ test('fallback cards render pace marker, observed activity and honest pass age',
   const card=root.children[0],all=nodes(card),gauge=all.find(node=>node.className==='allowance-gauge');
   assert.equal(root.children.length,2);assert.equal(card.attrs['data-pace'],'deficit');
   assert.equal(gauge.children[0].style.width,'10%');assert.ok(gauge.children[1].style.left.startsWith('46.'));
-  assert.ok(all.some(node=>node.className==='allowance-pace-label'&&node.children.some(child=>child.textContent==='36% in deficit')));
+  assert.ok(all.some(node=>node.className==='allowance-pace-label'&&node.children.some(child=>child.textContent==='36 percentage points in deficit')));
   assert.ok(all.some(node=>node.className==='activity-summary'&&node.textContent==='9K tokens · 2 reported days'));
   assert.equal(all.filter(node=>node.tag==='i'&&node.style.height!==undefined).length,2);
   assert.ok(card.attrs['aria-label'].includes('9,000 tokens across 2 reported dates'));

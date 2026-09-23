@@ -202,11 +202,13 @@ header{padding-bottom:8px}.brand{justify-content:center}.totals{gap:7px}.total{m
   .thread-card .usage-tile[data-kind=context] .usage-value::after{content:attr(data-compact);font-size:9px;color:var(--state)}
   .thread-card .usage-tile[data-kind=context] .usage-bar{display:none}
   .thread-card .usage-tile[data-kind=balance]{grid-column:2;grid-row:1}
+  .thread-card .usage-tile[data-kind=response-cache]{grid-column:2;grid-row:1}
   .thread-card .usage-tile[data-kind=balance] .usage-label{font-size:8px}
   .thread-card .usage-tile[data-kind=balance] .usage-value{font-size:11px;color:var(--cyan)}
   .thread-card .usage-tile[data-kind=balance] .usage-bar{height:7px;margin-top:auto}
   .thread-card .usage-tile[data-kind=session]{grid-column:1;grid-row:2}
   .thread-card .usage-tile[data-kind=response]{grid-column:2;grid-row:2}
+  .thread-card .usage-tile[data-kind=response-cache] .usage-value{font-size:11px;color:var(--cyan)}
   .thread-card .usage-tile[data-kind=session] .usage-label,.thread-card .usage-tile[data-kind=response] .usage-label{font-size:7px}
   .thread-card .usage-tile[data-kind=session] .usage-value,.thread-card .usage-tile[data-kind=response] .usage-value{font-size:9px}
   .thread-card .cache-recent{display:none}
@@ -234,6 +236,7 @@ header{padding-bottom:8px}.brand{justify-content:center}.totals{gap:7px}.total{m
   .thread-card .usage-tile[data-kind=context] .usage-value::after{font-size:13px}
   .thread-card .usage-tile[data-kind=balance] .usage-label{font-size:11px}
   .thread-card .usage-tile[data-kind=balance] .usage-value{font-size:15px}
+  .thread-card .usage-tile[data-kind=response-cache] .usage-value{font-size:15px}
   .thread-card .usage-tile[data-kind=balance] .usage-bar{height:11px}
   .thread-card .card-metrics{grid-template-rows:minmax(0,1fr) 34px;gap:7px 12px}
   .thread-card .usage-tile[data-kind=session] .usage-label,.thread-card .usage-tile[data-kind=response] .usage-label{font-size:10px}

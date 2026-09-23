@@ -49,7 +49,7 @@ export function allowanceView(sample, {now = Date.now(), disconnected = false} =
   const timeRemaining = paceKnown ? untilReset / week * 100 : null;
   const paceDifference = paceKnown ? remaining - timeRemaining : null;
   const pace = paceDifference === null ? 'unknown' : paceDifference > 3 ? 'reserve' : paceDifference < -3 ? 'deficit' : 'on';
-  const paceLabel = pace === 'unknown' ? 'Pace unknown' : pace === 'on' ? 'On pace' : `${Math.round(Math.abs(paceDifference))}% in ${pace}`;
+  const paceLabel = pace === 'unknown' ? 'Pace unknown' : pace === 'on' ? 'On pace' : `${Math.round(Math.abs(paceDifference))} percentage points in ${pace}`;
   return {
     label: clean(sample?.label) || 'Account', plan: planLabel(sample?.plan),
     remaining, weekly: remaining === null ? '—' : `${Math.round(remaining)}%`,
