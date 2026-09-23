@@ -73,10 +73,10 @@ header{padding-bottom:8px}.brand{justify-content:center}.totals{gap:7px}.total{m
 .allowance-plan{margin-left:8px;color:var(--muted);font-size:9px;text-transform:capitalize}
 .allowance-head{display:flex;justify-content:space-between;align-items:end;gap:6px;min-width:0}
 .allowance-reading{display:flex;align-items:baseline;gap:6px;min-width:0;white-space:nowrap}
-.allowance-reading>span,.allowance-reset>span{font-size:8px;color:var(--muted)}
+.allowance-reading>span,.allowance-outlook>span{font-size:8px;color:var(--muted)}
 .allowance-percent{font-weight:400;font-size:30px;line-height:1;color:var(--allowance-accent)}
-.allowance-reset{display:flex;flex-direction:column;align-items:end;gap:2px;min-width:0;white-space:nowrap;font-size:9px}
-.allowance-reset strong{font-weight:400;color:var(--foreground)}
+.allowance-outlook{display:flex;flex-direction:column;align-items:end;gap:2px;min-width:0;white-space:nowrap;font-size:9px}
+.allowance-outlook strong{font-size:15px;font-weight:400;color:var(--allowance-accent)}
 .allowance-gauge{display:block;flex:none;width:100%;height:11px;background:color-mix(in srgb,var(--border),var(--background) 30%);border:1px solid var(--border);border-radius:2px;overflow:hidden}
 .allowance-gauge i{display:block;height:100%;background:var(--allowance-accent);transition:width .35s ease}
 .allowance-pace{display:grid;gap:4px;min-width:0}
@@ -86,9 +86,9 @@ header{padding-bottom:8px}.brand{justify-content:center}.totals{gap:7px}.total{m
 .pace-track i{display:block;height:100%;background:var(--cyan);transition:width .35s ease}
 .pace-room .pace-track i{background:var(--green)}
 .allowance-card[data-pace=over] .pace-burn .pace-track i{background:var(--yellow)}
-.allowance-card[data-pace=over] .pace-burn strong,.allowance-card[data-pace=over] .pace-verdict{color:var(--yellow)}
+.allowance-card[data-pace=over] .pace-burn strong,.allowance-card[data-pace=over] .allowance-outlook strong{color:var(--yellow)}
 .allowance-foot{display:flex;align-items:center;gap:7px;min-width:0;font-size:8px;color:var(--muted);white-space:nowrap}
-.pace-verdict{color:var(--allowance-accent)}
+.allowance-reset-time{color:var(--foreground)}
 .allowance-passes{color:var(--cyan)}
 .allowance-age{margin-left:auto;font-size:8px;color:var(--muted);overflow:hidden;text-overflow:ellipsis}
 @media(max-height:800px){#activity{gap:12px}#allowances{padding-left:10px}#allowance-panels{gap:8px}.allowance-card{padding:10px 7px 4px;gap:4px}.allowance-name{font-size:9px}.allowance-plan{font-size:8px;margin-left:5px}.allowance-percent{font-size:25px}.allowance-age{font-size:7px}.pace-row{gap:3px}.allowance-foot{gap:4px}}

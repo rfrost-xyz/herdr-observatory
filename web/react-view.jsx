@@ -62,15 +62,15 @@ function Account({sample, now, disconnected}) {
   const row=allowanceView(sample,{now,disconnected});
   const paceLabel=row.pace==='over'?'Over pace':row.pace==='within'?'Within pace':'Pace unknown';
   return <article className="allowance-card" data-pace={row.pace} data-low={String(row.remaining!==null&&row.remaining<=15)}
-    aria-label={`${row.label}: ${row.weekly} of weekly allowance left; burn ${rateLabel(row.burnPerDay)}; room ${rateLabel(row.roomPerDay)}; ${paceLabel}; reset ${row.reset}; ${row.passes} reset passes; ${row.status}.`}>
+    aria-label={`${row.label}: ${row.weekly} of weekly allowance left; at the average burn, ${row.runway}; burn ${rateLabel(row.burnPerDay)}; room ${rateLabel(row.roomPerDay)}; ${paceLabel}; reset ${row.reset}; ${row.passes} reset passes; ${row.status}.`}>
     <h3 className="allowance-name">{row.label}<span className="allowance-plan"> · {row.plan}</span></h3>
-    <div className="allowance-head"><div className="allowance-reading"><strong className="allowance-percent">{row.weekly}</strong><span>weekly left</span></div><div className="allowance-reset"><span>Resets</span><strong>{row.reset}</strong></div></div>
+    <div className="allowance-head"><div className="allowance-reading"><strong className="allowance-percent">{row.weekly}</strong><span>weekly left</span></div><div className="allowance-outlook" title="Estimated from the average weekly allowance used per day so far. Future usage may differ."><span>At average burn</span><strong>{row.runway}</strong></div></div>
     <div className="allowance-gauge" role="meter" aria-label="Weekly allowance remaining" aria-valuemin="0" aria-valuemax="100" aria-valuenow={row.remaining??undefined} aria-valuetext={row.weekly}><i style={{width:`${row.remaining??0}%`}}/></div>
     <div className="allowance-pace" aria-label={`Burn ${rateLabel(row.burnPerDay)}; room ${rateLabel(row.roomPerDay)}. ${paceLabel}.`}>
       <div className="pace-row pace-burn" title="Average weekly allowance used per day so far. This is not a token count or forecast."><span>Burn</span><span className="pace-track" aria-hidden="true"><i style={{width:`${row.burnPerDay===null?0:row.burnPerDay/row.paceScale*100}%`}}/></span><strong>{rateLabel(row.burnPerDay)}</strong></div>
       <div className="pace-row pace-room" title="Weekly allowance left divided by time until reset. An even-use guide in the same units as burn."><span>Room</span><span className="pace-track" aria-hidden="true"><i style={{width:`${row.roomPerDay===null?0:row.roomPerDay/row.paceScale*100}%`}}/></span><strong>{rateLabel(row.roomPerDay)}</strong></div>
     </div>
-    <div className="allowance-foot"><span className="pace-verdict">{paceLabel}</span>{row.passes!=='—'&&row.passes!=='0'&&<span className="allowance-passes" title={`Reset passes: ${row.passes}. Next expiry: ${row.expiry}`}>{row.passes} passes</span>}<small className="allowance-age">{row.status}</small></div>
+    <div className="allowance-foot"><span className="allowance-reset-time">Reset {row.reset}</span>{row.passes!=='—'&&row.passes!=='0'&&<span className="allowance-passes" title={`Reset passes: ${row.passes}. Next expiry: ${row.expiry}`}>{row.passes} passes</span>}<small className="allowance-age">{row.status}</small></div>
   </article>;
 }
 
