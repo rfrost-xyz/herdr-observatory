@@ -24,10 +24,10 @@ function Machine({host, history, sparkline, rate}) {
 }
 
 function UsageTile({tile}) {
-  return <div className="usage-tile" data-kind={tile.kind} data-last-known={String(tile.lastKnown)} data-known={String(tile.ratio!=null)} data-flow={String(Boolean(tile.flowIn))} role="group"
+  return <div className="usage-tile" data-kind={tile.kind} data-last-known={String(tile.lastKnown)} data-known={String(tile.ratio!=null)} role="group"
     title={tile.detail} aria-label={`${tile.lastKnown?'Last known. ':''}${tile.label}: ${tile.detail}`}
     style={{'--ratio':`${Math.min(1,Math.max(0,tile.ratio??0))*100}%`}}>
-    <span className="usage-label">{tile.label}</span><strong className="usage-value" data-compact={tile.kind==='context'?tile.value.split(' ')[0]:undefined} data-input={tile.flowIn} data-output={tile.flowOut}>{tile.value}</strong>
+    <span className="usage-label">{tile.label}</span><strong className="usage-value" data-compact={tile.kind==='context'?tile.value.split(' ')[0]:undefined}>{tile.value}</strong>
     {tile.exact && <small className="usage-exact">{tile.exact}</small>}
   </div>;
 }

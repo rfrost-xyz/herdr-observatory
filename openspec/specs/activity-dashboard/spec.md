@@ -77,7 +77,7 @@ The service SHALL bind to loopback and reject browser requests with untrusted Ho
 - **THEN** the service denies it without returning activity data.
 
 ### Requirement: Glanceable activity presentation
-The display SHALL give thread cards persistent semantic state colour and a two-column top bar, with project and safe branch in the larger left region and a large icon-only native state in the right region. Current activity and reported tool SHALL sit beneath the state icon while remaining distinct from the native state. The branch SHALL sit in a subbox under the project name and inherit the state colour. Compact harness, host, pane and model metadata SHALL sit at the bottom left opposite compaction and source ages. Cards SHALL show validated context as the only dial, and cumulative session input/output and cumulative cache-read share as equally weighted non-dial blocks. Last-response counters MAY replace a missing cumulative instrument only with explicit response scope; they SHALL NOT repeat available session totals. Exact counts, source ages and coverage SHALL remain accessible. Missing usage SHALL have one visible cue and SHALL NOT appear as zero. Unknown subagent counts SHALL NOT become zero. Recent observations SHALL use native state colour when available. The header SHALL retain Idle, Working, Blocked and Done totals. Cards SHALL omit meaningless bare-repository checkout labels.
+The display SHALL give thread cards persistent semantic state colour and a two-column top bar, with project and safe branch in the larger left region and a large icon-only native state in the right region. Current activity and reported tool SHALL sit beneath the state icon while remaining distinct from the native state. The branch SHALL sit in a subbox under the project name and inherit the state colour. Compact harness, host, pane and model metadata SHALL sit at the bottom left opposite compaction and source ages. Cards SHALL show validated context as the only dial, and cumulative session input, cumulative session output and cumulative cache-read share as three equally prominent non-dial readings beside context. Last-response counters MAY replace a missing cumulative instrument only with explicit response scope; they SHALL NOT repeat available session totals. Exact counts, source ages and coverage SHALL remain accessible. Missing usage SHALL have one visible cue and SHALL NOT appear as zero. Unknown subagent counts SHALL NOT become zero. Recent observations SHALL use native state colour when available. The header SHALL retain Idle, Working, Blocked and Done totals. Cards SHALL omit meaningless bare-repository checkout labels.
 
 #### Scenario: Status header and footer
 - **WHEN** a permitted thread has project, branch, state, activity and model metadata
@@ -85,7 +85,7 @@ The display SHALL give thread cards persistent semantic state colour and a two-c
 
 #### Scenario: Valid telemetry
 - **WHEN** context, cumulative session tokens and cache composition are valid
-- **THEN** the card shows one context dial and equally weighted token and cached-input blocks without clipping or overlap.
+- **THEN** the card shows one context dial and separate, equally prominent input, output and cached-input readings without clipping or overlap.
 
 #### Scenario: Partial hook coverage
 - **WHEN** activity exists but usage counters are absent
@@ -93,7 +93,7 @@ The display SHALL give thread cards persistent semantic state colour and a two-c
 
 #### Scenario: Response-only counters
 - **WHEN** cumulative counters are unavailable but last-response counters are valid
-- **THEN** their response scope is visible and missing context remains unknown.
+- **THEN** the input and output readings visibly name their response scope, cache scope is visible when valid, and missing context remains unknown.
 
 #### Scenario: Stale usage
 - **WHEN** retained usage is older than the latest hook
