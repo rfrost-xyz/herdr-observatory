@@ -18,11 +18,11 @@ The service SHALL expose only explicitly labelled accounts, deduplicate the same
 - **THEN** its allowance data is absent from browser responses and publication.
 
 ### Requirement: Honest allowance instruments
-The footer SHALL persistently show Personal and Work panels. Each SHALL lead with the reported weekly percentage remaining, a visual remaining-share bar, scheduled reset and sample age. When a fresh future reset falls inside the seven-day window, the same bar SHALL mark time remaining and name the percentage-point difference as reserve, deficit or on pace. This comparison SHALL NOT imply future depletion time or a token quota. The panel SHALL NOT invent a session window. Available reset passes SHALL remain distinct, with expiry accessible. Missing or stale data SHALL remain unknown; passing a scheduled reset SHALL NOT fabricate a refreshed balance.
+The footer SHALL persistently show Personal and Work panels. Each SHALL lead with the reported weekly percentage remaining, a full-panel-width remaining-share bar, scheduled reset and sample age. When a fresh future reset falls inside the seven-day window, the same bar SHALL mark time remaining and visually distinguish the percentage-point gap as reserve, deficit or on pace. The exact pace meaning and difference SHALL remain accessible without requiring a long visible pace sentence. This comparison SHALL NOT imply future depletion time or a token quota. The panel SHALL NOT invent a session window. Available reset passes SHALL remain distinct, with expiry accessible. Missing or stale data SHALL remain unknown; passing a scheduled reset SHALL NOT fabricate a refreshed balance.
 
 #### Scenario: Supported snapshot
 - **WHEN** the current account source reports a valid weekly percentage and future reset in its seven-day window
-- **THEN** the card shows remaining share and a time-remaining marker on one bar, an honest pace difference, reset timing, passes and sample age.
+- **THEN** the card uses its full width for remaining share and a time-remaining marker, with accessible pace meaning, reset timing, passes and sample age.
 
 #### Scenario: Incomplete weekly snapshot
 - **WHEN** the balance is current but reset timing is absent or outside its window
@@ -44,11 +44,11 @@ Account allowance sharing SHALL be separately configured from project disclosure
 - **THEN** both permitted summaries can appear on the office display without publishing Personal agents, project names or transcripts.
 
 ### Requirement: Account token activity
-The service SHALL read supported ChatGPT-backed account token-activity summaries and daily buckets through its authenticated, read-only account source, bind them to explicit account mapping and keep them separate from local session cache usage. It SHALL export only bounded numeric totals, valid bucket dates, account labels and sample times. The panel MAY show a bounded daily-token histogram and sum for reported dates, with its observed-day count and account scope explicit. Missing dates SHALL NOT appear as zero or contribute to the sum. Activity SHALL NOT be converted into a remaining quota, cost or depletion forecast. Missing, unsupported, stale or malformed account usage SHALL remain unavailable without hiding a valid weekly allowance. Existing explicit sharing boundaries SHALL apply.
+The service SHALL read supported ChatGPT-backed account token-activity summaries and daily buckets through its authenticated, read-only account source, bind them to explicit account mapping and keep them separate from local session cache usage. It SHALL export only bounded numeric totals, valid bucket dates, account labels and sample times. The panel MAY show a full-panel-width bounded daily-token histogram and sum for reported dates, with its observed-day count and account scope explicit. Missing dates SHALL NOT appear as zero or contribute to the sum. Activity SHALL NOT be converted into a remaining quota, cost or depletion forecast. Missing, unsupported, stale or malformed account usage SHALL remain unavailable without hiding a valid weekly allowance. Existing explicit sharing boundaries SHALL apply.
 
 #### Scenario: Supported account activity
 - **WHEN** a mapped account returns valid daily token buckets
-- **THEN** the panel shows only reported dates, their numeric sum and observed-day count, separately from weekly allowance pace.
+- **THEN** the panel spans the available width with only reported dates, their numeric sum and observed-day count, separately from weekly allowance pace.
 
 #### Scenario: Partial or unsupported response
 - **WHEN** activity buckets are absent or malformed
