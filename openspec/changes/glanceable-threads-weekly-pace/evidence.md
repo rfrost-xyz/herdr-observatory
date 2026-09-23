@@ -1,5 +1,17 @@
 # Delivery evidence
 
+## Requirement trace
+
+| Requirement and scenarios | Implementation | Verification |
+| --- | --- | --- |
+| Honest allowance instruments: supported, incomplete, exhausted, missing or expired | `web/allowances.mjs`, `web/react-view.jsx` | `tests/test_allowances.mjs` weekly, missing and expired cases; four browser viewports |
+| Account token activity: supported, partial, missing dates, invalid weekly window | `observatory/allowances_probe.py`, `observatory/allowances.py`, `web/allowances.mjs`, `web/react-view.jsx` | Python `test_allowances`; JavaScript daily bucket and unknown-state cases |
+| Account token activity: office sharing | Existing `observatory/allowances.py` account mapping and disclosure path | Python `test_export_revalidates_current_account_mapping`, `test_feed_allowances_are_separate_opt_in_and_revalidated` |
+| Glanceable activity: partial hook, valid telemetry, stale usage | `web/app.js`, `web/react-view.jsx`, `web/style.css` | UI regression suite, including partial response/cache case; eight-card browser checks |
+| Glanceable activity: completed thread, checkout disclosure | Existing native-state and disclosure paths in `web/app.js` and `observatory/` | UI state-colour and count cases; Python work-filter and feed tests |
+| Single-screen activity: eight threads, viewport resize | `web/style.css`, `web/app.js` | Browser geometry at 1280×720, 1280×800, 1920×1080, 1920×1200 |
+| Single-screen activity: many agents, narrow tile | Existing `web/app.js` paging and narrow CSS rules | UI eight-card paging test; narrow CSS rules inspected |
+
 ## Thread presentation and office fit
 
 - React and fallback cards use compact state, context and cache visuals. Exact source text remains in tooltips and accessible labels; absent usage has a distinct placeholder.
