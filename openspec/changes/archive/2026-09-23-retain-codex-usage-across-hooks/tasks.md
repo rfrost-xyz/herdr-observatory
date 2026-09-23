@@ -8,5 +8,5 @@
 
 ## 2. Verify and deliver
 
-- [ ] 2.1 Run the repository gates, strict OpenSpec validation and independent review; record their results and traceability.
-- [ ] 2.2 Verify both deployment image selections and rollback paths, then record the release plan before archive.
+- [x] 2.1 Run the repository gates, strict OpenSpec validation and independent review; record their results and traceability.
+- [x] 2.2 Verify both deployment image selections and rollback paths, then record the release plan before archive.

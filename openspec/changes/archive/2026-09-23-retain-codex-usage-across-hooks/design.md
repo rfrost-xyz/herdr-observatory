@@ -10,7 +10,7 @@ The host adapter reads usage from the exact hook-named session file. The image r
 
 ## Decisions
 
-Decode and validate the pane's existing Observatory metadata under the reporter's lock after confirming the native session binding. Reuse its numeric fields only when the incoming Codex sample is absent or older. The report still writes all version-2 groups atomically. This uses Herdr's bounded metadata rather than adding a host cache or daemon.
+Decode and validate the pane's existing Observatory metadata under the reporter's lock after confirming the native session binding. Reuse its numeric fields when the incoming Codex sample is absent or has an equal or older source time. The report still writes all version-2 groups atomically. This uses Herdr's bounded metadata rather than adding a host cache or daemon.
 
 ## Risks / Trade-offs
 
