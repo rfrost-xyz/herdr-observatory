@@ -178,25 +178,8 @@ header{padding-bottom:8px}.brand{justify-content:center}.totals{gap:7px}.total{m
 @media(max-width:1000px){#threads{grid-template-rows:none;grid-auto-rows:max-content}.thread-card{min-height:230px}}
 @media(max-width:600px){.thread-card{min-height:185px}}
 
-/* Three measured instruments occupy independent regions at every card width. */
-.card-activity .tool-name{margin-left:0;max-width:38%;border:0;padding:0;color:var(--muted);font-size:.78em;font-weight:400}
 .cache-recent{display:none}
-.card-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:5px;min-height:0;margin:0}
-.card-metrics .usage-tile{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;min-width:0;min-height:0;padding:2px;background:none;text-align:center;overflow:hidden}
-.card-metrics .usage-label{font-size:9px;line-height:1.15;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
-.card-metrics .usage-value{margin:0;font-size:11px;line-height:1.25;white-space:pre-line;overflow:visible}
 .card-metrics .usage-exact,.card-metrics .usage-bar{display:none}
-.card-metrics .usage-tile[data-kind=context] .usage-value,.card-metrics .usage-tile[data-kind=cache-hit] .usage-value{width:clamp(48px,4.6vw,76px);height:clamp(48px,4.6vw,76px);display:grid;place-items:center;border-radius:50%;font-size:0;background:radial-gradient(circle,var(--background) 57%,transparent 59%),conic-gradient(var(--instrument-colour) var(--ratio),var(--border) 0)}
-.card-metrics .usage-tile[data-kind=context]{--instrument-colour:var(--state)}
-.card-metrics .usage-tile[data-kind=cache-hit]{--instrument-colour:var(--blue)}
-.card-metrics .usage-tile[data-kind=context][data-known=false] .usage-value,.card-metrics .usage-tile[data-kind=cache-hit][data-known=false] .usage-value{background:radial-gradient(circle,var(--background) 57%,transparent 59%),var(--border)}
-.card-metrics .usage-tile[data-kind=context] .usage-value::after,.card-metrics .usage-tile[data-kind=cache-hit] .usage-value::after{content:attr(data-compact);font-size:clamp(10px,1vw,16px);color:var(--instrument-colour)}
-.card-metrics .usage-tile[data-known=false] .usage-value::after{color:var(--muted)}
-.card-metrics .usage-tile[data-kind=session] .usage-value,.card-metrics .usage-tile[data-kind=response] .usage-value{text-align:left;font-variant-numeric:tabular-nums}
-.card-metrics .usage-tile[data-flow=true] .usage-value{width:min(100%,100px);font-size:0}
-.card-metrics .usage-tile[data-flow=true] .usage-value::before,.card-metrics .usage-tile[data-flow=true] .usage-value::after{display:block;padding:3px 5px;border-left:2px solid var(--blue);background:color-mix(in srgb,var(--background),var(--blue) 8%);font-size:11px;line-height:1.2;white-space:nowrap}
-.card-metrics .usage-tile[data-flow=true] .usage-value::before{content:attr(data-input)}
-.card-metrics .usage-tile[data-flow=true] .usage-value::after{content:attr(data-output);border-color:var(--cyan);background:color-mix(in srgb,var(--background),var(--cyan) 7%);color:var(--muted)}
 .card-metrics .usage-tile[data-last-known=true]{opacity:.55}
 @media(min-width:1280px){
   #threads{grid-template-columns:repeat(4,minmax(0,1fr));grid-template-rows:repeat(2,minmax(0,1fr));grid-auto-rows:0;overflow:hidden;align-content:stretch}
@@ -250,3 +233,54 @@ header{padding-bottom:8px}.brand{justify-content:center}.totals{gap:7px}.total{m
 .allowance-foot{grid-row:4;justify-content:space-between;line-height:11px}
 .allowance-age{margin-left:auto}
 @media(max-width:640px){.allowance-card{min-height:140px}}
+
+/* Thread hierarchy: compact identity, one context dial and two peer data blocks. */
+.thread-card .card-top{min-width:0;display:flex;align-items:baseline;justify-content:space-between;gap:8px}
+.thread-card .card-top .project{flex:0 1 auto;max-width:56%;min-width:0}
+.thread-card .card-top .identity{flex:1 1 auto;min-width:0;margin:0;text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block;color:var(--muted);font-size:clamp(8px,.67vw,12px);line-height:1.3}
+.thread-card .status-group{display:flex;align-items:center;gap:7px;min-width:0;min-height:25px;padding:3px 6px;border-left:3px solid var(--state);background:color-mix(in srgb,var(--background),var(--state) 9%);border-radius:2px}
+.thread-card .status-group .state{flex:none;display:flex;align-items:center;gap:5px;padding:3px 6px;background:color-mix(in srgb,var(--background),var(--state) 18%);font-size:11px;line-height:1.2;font-weight:700}
+.thread-card .status-group .card-activity{flex:1;min-width:0;margin:0;padding:0;gap:5px;color:var(--foreground);font-size:11px;line-height:1.2}
+.thread-card .status-group .activity-glyph{color:var(--state)}
+.thread-card .status-group .activity-text{font-weight:600}
+.thread-card .status-group .tool-name{margin-left:auto;max-width:38%;padding:2px 4px;border:1px solid color-mix(in srgb,var(--border),var(--state) 24%);border-radius:2px;background:var(--background);color:var(--foreground);font-size:10px;font-weight:500}
+.thread-card .thread-meta{min-width:0;min-height:0}
+.thread-card .thread-meta .model-name{display:block;text-align:right;font-size:9px;line-height:13px}
+.thread-card .card-metrics{display:grid;grid-template-columns:minmax(0,.8fr) repeat(2,minmax(0,1fr));gap:5px;min-width:0;min-height:0;align-items:stretch;margin:0;align-self:stretch}
+.thread-card .card-metrics .usage-tile{min-width:0;min-height:0;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:5px;padding:5px 4px;overflow:hidden;text-align:center;border:1px solid var(--border);border-radius:3px;background:color-mix(in srgb,var(--background),var(--foreground) 2%)}
+.thread-card .card-metrics .usage-label{font-size:9px;line-height:1.15;color:var(--muted)}
+.thread-card .card-metrics .usage-value{margin:0;line-height:1.15}
+.thread-card .card-metrics .usage-tile[data-kind=context]{border-color:transparent;background:transparent;--instrument-colour:var(--state)}
+.thread-card .card-metrics .usage-tile[data-kind=context] .usage-value{width:clamp(43px,3.8vw,72px);height:clamp(43px,3.8vw,72px);display:grid;place-items:center;border-radius:50%;font-size:0;background:radial-gradient(circle,var(--background) 57%,transparent 59%),conic-gradient(var(--instrument-colour) var(--ratio),var(--border) 0)}
+.thread-card .card-metrics .usage-tile[data-kind=context][data-known=false] .usage-value{background:radial-gradient(circle,var(--background) 57%,transparent 59%),var(--border)}
+.thread-card .card-metrics .usage-tile[data-kind=context] .usage-value::after{content:attr(data-compact);font-size:clamp(10px,.95vw,16px);color:var(--instrument-colour)}
+.thread-card .card-metrics .usage-tile[data-kind=context][data-known=false] .usage-value::after{color:var(--muted)}
+.thread-card .card-metrics .usage-tile[data-kind=cache-hit] .usage-value{width:auto;height:auto;display:block;border-radius:0;background:none;font-size:clamp(14px,1.35vw,23px);font-variant-numeric:tabular-nums;color:var(--blue)}
+.thread-card .card-metrics .usage-tile[data-kind=cache-hit] .usage-value::after{content:none}
+.thread-card .card-metrics .usage-tile[data-kind=cache-hit][data-known=false] .usage-value{background:none;color:var(--muted)}
+.thread-card .card-metrics .usage-tile[data-flow=true] .usage-value{width:100%;font-size:0}
+.thread-card .card-metrics .usage-tile[data-flow=true] .usage-value::before,.thread-card .card-metrics .usage-tile[data-flow=true] .usage-value::after{display:block;padding:3px 4px;border-left:2px solid var(--blue);background:color-mix(in srgb,var(--background),var(--blue) 8%);font-size:12px;line-height:1.1;white-space:nowrap;text-align:left}
+.thread-card .card-metrics .usage-tile[data-flow=true] .usage-value::before{content:attr(data-input)}
+.thread-card .card-metrics .usage-tile[data-flow=true] .usage-value::after{content:attr(data-output);border-color:var(--cyan);background:color-mix(in srgb,var(--background),var(--cyan) 7%);color:var(--foreground)}
+@media(min-width:1280px){
+  .thread-card{grid-template-rows:21px 13px 27px minmax(0,1fr) 13px;gap:3px 6px}
+  .thread-card .card-top{grid-column:1/-1;grid-row:1}
+  .thread-card .checkout{grid-column:1;grid-row:2}
+  .thread-card .thread-meta{grid-column:2;grid-row:2}
+  .thread-card .status-group{grid-column:1/-1;grid-row:3}
+  .thread-card .card-metrics,.thread-card .visual-pending{grid-column:1/-1;grid-row:4;height:100%}
+  .thread-card .thread-freshness{grid-column:2;grid-row:5}
+  .thread-card .coverage{grid-column:1;grid-row:5}
+}
+@media(min-width:1280px) and (min-height:900px){
+  .thread-card{grid-template-rows:29px 18px 35px minmax(0,1fr) 18px;gap:4px 8px}
+  .thread-card .status-group .state{font-size:13px}
+  .thread-card .status-group .card-activity{font-size:12px}
+  .thread-card .status-group .tool-name{font-size:11px}
+  .thread-card .card-metrics .usage-label{font-size:11px}
+  .thread-card .card-metrics .usage-tile[data-flow=true] .usage-value::before,.thread-card .card-metrics .usage-tile[data-flow=true] .usage-value::after{font-size:13px;padding:5px 6px}
+}
+@media(max-width:1279px){
+  .thread-card .status-group{flex-shrink:0}
+  .thread-card .thread-meta:empty{display:none}
+}
