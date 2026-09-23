@@ -79,10 +79,9 @@ export function createAllowancePanel({root}) {
       head.append(reading,reset);
       const gauge = element('span', 'allowance-gauge');
       const fill = element('i', '');fill.style.width = `${row.remaining ?? 0}%`;gauge.append(fill);
-      if(row.timeRemaining !== null){const marker=element('span','allowance-time-marker');marker.style.left=`${row.timeRemaining}%`;marker.title=`${Math.round(row.timeRemaining)}% of week remaining`;gauge.append(marker);}
+      if(row.timeRemaining !== null){const gap=element('span','allowance-pace-gap');gap.style.left=`${Math.min(row.remaining,row.timeRemaining)}%`;gap.style.width=`${Math.abs(row.paceDifference)}%`;gap.title=row.paceLabel;gap.setAttribute('aria-hidden','true');const marker=element('span','allowance-time-marker');marker.style.left=`${row.timeRemaining}%`;marker.title=`${Math.round(row.timeRemaining)}% of week remaining · ${row.paceLabel}`;gauge.append(gap,marker);}
       gauge.setAttribute('role','meter');gauge.setAttribute('aria-label','Weekly allowance remaining');gauge.setAttribute('aria-valuemin','0');gauge.setAttribute('aria-valuemax','100');gauge.setAttribute('aria-valuetext',row.weekly);
       if(row.remaining!==null)gauge.setAttribute('aria-valuenow',String(row.remaining));
-      const pace=element('div','allowance-pace-label');pace.append(element('span','',row.paceLabel));if(row.timeRemaining!==null)pace.append(element('small','','│ time left'));
       const foot=element('div','allowance-foot');
       if(row.passes!=='—'&&row.passes!=='0'){
         const passes=element('span','allowance-passes',`${row.passes} passes`);passes.title=`Reset passes: ${row.passes}. Next expiry: ${row.expiry}`;foot.append(passes);
@@ -96,7 +95,7 @@ export function createAllowancePanel({root}) {
         for(const item of row.activity.daily){const bar=element('i','');bar.style.height=`${item.height}%`;bar.title=`${item.date}: ${item.tokens.toLocaleString('en-GB')} tokens`;bars.append(bar);}
         activity.append(title,bars);
       } else activity.append(element('span','activity-summary','Account activity unavailable'));
-      panel.append(heading,head,gauge,pace,activity,foot);
+      panel.append(heading,head,gauge,activity,foot);
       return panel;
     });
     root.replaceChildren(...panels);
