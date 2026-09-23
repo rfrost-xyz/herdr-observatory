@@ -245,9 +245,9 @@ function visibleInstruments(tiles){
   const balance=find('balance'),response=find('response'),responseCache=find('response-cache');
   const responseRatio=!balance && Number.isSafeInteger(response?.inputTokens) && response.inputTokens>0 && Number.isSafeInteger(responseCache?.readTokens) && responseCache.readTokens<=response.inputTokens?responseCache.readTokens/response.inputTokens:null;
   const ratio=balance?.ratio??responseRatio;
-  const cache={kind:'cache-hit',source:balance?.source || responseCache?.source || 'hook',label:balance?'Cache hit':responseRatio!==null?'Cache · response':'Cache hit',
+  const cache={kind:'cache-hit',source:balance?.source || responseCache?.source || 'hook',label:balance?'Cached input':responseRatio!==null?'Cache · response':'Cached input',
     value:ratio===null?'—':tokenPercent(ratio),ratio,
-    detail:balance?`${balance.detail}. ${ratio===null?'Cache share unavailable.':'Cache hit rate uses session input.'}`:responseRatio!==null?`${tokenPercent(responseRatio)} of last-response input was cache-read. ${responseCache.detail}`:'Cache hit rate unavailable',
+    detail:balance?`${balance.detail}. ${ratio===null?'Cached input share unavailable.':'Share of cumulative session input tokens read from cache.'}`:responseRatio!==null?`${tokenPercent(responseRatio)} of last-response input was cache-read. ${responseCache.detail}`:'Cached input share unavailable',
     lastKnown:balance?.lastKnown??responseCache?.lastKnown??false};
   return [context,tokens,cache];
 }
