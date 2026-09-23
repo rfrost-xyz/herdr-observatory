@@ -4,7 +4,7 @@ import subprocess
 import unittest
 from unittest.mock import patch
 
-from observatory.core import Observatory, classification, collect, normalise, rates, theme, validate_config
+from observatory.core import Observatory, classification, collect, normalise, rates, sanitise_metrics, theme, validate_config
 
 HOST = {'id': 'desktop', 'work_roots': ['/work'], 'personal_roots': ['/work/private']}
 SNAP = {'version': '0.9.0', 'workspaces': [{'workspace_id': 'w1', 'label': 'Public project'}, {'workspace_id': 'w2', 'label': 'PRIVATE PROJECT'}], 'agents': [
@@ -14,6 +14,15 @@ RAW = {'snapshot': SNAP, 'error': None, 'theme': None, 'metrics': {'at': 10, 'sc
 
 
 class CoreTests(unittest.TestCase):
+    def test_graphics_source_is_validated_without_invented_vram(self):
+        base = {'at': 10, 'scope': 'Linux'}
+        xe = sanitise_metrics(base | {'gpu': {'percent': 12.5, 'source': 'intel-xe-pmu'}})
+        self.assertEqual(xe['gpu'], {'percent': 12.5, 'source': 'intel-xe-pmu'})
+        nvidia = sanitise_metrics(base | {'gpu': {'percent': 20, 'used': 1, 'total': 2, 'source': 'nvidia-visible'}})
+        self.assertEqual(nvidia['gpu']['source'], 'nvidia-visible')
+        for value in ({'percent': 5, 'source': 'unknown'}, {'percent': 101, 'source': 'intel-xe-pmu'}, {'percent': 5, 'source': 'intel-xe-pmu', 'used': 0, 'total': 1}, {'percent': 5, 'source': 'nvidia-visible'}):
+            self.assertIsNone(sanitise_metrics(base | {'gpu': value})['gpu'])
+
     def test_work_disclosure_is_server_side(self):
         app = Observatory({'hosts': [HOST]}, 'work', lambda h: copy.deepcopy(RAW))
         app.poll(HOST)
@@ -112,6 +121,9 @@ class CoreTests(unittest.TestCase):
         for config in ({'hosts': []}, {'hosts': [HOST, HOST]}, {'hosts': [dict(HOST, transport='ssh', target='-oProxyCommand=evil')]}, {'hosts': [dict(HOST, work_roots=['relative'])]}, {'hosts': [HOST], 'interval': 0}):
             with self.assertRaises(ValueError): validate_config(config)
         with self.assertRaises(ValueError): normalise({'agents': None}, HOST, 'work')
+        for host in (dict(HOST, gpu_state_port=8789), dict(HOST, transport='ssh', target='ws-255', gpu_state_port=True), dict(HOST, transport='ssh', target='ws-255', gpu_state_port=65536)):
+            with self.assertRaises(ValueError): validate_config({'hosts': [host]})
+        validate_config({'hosts': [dict(HOST, transport='ssh', target='ws-255', gpu_state_port=8789)]})
 
     @patch('observatory.core.subprocess.run')
     def test_ssh_uses_fixed_command_and_stdin(self, run):

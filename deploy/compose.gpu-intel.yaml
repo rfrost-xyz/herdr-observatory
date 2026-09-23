@@ -1,0 +1,38 @@
+# Optional iapetus Intel Xe whole-device engine telemetry.
+services:
+  dashboard:
+    volumes:
+      - type: volume
+        source: gpu_metrics
+        target: /gpu
+        read_only: true
+  gpu-intel:
+    image: ${OBSERVATORY_IMAGE:?Set a versioned Observatory image}
+    entrypoint: ["python3", "-m", "observatory.gpu_probe"]
+    command: []
+    user: "0:0"
+    init: true
+    restart: unless-stopped
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [PERFMON]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    healthcheck:
+      test: [CMD, python3, -c, "import json,time; d=json.load(open('/gpu/metrics.json')); assert d['source']=='intel-xe-pmu' and 0<=time.time()-d['at']<10 and 0<=d['percent']<=100"]
+      interval: 10s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "3"
+    volumes:
+      - type: volume
+        source: gpu_metrics
+        target: /gpu
+volumes:
+  gpu_metrics:

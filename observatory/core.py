@@ -56,6 +56,8 @@ def validate_config(config):
                 raise ValueError('Project roots must be absolute POSIX paths without parent traversal')
         if host.get('socket_path') and host.get('session'):
             raise ValueError('Select a socket path or a CLI session, not both')
+        if 'gpu_state_port' in host and (host.get('transport') != 'ssh' or type(host['gpu_state_port']) is not int or not 1 <= host['gpu_state_port'] <= 65535):
+            raise ValueError('gpu_state_port requires an SSH host and a valid port')
         for key in ('herdr', 'session', 'socket_path', 'theme_path', 'disk_path'):
             if key in host and (not isinstance(host[key], str) or not host[key]):
                 raise ValueError(f'{key} must be a nonempty string')
@@ -147,13 +149,19 @@ def sanitise_metrics(raw):
     if not number(at):
         raise ValueError('Invalid metric timestamp')
     result = {'at': at, 'scope': clean(raw.get('scope'), 'Unknown scope')}
-    for key, fields in {'cpu': ('total', 'idle'), 'memory': ('used', 'total'), 'disk': ('used', 'total'), 'network': ('rx', 'tx'), 'gpu': ('percent', 'used', 'total')}.items():
+    for key, fields in {'cpu': ('total', 'idle'), 'memory': ('used', 'total'), 'disk': ('used', 'total'), 'network': ('rx', 'tx')}.items():
         item = raw.get(key)
         result[key] = {f: item[f] for f in fields} if isinstance(item, dict) and all(number(item.get(f)) for f in fields) else None
         if result[key] and 'total' in fields and (item['total'] <= 0 or item.get('used', item.get('idle', 0)) > item['total']):
             result[key] = None
-        if key == 'gpu' and result[key] and item['percent'] > 100:
-            result[key] = None
+    gpu = raw.get('gpu')
+    result['gpu'] = None
+    if isinstance(gpu, dict) and number(gpu.get('percent')) and gpu['percent'] <= 100:
+        source = gpu.get('source')
+        if source == 'intel-xe-pmu' and 'used' not in gpu and 'total' not in gpu:
+            result['gpu'] = {'percent': gpu['percent'], 'source': source}
+        elif source in (None, 'nvidia-visible') and number(gpu.get('used')) and number(gpu.get('total')) and 0 < gpu['total'] and gpu['used'] <= gpu['total']:
+            result['gpu'] = {key: gpu[key] for key in ('percent', 'used', 'total')} | {'source': 'nvidia-visible'}
     return result
 
 
@@ -186,6 +194,8 @@ def collect(host):
         return read_feed(host)
     options = {'binary': host.get('herdr', 'herdr'), 'session': host.get('session')}
     options.update({key: host[key] for key in ('socket_path', 'theme_path', 'disk_path') if key in host})
+    if 'gpu_state_port' in host:
+        options.update(gpu_state_port=host['gpu_state_port'], gpu_host_id=host['id'])
     script = Path(probe.__file__).read_text().split("if __name__ == '__main__':")[0]
     script += '\nprint(json.dumps(sample(**' + repr(options) + ')))\n'
     command = [sys.executable, '-']

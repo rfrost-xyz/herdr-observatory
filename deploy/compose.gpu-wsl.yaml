@@ -1,0 +1,14 @@
+# Optional ws-255 WSL NVIDIA graphics telemetry.
+services:
+  dashboard:
+    devices:
+      - /dev/dxg:/dev/dxg:rw
+    volumes:
+      - type: bind
+        source: /usr/lib/wsl
+        target: /usr/lib/wsl
+        read_only: true
+        bind: {create_host_path: false}
+    environment:
+      LD_LIBRARY_PATH: /usr/lib/wsl/lib
+      PATH: /usr/lib/wsl/lib:/usr/local/bin:/usr/bin:/bin

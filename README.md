@@ -200,7 +200,7 @@ Custom Herdr token/label maps, native session identifiers and terminal contents 
 - **Observed changes:** discovered agents and changes between snapshots. Rapid transitions between samples can be missed. The backend retains bounded sampled history in memory and clears it at restart. The browser shows four recent observations and retains up to 60 in its accessible text history; old observations remain historical during an outage.
 - **CPU and network:** deltas between successful samples. The first sample or a counter reset shows unavailable. Network totals exclude loopback, but may include virtual interfaces.
 - **RAM / disk:** kernel memory and the configured source filesystem (`disk_path`, normally the mounted Herdr directory in Compose), or the collector user's home by default. Containers can report kernel-wide memory, while disk scope follows their filesystem. These are not native Windows host totals or cgroup quotas.
-- **GPU:** optional `nvidia-smi`; mean utilisation and summed VRAM across visible GPUs. Unavailable where drivers/devices are not exposed, including many containers. The service never invokes Docker to acquire broader access.
+- **GPU:** optional `nvidia-smi` reports mean utilisation and summed VRAM across visible NVIDIA GPUs. On Intel Xe, an optional isolated monitor reports the busiest device engine from kernel performance counters. It does not infer dedicated VRAM. Without either source, the value stays unavailable. The service never invokes Docker to acquire broader access.
 - **Unavailable:** failed SSH, missing Herdr, incompatible data or stale sampling. Disconnected agents are excluded from current counts. The browser stops live activity on fetch failure and also expires old host samples.
 
 ## Access and disclosure
@@ -289,9 +289,13 @@ HERDR_DIRECTORY=/home/user/.config/herdr
 OMARCHY_CURRENT=/home/user/.local/state/omarchy/current
 ```
 
+On iapetus, add `compose.gpu-intel.yaml` to `COMPOSE_FILE` and copy that override beside the base files. It starts an isolated Intel Xe monitor with `CAP_PERFMON`, no network and no host process or home mount. The monitor writes only a small aggregate to a named volume; the Personal dashboard mounts that volume read-only and keeps its existing user and dropped capabilities. Remove the override and recreate the deployment to disable it.
+
 The local host entry in `config/config.json` uses `socket_path: /herdr/herdr.sock`, `theme_path: /theme`, and `disk_path: /herdr`. Keep Work/Personal roots in the original host namespace, not container paths. For a named session, configure its actual socket filename. Socket collection bypasses the CLI, so do not combine `session` with `socket_path`.
 
 For SSH collection/publication, place a dedicated `ssh_config` and verified `known_hosts` in `config/`. Set `UserKnownHostsFile /config/known_hosts`, `StrictHostKeyChecking yes` and `BatchMode yes`. Use a reachable Tailscale host address. Existing Tailscale SSH can authenticate without a private key; if ordinary SSH requires credentials, provision only a dedicated restricted credential. Do not mount the entire `.ssh` directory or disable host verification. Tailscale check-mode reauthentication remains an operator action.
+
+When an SSH target shell cannot see its GPU but runs its own Observatory service on loopback, add `"gpu_state_port": 8789` to that SSH host's private Personal configuration. The remote probe reads only `127.0.0.1:8789/api/state`, accepts the matching host's fresh NVIDIA aggregate and discards the rest. A missing or stale Work service leaves that one graphics value unavailable; SSH agent and other machine metrics continue. Do not enable this on a local or file host.
 
 Work `.env` for an existing named Herdr home volume:
 
@@ -306,6 +310,8 @@ HERDR_SUBPATH=.config/herdr
 OBSERVATORY_CONFIG_SUBPATH=.local/state/herdr-observatory/deployment/config
 OBSERVATORY_FEED_SUBPATH=.local/state/herdr-observatory/feeds
 ```
+
+On ws-255 WSL, add `compose.gpu-wsl.yaml` to `COMPOSE_FILE` and copy that override beside the base files. It exposes `/dev/dxg` and mounts `/usr/lib/wsl` read-only so the existing non-root probe can run WSL's `nvidia-smi`. It does not alter the Ollama container or its GPU reservation. Remove the override and recreate the service to disable it. Neither GPU override belongs on the other host.
 
 Create both subdirectories in that existing volume before starting. The Work `config.json` uses `socket_path: /herdr/herdr.sock`, `disk_path: /herdr`, and laptop feed `path: /feeds/laptop.json`. The laptop publisher uses `container: herdr-observatory` and `path: /feeds/laptop.json` instead of `directory`. It sends an allowlisted Work payload through SSH to `docker exec -i herdr-observatory python3 -m observatory.feed /feeds/laptop.json`. Its SSH account needs access to that Docker engine; the dashboard itself has no Docker socket mount.
 
@@ -331,11 +337,13 @@ Health checks test the HTTP service, not whether every source is online: offline
 
 ## Container integration boundaries
 
-HTTP stays on 127.0.0.1:8789 via host networking. Containers run as the socket owner's UID, with read-only root, no capabilities and no Docker socket. The base deployment mounts configuration, Herdr's directory, the selected theme directory and the feed subdirectory. Optional music adds only the existing cliamp socket directory through `compose.music.yaml`; it does not mount audio devices or the player's entire home directory. Mount the socket's containing directory so replacing the socket does not strand an old inode.
+HTTP stays on 127.0.0.1:8789 via host networking. Dashboard containers run as the socket owner's UID, with read-only root, no capabilities and no Docker socket. The base deployment mounts configuration, Herdr's directory, the selected theme directory and the feed subdirectory. Optional music adds only the existing cliamp socket directory through `compose.music.yaml`; it does not mount audio devices or the player's entire home directory. Mount the socket's containing directory so replacing the socket does not strand an old inode.
+
+The optional Intel monitor is a separate container with `CAP_PERFMON` and root inside that container. It has no network, credentials, Herdr socket, host process mount or home mount. Its only writable path is the small graphics aggregate volume, which the dashboard reads. Its health check requires a fresh sample; the dashboard's HTTP health check remains independent.
 
 A read-only mount does not make a Unix socket read-only: code with socket access has Herdr's socket authority. Collectors send only `session.snapshot` and HTTP exposes no mutation endpoint. Explicitly installed harness adapters invoke the image reporter, which also reads `pane.get` and writes only owned, expiring `pane.report_metadata` presentation fields. It never reports lifecycle/session authority or sends agent input. The socket directory can contain Herdr logs/config; it is narrower than a home mount but not a separate read-only API permission. SSH credentials are similarly trusted integration authority.
 
-CPU/RAM come from the Linux kernel, network from the shared host namespace and disk from the configured socket filesystem. GPU remains unavailable unless separately integrated. These are not native Windows totals. Open http://localhost:8789 on the display; the existing Windows kiosk launcher remains applicable.
+CPU/RAM come from the Linux kernel, network from the shared host namespace and disk from the configured socket filesystem. Graphics needs the matching optional override; its accessible gauge text identifies the NVIDIA device mean or busiest Intel Xe engine. These are not native Windows totals. Open http://localhost:8789 on the display; the existing Windows kiosk launcher remains applicable.
 
 ## Verify
 
