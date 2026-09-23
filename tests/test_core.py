@@ -47,6 +47,21 @@ class CoreTests(unittest.TestCase):
             sample['agents'][0]['revision'] = invalid
             self.assertIsNone(normalise(sample, HOST, 'work')[0]['technical']['revision'])
 
+    def test_session_generation_changes_without_disclosing_session_identity(self):
+        raw = copy.deepcopy(RAW)
+        ref = raw['snapshot']['agents'][0]['agent_session']
+        ref.update(agent='codex', source='herdr:codex', kind='id')
+        app = Observatory({'hosts': [HOST]}, 'work', lambda h: raw)
+        app.poll(HOST)
+        first = app.snapshot()['hosts'][0]['agents'][0]['technical']['session_generation']
+        app.poll(HOST)
+        self.assertEqual(app.snapshot()['hosts'][0]['agents'][0]['technical']['session_generation'], first)
+        ref['value'] = 'ANOTHER SECRET SESSION'
+        app.poll(HOST)
+        current = app.snapshot()['hosts'][0]['agents'][0]['technical']['session_generation']
+        self.assertGreater(current, first)
+        self.assertNotIn('SECRET SESSION', json.dumps(app.snapshot()))
+
     def test_personal_profile_includes_both_categories(self):
         agents = normalise(SNAP, HOST, 'personal')
         self.assertEqual([a['category'] for a in agents], ['work', 'personal'])

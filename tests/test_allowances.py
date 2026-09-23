@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from observatory.allowances_probe import summarise
+from observatory.allowances_probe import summarise, summarise_usage
 from observatory.allowances import Allowances, sanitise, receive, read_cache, validate_config
 
 NOW = 1790000000
@@ -21,6 +21,22 @@ def source():
 
 
 class AllowanceTests(unittest.TestCase):
+    def test_account_activity_is_numeric_bounded_and_independent(self):
+        activity = {'summary': {'lifetimeTokens': 12345, 'peakDailyTokens': 300, 'email': 'SECRET'},
+                    'dailyUsageBuckets': [{'startDate': '2026-09-20', 'tokens': 20},
+                                          {'startDate': '2026-09-21', 'tokens': 0}]}
+        selected = summarise_usage(activity)
+        self.assertEqual(selected['lifetime_tokens'], 12345)
+        self.assertEqual(selected['daily_usage'][-1], {'date': '2026-09-21', 'tokens': 0})
+        self.assertNotIn('SECRET', json.dumps(selected))
+        row = {**summarise(source(), NOW), **selected}
+        mapped = sanitise(row, NOW)
+        self.assertEqual(mapped['peak_daily_tokens'], 300)
+        self.assertEqual(mapped['daily_usage'], selected['daily_usage'])
+        self.assertIsNone(sanitise(dict(row, daily_usage=[{'date': '2026-09-22', 'tokens': -1}]), NOW)['daily_usage'])
+        self.assertIsNone(summarise_usage({'summary': {'lifetimeTokens': True}})['lifetime_tokens'])
+        self.assertIsNone(summarise_usage({'dailyUsageBuckets': [{'startDate': '2026-02-30', 'tokens': 1}]})['daily_usage'])
+
     def test_supported_weekly_window_identity_and_credit_count(self):
         result = summarise(source(), NOW)
         self.assertEqual(result['account_key'], KEY)
@@ -111,13 +127,16 @@ class ProbeProcessTests(unittest.TestCase):
                     ' x=json.loads(line);methods.append(x["method"])\n'
                     ' if x.get("id")==1: print(json.dumps({"id":1,"result":{}}),flush=True)\n'
                     ' if x.get("id")==2:\n'
+                    f'  print(json.dumps({{"id":2,"result":{source()!r}}}),flush=True)\n'
+                    ' if x.get("id")==3:\n'
                     f'  open({record!r},"w").write(json.dumps(methods))\n'
-                    f'  print(json.dumps({{"id":2,"result":{source()!r}}}),flush=True)\n')
+                    '  print(json.dumps({"id":3,"result":{"summary":{"lifetimeTokens":1234},"dailyUsageBuckets":[]}}),flush=True)\n')
             self.executable(directory, body)
             with patch.dict(os.environ, {'PATH': directory + os.pathsep + os.environ['PATH']}), patch('observatory.allowances_probe.time.time', return_value=NOW):
                 row = read_account(timeout=2)
             self.assertEqual(row['account_key'], KEY)
-            self.assertEqual(json.loads(Path(record).read_text()), ['initialize', 'initialized', 'account/rateLimits/read'])
+            self.assertEqual(row['lifetime_tokens'], 1234)
+            self.assertEqual(json.loads(Path(record).read_text()), ['initialize', 'initialized', 'account/rateLimits/read', 'account/usage/read'])
 
     def test_partial_frame_and_oversized_output_are_bounded(self):
         import os
@@ -131,6 +150,23 @@ class ProbeProcessTests(unittest.TestCase):
                 with patch.dict(os.environ, {'PATH': directory + os.pathsep + os.environ['PATH']}):
                     self.assertIsNone(read_account(timeout=.2))
                 self.assertLess(time.monotonic() - start, 1)
+
+    def test_malformed_usage_response_preserves_valid_allowance(self):
+        import os
+        from observatory.allowances_probe import read_account
+        with tempfile.TemporaryDirectory() as directory:
+            body = ('import sys,json\nfor line in sys.stdin:\n'
+                    ' x=json.loads(line)\n'
+                    ' if x.get("id")==1: print(json.dumps({"id":1,"result":{}}),flush=True)\n'
+                    ' if x.get("id")==2:\n'
+                    f'  print(json.dumps({{"id":2,"result":{source()!r}}}),flush=True)\n'
+                    ' if x.get("id")==3: print("{malformed",flush=True)\n')
+            self.executable(directory, body)
+            with patch.dict(os.environ, {'PATH': directory + os.pathsep + os.environ['PATH']}), patch('observatory.allowances_probe.time.time', return_value=NOW):
+                row = read_account(timeout=2)
+            self.assertEqual(row['account_key'], KEY)
+            self.assertEqual(row['weekly_remaining'], 26)
+            self.assertIsNone(row['lifetime_tokens'])
 
     def test_remote_cache_command_bound(self):
         import sys

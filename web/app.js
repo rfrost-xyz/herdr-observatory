@@ -6,10 +6,12 @@ let snapshot = null, received = 0, disconnected = false, initialised = false;
 let rowActivity = new Map();
 let previous = new Map(), agents = [], records = [], serial = 0;
 let allowancePanel=null;
+let reactRenderer=null;
 let pixelField=null,titleMark=null,musicTitle=null,musicArtist=null,fieldHeight=-1,music=null,musicReceived=0;
 const GRID={columns:140,feedRows:4,threadRows:8};
 let lastFrame=0,manualPage=null,category='all';
 const fleetHistory=new Map(),cardClicks=new Map();
+const cacheHistory=new Map();
 let palette = {background:'#101318',foreground:'#c0caf5',blue:'#7aa2f7',green:'#9ece6a',yellow:'#e0af68',red:'#f7768e',cyan:'#7dcfff'};
 const clean = (value, limit=160) => Array.from(String(value ?? '—').replace(/[\x00-\x1f\x7f-\x9f]/g,' ')).slice(0,limit).join('');
 const number = value => Number.isSafeInteger(value) && value >= 0 ? String(value) : '—';
@@ -35,6 +37,7 @@ function observe(data, now=Date.now()) {
   if (recovery) record('LINK','Connection restored · watching for changes',now);
   for (const [key,value] of Object.entries(data.theme?.colours || {})) if ((key in palette || key==='accent') && /^#[0-9a-f]{6}$/i.test(value)) {palette[key]=value;if(key==='accent'){palette.blue=value;palette.cyan=value;}}
   reconcile(now,recovery);
+  sampleCache(now);
 }
 function paneNumber(a) {const prefix=a.host+':';return clean(a.id?.startsWith(prefix)?a.id.slice(prefix.length):a.id,24);}
 function agentEvent(kind,a,now,action) {record(kind,action,now,{project:a.project,detail:a.title,host:a.host,state:statusKind(a.status),thread:paneNumber(a),eligible:true});}
@@ -94,7 +97,7 @@ function reconcile(now=Date.now(), reset=false) {
 }
 function disconnect(now=Date.now()) {
   if (!disconnected) record('LOST','Connection lost · activity unknown',now);
-  disconnected=true; agents=[];rowActivity.clear();fleetHistory.clear();cardClicks.clear();pendingEffect=null;stopEffect();
+  disconnected=true; agents=[];rowActivity.clear();fleetHistory.clear();cacheHistory.clear();cardClicks.clear();pendingEffect=null;stopEffect();
   // Preserve source baseline until transport recovery, without inventing per-pane exits.
   accessible();
 }
@@ -104,12 +107,11 @@ function accessible() {
 function threadMotion(a,now=performance.now(),wall=Date.now()) {
   const host=snapshot?.hosts.find(h=>h.id===a.host);
   if(document.hidden || reduced.matches || disconnected || !host?.online || !Number.isFinite(host.sampled_at) || wall/1000-host.sampled_at>=snapshot.interval+20)return {moving:false,flash:0,glyph:icon(a.status)};
-  const hash=Array.from(a.id).reduce((n,c)=>(Math.imul(n,31)+c.codePointAt(0))>>>0,0);
   const moving=a.status==='working';
   const elapsed=now-(rowActivity.get(a.id) ?? -Infinity);
   return {moving,
     flash:Math.max(0,1-elapsed/1800),
-    glyph:moving?Array.from('⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏')[Math.floor((now+hash%1000)/130)%10]:icon(a.status)};
+    glyph:icon(a.status)};
 }
 function filteredAgents(){return agents.filter(a=>category==='all'||snapshot?.profile==='work'||a.category===category);}
 function currentPage(now=Date.now()) {return (manualPage ?? Math.floor(now/15000))%Math.max(1,Math.ceil(filteredAgents().length/GRID.threadRows));}
@@ -234,6 +236,59 @@ function cardTelemetry(a,t){
   const note=!t?'No hook sample':!tiles.length?'Waiting for reported usage':!['context','window','input','output_tokens','cache_read','cache_write'].every(has)?'Partial usage coverage':'';
   return {activity,tool:t?.tool || '',model:t?.model || '',tiles,compactions,note,subagent:Boolean(subagent)};
 }
+function sampleCache(now=Date.now()){
+  const present=new Set(agents.map(a=>a.id));
+  for(const id of cacheHistory.keys())if(!present.has(id))cacheHistory.delete(id);
+  for(const a of agents){
+    if(a.harness!=='codex'){cacheHistory.delete(a.id);continue;}
+    const generation=a.technical?.session_generation;
+    if(!Number.isSafeInteger(generation)){cacheHistory.delete(a.id);continue;}
+    const t=telemetryFor(a,now);
+    let history=cacheHistory.get(a.id);
+    if(!history || history.generation!==generation){
+      history={generation,baseline:null,points:[],markers:[],lastEventSeq:null,model:null,compactions:null,gapPending:false};
+      cacheHistory.set(a.id,history);
+    }
+    if(!t){history.gapPending=history.gapPending || Boolean(history.baseline || history.points.length);history.baseline=null;history.points=[];history.markers=[];continue;}
+    if(t.seq!==history.lastEventSeq){
+      if(history.model && t.model && history.model!==t.model)history.markers.push({at:t.seq,kind:'model'});
+      if(history.compactions!=null && t.compactions!=null && t.compactions>history.compactions)history.markers.push({at:t.seq,kind:'compaction'});
+      if(t.event==='compact-end' && t.compactions==null)history.markers.push({at:t.seq,kind:'compaction'});
+      history.lastEventSeq=t.seq;
+      if(t.model)history.model=t.model;
+      if(t.compactions!=null)history.compactions=t.compactions;
+      history.markers=history.markers.slice(-24);
+    }
+    const valid=Number.isSafeInteger(t.usage_seq) && Number.isSafeInteger(t.total_input) && Number.isSafeInteger(t.total_cache_read)
+      && t.total_input>=0 && t.total_cache_read>=0 && t.total_cache_read<=t.total_input;
+    if(!valid){history.gapPending=history.gapPending || Boolean(history.baseline || history.points.length);history.baseline=null;history.points=[];history.markers=[];continue;}
+    const sample={at:t.usage_seq,input:t.total_input,read:t.total_cache_read};
+    const prior=history.baseline;
+    if(prior?.at===sample.at)continue;
+    if(prior && (sample.at<prior.at || sample.input<prior.input || sample.read<prior.read || sample.read-prior.read>sample.input-prior.input)){
+      history.points=[];history.markers=[];history.gapPending=true;history.baseline=sample;continue;
+    }
+    if(prior && sample.input>prior.input){
+      const input=sample.input-prior.input,read=sample.read-prior.read;
+      if(history.gapPending){history.markers.push({at:sample.at,kind:'gap'});history.gapPending=false;}
+      history.points.push({at:sample.at,input,read,ratio:read/input});
+      history.points=history.points.slice(-24);
+    }
+    history.baseline=sample;
+  }
+}
+function recentCache(id){
+  const history=cacheHistory.get(id),points=history?.points || [];
+  if(!points.length)return null;
+  const input=points.reduce((total,p)=>total+p.input,0),read=points.reduce((total,p)=>total+p.read,0);
+  return {ratio:read/input,input,read,points,markers:history.markers};
+}
+function cacheTrend(recent){
+  const glyphs='▁▂▃▄▅▆▇█',first=recent.points[0].at;
+  const entries=[...recent.points.map(point=>({at:point.at,text:glyphs[Math.min(7,Math.floor(point.ratio*7))]})),
+    ...recent.markers.filter(marker=>marker.at>=first).map(marker=>({at:marker.at,text:marker.kind==='model'?'M':marker.kind==='compaction'?'C':'?'}))];
+  return entries.sort((a,b)=>a.at-b.at).slice(-30).map(entry=>entry.text).join('');
+}
 function historicalActivity(t,activity,age){
   if(!activity)return '';
   const event={'tool-start':'Tool started',thinking:'Thinking observed',output:'Response observed','compact-start':'Compaction started'}[t.event];
@@ -262,7 +317,7 @@ function viewModel(now=performance.now(),wall=Date.now()) {
       usageSource:t?.usage_source==='codex-rollout'?'Codex record':t?.usage_source==='pi-extension'?'Pi extension':'reported sample',
       hookLastKnown,usageLastKnown,hookAge,usageAge,
       ...detail,historicalActivity:hookLastKnown && Boolean(detail.activity),activity:hookLastKnown?historicalActivity(t,detail.activity,hookAge):detail.activity,
-      tiles:detail.tiles.map(tile=>({...tile,lastKnown:tile.source==='usage'?usageLastKnown:hookLastKnown}))
+      tiles:detail.tiles.map(tile=>({...tile,lastKnown:tile.source==='usage'?usageLastKnown:hookLastKnown})),recentCache:a.harness==='codex'?recentCache(a.id):null
     };}),
     events:records.slice(-GRID.feedRows).map(r=>({id:r.id,line:eventLine(r),kind:r.kind,state:r.state})),
     empty:disconnected?'Current threads unavailable while disconnected':snapshot && !snapshot.hosts.some(h=>previous.get(h.id)?.live)?'Current threads unavailable. Waiting for a source.':'No permitted threads in this view'
@@ -288,10 +343,10 @@ function buildView(){
     const card=node('article','thread-card'),head=node('div','card-top'),project=node('h3','project'),status=node('span','state'),glyph=node('span','state-glyph'),state=node('span','state-word');status.append(glyph,state);head.append(project,status);
     card.setAttribute('role','button');card.setAttribute('tabindex','0');
     card.addEventListener('click',()=>pulseCard(card.dataset.thread));card.addEventListener('keydown',event=>{if(['Enter',' '].includes(event.key)){event.preventDefault?.();pulseCard(card.dataset.thread);}});
-    const checkout=node('p','checkout'),identity=node('p','identity'),activity=node('div','card-activity'),activityGlyph=node('span','activity-glyph'),activityText=node('strong','activity-text'),tool=node('span','tool-name'),model=node('p','model-name'),metrics=node('div','card-metrics'),coverage=node('p','coverage');
+    const checkout=node('p','checkout'),identity=node('p','identity'),activity=node('div','card-activity'),activityGlyph=node('span','activity-glyph'),activityText=node('strong','activity-text'),tool=node('span','tool-name'),model=node('p','model-name'),metrics=node('div','card-metrics'),recent=node('p','cache-recent'),coverage=node('p','coverage');
     activity.title='Latest observed hook activity; the state badge is Herdr’s current state';activity.append(activityGlyph,activityText,tool);
     const fields=Array.from({length:4},()=>{const tile=node('div','usage-tile'),label=node('span','usage-label'),value=node('strong','usage-value'),exact=node('small','usage-exact'),bar=node('span','usage-bar'),fill=node('i',''),remainder=node('i','usage-remainder'),write=node('i','usage-write');tile.setAttribute('role','group');bar.append(fill,remainder,write);bar.setAttribute('aria-hidden','true');tile.append(label,value,exact,bar);metrics.append(tile);return {tile,label,value,exact,bar,fill,remainder,write};});
-    const detail=node('div','thread-meta'),freshness=node('p','thread-freshness'),compactionAge=node('span','freshness-part'),hookAge=node('span','freshness-part'),usageAge=node('span','freshness-part'),accessibleMetrics=node('span','sr-only');accessibleMetrics.id=`thread-metrics-${index}`;detail.append(identity,model);freshness.append(compactionAge,hookAge,usageAge);card.append(head,checkout,detail,activity,metrics,freshness,coverage,accessibleMetrics);document.getElementById('threads').append(card);return {card,project,glyph,state,checkout,identity,detail,freshness,compactionAge,hookAge,usageAge,activity,activityGlyph,activityText,tool,model,metrics,coverage,accessibleMetrics,fields};
+    const detail=node('div','thread-meta'),freshness=node('p','thread-freshness'),compactionAge=node('span','freshness-part'),hookAge=node('span','freshness-part'),usageAge=node('span','freshness-part'),accessibleMetrics=node('span','sr-only');accessibleMetrics.id=`thread-metrics-${index}`;detail.append(identity,model);freshness.append(compactionAge,hookAge,usageAge);card.append(head,checkout,detail,activity,metrics,recent,freshness,coverage,accessibleMetrics);document.getElementById('threads').append(card);return {card,project,glyph,state,checkout,identity,detail,freshness,compactionAge,hookAge,usageAge,activity,activityGlyph,activityText,tool,model,metrics,recent,coverage,accessibleMetrics,fields};
   });
   hostNodes=Array.from({length:3},()=>{const row=node('article','host-row'),name=node('strong','host-name'),status=node('span','host-status'),metrics=node('dl','host-metrics');const fields=Array.from({length:7},(_,i)=>{const pair=node('div','metric'),graph=node('span','metric-graph'),label=node('dt',''),value=node('dd',''),gauge=node('span','metric-gauge'),fill=node('i','metric-fill'),direction=node('span','network-direction',i===4?'↓':i===5?'↑':'');gauge.setAttribute('aria-hidden','true');direction.setAttribute('aria-hidden','true');gauge.append(fill);gauge.hidden=i>=4;direction.hidden=i<4 || i>5;pair.append(label,value,gauge,direction,graph);metrics.append(pair);return {label,value,gauge,fill,direction,graph};});row.append(name,status,metrics);document.getElementById('fleet').append(row);return {row,name,status,fields};});
   eventNodes=Array.from({length:4},()=>{const row=node('div','event-row'),glyph=node('span','event-icon'),text=node('span','event-text');glyph.setAttribute('aria-hidden','true');row.append(glyph,text);document.getElementById('events').append(row);return {row,glyph,text};});
@@ -303,7 +358,7 @@ function applyTheme(){
   root.style.colorScheme=(rgb[0]*.2126+rgb[1]*.7152+rgb[2]*.0722)>150?'light':'dark';
 }
 function draw(now=performance.now()) {
-  const view=viewModel(now);applyTheme();allowancePanel?.update(snapshot?.allowances || [],{disconnected,now:Date.now()});
+  const view=viewModel(now);applyTheme();if(!reactRenderer)allowancePanel?.update(snapshot?.allowances || [],{disconnected,now:Date.now()});
   pixelField?.update({colours:palette});
   titleMark?.update(palette);
   fitBackground();
@@ -320,8 +375,8 @@ function draw(now=performance.now()) {
   setText(document.getElementById('done-count'),view.done);
   setText(document.getElementById('connection'),view.connection);
   document.getElementById('connection-loader').hidden=view.connection!=='Connecting';
-  hostNodes.forEach((host,i)=>{const model=view.hosts[i];host.row.hidden=!model;if(!model)return;setText(host.name,model.label);host.name.title=model.label;setText(host.status,model.online?'Online':'Offline');host.status.dataset.online=String(model.online);host.row.title='Sample age: '+model.metrics[6][1];host.fields.forEach((f,j)=>{setText(f.label,model.metrics[j][0]);setText(f.value,model.metrics[j][1]==='Unavailable'?'—':model.metrics[j][1]);const detail=j===2&&model.graphicsScope?`${model.metrics[j][1]} · ${model.graphicsScope}`:model.metrics[j][1];f.value.title=detail;f.value.setAttribute('aria-label',detail);if(j<4){const value=model.metrics[j][1],known=value.endsWith('%');f.gauge.dataset.known=String(known);f.fill.style.width=(known?Math.max(0,Math.min(100,parseFloat(value))):0)+'%';}if(j===4 || j===5)f.direction.dataset.known=String(model.metrics[j][1]!=='Unavailable');const values=model.online?(fleetHistory.get(model.id)?.rows || []).map(row=>row[j]):[];const scale=j>=4?Math.max(1,...values.filter(Number.isFinite)):100;f.graph.hidden=j>5;setText(f.graph,sparkline(values,scale));const measured=values.filter(Number.isFinite).length;f.graph.title=`${measured} measured samples · ${values.length-measured} missing${j>=4?(measured?' · peak '+rate(Math.max(...values.filter(Number.isFinite))):' · peak unavailable'):' · 0–100% scale'}`;f.graph.setAttribute('aria-label',f.graph.title);});});
-  cardNodes.forEach((card,i)=>{const model=view.cards[i];card.card.hidden=!model;if(!model){for(const field of ['project','state','checkout','identity','activityText','tool','model','coverage','accessibleMetrics','compactionAge','hookAge','usageAge']){setText(card[field],'');card[field].title='';}card.freshness.title='';card.freshness.setAttribute('aria-label','');for(const f of card.fields){for(const part of ['label','value','exact'])setText(f[part],'');f.tile.title='';f.tile.setAttribute('aria-label','');}card.card.setAttribute('aria-label','');return;}
+  if(!reactRenderer){hostNodes.forEach((host,i)=>{const model=view.hosts[i];host.row.hidden=!model;if(!model)return;setText(host.name,model.label);host.name.title=model.label;setText(host.status,model.online?'Online':'Offline');host.status.dataset.online=String(model.online);host.row.title='Sample age: '+model.metrics[6][1];host.fields.forEach((f,j)=>{setText(f.label,model.metrics[j][0]);setText(f.value,model.metrics[j][1]==='Unavailable'?'—':model.metrics[j][1]);const detail=j===2&&model.graphicsScope?`${model.metrics[j][1]} · ${model.graphicsScope}`:model.metrics[j][1];f.value.title=detail;f.value.setAttribute('aria-label',detail);if(j<4){const value=model.metrics[j][1],known=value.endsWith('%');f.gauge.dataset.known=String(known);f.fill.style.width=(known?Math.max(0,Math.min(100,parseFloat(value))):0)+'%';}if(j===4 || j===5)f.direction.dataset.known=String(model.metrics[j][1]!=='Unavailable');const values=model.online?(fleetHistory.get(model.id)?.rows || []).map(row=>row[j]):[];const scale=j>=4?Math.max(1,...values.filter(Number.isFinite)):100;f.graph.hidden=j>5;setText(f.graph,sparkline(values,scale));const measured=values.filter(Number.isFinite).length;f.graph.title=`${measured} measured samples · ${values.length-measured} missing${j>=4?(measured?' · peak '+rate(Math.max(...values.filter(Number.isFinite))):' · peak unavailable'):' · 0–100% scale'}`;f.graph.setAttribute('aria-label',f.graph.title);});});
+  cardNodes.forEach((card,i)=>{const model=view.cards[i];card.card.hidden=!model;if(!model){for(const field of ['project','state','checkout','identity','activityText','tool','model','recent','coverage','accessibleMetrics','compactionAge','hookAge','usageAge']){setText(card[field],'');card[field].title='';}card.freshness.title='';card.freshness.setAttribute('aria-label','');for(const f of card.fields){for(const part of ['label','value','exact'])setText(f[part],'');f.tile.title='';f.tile.setAttribute('aria-label','');}card.card.setAttribute('aria-label','');return;}
     card.card.dataset.state=model.state.toLowerCase();card.card.dataset.thread=model.id;card.card.setAttribute('aria-label',`${model.project}, ${model.state}. Activate for a brief visual effect`);card.card.setAttribute('aria-describedby',card.accessibleMetrics.id);setText(card.accessibleMetrics,[model.freshness,model.usageAge?`${model.usageFreshness} (${model.usageSource})`:null,...model.tiles.map(tile=>`${tile.lastKnown?'Last known '+(tile.source==='usage'?model.usageAge:model.hookAge)+'. ':''}${tile.label}: ${tile.detail}`),model.compactions?`Compactions: ${model.compactions.detail}`:null].filter(Boolean).join(' '));const clickAge=now-(cardClicks.get(model.id) ?? -Infinity);const clickLevel=reduced.matches || document.hidden || disconnected?0:Math.max(0,1-clickAge/650);card.card.style.setProperty('--click',clickLevel.toFixed(3));card.card.style.setProperty('--glitch-x',(clickLevel>0?Math.sin(clickAge*.13)*2*clickLevel:0).toFixed(2)+'px');card.card.style.setProperty('--impulse',model.motion.flash.toFixed(3));
     setText(card.project,model.project);card.project.title=model.project;setText(card.glyph,model.motion.glyph);setText(card.state,model.state);
     const checkout=model.checkout && !['.bare','Checkout not reported',model.project].includes(model.checkout)?model.checkout:'';setText(card.checkout,checkout?`${icon('branch')} ${checkout}`:'');card.checkout.hidden=!checkout;card.checkout.title='Worktree / checkout: '+model.checkout;
@@ -329,8 +384,9 @@ function draw(now=performance.now()) {
     card.activity.hidden=!model.activity && !model.tool;card.activity.dataset.historical=String(model.historicalActivity);card.activity.title=model.historicalActivity?`${model.activity}${model.tool?` · ${model.tool}`:''}`:'Latest observed hook activity; the state badge is Herdr’s current state';setText(card.activityGlyph,icon(model.subagent?'threads':model.tool?'tool':model.state.toLowerCase()));setText(card.activityText,model.activity);setText(card.tool,model.tool);card.tool.hidden=!model.tool;card.tool.title=model.tool;
     setText(card.model,model.model);card.model.hidden=!model.model;card.model.title=model.model;
     card.metrics.hidden=!model.tiles.length;card.fields.forEach((f,j)=>{const tile=model.tiles[j];f.tile.hidden=!tile;if(!tile)return;f.tile.dataset.kind=tile.kind;f.tile.dataset.lastKnown=String(tile.lastKnown);setText(f.label,tile.label);setText(f.value,tile.value);setText(f.exact,tile.exact || '');f.exact.hidden=!tile.exact;f.tile.title=tile.detail;f.tile.setAttribute('aria-label',`${tile.lastKnown?'Last known. ':''}${tile.label}: ${tile.detail}`);f.bar.hidden=tile.ratio==null;f.fill.style.width=(Math.min(1,Math.max(0,tile.ratio || 0))*100)+'%';f.remainder.hidden=tile.kind!=='balance' || tile.ratio==null;f.remainder.style.width=((tile.uncachedRatio ?? 1-Math.min(1,Math.max(0,tile.ratio || 0)))*100)+'%';f.write.hidden=tile.kind!=='balance' || !tile.writeRatio;f.write.style.width=((tile.writeRatio || 0)*100)+'%';});
+    const recent=model.recentCache;setText(card.recent,recent?`${model.usageLastKnown?'Last known ':''}recent cache ${tokenPercent(recent.ratio)}  ${cacheTrend(recent)}`:'');card.recent.hidden=!recent;card.recent.title=recent?`${groupedNumber(recent.read)} cached of ${groupedNumber(recent.input)} input tokens across ${recent.points.length} distinct intervals. M marks a model change; C marks compaction; ? marks an unavailable interval. Markers are observations, not cache-miss reasons.`:'';card.recent.setAttribute('aria-label',card.recent.title);
     setText(card.coverage,model.note);card.coverage.hidden=!model.note;setText(card.compactionAge,model.compactions?`Compactions ${model.compactions.value}`:'');card.compactionAge.hidden=!model.compactions;setText(card.hookAge,model.freshness);setText(card.usageAge,model.usageFreshness);card.freshness.setAttribute('aria-label',[model.compactions?`Compactions ${model.compactions.value}`:null,model.freshness,model.usageFreshness].filter(Boolean).join('. '));card.freshness.title=[model.compactions?.detail,model.usageAge?`Usage source: ${model.usageSource}`:null].filter(Boolean).join(' · ');
-  });
+  });}
   const empty=document.getElementById('empty');empty.hidden=Boolean(view.cards.length);setText(empty,view.empty);
   setText(document.getElementById('thread-total'),view.visibleTotal===view.total?view.total+' total':view.visibleTotal+' of '+view.total);
   setText(document.getElementById('page'),`${view.page} / ${view.pages}`);setText(document.getElementById('category'),`Category: ${category}`);document.getElementById('category').hidden=snapshot?.profile!=='personal';
@@ -338,7 +394,8 @@ function draw(now=performance.now()) {
 
   const playing=Boolean(ctx) && animationIndex>=0 && framesCurrent() && !reduced.matches;
   let target=null;
-  eventNodes.forEach((event,i)=>{const model=view.events[i];event.row.hidden=!model;if(!model)return;setText(event.glyph,eventIcon(model.kind));setText(event.text,model.line);event.text.style.visibility=playing && model.id===textFrames.recordId?'hidden':'visible';event.row.style.color=observationColour(model);event.row.style.setProperty('--event-colour',observationColour(model));if(playing && model.id===textFrames.recordId)target=event.text;});
+  if(reactRenderer){const rendered=reactRenderer.update({view,now,history:fleetHistory,cardClicks,disconnected,reduced:reduced.matches,playing,effectRecordId:textFrames.recordId,accounts:snapshot?.allowances||[],helpers:{sparkline,rate,icon,cacheTrend,tokenPercent,groupedNumber,observationColour,eventIcon},onPulse:pulseCard});if(playing)target=rendered;}
+  else eventNodes.forEach((event,i)=>{const model=view.events[i];event.row.hidden=!model;if(!model)return;setText(event.glyph,eventIcon(model.kind));setText(event.text,model.line);event.text.style.visibility=playing && model.id===textFrames.recordId?'hidden':'visible';event.row.style.color=observationColour(model);event.row.style.setProperty('--event-colour',observationColour(model));if(playing && model.id===textFrames.recordId)target=event.text;});
   canvas.hidden=!target;
   if(target && ctx){const rect=target.getBoundingClientRect(),row=target.parentElement?.getBoundingClientRect() || rect,section=document.querySelector?.('.observations-panel')?.getBoundingClientRect() || row,width=Math.max(0,Math.min(rect.width,row.right===undefined?rect.width:row.right-rect.left,section.right===undefined?rect.width:section.right-rect.left)),container=document.getElementById('activity').getBoundingClientRect(),ratio=Math.min(devicePixelRatio || 1,2);canvas.style.left=(rect.left-container.left)+'px';canvas.style.top=(rect.top-container.top)+'px';canvas.style.width=width+'px';canvas.style.height=rect.height+'px';canvas.width=Math.round(width*ratio);canvas.height=Math.round(rect.height*ratio);ctx.setTransform(ratio,0,0,ratio,0,0);ctx.clearRect(0,0,width,rect.height);const font=parseFloat(getComputedStyle(target).fontSize);ctx.font=`${font}px ${FONT_FACE}`;const cell=ctx.measureText?.('M').width || font*.6;ctx.textBaseline='top';paintEffect(effectFrame,0,Math.max(0,(rect.height-font)/2),cell,rect.height);}
 }
@@ -394,3 +451,9 @@ function playMusicEffect(){const track=currentMusic();musicTitle?.update(track,p
 for(const id of ['music-title','music-artist']){const target=document.getElementById(id);target.setAttribute('role','button');target.setAttribute('tabindex','0');target.setAttribute('title','Play music text effect');target.addEventListener('click',playMusicEffect);target.addEventListener('keydown',event=>{if(['Enter',' '].includes(event.key)){event.preventDefault?.();playMusicEffect();}});}
 
 import('./allowances.mjs').then(({createAllowancePanel})=>{allowancePanel=createAllowancePanel({root:document.getElementById('allowance-panels')});}).catch(()=>{});
+import('./react-view.mjs').then(({createReactView})=>{
+  for(const id of ['fleet','threads','events','allowance-panels','connection-loader'])document.getElementById(id).replaceChildren();
+  document.getElementById('connection-loader').className='';
+  allowancePanel=null;
+  reactRenderer=createReactView();draw();
+}).catch(()=>{/* The browser-native presentation remains usable if React cannot load. */});

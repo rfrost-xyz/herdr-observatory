@@ -1,0 +1,17 @@
+{
+  "name": "herdr-observatory",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "build:web": "esbuild web/react-view.jsx --bundle --format=esm --target=es2022 --minify --outfile=web/react-view.mjs"
+  },
+  "dependencies": {
+    "loading-dev": "0.3.4",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12"
+  }
+}

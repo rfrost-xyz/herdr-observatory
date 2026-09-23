@@ -1,6 +1,7 @@
 # herdr-observatory adapter v1; installed from the running image
 """Ephemeral host-side Codex quota read. Only an allowlisted summary leaves stdout."""
 import hashlib
+import datetime
 import json
 import os
 from pathlib import Path
@@ -72,6 +73,34 @@ def summarise(raw, now=None):
             'reset_count': count, 'reset_expires_at': expiry, 'sampled_at': now}
 
 
+def summarise_usage(raw):
+    """Select only documented numerical ChatGPT activity, never account details."""
+    if not isinstance(raw, dict):
+        return {'lifetime_tokens': None, 'peak_daily_tokens': None, 'daily_usage': None}
+    summary = raw.get('summary')
+    lifetime = integer(summary.get('lifetimeTokens')) if isinstance(summary, dict) else None
+    peak = integer(summary.get('peakDailyTokens')) if isinstance(summary, dict) else None
+    buckets = raw.get('dailyUsageBuckets')
+    daily = None
+    if isinstance(buckets, list) and len(buckets) <= 366:
+        parsed = []
+        for bucket in buckets:
+            if not isinstance(bucket, dict) or not isinstance(bucket.get('startDate'), str):
+                parsed = None; break
+            date = bucket['startDate']
+            try:
+                valid = datetime.date.fromisoformat(date).isoformat() == date and datetime.date.fromisoformat(date) <= datetime.date.today()
+            except ValueError:
+                valid = False
+            tokens = integer(bucket.get('tokens'))
+            if not valid or tokens is None:
+                parsed = None; break
+            parsed.append({'date': date, 'tokens': tokens})
+        if parsed is not None and len({row['date'] for row in parsed}) == len(parsed):
+            daily = sorted(parsed, key=lambda row: row['date'])[-30:]
+    return {'lifetime_tokens': lifetime, 'peak_daily_tokens': peak, 'daily_usage': daily}
+
+
 def codex_binary():
     binary = shutil.which('codex')
     if binary:
@@ -97,6 +126,7 @@ def read_account(timeout=5):
     buffer = b''
     size = 0
     requested = False
+    allowance = None
     try:
         send({'id': 1, 'method': 'initialize', 'params': {
             'clientInfo': {'name': 'herdr_observatory_allowances', 'version': '1'},
@@ -113,9 +143,12 @@ def read_account(timeout=5):
             buffer += chunk
             while b'\n' in buffer:
                 line, buffer = buffer.split(b'\n', 1)
-                item = json.loads(line)
+                try:
+                    item = json.loads(line)
+                except (ValueError, UnicodeError):
+                    return {**allowance, **summarise_usage(None)} if allowance else None
                 if not isinstance(item, dict):
-                    return None
+                    return {**allowance, **summarise_usage(None)} if allowance else None
                 if item.get('id') == 1 and not requested:
                     if 'error' in item:
                         return None
@@ -123,8 +156,20 @@ def read_account(timeout=5):
                     send({'id': 2, 'method': 'account/rateLimits/read'})
                     requested = True
                 elif item.get('id') == 2 and requested:
-                    return summarise(item.get('result')) if 'error' not in item else None
-        return None
+                    if 'error' in item:
+                        return None
+                    allowance = summarise(item.get('result'))
+                    if allowance is None:
+                        return None
+                    try:
+                        send({'id': 3, 'method': 'account/usage/read'})
+                    except OSError:
+                        return {**allowance, **summarise_usage(None)}
+                elif item.get('id') == 3 and allowance is not None:
+                    return {**allowance, **summarise_usage(item.get('result'))}
+        return {**allowance, **summarise_usage(None)} if allowance else None
+    except (OSError, ValueError, TypeError, OverflowError):
+        return {**allowance, **summarise_usage(None)} if allowance else None
     finally:
         selector.close()
         try:
