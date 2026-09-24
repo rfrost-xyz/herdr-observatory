@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "id": "herdr.observatory",
+  "name": "Herdr Observatory",
+  "version": "0.1.0",
+  "author": "Herdr Observatory",
+  "description": "Read-only Herdr threads, Codex allowance and fleet reporting",
+  "kinds": ["bar-widget"],
+  "entryPoints": { "barWidget": "Panel.qml" },
+  "barWidget": {
+    "displayName": "Herdr",
+    "description": "Current Herdr threads, mapped Codex allowance and sampled fleet state",
+    "category": "AI",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
