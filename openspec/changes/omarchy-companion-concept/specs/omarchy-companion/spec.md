@@ -24,3 +24,10 @@ The popover SHALL use the installed Omarchy panel lifecycle and keyboard dismiss
 #### Scenario: Narrow tile
 - **WHEN** Hyprland narrows the companion window
 - **THEN** the content forms a scrolling single column without clipping thread status or source age.
+
+### Requirement: Reversible local installation
+The plugin SHALL install as a user-owned copy independent of a development worktree. Installation SHALL refuse to overwrite an existing plugin at the same ID. Uninstallation SHALL disable the bar widget and remove only files belonging to this plugin, preserving other plugin directories and bar entries.
+
+#### Scenario: Remove the trial
+- **WHEN** the operator runs the installed uninstaller
+- **THEN** the widget and its owned directory are removed without leaving a dependency on the source checkout or removing other plugins.

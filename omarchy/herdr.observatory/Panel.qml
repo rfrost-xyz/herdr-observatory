@@ -34,6 +34,7 @@ Panel {
     function close(): void { root.close() }
     function toggle(): void { root.toggle() }
     function refresh(): void { snapshot.refresh() }
+    function status(): string { return root.opened ? "open" : "closed" }
   }
 
   WidgetButton {

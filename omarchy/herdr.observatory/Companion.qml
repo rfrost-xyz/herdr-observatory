@@ -17,7 +17,7 @@ ApplicationWindow {
   readonly property color bg: colours.background || "#1a1b26"
   readonly property color panel: colours.lighter_background || "#24283b"
   readonly property color ink: colours.foreground || "#c0caf5"
-  readonly property color muted: colours.muted || "#8893aa"
+  readonly property color muted: Qt.darker(ink, 1.35)
   readonly property color accent: colours.accent || "#7aa2f7"
   readonly property color warning: colours.yellow || "#e0af68"
   readonly property color bad: colours.red || "#f7768e"

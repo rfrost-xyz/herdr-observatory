@@ -1,7 +1,8 @@
 # Herdr Observatory
 
 The [Omarchy companion source](omarchy/herdr.observatory/README.md) contains a
-manifest-backed bar plugin and a separate Qt Quick window under development.
+manifest-backed bar plugin, a separate Qt Quick window, and reversible local
+installation instructions.
 Its [interactive concept](docs/concepts/omarchy-companion.html) uses synthetic
 data. Neither surface is part of the Observatory container.
 

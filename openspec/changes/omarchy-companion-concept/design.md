@@ -52,15 +52,15 @@ Herdr / Codex hooks / host probe / optional ws-255 inference probe
         └──── shared data rules and visual tokens ────┘
 ```
 
-Build the actual plugin as a user-owned plugin with its own manifest, following the installed `bar-widget` contract and `qs.Ui.Panel` conventions. Keep plugin and companion code in this repository; package and install through a later change rather than editing `/usr/share/omarchy`. The standalone concept page is an interaction and layout reference, not production code.
+Build the actual plugin as a user-owned plugin with its own manifest, following the installed `bar-widget` contract and `qs.Ui.Panel` conventions. Keep plugin and companion code in this repository; copy the reviewed plugin files into the local user plugin directory with a reversible installer, without editing `/usr/share/omarchy`. The standalone concept page is an interaction and layout reference, not production code.
 
-## Implementation sequence after concept approval
+## Implementation sequence and later evaluation
 
 1. Specify a bounded native presentation projection and tests for freshness, disclosure, host loss and allowance scope. Decide whether the existing state JSON is sufficient without an extra endpoint.
 2. Build the Quickshell bar and popover against a synthetic fixture, then the live loopback feed. Check bar-edge anchoring, monitor placement, keyboard access and Omarchy theme changes.
 3. Spike the same representative thread roster and metric cards in Qt Quick and Rust/Slint on the actual Omarchy host. Pin release build settings and record each candidate's actual window backend and renderer. In particular, select Slint's Wayland winit backend and a GPU renderer explicitly for the primary comparison; its Qt backend uses software rendering and would confound the result. Record Qt Quick's graphics backend too. Compare cold start, idle and updating CPU/RSS, frame pacing while resizing narrow/half/wide Hyprland tiles, accessibility, theme adaptation and packaging. Keep the data fixture and measurement conditions identical. Choose the companion toolkit from those results, then build the full toplevel and test it alongside a live Herdr window. See the [Slint backend and renderer documentation](https://docs.slint.dev/latest/docs/slint/guide/backends-and-renderers/backends_and_renderers/) and [Qt Quick scene graph documentation](https://doc.qt.io/qt-6/qtquick-visualcanvas-scenegraph.html).
 4. Add ws-255 inference telemetry only after selecting a measured source. Verify the local collector, SSH path, sample age and missing/error behaviour separately.
-5. Package via managed user configuration and verify installation on each intended Omarchy host. No host configuration changes are part of this concept.
+5. Package and trial the first plugin on the local Omarchy host. Keep the installed copy independent of the development worktree and verify that uninstall removes its files and bar entry without touching other plugins. Any later fleet deployment is a separate decision.
 
 ## Acceptance for this concept
 

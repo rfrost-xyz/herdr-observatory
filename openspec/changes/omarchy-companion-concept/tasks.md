@@ -9,7 +9,8 @@
 - [x] Implement and test a source-bound projection of current threads, Codex weekly allowance, sampled GPU and reporting state.
 - [x] Implement a manifest-backed bar widget and anchored Omarchy popover using the installed panel and keyboard components.
 - [x] Implement an ordinary Qt Quick companion toplevel as the first toolkit candidate with responsive layouts.
-- [x] Verify QML syntax, projection tests, live loopback read and independent review; document installation without changing current shell config.
-- [ ] Verify bar placement, popover focus and dismissal, companion launch and narrow/wide tiling in an Omarchy graphical session.
+- [x] Verify QML syntax, projection tests, live loopback read and independent review; document installation without editing packaged Omarchy files or weakening the API.
+- [x] Verify bar placement, popover focus and Escape dismissal, companion launch and narrow/wide tiling in an Omarchy graphical session.
+- [x] Provide a self-contained local installer and clean uninstaller; exercise install, enable, remove and reinstall without changing another plugin.
 
-Installation and fleet deployment require an explicit follow-up change after reviewing the plugin code. The Qt Quick window remains a candidate pending the toolkit comparison in the design.
+Fleet deployment requires a separate change. The Qt Quick window remains a candidate pending the toolkit comparison in the design.

@@ -22,13 +22,30 @@ Hyprland chooses its tile, workspace and monitor. Both surfaces use
 | `State.js` | Shared, source-bound display projection |
 
 Omarchy's `plugin add` clones a repository with a manifest **at its root**.
-This project keeps the plugin in a subdirectory so it cannot be passed to
-`omarchy plugin add` as a repository URL. A future distribution step can
-publish this directory as its own repository. The installed shell also supports
-a user-owned plugin directory at `~/.config/omarchy/plugins/herdr.observatory/`,
-followed by `omarchy-shell shell rescanPlugins` and
-`omarchy plugin enable herdr.observatory`. Installation and enabling are not
-part of this change; check managed configuration first.
+This project keeps the plugin in a subdirectory, so install the reviewed source
+from a checkout with:
+
+```sh
+./omarchy/herdr.observatory/install.sh
+```
+
+The installer validates and copies the seven plugin files into
+`~/.config/omarchy/plugins/herdr.observatory/`, then enables the bar widget in
+the running shell and briefly restarts the shell to load the copied QML. It
+refuses to overwrite an existing installation. The installed copy is
+independent of this checkout, so the development worktree
+can be removed without breaking it. Observatory must be running on
+`127.0.0.1:8789` for current data; an unavailable source is labelled as such.
+
+To uninstall, close the companion window, then run:
+
+```sh
+~/.config/omarchy/plugins/herdr.observatory/uninstall.sh
+```
+
+This disables the widget, removes only its known files and directory, and
+rescans the shell. It refuses to remove a directory with unknown files or a
+different manifest. Other plugins and their bar positions remain untouched.
 
 ## Current data coverage
 
