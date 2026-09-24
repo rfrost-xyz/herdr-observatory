@@ -120,10 +120,19 @@ Panel {
               spacing: 2
               Text {
                 width: parent.width
-                text: modelData.project + "  ·  " + modelData.state.toUpperCase()
+                text: modelData.state.toUpperCase()
+                textFormat: Text.PlainText
+                color: modelData.state === "blocked" ? Color.urgent : root.ink
+                font.family: root.face
+                font.pixelSize: Style.font.bodySmall
+                font.bold: true
+              }
+              Text {
+                width: parent.width
+                text: modelData.project
                 textFormat: Text.PlainText
                 elide: Text.ElideRight
-                color: modelData.state === "blocked" ? Color.urgent : root.ink
+                color: root.ink
                 font.family: root.face
                 font.pixelSize: Style.font.body
                 font.bold: true
