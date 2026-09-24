@@ -13,6 +13,6 @@ development worktree. The separate Rust/Slint comparison and measured inference
 request source remain future work, not claims of this change.
 
 The independent implementation review covered commit `225317d` and found no
-actionable issues. The four scenarios above trace to seven projection tests,
+actionable issues. The four requirement groups above trace to seven projection tests,
 the Omarchy plugin validator, QML formatting checks and the live desktop checks.
 The archived change and canonical specification passed strict OpenSpec validation.
