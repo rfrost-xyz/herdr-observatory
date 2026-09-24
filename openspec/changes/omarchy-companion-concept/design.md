@@ -2,9 +2,13 @@
 
 ## Decision
 
-Use **Quickshell/QML for the Omarchy bar widget and popover**, and a separate **Qt Quick Wayland toplevel** for the tiled companion. Use the existing Observatory service as the read-only data source. Share visual tokens and presentation rules between QML surfaces, but keep their process lifetimes independent. Do not add Rust to the first client: it would duplicate an already running collector without solving a current bottleneck. Revisit a small Rust library or service only if measured client parsing, local inference instrumentation or distribution needs justify it.
+Use **Quickshell/QML for the Omarchy bar widget and popover**. Keep the tiled companion a separate, ordinary Wayland toplevel. **Qt Quick is the provisional main-window choice**, because the installed Omarchy shell already uses Qt/QML and it offers a mature accelerated scene graph. A **Rust/Slint main window** is a credible alternative, especially if a smaller idle footprint or an independent Rust client is more valuable than sharing QML patterns with the popover. A Rust language choice alone does not determine rendering performance: Qt Quick and Slint use different renderers and backends. Select the main-window toolkit after a small real-Hyprland comparison, not from language-level speed claims.
+
+Both clients should read the existing Observatory service as their read-only data source and keep process lifetimes independent. Share data semantics and visual tokens; share QML components only if Qt Quick wins. Do not add a Rust collector to the first client: it would duplicate an already running collector without solving a measured bottleneck. Revisit Rust for collection or parsing only if a profile identifies hot work or distribution needs justify it.
 
 The [Rails World 2026 keynote](https://www.youtube.com/watch?v=vDjW_dRyKXY&t=1103s) makes the native-client case after the linked 18:23 segment (roughly 24–27 minutes) and proposes Rust for HEY's backend at roughly 29–33 minutes. That is an example, not a benchmark for this application. Observatory already has a Python backend and a loopback API. Its collection cost and system boundaries need measurement before a rewrite could be justified.
+
+For this mostly read-only companion, visible freshness is currently bounded by Observatory's sampling and browser polling, not by intensive client computation. Rust could reduce CPU or memory if a measured collector, parser or aggregation path is hot; it could also offer a compact client executable. It will not shorten an upstream sample interval or automatically improve UI frame pacing. Compare complete processes, including toolkit and renderer, rather than comparing Rust with QML as languages.
 
 ## Product roles
 
@@ -43,9 +47,9 @@ Herdr / Codex hooks / host probe / optional ws-255 inference probe
               Observatory service
                      │ loopback read-only state
         ┌────────────┴─────────────┐
- Omarchy Quickshell plugin      Qt Quick companion
+ Omarchy Quickshell plugin      Qt Quick or Rust/Slint companion
  bar + transient popover        tiled Wayland window
-        └──── shared visual tokens and state adapter ────┘
+        └──── shared data rules and visual tokens ────┘
 ```
 
 Build the actual plugin as a user-owned plugin with its own manifest, following the installed `bar-widget` contract and `qs.Ui.Panel` conventions. Keep plugin and companion code in this repository; package and install through a later change rather than editing `/usr/share/omarchy`. The standalone concept page is an interaction and layout reference, not production code.
@@ -54,7 +58,7 @@ Build the actual plugin as a user-owned plugin with its own manifest, following 
 
 1. Specify a bounded native presentation projection and tests for freshness, disclosure, host loss and allowance scope. Decide whether the existing state JSON is sufficient without an extra endpoint.
 2. Build the Quickshell bar and popover against a synthetic fixture, then the live loopback feed. Check bar-edge anchoring, monitor placement, keyboard access and Omarchy theme changes.
-3. Build the Qt Quick toplevel with responsive layouts. Test real Hyprland tiling at narrow, half and wide sizes and alongside a live Herdr window.
+3. Spike the same representative thread roster and metric cards in Qt Quick and Rust/Slint on the actual Omarchy host. Pin release build settings and record each candidate's actual window backend and renderer. In particular, select Slint's Wayland winit backend and a GPU renderer explicitly for the primary comparison; its Qt backend uses software rendering and would confound the result. Record Qt Quick's graphics backend too. Compare cold start, idle and updating CPU/RSS, frame pacing while resizing narrow/half/wide Hyprland tiles, accessibility, theme adaptation and packaging. Keep the data fixture and measurement conditions identical. Choose the companion toolkit from those results, then build the full toplevel and test it alongside a live Herdr window. See the [Slint backend and renderer documentation](https://docs.slint.dev/latest/docs/slint/guide/backends-and-renderers/backends_and_renderers/) and [Qt Quick scene graph documentation](https://doc.qt.io/qt-6/qtquick-visualcanvas-scenegraph.html).
 4. Add ws-255 inference telemetry only after selecting a measured source. Verify the local collector, SSH path, sample age and missing/error behaviour separately.
 5. Package via managed user configuration and verify installation on each intended Omarchy host. No host configuration changes are part of this concept.
 
