@@ -8,15 +8,16 @@ The existing Observatory is a passive display. On an Omarchy desktop, a bar glan
 
 - Define the product and technical concept for an Omarchy bar plugin and a native companion window.
 - Add a responsive, synthetic-data UI prototype covering the popover and three companion window sizes.
+- Implement a user-owned Omarchy bar widget and a first companion window using the installed plugin contract and Observatory's read-only loopback state.
 - Record source boundaries, unknown/stale behaviour and a phased implementation route.
 
-This change is **concept-only**. It does not install a plugin, alter Observatory's runtime/API, or change fleet configuration. The prototype is not a live monitor.
+The standalone HTML prototype remains illustrative. The QML surfaces read live state if Observatory is running on loopback. This change does not install the plugin, alter Observatory's server/API, or change fleet configuration.
 
 ## Capabilities
 
 ### New Capabilities
 
-None in this change. The eventual native client needs a separate behavioural specification and implementation change.
+- `omarchy-companion`: Read-only Omarchy bar, popover and tiled companion presentation of permitted Observatory state.
 
 ### Modified Capabilities
 
@@ -24,4 +25,4 @@ None. No existing display behaviour changes.
 
 ## Impact
 
-Planning artefacts and a standalone concept page only. There are no runtime dependencies, migrations, configuration changes or deployed hosts.
+Adds a user-owned plugin source directory with an Omarchy manifest and QML surfaces. It depends on the installed Omarchy shell/Qt Quick and the existing loopback Observatory service. There are no migrations, configuration changes or deployed hosts.

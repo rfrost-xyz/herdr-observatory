@@ -1,5 +1,10 @@
 # Herdr Observatory
 
+The [Omarchy companion source](omarchy/herdr.observatory/README.md) contains a
+manifest-backed bar plugin and a separate Qt Quick window under development.
+Its [interactive concept](docs/concepts/omarchy-companion.html) uses synthetic
+data. Neither surface is part of the Observatory container.
+
 A passive display of Herdr agent activity across your machines. See working agents, tasks needing input, project titles, sampled state changes and resource telemetry in a full-screen dashboard that follows your Omarchy palette.
 
 No agent controls, terminal transcripts or cloud service. Optional Work feeds and a persistent office-display service are explicitly deployed. Python 3.11+ standard library on collector hosts, a browser, Herdr 0.9.x with `api snapshot`, and OpenSSH for remote collection. The browser uses a locally bundled React 19 view; npm is needed only when rebuilding that asset.
