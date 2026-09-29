@@ -209,6 +209,10 @@ omarchy-plugin-validate omarchy/herdr.observatory
 openspec validate --all --strict
 ```
 
+`tests/run-qml.sh` fails on QML binding errors (`TypeError`, `ReferenceError`,
+`Unable to assign`) as well as on test failures. Set `QMLTESTRUNNER` to use a
+particular Qt 6 build; CI uses Qt 6.8.3.
+
 Production QML fixtures exercise the actual `PopupContent.qml`; include their
 layout/keyboard/reduced-motion checks and `omarchy-plugin-validate` for UI changes.
 Resource comparisons must include all local children, state their scope and avoid
