@@ -19,8 +19,9 @@ omarchy/herdr.observatory/README.md for current operation.
 - No Python or Docker subprocess, web listener, independent daemon or autostart
   service is part of the supported plugin. QML owns the Rust collector lifetime.
   Peers are invoked over existing authenticated SSH and exit after bounded work.
-- Never parse authentication files. Account observations use native read-only
-  Codex account RPCs. No login/reset/redemption mutation. Verify hashed mapping
+- Never parse authentication files. Codex account observations use native read-only
+  account RPCs. Optional Notion monthly observations use an explicitly bound
+  browser-owned native messaging source; authentication stays in the browser. No login/reset/redemption mutation. Verify hashed mapping
   before displaying an email; private email identity never enters normal snapshots.
 - Preserve unknown, stale and zero distinctly. Never invent tokens, allowances,
   child completion, timing, or measurement freshness from transport heartbeats.

@@ -131,9 +131,13 @@ Item {
             var now = new Date(2026, 9, 1).getTime();
             var reset = new Date(2026, 9, 27).getTime() / 1000;
             allowance.entry = State.project({hosts: [], allowances: [{account_id: "notion-monthly", provider: "notion", label: "Work", available: true, window_seconds: 0, sampled_at: now / 1000, monthly_used_percent: 1.61, monthly_resets_at: reset}]}, now).allowances[0];
+            fakeUi.accountEmails = {Work: "codex@example.invalid"};
+            compare(findChild(allowance, "allowance-identity").email, "");
+            verify(allowance.Accessible.name.indexOf("codex@example.invalid") < 0);
             compare(findChild(allowance, "allowance-balance").text, "2% used");
             verify(allowance.hint.indexOf("27 Oct 2026") >= 0);
             verify(!findChild(allowance, "allowance-expected-tick").visible);
+            fakeUi.accountEmails = {};
             allowance.entry = saved;
         }
         function test_01_initial_static() {

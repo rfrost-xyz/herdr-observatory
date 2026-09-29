@@ -29,7 +29,7 @@ AntonSurface {
         }
     }
 
-    Accessible.name: (ui.preferences.namesHidden ? accountIdentity.aliasName : accountIdentity.email || "Unknown account") + ". " + hint
+    Accessible.name: (ui.preferences.namesHidden ? accountIdentity.aliasName : accountIdentity.email || entry.label) + ". " + hint
     Accessible.role: Accessible.Button
     height: Style.space(59)
     hint: known ? (entry.monthly ? Math.ceil(entry.used) + "% of monthly allowance used · " + Math.floor(entry.remaining) + "% left · resets " + entry.resetDate : ui.paceText(entry)) : "Allowance unavailable"
@@ -70,7 +70,7 @@ AntonSurface {
 
         readonly property string aliasName: ui.accountAlias(allowanceCard.entry)
         readonly property bool concealed: ui.preferences.namesHidden
-        readonly property string email: ui.accountEmails[ui.accountKey(allowanceCard.entry)] || ui.accountEmails[allowanceCard.entry.id] || ui.accountEmails[allowanceCard.entry.label] || ""
+        readonly property string email: allowanceCard.entry.provider === "codex" ? (ui.accountEmails[ui.accountKey(allowanceCard.entry)] || ui.accountEmails[allowanceCard.entry.id] || ui.accountEmails[allowanceCard.entry.label] || "") : ""
 
         objectName: "allowance-identity"
         height: Style.space(20)

@@ -17,14 +17,14 @@ The plugin SHALL optionally show the explicitly configured Notion user/workspace
 
 #### Scenario: Browser integration removal
 - **WHEN** the optional integration is removed
-- **THEN** only its receipt-owned host registration and launcher are removed, preserving unrelated browser settings, credentials and integrations.
+- **THEN** only its receipt-owned host registration and receipt are removed, preserving unrelated browser settings, credentials and integrations.
 
 ## MODIFIED Requirements
 
 ### Requirement: Account-bound allowance observation
 The native plugin SHALL expose only explicitly labelled accounts, deduplicate the same account across machines, and use the actual source account identity rather than the source host as account authority. Ordinary telemetry SHALL contain only labels, plan, bounded allowance values and timestamps, with no raw account identifiers, email, credentials or session material. Collection SHALL be read-only and SHALL NOT redeem resets, change login, mount credentials or install a persistent host process.
 
-The Codex source SHALL be a bounded native read-only account RPC, available independently of threads. An optional Notion source SHALL use the browser-owned, explicitly bound monthly observation contract below. Remote sources SHALL invoke the marked native peer over SSH without a Docker exporter or Python helper.
+The Codex source SHALL be a bounded native read-only account RPC, available independently of threads. An optional Notion source SHALL use the browser-owned, explicitly bound monthly observation contract. Remote sources SHALL invoke the marked native peer over SSH without a Docker exporter or Python helper.
 
 Transport sanitisation and presentation SHALL tolerate a source allowance timestamp up to one second ahead of local time, preserving the original timestamp and strict cache ordering. Larger future offsets and observations older than ten minutes SHALL be rejected. Weekly reset and reset-credit expiry checks SHALL continue to use actual local time without a grace period.
 
@@ -39,4 +39,3 @@ Transport sanitisation and presentation SHALL tolerate a source allowance timest
 #### Scenario: Small peer clock offset
 - **WHEN** a mapped native peer allowance is at most one second ahead of local time
 - **THEN** it remains available with its original source time, while larger future offsets, stale samples and expired resets remain unavailable.
-

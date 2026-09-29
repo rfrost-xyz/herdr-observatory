@@ -23,7 +23,15 @@ synthetic fixtures do not establish live compatibility.
 - Plugin manifest validation passed. No shipped Python, Docker or web runtime
   added; existing distribution audit covers the native source tree.
 - OpenSpec strict validation passed.
-- Full Rust and JS gate results and independent review are pending final run.
+- Serial locked/offline Rust suite passed: 54 library, 4 CLI, 6 native account
+  and 18 native process tests. A parallel run hit an existing RPC fixture startup
+  race; serial rerun passed without changing that fixture.
+- All four JS suites passed: Pi, State, native distribution and Notion bridge.
+- Offline release build passed.
+- Independent review at `3eb429e` found cross-provider legacy email fallback.
+  Notion now uses its configured label; production QML tests verify that a
+  conflicting Codex email cannot appear visually or in the accessible name.
+  Review of the fix is pending.
 
 ## Live acceptance outstanding
 
