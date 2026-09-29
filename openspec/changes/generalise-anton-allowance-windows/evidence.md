@@ -189,6 +189,7 @@ Commits:
 - `8cc635b` is the contract commit: runtime rows and popover projection change together, so no commit pairs the new wire with the old reader (review round 1 squashed the former separate runtime and presentation commits).
 - `575ef6d` is the plugin README.
 - `5bcfb18` is the harness.
+- `b1834e1` validates provider and row labels in the view (review round 2).
 
 Rust tests are in `allowances.rs` (`A`), `model.rs` (`M`), `main.rs` (`B`) and `tests/native_process.rs` (`P`). Node tests are in `tests/test_omarchy_state.cjs` (`N`). QML tests are in `tests/qml/anton/tst_components.qml` (`C`) and `tst_popup.qml` (`Q`). Status is `verified` when the named test passed on the integrated head.
 
@@ -224,6 +225,7 @@ Rust tests are in `allowances.rs` (`A`), `model.rs` (`M`), `main.rs` (`B`) and `
 | · Absent provider | no synthesis in `project` or `providerGroups` | N `only providers present in the snapshot form groups` | `8cc635b` | verified |
 | · Ambiguous pacing window | `pacingWindow` | N `the pacing window is the single flagged window, never list order` | `8cc635b` | verified |
 | Malformed, oversized, stale and zero values (AGENTS.md) | `allowanceView` bounds | N `malformed and oversized windows ...`, `zero stays distinct from unknown`, `status text is bounded and never synthesised`, `a row without a valid provider or account id is skipped`, `an unknown or missing status projects as unavailable`, `a legacy weekly_remaining row projects as unavailable`, `the projected allowance view has exactly the eleven contract keys` | `8cc635b` | verified |
+| Invalid provider or row label (omarchy-companion delta, D1) | `allowanceView` via `boundedLabel` (1 to 40 characters, no control characters) | N `an invalid provider or row label falls back to the provider or account id` | `b1834e1` | verified |
 | Visual preservation (AGENTS.md) | no visible card change | screenshot hashes | `8cc635b` | verified |
 | Omarchy `limits` mapping (D7) | documentation only: design D7, plugin README "Allowance rows" | review | `575ef6d` | implemented (no adapter, by design) |
 | Measurement comparability (programme) | additive harness commit | baseline and after tables above | `5bcfb18` | verified |
@@ -250,3 +252,11 @@ Pending (task 4.4).
 | Proposal says the alias lookup is keyed by account key | Proposal reworded: saved aliases stay keyed by `provider:id`, and the legacy table is keyed by `provider:label`. |
 
 Gates after the round, on `a776756`: cargo fmt and clippy exit 0; cargo test lib 65, bin 8, nav 6, process 26, all passing; JS 65 passed; QML 41 passed; the seven screenshot hashes are identical to the visual reference; `openspec validate --strict` valid.
+
+## Review round 2
+
+| Finding | Disposition |
+| --- | --- |
+| The view accepts any non-empty `provider_label` or `label`, though the delta spec and D1 bound them to 1 to 40 characters; D5 step 4 claims non-pacing windows are validated | Fixed in `b1834e1`: `allowanceView` uses `boundedLabel(…, 40)`, which now also rejects control characters, and falls back to the provider id or the account id. N `an invalid provider or row label falls back to the provider or account id` covers empty, 41-character, BEL, newline, numeric and null labels, and the 40-character limit. D1 now states the control-character rule for both labels and window labels, the omarchy-companion delta lists what makes a provider label invalid, and D5 step 4 says the view neither validates nor projects non-pacing windows. The runtime already restricts configured labels to 40 ASCII characters, so current output is unchanged. |
+
+Gates after the round, on `b1834e1`: cargo fmt and clippy exit 0; cargo test lib 65, bin 8, nav 6, process 26, all passing; JS 66 passed; QML 41 passed, 0 binding errors; the seven screenshot hashes are identical to the visual reference; `openspec validate --strict` valid. A rerun of the measurement (`--repeat 1 --seconds 5`) gave the same `allowance_wire`, `allowance_contract` and `provider_coupling` values as the after table.

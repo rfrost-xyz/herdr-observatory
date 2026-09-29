@@ -69,9 +69,9 @@ The `allowances` array in each snapshot line holds one object per configured acc
 | Field | Type and bounds | Meaning |
 | --- | --- | --- |
 | `provider` | string, `^[a-z0-9][a-z0-9_.-]{0,31}$` | stable provider id, part of the account key and the provider group id |
-| `provider_label` | string, 1 to 40 printable characters | group heading, supplied by the runtime; the view's only fallback is the row's own `provider` id, never a provider-specific name |
+| `provider_label` | string, 1 to 40 characters with no control characters | group heading, supplied by the runtime; when it is missing or invalid the view falls back to the row's own `provider` id, never a provider-specific name |
 | `account_id` | string, `^[A-Za-z0-9_-]{1,40}$` | mapping id (today `Personal`, `Work` or a configured id) |
-| `label` | string, 1 to 40 characters | configured label |
+| `label` | string, 1 to 40 characters with no control characters | configured label; when it is missing or invalid the view shows the account id |
 | `status` | `"available"`, `"unavailable"` or `"auth_needed"` | source status |
 | `status_text` | null, or a string of 1 to 80 characters with no control characters | text supplied by the source; the view never writes one |
 | `plan` | null or string (Codex: the existing `PLANS` allowlist) | counterpart of Omarchy `tierLabel`; not displayed today |
@@ -85,7 +85,7 @@ Each window object:
 | Field | Type and bounds | Meaning |
 | --- | --- | --- |
 | `kind` | string, `^[a-z0-9_]{1,24}$` | e.g. `weekly`, `monthly`, `session`. The view never branches on it |
-| `label` | string, 1 to 40 characters | display name, e.g. `Weekly` |
+| `label` | string, 1 to 40 characters with no control characters | display name, e.g. `Weekly` |
 | `used_percent` | null or number 0 to 100 | percentage used. Remaining is `100 - used_percent` |
 | `resets_at` | null or integer Unix seconds | null once past (see D2) |
 | `duration_s` | integer 1 to 31622400 (366 days) | source-supplied window length |
@@ -149,7 +149,7 @@ For each row, `project()` does the following.
    - `account_id` (or `label` when `account_id` is absent) must be 1 to 128 characters of `[A-Za-z0-9_.-]`.
    - The row is skipped if either is invalid, as today.
    - There are no defaults: a missing provider is invalid.
-   - `providerLabel = label(row.provider_label, row.provider)`. That fallback is the provider id itself, never a provider-specific name, and is the only label the view may supply (D1, omarchy-companion delta).
+   - `providerLabel = boundedLabel(row.provider_label, 40) || row.provider`, and the displayed `label = boundedLabel(row.label, 40) || accountId`. `boundedLabel` accepts a string of 1 to 40 characters with no control characters. The provider fallback is the provider id itself, never a provider-specific name, and is the only provider label the view may supply (D1, omarchy-companion delta).
 2. **Status.**
    - `status` is one of the three values. Anything else, including a missing status, is `unavailable`. It gates freshness only and is not projected, because no card, Panel or IPC reader consumes it; the card gates on `remaining` and uses `statusText`.
    - `statusText` is `row.status_text` when it is a string of 1 to 80 characters with no control characters, otherwise null.
@@ -159,7 +159,7 @@ For each row, `project()` does the following.
    - When fresh, and `windows` is an array of at most 8 entries, collect the entries with `pacing === true`.
    - If exactly one exists, and it has a valid `duration_s` (integer, 1 to 31622400) and a valid `kind` and `label`, that is the pacing window.
    - Otherwise there is none.
-   - Non-pacing windows are validated only for bounds and are not projected today.
+   - Non-pacing windows are neither validated nor projected by the view today. The runtime bounds every window it emits (D1), and a malformed non-pacing entry does not affect the pacing window.
 5. **Values.**
    - `used` is valid when it is a finite number from 0 to 100.
    - `reset` is valid when it is a finite number greater than the current time.
