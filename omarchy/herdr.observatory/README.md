@@ -10,6 +10,11 @@ Codex session records and invokes the same executable on explicitly configured
 SSH peers. It stops on owner-pipe closure. No Python, Docker, listening service,
 independent autostart or music forwarding is required.
 
+The collector no longer reads the Omarchy theme; the popover follows the theme
+itself. Existing `theme_host` and per-host `theme_path` settings are still
+validated as before so installed configurations keep loading, and are otherwise
+ignored. Peers report `theme` as `null` for compatibility with older plugins.
+
 The unchanged popover shows context, input/output, cache composition, subagent
 outcomes and turn time. Missing data stays unknown. Codex collection does not
 need Observatory hooks; Herdr's native integration supplies session identity.

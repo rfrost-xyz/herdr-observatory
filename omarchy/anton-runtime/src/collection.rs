@@ -5,8 +5,6 @@ use crate::{
     telemetry,
 };
 use serde_json::{Value, json};
-use std::io::Read;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Component, Path};
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
@@ -52,58 +50,6 @@ fn category(path: &Value, host: &Value) -> &'static str {
         }
     }
     "personal"
-}
-pub fn fallback_theme() -> Value {
-    json!({"name":"Tokyo Night · fallback","colours":{"background":"#1a1b26","foreground":"#c0caf5","accent":"#7aa2f7","green":"#9ece6a","red":"#f7768e","yellow":"#e0af68","muted":"#565f89","lighter_background":"#24283b"}})
-}
-// Omarchy legitimately symlinks its active theme. Follow that link, then
-// validate the opened descriptor and bound the read, including changing files.
-fn theme_text(path: &Path, limit: usize) -> Option<String> {
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
-        .open(path)
-        .ok()?;
-    let metadata = file.metadata().ok()?;
-    if !metadata.is_file() || metadata.len() > limit as u64 {
-        return None;
-    }
-    let mut text = String::new();
-    file.take(limit as u64 + 1).read_to_string(&mut text).ok()?;
-    (text.len() <= limit).then_some(text)
-}
-fn theme(host: &Value) -> Value {
-    let paths = if let Some(path) = host["theme_path"].as_str() {
-        vec![common::expand_home(path)]
-    } else {
-        vec![
-            common::expand_home("~/.local/state/omarchy/current"),
-            common::expand_home("~/.config/omarchy/current"),
-        ]
-    };
-    for path in paths {
-        let file = path.join("theme/colors.toml");
-        let Some(text) = theme_text(&file, 65536) else {
-            continue;
-        };
-        let Ok(parsed) = toml::from_str::<toml::Value>(&text) else {
-            continue;
-        };
-        let Some(name) = theme_text(&path.join("theme.name"), 1024) else {
-            continue;
-        };
-        let mut result = fallback_theme();
-        result["name"] = json!(clean(&json!(name.trim()), "Omarchy"));
-        for (key, value) in result["colours"].as_object_mut().unwrap() {
-            if let Some(colour) = parsed.get(key).and_then(toml::Value::as_str).filter(|s| {
-                s.len() == 7 && s.starts_with('#') && s[1..].bytes().all(|b| b.is_ascii_hexdigit())
-            }) {
-                *value = json!(colour);
-            }
-        }
-        return result;
-    }
-    fallback_theme()
 }
 pub fn herdr_binary(binary: &str) -> String {
     if binary == "herdr"
@@ -196,14 +142,18 @@ pub fn normalise(raw: &Value, host: &Value) -> Result<Vec<Value>> {
     }
     Ok(result)
 }
+/// Presentation theme is no longer collected. `theme` stays in the sample as an
+/// explicit `null` because pre-change local runtimes deserialise a required
+/// `theme` field from peer probe results. Remove it once none can remain.
 pub fn local(
     host: &Value,
     cursors: &Value,
     follower: &mut NativeTelemetry,
     cancel: Option<&AtomicBool>,
 ) -> Result<Value> {
+    // `sampled_at` is stamped before the Herdr call, so a sample that was already
+    // in flight when an owner refresh arrived can never satisfy that refresh.
     let time = common::now();
-    let palette = theme(host);
     match snapshot(host, cancel) {
         Ok(mut raw) => {
             raw["workspaces"]
@@ -217,11 +167,11 @@ pub fn local(
             );
             let agents = normalise(&raw, host)?;
             Ok(
-                json!({"agents":agents,"theme":palette,"sampled_at":time,"error":null,"protocol":number(&raw["protocol"]),"version":clean(&raw["version"],"unknown"),"cursors":updated}),
+                json!({"agents":agents,"theme":null,"sampled_at":time,"error":null,"protocol":number(&raw["protocol"]),"version":clean(&raw["version"],"unknown"),"cursors":updated}),
             )
         }
         Err(_) => Ok(
-            json!({"agents":[],"theme":palette,"sampled_at":time,"error":"Herdr unavailable or incompatible","protocol":null,"version":"unknown","cursors":cursors}),
+            json!({"agents":[],"theme":null,"sampled_at":time,"error":"Herdr unavailable or incompatible","protocol":null,"version":"unknown","cursors":cursors}),
         ),
     }
 }

@@ -54,8 +54,6 @@ struct HostState {
     error: Option<String>,
     sampled_at: Option<f64>,
     agents: Vec<Agent>,
-    metrics: Option<Value>,
-    trend: Vec<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     protocol: Option<Option<u64>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -63,8 +61,8 @@ struct HostState {
 }
 #[derive(Deserialize)]
 struct Sample {
+    // Peers before this change still send `theme`; unknown fields are ignored.
     agents: Vec<Agent>,
-    theme: Value,
     sampled_at: f64,
     error: Option<String>,
     protocol: Option<u64>,
@@ -80,7 +78,6 @@ enum Event {
 struct State {
     config: Value,
     hosts: Vec<HostState>,
-    theme: Value,
     allowances: Vec<AllowanceRow>,
     revision: u64,
     discovery: String,
@@ -102,8 +99,6 @@ impl State {
                     error: Some("Awaiting first sample".into()),
                     sampled_at: None,
                     agents: vec![],
-                    metrics: None,
-                    trend: vec![],
                     protocol: None,
                     version: None,
                 }
@@ -112,31 +107,17 @@ impl State {
         Self {
             config,
             hosts,
-            theme: collection::fallback_theme(),
             allowances: vec![],
             revision: 0,
             discovery: "disabled".into(),
         }
     }
     fn snapshot(&self) -> Value {
-        let local = self.config["hosts"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|v| {
-                v.get("transport")
-                    .and_then(Value::as_str)
-                    .unwrap_or("local")
-                    == "local"
-            })
-            .and_then(|v| v["id"].as_str())
-            .unwrap_or("");
-        json!({"profile":"personal","at":common::now(),"interval":self.config.get("interval").cloned().unwrap_or(json!(5)),"hosts":self.hosts,"theme":self.theme,"display":{"host":local,"role":"Host"},"allowances":self.allowances,"fleet_discovery":{"state":self.discovery}})
+        json!({"at":common::now(),"interval":self.config.get("interval").cloned().unwrap_or(json!(5)),"hosts":self.hosts,"allowances":self.allowances,"fleet_discovery":{"state":self.discovery}})
     }
     fn sample(&mut self, id: &str, result: Result<Sample>) -> Option<Value> {
         let index = self.hosts.iter().position(|v| v.id == id)?;
         let mut before = self.hosts[index].clone();
-        let old_theme = self.theme.clone();
         let state = &mut self.hosts[index];
         let mut cursors = None;
         match result {
@@ -197,15 +178,6 @@ impl State {
                 state.agents = if state.online { sample.agents } else { vec![] };
                 state.protocol = Some(sample.protocol);
                 state.version = Some(sample.version);
-                if id
-                    == self
-                        .config
-                        .get("theme_host")
-                        .and_then(Value::as_str)
-                        .unwrap_or(self.config["hosts"][0]["id"].as_str().unwrap_or(""))
-                {
-                    self.theme = sample.theme;
-                }
                 cursors = Some(
                     serde_json::to_value(native::validate_cursors(&sample.cursors))
                         .unwrap_or_else(|_| json!({})),
@@ -227,7 +199,7 @@ impl State {
             }
         }
         before.sampled_at = state.sampled_at;
-        if before != *state || old_theme != self.theme {
+        if before != *state {
             self.revision += 1;
         }
         cursors
@@ -984,7 +956,44 @@ mod tests {
         State::new(json!({"hosts":[{"id":"test"}]}))
     }
     fn sample(status: &str, at: f64) -> Sample {
-        serde_json::from_value(json!({"agents":[{"id":"test:pane","host":"test","status":status,"technical":{}}],"theme":collection::fallback_theme(),"sampled_at":at,"error":null,"protocol":1,"version":"test","cursors":{}})).unwrap()
+        serde_json::from_value(json!({"agents":[{"id":"test:pane","host":"test","status":status,"technical":{}}],"theme":null,"sampled_at":at,"error":null,"protocol":1,"version":"test","cursors":{}})).unwrap()
+    }
+    #[test]
+    fn old_peer_theme_is_accepted_and_new_snapshot_has_contract_keys() {
+        let mut value = serde_json::to_value(json!({"agents":[],"theme":{"name":"Legacy","colours":{"accent":"#123456"}},"sampled_at":common::now(),"error":null,"protocol":1,"version":"old","cursors":{}})).unwrap();
+        let sample: Sample = serde_json::from_value(value.clone()).unwrap();
+        let mut state = state();
+        state.sample("test", Ok(sample));
+        assert_eq!(state.hosts[0].connection_state, "connected");
+        value.as_object_mut().unwrap().remove("theme");
+        assert!(serde_json::from_value::<Sample>(value).is_ok());
+        let snapshot = state.snapshot();
+        let keys: Vec<_> = snapshot.as_object().unwrap().keys().cloned().collect();
+        assert_eq!(
+            keys,
+            ["allowances", "at", "fleet_discovery", "hosts", "interval"]
+        );
+        let host: Vec<_> = snapshot["hosts"][0]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        assert_eq!(
+            host,
+            [
+                "agents",
+                "connection_state",
+                "error",
+                "id",
+                "label",
+                "navigation",
+                "online",
+                "protocol",
+                "sampled_at",
+                "version"
+            ]
+        );
     }
     #[test]
     fn unchanged_sample_preserves_since_and_revision() {

@@ -681,56 +681,107 @@ fn peer_uninstaller_refuses_unknown_payload_and_finishes_retired_retry() {
     assert_eq!(fs::read(state.join("unrelated")).unwrap(), b"retain");
 }
 
+fn keys(value: &Value) -> Vec<&str> {
+    value
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect()
+}
+/// A theme object exactly as peers installed before theme removal still send it.
+fn legacy_theme() -> Value {
+    json!({"name":"Tokyo Night · fallback","colours":{"background":"#1a1b26","foreground":"#c0caf5","accent":"#7aa2f7","green":"#9ece6a","red":"#f7768e","yellow":"#e0af68","muted":"#565f89","lighter_background":"#24283b"}})
+}
+/// Replaces SSH with a counting stub that answers like an unchanged old peer.
+fn legacy_peer(f: &Fixture) {
+    let sample = json!({"version":1,"host_id":"remote","session":"default","ok":true,"result":{"agents":[],"theme":legacy_theme(),"sampled_at":common::now(),"error":null,"protocol":1,"version":"fixture","cursors":{}}});
+    write(&f.dir.join("remote-sample.json"), sample.to_string(), 0o600);
+    write(&f.dir.join("bin/ssh"),b"#!/bin/sh\nfor arg do last=$arg; done\nbase=\"$ANTON_TEST_PEER/..\"\nprintf '%s\\n' ssh >> \"$base/ssh-calls\"\ncase $last in\n *--allowances-probe*) cat > /dev/null; printf '[]\\n';;\n *--probe*) cat > /dev/null; cat \"$base/remote-sample.json\";;\n *) exit 91;;\nesac\n",0o755);
+}
+
 #[test]
-fn theme_files_are_bounded_and_fifos_cannot_prevent_owner_eof() {
-    use std::ffi::CString;
-    use std::os::unix::ffi::OsStrExt;
+fn snapshot_has_exact_contract_keys_and_probe_theme_is_null() {
     let f = Fixture::new();
-    let current = f.dir.join("current");
-    let actual = f.dir.join("actual-theme");
-    fs::create_dir(&current).unwrap();
-    fs::create_dir(&actual).unwrap();
-    std::os::unix::fs::symlink(&actual, current.join("theme")).unwrap();
-    let colours = actual.join("colors.toml");
-    let name = current.join("theme.name");
-    write(&colours, b"accent = '#123456'\n", 0o600);
-    write(&name, b"Fixture", 0o600);
-    write(&f.root.join(".config.json"), json!({"hosts":[{"id":"local","socket_path":f.dir.join("herdr.sock"),"theme_path":current}]}).to_string(), 0o600);
+    f.agents();
+    // Retired theme keys still load and are otherwise ignored.
+    let mut cfg: Value =
+        serde_json::from_slice(&fs::read(f.root.join(".config.json")).unwrap()).unwrap();
+    cfg["theme_host"] = json!("remote");
+    cfg["hosts"][0]["theme_path"] = json!(f.dir.join("missing-theme"));
+    write(&f.root.join(".config.json"), cfg.to_string(), 0o600);
     let mut stream = Stream::new(&f);
-    let snapshot = stream.until(|v| v["hosts"][0]["online"] == true);
-    assert_eq!(snapshot["theme"]["colours"]["accent"], "#123456");
+    let snapshot = stream.until(|v| {
+        v["hosts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|h| h["online"] == true)
+    });
     stream.close();
-    write(&name, vec![b'x'; 1025], 0o600);
-    let mut stream = Stream::new(&f);
-    let snapshot = stream.until(|v| v["hosts"][0]["online"] == true);
     assert_eq!(
-        snapshot["theme"],
-        anton_runtime::collection::fallback_theme()
+        keys(&snapshot),
+        ["allowances", "at", "fleet_discovery", "hosts", "interval"]
     );
-    stream.close();
-    write(&name, b"Fixture", 0o600);
-    for path in [&colours, &name] {
-        fs::remove_file(path).unwrap();
-        let cpath = CString::new(path.as_os_str().as_bytes()).unwrap();
-        assert_eq!(unsafe { libc::mkfifo(cpath.as_ptr(), 0o600) }, 0);
-        let mut stream = Stream::new(&f);
-        let snapshot = stream.until(|v| v["hosts"][0]["online"] == true);
-        assert_eq!(
-            snapshot["theme"],
-            anton_runtime::collection::fallback_theme()
-        );
-        stream.close();
-        fs::remove_file(path).unwrap();
-        write(
-            path,
-            if path == &colours {
-                b"accent = '#123456'\n".as_slice()
-            } else {
-                b"Fixture".as_slice()
-            },
-            0o600,
+    let required = [
+        "agents",
+        "connection_state",
+        "error",
+        "id",
+        "label",
+        "online",
+        "sampled_at",
+    ];
+    for host in snapshot["hosts"].as_array().unwrap() {
+        let keys = keys(host);
+        assert!(required.iter().all(|key| keys.contains(key)), "{keys:?}");
+        assert!(
+            keys.iter()
+                .all(|key| required.contains(key)
+                    || ["navigation", "protocol", "version"].contains(key)),
+            "{keys:?}"
         );
     }
+    let probe = Command::new(BIN)
+        .args([
+            "--root",
+            f.peer.to_str().unwrap(),
+            "--state",
+            f.dir.join("peer-state").to_str().unwrap(),
+            "--probe",
+        ])
+        .env("HOME", f.dir.join("home"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    probe
+        .stdin
+        .as_ref()
+        .unwrap()
+        .write_all(
+            json!({"version":1,"host_id":"remote","cursors":{}})
+                .to_string()
+                .as_bytes(),
+        )
+        .unwrap();
+    let output = probe.wait_with_output().unwrap();
+    assert!(output.status.success());
+    let response: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(response["ok"], true);
+    assert_eq!(response["result"].get("theme"), Some(&Value::Null));
+    assert_eq!(response["result"]["agents"][0]["host"], "remote");
+}
+
+#[test]
+fn unchanged_peer_result_with_theme_object_reports_connected() {
+    let f = Fixture::new();
+    legacy_peer(&f);
+    let mut stream = Stream::new(&f);
+    let snapshot = stream.until(|v| v["hosts"][1]["connection_state"] == "connected");
+    assert_eq!(snapshot["hosts"][1]["online"], true);
+    assert!(snapshot.get("theme").is_none());
+    stream.close();
 }
 
 #[test]
@@ -802,7 +853,7 @@ fn fleet_fixture(f: &Fixture, inventory: Value) {
         json!([row]).to_string(),
         0o600,
     );
-    let sample = json!({"version":1,"host_id":"legacy","session":"default","ok":true,"result":{"agents":[],"theme":anton_runtime::collection::fallback_theme(),"sampled_at":common::now(),"error":null,"protocol":1,"version":"fixture","cursors":{}}});
+    let sample = json!({"version":1,"host_id":"legacy","session":"default","ok":true,"result":{"agents":[],"theme":legacy_theme(),"sampled_at":common::now(),"error":null,"protocol":1,"version":"fixture","cursors":{}}});
     write(&f.dir.join("remote-sample.json"), sample.to_string(), 0o600);
     write(&f.dir.join("bin/ssh"),b"#!/bin/sh\nfor arg do last=$arg; done\nbase=\"$ANTON_TEST_PEER/..\"\ncase $last in\n *--allowances-probe*) printf '%s\\n' allowance >> \"$base/calls\"; cat \"$base/remote-allowances.json\";;\n *--probe*) cat > \"$base/last-probe\"; cat \"$base/remote-sample.json\";;\n *) exit 91;;\nesac\n",0o755);
 }
