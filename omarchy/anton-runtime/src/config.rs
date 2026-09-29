@@ -2,6 +2,12 @@ use crate::Result;
 use serde_json::Value;
 use std::collections::BTreeSet;
 use std::path::{Component, Path};
+/// Validates private plugin configuration.
+///
+/// `theme_host` and `hosts[].theme_path` are retired: the runtime no longer
+/// collects the Omarchy theme. They are still validated exactly as before
+/// (`theme_host` must name a configured host, `theme_path` must be a non-empty
+/// string) so installed configurations keep loading, and are otherwise ignored.
 pub fn validate(config: Value) -> Result<Value> {
     if !config.is_object() {
         return Err("Invalid configuration".into());
@@ -108,6 +114,14 @@ pub fn validate(config: Value) -> Result<Value> {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn retired_theme_keys_still_load_and_still_validate() {
+        let valid = json!({"theme_host":"local","hosts":[{"id":"local","theme_path":"~/theme"},{"id":"remote","transport":"ssh","target":"fixture","theme_path":"/srv/theme"}]});
+        assert_eq!(validate(valid.clone()).unwrap(), valid);
+        for theme_host in [json!("missing"), json!(12), Value::Null, json!("")] {
+            assert!(validate(json!({"theme_host":theme_host,"hosts":[{"id":"local"}]})).is_err());
+        }
+    }
     #[test]
     fn host_transport_and_source_selectors_fail_closed() {
         assert!(validate(json!({"hosts":[{"id":"local"}]})).is_ok());

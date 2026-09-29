@@ -22,12 +22,18 @@ fn write(path: &Path, bytes: impl AsRef<[u8]>, mode: u32) {
     fs::write(path, bytes).unwrap();
     fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
 }
+/// Accept instant and, once written, reply instant of one fixture Herdr RPC.
+type Served = (Instant, Option<Instant>);
 struct Fixture {
     dir: PathBuf,
     root: PathBuf,
     peer: PathBuf,
     state: PathBuf,
     raw: Arc<Mutex<Value>>,
+    /// Accept and reply instants of every local Herdr RPC served.
+    served: Arc<Mutex<Vec<Served>>>,
+    /// Milliseconds the fixture socket waits before replying.
+    delay: Arc<AtomicU64>,
     stop: Arc<AtomicBool>,
     server: Option<thread::JoinHandle<()>>,
 }
@@ -61,11 +67,20 @@ impl Fixture {
             json!({"protocol":1,"version":"fixture","agents":[],"workspaces":[]}),
         ));
         let stop = Arc::new(AtomicBool::new(false));
+        let served = Arc::new(Mutex::new(Vec::new()));
+        let delay = Arc::new(AtomicU64::new(0));
         let state_raw = raw.clone();
         let stop_server = stop.clone();
+        let server_served = served.clone();
+        let server_delay = delay.clone();
         let server = thread::spawn(move || {
             while !stop_server.load(Ordering::Relaxed) {
                 if let Ok((mut stream, _)) = listener.accept() {
+                    let index = {
+                        let mut served = server_served.lock().unwrap();
+                        served.push((Instant::now(), None));
+                        served.len() - 1
+                    };
                     stream
                         .set_read_timeout(Some(Duration::from_secs(1)))
                         .unwrap();
@@ -86,7 +101,9 @@ impl Fixture {
                     }
                     let response =
                         json!({"jsonrpc":"2.0","id":request["id"],"result":{"snapshot":value}});
+                    thread::sleep(Duration::from_millis(server_delay.load(Ordering::Relaxed)));
                     let _ = writeln!(stream, "{response}");
+                    server_served.lock().unwrap()[index].1 = Some(Instant::now());
                 } else {
                     thread::sleep(Duration::from_millis(5));
                 }
@@ -106,6 +123,8 @@ impl Fixture {
             peer,
             state,
             raw,
+            served,
+            delay,
             stop,
             server: Some(server),
         }
@@ -208,6 +227,11 @@ impl Stream {
                 return snapshot;
             }
         }
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        let input = self.child.stdin.as_mut().unwrap();
+        input.write_all(bytes).unwrap();
+        input.flush().unwrap();
     }
     fn close(&mut self) {
         drop(self.child.stdin.take());
@@ -681,54 +705,314 @@ fn peer_uninstaller_refuses_unknown_payload_and_finishes_retired_retry() {
     assert_eq!(fs::read(state.join("unrelated")).unwrap(), b"retain");
 }
 
+fn keys(value: &Value) -> Vec<&str> {
+    value
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect()
+}
+/// A theme object exactly as peers installed before theme removal still send it.
+fn legacy_theme() -> Value {
+    json!({"name":"Tokyo Night · fallback","colours":{"background":"#1a1b26","foreground":"#c0caf5","accent":"#7aa2f7","green":"#9ece6a","red":"#f7768e","yellow":"#e0af68","muted":"#565f89","lighter_background":"#24283b"}})
+}
+/// Replaces SSH with a counting stub that answers like an unchanged old peer.
+fn legacy_peer(f: &Fixture) {
+    let sample = json!({"version":1,"host_id":"remote","session":"default","ok":true,"result":{"agents":[],"theme":legacy_theme(),"sampled_at":common::now(),"error":null,"protocol":1,"version":"fixture","cursors":{}}});
+    write(&f.dir.join("remote-sample.json"), sample.to_string(), 0o600);
+    write(&f.dir.join("bin/ssh"),b"#!/bin/sh\nfor arg do last=$arg; done\nbase=\"$ANTON_TEST_PEER/..\"\nprintf '%s\\n' ssh >> \"$base/ssh-calls\"\ncase $last in\n *--allowances-probe*) cat > /dev/null; printf '[]\\n';;\n *--probe*) cat > /dev/null; cat \"$base/remote-sample.json\";;\n *) exit 91;;\nesac\n",0o755);
+}
+fn lines(path: &Path) -> usize {
+    fs::read_to_string(path).map_or(0, |v| v.lines().count())
+}
+fn local_sampled_at(snapshot: &Value) -> f64 {
+    snapshot["hosts"][0]["sampled_at"].as_f64().unwrap_or(0.0)
+}
+
 #[test]
-fn theme_files_are_bounded_and_fifos_cannot_prevent_owner_eof() {
-    use std::ffi::CString;
-    use std::os::unix::ffi::OsStrExt;
+fn snapshot_has_exact_contract_keys_and_probe_theme_is_null() {
     let f = Fixture::new();
-    let current = f.dir.join("current");
-    let actual = f.dir.join("actual-theme");
-    fs::create_dir(&current).unwrap();
-    fs::create_dir(&actual).unwrap();
-    std::os::unix::fs::symlink(&actual, current.join("theme")).unwrap();
-    let colours = actual.join("colors.toml");
-    let name = current.join("theme.name");
-    write(&colours, b"accent = '#123456'\n", 0o600);
-    write(&name, b"Fixture", 0o600);
-    write(&f.root.join(".config.json"), json!({"hosts":[{"id":"local","socket_path":f.dir.join("herdr.sock"),"theme_path":current}]}).to_string(), 0o600);
+    f.agents();
+    // Retired theme keys still load and are otherwise ignored.
+    let mut cfg: Value =
+        serde_json::from_slice(&fs::read(f.root.join(".config.json")).unwrap()).unwrap();
+    cfg["theme_host"] = json!("remote");
+    cfg["hosts"][0]["theme_path"] = json!(f.dir.join("missing-theme"));
+    write(&f.root.join(".config.json"), cfg.to_string(), 0o600);
     let mut stream = Stream::new(&f);
-    let snapshot = stream.until(|v| v["hosts"][0]["online"] == true);
-    assert_eq!(snapshot["theme"]["colours"]["accent"], "#123456");
+    let snapshot = stream.until(|v| {
+        v["hosts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|h| h["online"] == true)
+    });
     stream.close();
-    write(&name, vec![b'x'; 1025], 0o600);
-    let mut stream = Stream::new(&f);
-    let snapshot = stream.until(|v| v["hosts"][0]["online"] == true);
     assert_eq!(
-        snapshot["theme"],
-        anton_runtime::collection::fallback_theme()
+        keys(&snapshot),
+        [
+            "allowances",
+            "at",
+            "fleet_discovery",
+            "heartbeat_seconds",
+            "hosts",
+            "interval"
+        ]
+    );
+    assert_eq!(snapshot["heartbeat_seconds"], 4);
+    let required = [
+        "agents",
+        "connection_state",
+        "error",
+        "id",
+        "label",
+        "online",
+        "sampled_at",
+    ];
+    for host in snapshot["hosts"].as_array().unwrap() {
+        let keys = keys(host);
+        assert!(required.iter().all(|key| keys.contains(key)), "{keys:?}");
+        assert!(
+            keys.iter()
+                .all(|key| required.contains(key)
+                    || ["navigation", "protocol", "version"].contains(key)),
+            "{keys:?}"
+        );
+    }
+    let probe = Command::new(BIN)
+        .args([
+            "--root",
+            f.peer.to_str().unwrap(),
+            "--state",
+            f.dir.join("peer-state").to_str().unwrap(),
+            "--probe",
+        ])
+        .env("HOME", f.dir.join("home"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    probe
+        .stdin
+        .as_ref()
+        .unwrap()
+        .write_all(
+            json!({"version":1,"host_id":"remote","cursors":{}})
+                .to_string()
+                .as_bytes(),
+        )
+        .unwrap();
+    let output = probe.wait_with_output().unwrap();
+    assert!(output.status.success());
+    let response: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(response["ok"], true);
+    assert_eq!(response["result"].get("theme"), Some(&Value::Null));
+    assert_eq!(response["result"]["agents"][0]["host"], "remote");
+}
+
+#[test]
+fn unchanged_peer_result_with_theme_object_reports_connected() {
+    let f = Fixture::new();
+    legacy_peer(&f);
+    let mut stream = Stream::new(&f);
+    let snapshot = stream.until(|v| v["hosts"][1]["connection_state"] == "connected");
+    assert_eq!(snapshot["hosts"][1]["online"], true);
+    assert!(snapshot.get("theme").is_none());
+    stream.close();
+}
+
+#[test]
+fn owner_refresh_after_emission_yields_fresh_local_sample_promptly() {
+    let f = Fixture::new();
+    f.agents();
+    let mut stream = Stream::new(&f);
+    stream.until(|v| {
+        v["hosts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|h| h["online"] == true)
+    });
+    // Request straight after an emission, so the four-second heartbeat cannot
+    // coincidentally satisfy the deadline.
+    stream.rx.recv_timeout(Duration::from_secs(6)).unwrap();
+    let requested = common::now();
+    let began = Instant::now();
+    stream.write(b"refresh\n");
+    stream.until(|v| local_sampled_at(v) >= requested);
+    assert!(
+        began.elapsed() < Duration::from_millis(1500),
+        "refresh took {:?}",
+        began.elapsed()
     );
     stream.close();
-    write(&name, b"Fixture", 0o600);
-    for path in [&colours, &name] {
-        fs::remove_file(path).unwrap();
-        let cpath = CString::new(path.as_os_str().as_bytes()).unwrap();
-        assert_eq!(unsafe { libc::mkfifo(cpath.as_ptr(), 0o600) }, 0);
-        let mut stream = Stream::new(&f);
-        let snapshot = stream.until(|v| v["hosts"][0]["online"] == true);
-        assert_eq!(
-            snapshot["theme"],
-            anton_runtime::collection::fallback_theme()
+}
+
+#[test]
+fn owner_refresh_during_inflight_local_sample_samples_again_at_once() {
+    let f = Fixture::new();
+    f.agents();
+    write(
+        &f.root.join(".config.json"),
+        json!({"hosts":[{"id":"local","socket_path":f.dir.join("herdr.sock")}]}).to_string(),
+        0o600,
+    );
+    let mut stream = Stream::new(&f);
+    stream.until(|v| v["hosts"][0]["online"] == true);
+    f.delay.store(1200, Ordering::Relaxed);
+    let end = Instant::now() + Duration::from_secs(6);
+    let inflight = loop {
+        let served = f.served.lock().unwrap();
+        if let Some(index) = served.iter().rposition(|(_, reply)| reply.is_none()) {
+            if index > 0 && served[index].0.elapsed() < Duration::from_millis(300) {
+                break index;
+            }
+        }
+        drop(served);
+        assert!(Instant::now() < end, "no in-flight local sample");
+        thread::sleep(Duration::from_millis(5));
+    };
+    let requested = common::now();
+    stream.write(b"refresh\n");
+    stream.until(|v| local_sampled_at(v) >= requested);
+    let served = f.served.lock().unwrap().clone();
+    let replied = served[inflight].1.expect("in-flight sample completed");
+    let next = served[inflight + 1].0;
+    assert!(
+        next.duration_since(replied) < Duration::from_millis(500),
+        "resample waited {:?} after the in-flight reply",
+        next.duration_since(replied)
+    );
+    stream.close();
+}
+
+#[test]
+fn owner_refresh_recomputes_allowances_from_local_cache_at_once() {
+    let f = Fixture::new();
+    write(&f.dir.join("bin/codex"), b"#!/bin/sh\nexit 1\n", 0o755);
+    let key = "a".repeat(64);
+    write(&f.root.join(".config.json"),json!({"hosts":[{"id":"local","socket_path":f.dir.join("herdr.sock")}],"allowances":{"accounts":{key.clone():"Personal"}}}).to_string(),0o600);
+    let cache = |remaining: u64| {
+        let row = json!([{"account_key":key,"plan":"pro","weekly_remaining":remaining,"weekly_resets_at":(common::now()+86400.0) as u64,"sampled_at":common::now()}]);
+        let temporary = f.state.join("allowances.json.fixture");
+        write(&temporary, row.to_string(), 0o600);
+        fs::rename(&temporary, f.state.join("allowances.json")).unwrap();
+    };
+    cache(50);
+    let mut stream = Stream::new(&f);
+    // Seeing a changed row means a periodic recompute has only just run, so
+    // the next periodic one is about two seconds away.
+    stream.until(|v| v["allowances"][0]["weekly_remaining"] == 50);
+    cache(75);
+    let began = Instant::now();
+    stream.write(b"refresh\n");
+    stream.until(|v| v["allowances"][0]["weekly_remaining"] == 75);
+    assert!(
+        began.elapsed() < Duration::from_millis(600),
+        "allowance recompute took {:?}",
+        began.elapsed()
+    );
+    stream.close();
+}
+
+#[test]
+fn owner_refresh_burst_is_coalesced_and_never_wakes_ssh_or_codex() {
+    let f = Fixture::new();
+    f.agents();
+    f.codex();
+    let codex = fs::read_to_string(f.dir.join("bin/codex"))
+        .unwrap()
+        .replace(
+            "#!/bin/sh\n",
+            "#!/bin/sh\nprintf '%s\\n' codex >> \"$ANTON_TEST_PEER/../codex-calls\"\n",
         );
-        stream.close();
-        fs::remove_file(path).unwrap();
-        write(
-            path,
-            if path == &colours {
-                b"accent = '#123456'\n".as_slice()
-            } else {
-                b"Fixture".as_slice()
-            },
-            0o600,
+    write(&f.dir.join("bin/codex"), codex, 0o755);
+    legacy_peer(&f);
+    let key = anton_runtime::allowances::account_key("synthetic-account").unwrap();
+    write(&f.root.join(".config.json"),json!({"interval":60,"hosts":[{"id":"local","socket_path":f.dir.join("herdr.sock")},{"id":"remote","transport":"ssh","target":"fixture"}],"allowances":{"accounts":{key:{"id":"synthetic","label":"Synthetic","category":"Personal"}},"sources":[{"target":"fixture"}]}}).to_string(),0o600);
+    let mut stream = Stream::new(&f);
+    stream.until(|v| {
+        v["hosts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|h| h["online"] == true)
+            && v["allowances"][0]["weekly_remaining"] == 75
+    });
+    let end = Instant::now() + Duration::from_secs(6);
+    while lines(&f.dir.join("ssh-calls")) < 2 {
+        assert!(Instant::now() < end, "startup ssh reads incomplete");
+        thread::sleep(Duration::from_millis(10));
+    }
+    thread::sleep(Duration::from_millis(300));
+    let ssh = lines(&f.dir.join("ssh-calls"));
+    let codex = lines(&f.dir.join("codex-calls"));
+    assert!(codex >= 1, "account worker must exist for this test");
+    let began = Instant::now();
+    for _ in 0..20 {
+        stream.write(b"refresh\n");
+        thread::sleep(Duration::from_millis(10));
+    }
+    thread::sleep(Duration::from_secs(3).saturating_sub(began.elapsed()));
+    let window = began + Duration::from_secs(3);
+    let reads = f
+        .served
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(at, _)| *at >= began && *at < window)
+        .count();
+    assert!((2..=4).contains(&reads), "{reads} local Herdr reads in 3 s");
+    assert_eq!(lines(&f.dir.join("ssh-calls")), ssh, "refresh woke SSH");
+    assert_eq!(
+        lines(&f.dir.join("codex-calls")),
+        codex,
+        "refresh ran Codex"
+    );
+    stream.close();
+}
+
+#[test]
+fn malformed_owner_input_then_eof_stops_and_reaps_descendants() {
+    let f = Fixture::new();
+    f.agents();
+    write(&f.dir.join("bin/ssh"),b"#!/bin/sh\necho $$ > \"$ANTON_TEST_PEER/ssh.pid\"\nsleep 60 &\necho $! > \"$ANTON_TEST_PEER/sleep.pid\"\nwait\n",0o755);
+    let mut stream = Stream::new(&f);
+    stream.until(|v| v["hosts"][0]["online"] == true);
+    let end = Instant::now() + Duration::from_secs(2);
+    while !f.peer.join("sleep.pid").exists() {
+        assert!(Instant::now() < end);
+        thread::sleep(Duration::from_millis(10));
+    }
+    stream.write(&vec![b'x'; 256 * 1024]);
+    stream.write(b"\n\xff\xfe\n\r\nunknown\nREFRESH\n\0refresh\n");
+    // Ignored input must not stall publishing: a snapshot still arrives within
+    // one heartbeat plus one loop wait (4 s + 1 s) and 1 s of margin.
+    let malformed = Instant::now();
+    stream.rx.recv_timeout(Duration::from_secs(6)).unwrap();
+    assert!(malformed.elapsed() < Duration::from_secs(6));
+    // The reader recovered after the oversized line: a valid refresh, sent
+    // straight after an emission, still answers promptly with a local sample
+    // stamped after the request.
+    stream.rx.recv_timeout(Duration::from_secs(6)).unwrap();
+    let requested = common::now();
+    let began = Instant::now();
+    stream.write(b"refresh\n");
+    stream.until(|v| local_sampled_at(v) >= requested);
+    assert!(
+        began.elapsed() < Duration::from_millis(1500),
+        "refresh after malformed input took {:?}",
+        began.elapsed()
+    );
+    stream.write(&[b'r'; 100]);
+    stream.close();
+    for name in ["ssh.pid", "sleep.pid"] {
+        let pid = fs::read_to_string(f.peer.join(name)).unwrap();
+        let status = fs::read_to_string(format!("/proc/{}/stat", pid.trim()));
+        assert!(
+            status.is_err() || status.unwrap().split_whitespace().nth(2) == Some("Z"),
+            "descendant still running"
         );
     }
 }
@@ -802,7 +1086,7 @@ fn fleet_fixture(f: &Fixture, inventory: Value) {
         json!([row]).to_string(),
         0o600,
     );
-    let sample = json!({"version":1,"host_id":"legacy","session":"default","ok":true,"result":{"agents":[],"theme":anton_runtime::collection::fallback_theme(),"sampled_at":common::now(),"error":null,"protocol":1,"version":"fixture","cursors":{}}});
+    let sample = json!({"version":1,"host_id":"legacy","session":"default","ok":true,"result":{"agents":[],"theme":legacy_theme(),"sampled_at":common::now(),"error":null,"protocol":1,"version":"fixture","cursors":{}}});
     write(&f.dir.join("remote-sample.json"), sample.to_string(), 0o600);
     write(&f.dir.join("bin/ssh"),b"#!/bin/sh\nfor arg do last=$arg; done\nbase=\"$ANTON_TEST_PEER/..\"\ncase $last in\n *--allowances-probe*) printf '%s\\n' allowance >> \"$base/calls\"; cat \"$base/remote-allowances.json\";;\n *--probe*) cat > \"$base/last-probe\"; cat \"$base/remote-sample.json\";;\n *) exit 91;;\nesac\n",0o755);
 }

@@ -160,6 +160,8 @@ pub fn effective(base: &Value, inventory: Option<&[Value]>) -> Result<Value> {
         );
     }
     // Effective empty fleets and removed theme hosts are valid at runtime.
+    // `theme_host` is a retired, ignored key; a discovered host that named it
+    // may disappear without invalidating the effective configuration.
     if !hosts.is_empty() {
         let mut validated = result.clone();
         validated.as_object_mut().unwrap().remove("theme_host");
@@ -247,6 +249,14 @@ mod tests {
             checkpoint_key(&renamed),
             checkpoint_key(&active["hosts"][1])
         );
+    }
+    #[test]
+    fn retired_theme_host_may_name_a_removed_profile_host() {
+        let base = json!({"fleet_discovery":true,"theme_host":"legacy","hosts":[{"id":"local","theme_path":"~/theme"},{"id":"legacy","profile_id":"saved","target":"old","transport":"ssh"}]});
+        assert!(crate::config::validate(base.clone()).is_ok());
+        let active = effective(&base, Some(&[])).unwrap();
+        assert_eq!(active["hosts"].as_array().unwrap().len(), 1);
+        assert_eq!(active["theme_host"], "legacy");
     }
     #[test]
     fn invalid_inventory_and_collisions_fail_closed() {

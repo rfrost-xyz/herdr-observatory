@@ -10,6 +10,25 @@ Codex session records and invokes the same executable on explicitly configured
 SSH peers. It stops on owner-pipe closure. No Python, Docker, listening service,
 independent autostart or music forwarding is required.
 
+The collector writes one JSON snapshot per line. It emits when state changes and
+otherwise every `heartbeat_seconds` (4 s), a value carried in each snapshot so
+the popover can derive how long to keep a snapshot without a new one. The
+coordinator waits at most 1 s for events between heartbeat checks.
+
+The owner pipe (the collector's stdin) accepts newline-delimited commands of at
+most 64 bytes. The only command is `refresh`. Longer lines, invalid UTF-8 and
+unknown commands are ignored; EOF stops the collector. `refresh` wakes only local
+Herdr sampling, recomputes allowances from the local cache without a Codex call
+and emits once the fresh local samples arrive, typically within about a second.
+Refreshes are honoured at most once every 2 s; requests in between coalesce into
+one. SSH peers, account reads and fleet discovery keep their own cadence. The
+popover sends `refresh` for `r`, middle-click and the IPC `refresh` call.
+
+The collector no longer reads the Omarchy theme; the popover follows the theme
+itself. Existing `theme_host` and per-host `theme_path` settings are still
+validated as before so installed configurations keep loading, and are otherwise
+ignored. Peers report `theme` as `null` for compatibility with older plugins.
+
 The unchanged popover shows context, input/output, cache composition, subagent
 outcomes and turn time. Missing data stays unknown. Codex collection does not
 need Observatory hooks; Herdr's native integration supplies session identity.
@@ -189,6 +208,10 @@ bash tests/run-qml.sh
 omarchy-plugin-validate omarchy/herdr.observatory
 openspec validate --all --strict
 ```
+
+`tests/run-qml.sh` fails on QML binding errors (`TypeError`, `ReferenceError`,
+`Unable to assign`) as well as on test failures. Set `QMLTESTRUNNER` to use a
+particular Qt 6 build; CI uses Qt 6.8.3.
 
 Production QML fixtures exercise the actual `PopupContent.qml`; include their
 layout/keyboard/reduced-motion checks and `omarchy-plugin-validate` for UI changes.

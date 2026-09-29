@@ -10,13 +10,14 @@ QtObject {
     property var collapsedHosts: []
     readonly property var contentItem: popup ? popup.threadContent : null
     property string face: 'monospace'
-    property int focusedThread: -1
+    property string focusedKey: ''
     property color green: light ? '#397332' : '#9dc473'
     property var hiddenStates: []
     property color ink: light ? '#243030' : '#d7d6cd'
     property bool light: false
     property color line: light ? '#d1d9d7' : '#28383c'
     property bool motionEnabled: false
+    property var openedKeys: []
     property color muted: light ? '#637173' : '#8d9497'
     property string navigationError: ''
     property double now: 1800000000000
@@ -38,9 +39,7 @@ QtObject {
         return h.reporting;
     }).length
     readonly property var threadGroups: State.groupThreads(overview, hiddenStates, collapsedHosts)
-    readonly property var threadOrder: threadsCollapsed ? [] : threadGroups.reduce(function (a, g) {
-        return a.concat(g.indices);
-    }, [])
+    readonly property var threadKeys: threadsCollapsed ? [] : State.focusKeys(overview, threadGroups)
     readonly property var threadViewport: popup ? popup.threadViewport : null
     readonly property bool threadsCollapsed: parseList(preferences.collapsedSections).indexOf('threads') >= 0
     readonly property var tooltipHost: popup
@@ -49,6 +48,8 @@ QtObject {
 
     signal newThreads(var keys)
     signal observedChange(var changes)
+
+    onThreadKeysChanged: focusedKey = State.reconcileFocus(threadKeys, focusedKey)
 
     function accountAlias(a) {
         return a.id === 'one' ? 'Gilfoyle' : 'Jared Dunn';
@@ -59,7 +60,9 @@ QtObject {
     function alpha(c, a) {
         return Qt.rgba(c.r, c.g, c.b, a);
     }
-    function openThread(i) {
+    // Mirrors Panel.qml: record the key instead of launching navigation.
+    function openThread(key) {
+        openedKeys = openedKeys.concat([key]);
     }
     function paceText(a) {
         return a.remaining.toFixed(1).replace(/\.0$/, '') + '% left · ' + a.timeRemaining.toFixed(1).replace(/\.0$/, '') + '% expected';
@@ -95,6 +98,7 @@ QtObject {
             next[key] = JSON.stringify(list);
             preferences = next;
         }
+        focusedKey = '';
     }
     function tokens(n) {
         return n === null ? '—' : n >= 1000000 ? (n / 1000000).toFixed(1) + 'M' : n >= 1000 ? (n / 1000).toFixed(1) + 'K' : String(n);

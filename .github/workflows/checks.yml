@@ -14,3 +14,25 @@ jobs:
       - run: cargo clippy --manifest-path omarchy/anton-runtime/Cargo.toml --locked --all-targets -- -D warnings
       - run: cargo test --manifest-path omarchy/anton-runtime/Cargo.toml --locked
       - run: node --test tests/test_pi_hooks.mjs tests/test_omarchy_state.cjs tests/test_native_distribution.mjs
+  qml:
+    # Qt 6.8 LTS instead of Ubuntu's Qt 6.4. On 6.4 the AntonSurface colour
+    # bindings read the stub qs.Commons Color as undefined and throw while the
+    # tests still pass. run-qml.sh now fails on such binding errors.
+    runs-on: ubuntu-latest
+    env:
+      QT_QUICK_BACKEND: software
+    steps:
+      - uses: actions/checkout@v4
+      - run: >-
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends
+          libgl1 libegl1 libxkbcommon0 libfontconfig1 libdbus-1-3 libgssapi-krb5-2
+          fonts-dejavu-core
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          arch: linux_gcc_64
+          cache: true
+          setup-python: true
+      - run: bash tests/run-qml.sh
+        env:
+          QMLTESTRUNNER: ${{ env.QT_ROOT_DIR }}/bin/qmltestrunner

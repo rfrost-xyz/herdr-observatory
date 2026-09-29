@@ -47,7 +47,7 @@ AntonSurface {
     Accessible.role: Accessible.Button
     height: threadMetrics.y + threadMetrics.implicitHeight + Style.space(8)
     hint: entry.state + " · " + entry.host + " · " + entry.harness + "\n" + (usage.age ? (usage.stale ? "Last reported " : "Reported ") + usage.age : "Usage not reported")
-    keyed: ui.focusedThread === threadIndex
+    keyed: ui.focusedKey !== "" && ui.focusedKey === State.threadKey(entry)
     opacity: entrance
     restingOpacity: 0
     tint: ui.stateColour(entry.state)
@@ -57,7 +57,7 @@ AntonSurface {
         y: (1 - threadCard.entrance) * Style.space(5)
     }
 
-    Accessible.onPressAction: ui.openThread(threadCard.threadIndex)
+    Accessible.onPressAction: ui.openThread(State.threadKey(threadCard.entry))
     onKeyedChanged: Qt.callLater(reveal)
 
     Connections {
@@ -403,7 +403,7 @@ AntonSurface {
         }
     }
     TapHandler {
-        onTapped: ui.openThread(threadCard.threadIndex)
+        onTapped: ui.openThread(State.threadKey(threadCard.entry))
     }
     HoverHandler {
         cursorShape: Qt.PointingHandCursor

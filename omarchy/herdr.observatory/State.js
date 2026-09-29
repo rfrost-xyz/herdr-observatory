@@ -26,12 +26,6 @@ function percent(value) {
   return n !== null && n >= 0 && n <= 100 ? n : null
 }
 
-function usedPercent(value) {
-  if (!value || number(value.used) === null || number(value.total) === null
-      || value.total <= 0 || value.used < 0 || value.used > value.total) return null
-  return value.used / value.total * 100
-}
-
 function counter(value) {
   var n = number(value)
   return n !== null && n >= 0 && n <= 9007199254740991 && Math.floor(n) === n ? n : null
@@ -53,6 +47,7 @@ function threadUsage(agent, nowMs) {
   var context = counter(t.context), window = counter(t.window)
   var contextPercent = context !== null && window !== null && window > 0 && context <= window
       ? percent(t.context_percent) !== null ? t.context_percent : context / window * 100 : null
+  // Measurement freshness: usage older than 120 s is last-known, not current.
   return { contextPercent: contextPercent, inputTokens: input, outputTokens: output, uncachedTokens: validPartition ? uncached : null, cachePercent: cache, compactions: counter(t.compactions), age: ageLabel(age), stale: age > 120 }
 }
 
@@ -115,6 +110,7 @@ function childCompletion(agent, nowMs) {
     if (value === null) valid = false; else sum += value
   })
   if (!valid || sum !== total) outcomes = null
+  // Measurement freshness: child status older than 120 s is last-known.
   return { total: total, done: done, stamp: stamp, stale: age > 120, age: ageLabel(age), outcomes: outcomes }
 }
 
@@ -129,6 +125,7 @@ function childObservations(agent, nowMs) {
   if (counter(stamp) === null || stamp <= 0 || stamp > t.seq) return null
   var age = ageSeconds(stamp / 1000000, nowMs)
   if (age === null) return null
+  // Measurement freshness: child observations older than 120 s are last-known.
   return { starts: starts, stops: stops, stamp: stamp, stale: age > 120, age: ageLabel(age) }
 }
 
@@ -157,31 +154,6 @@ function transitions(before, after) {
 
 function resetLabel(seconds) {
   return Math.floor(seconds / 86400) + "d " + (seconds < 3600 ? "<1" : Math.floor(seconds % 86400 / 3600)) + "h"
-}
-
-// Only published daily observations become bars. Missing dates are not zeroes.
-function activityView(rows, nowMs) {
-  if (!Array.isArray(rows) || rows.length === 0 || rows.length > 30) return null
-  var seen = {}, daily = [], total = 0, peak = 0
-  var today = new Date(nowMs).toISOString().slice(0, 10)
-  for (var i = 0; i < rows.length; i++) {
-    var row = rows[i], date = row && row.date, tokens = row && row.tokens
-    if (typeof date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(date)
-        || !isFinite(Date.parse(date + "T00:00:00Z"))
-        || new Date(date + "T00:00:00Z").toISOString().slice(0, 10) !== date
-        || date > today || seen[date] || number(tokens) === null
-        || tokens < 0 || tokens > 9007199254740991 || Math.floor(tokens) !== tokens) return null
-    seen[date] = true
-    total += tokens
-    if (total > 9007199254740991) return null
-    peak = Math.max(peak, tokens)
-    daily.push({ date: date, tokens: tokens })
-  }
-  daily.sort(function(a, b) { return a.date.localeCompare(b.date) })
-  for (var j = 0; j < daily.length; j++) daily[j].ratio = peak > 0 ? daily[j].tokens / peak : 0
-  var scale = total >= 1e12 ? 1e12 : total >= 1e9 ? 1e9 : total >= 1e6 ? 1e6 : total >= 1e3 ? 1e3 : 1
-  var unit = scale === 1e12 ? "T" : scale === 1e9 ? "B" : scale === 1e6 ? "M" : scale === 1e3 ? "K" : ""
-  return { daily: daily, count: daily.length, total: (total / scale).toFixed(scale === 1 ? 0 : 1).replace(/\.0$/, "") + unit }
 }
 
 // Highest-priority observed state wins; unavailable sources never imply completion.
@@ -273,32 +245,25 @@ function groupThreads(view, hiddenStates, collapsedHosts) {
 
 function project(raw, nowMs) {
   var empty = { connected: false, working: null, partial: false, threads: [], hosts: [],
-                allowances: [], gpu: null, discoveryState: "disabled", discoveryLabel: "", inference: "Inference use unavailable", note: "Observatory unavailable" }
+                allowances: [], discoveryLabel: "", note: "Observatory unavailable" }
   if (!raw || !Array.isArray(raw.hosts) || !Array.isArray(raw.allowances)) return empty
   var discovery = raw.fleet_discovery && raw.fleet_discovery.state
   if (["available", "unavailable", "discovering"].indexOf(discovery) < 0) discovery = "disabled"
   var interval = number(raw.interval)
+  // Measurement freshness, not transport: a host sample stays current for its
+  // sampling interval plus 20 s of peer and scheduling slack.
   var maxAge = (interval !== null && interval >= 2 && interval <= 60 ? interval : 5) + 20
-  var hosts = [], threads = [], working = 0, missing = 0, reportingCount = 0, gpu = null
+  var hosts = [], threads = [], working = 0, missing = 0, reportingCount = 0
   for (var i = 0; i < raw.hosts.length; i++) {
     var host = raw.hosts[i]
     if (!host || typeof host !== "object") continue
     var age = ageSeconds(host.sampled_at, nowMs)
     var reporting = host.connection_state !== "setup_needed" && host.online === true && age !== null && age < maxAge && Array.isArray(host.agents)
-    var metrics = reporting && host.metrics ? host.metrics : {}
     var connection = host.connection_state === "setup_needed" ? "setup_needed" : host.connection_state === "connecting" ? "connecting" : reporting ? "connected" : "unreachable"
     hosts.push({ connectionState: connection, connectionLabel: connection === "setup_needed" ? "Setup needed" : connection === "connecting" ? "Connecting" : connection === "connected" ? "Connected" : "Unreachable", id: label(host.id, "unknown"), name: label(host.label, label(host.id, "Host")), navigation: host.navigation === undefined ? null : host.navigation,
-                 activeThreads: reporting ? host.agents.filter(function(a) { return a && ["working", "blocked"].indexOf(String(a.status).toLowerCase()) >= 0 }).length : null,
-                 reporting: reporting, age: reporting ? ageLabel(age) : "source unavailable",
-                 cpu: percent(metrics.cpu_percent), memory: usedPercent(metrics.memory),
-                 gpu: metrics.gpu ? percent(metrics.gpu.percent) : null,
-                 vram: usedPercent(metrics.gpu) })
+                 reporting: reporting, age: reporting ? ageLabel(age) : "source unavailable" })
     if (!reporting) { missing++; continue }
     reportingCount++
-    if (host.id === "ws-255" && host.metrics && host.metrics.gpu && number(host.metrics.gpu.percent) !== null
-        && number(host.metrics.gpu.percent) >= 0 && number(host.metrics.gpu.percent) <= 100) {
-      gpu = { host: label(host.label, label(host.id, "Host")), percent: host.metrics.gpu.percent, age: ageLabel(age) }
-    }
     var agents = Array.isArray(host.agents) ? host.agents : []
     for (var j = 0; j < agents.length; j++) {
       var agent = agents[j]
@@ -331,6 +296,7 @@ function project(raw, nowMs) {
     var balance = number(row.weekly_remaining)
     var reset = number(row.weekly_resets_at)
     var age = ageSeconds(row.sampled_at, nowMs, 1)
+    // Measurement freshness: an allowance observation is current for 600 s.
     var current = row.available === true && age !== null && age <= 600
                   && balance !== null && balance >= 0 && balance <= 100
                   && reset !== null && reset > nowMs / 1000
@@ -344,18 +310,14 @@ function project(raw, nowMs) {
     allowances.push({ id: accountId, provider: provider, providerLabel: label(row.provider_label, provider === "codex" ? "Codex" : provider), label: label(row.label, accountId), remaining: current ? balance : null,
                       timeRemaining: timeRemaining,
                       paceDifference: paceDifference,
-                      paceStrength: paceDifference === null ? 0 : Math.min(1, Math.abs(paceDifference) / 15),
                       resetCount: resetCount,
-                      pace: paceDifference === null ? "unknown" : paceDifference > 0 ? "reserve" : paceDifference < 0 ? "deficit" : "even",
                       reset: untilReset !== null ? resetLabel(untilReset) : null,
-                      activity: current ? activityView(row.daily_usage, nowMs) : null,
                       age: current ? ageLabel(age) : "source unavailable" })
   }
   // Account and provider order follows the configured collection order.
   return { connected: true, working: reportingCount > 0 ? working : null, partial: missing > 0, threads: threads,
-           discoveryState: discovery, discoveryLabel: discovery === "unavailable" ? "Discovery unavailable" : discovery === "discovering" ? "Discovering" : "",
-           hosts: hosts, allowances: allowances, gpu: gpu,
-           inference: "Inference use unavailable",
+           discoveryLabel: discovery === "unavailable" ? "Discovery unavailable" : discovery === "discovering" ? "Discovering" : "",
+           hosts: hosts, allowances: allowances,
            note: reportingCount === 0 ? "No sources reporting" : missing > 0 ? missing + " source" + (missing === 1 ? "" : "s") + " unavailable" : "All sources reporting" }
 }
 
@@ -377,4 +339,38 @@ function allowancePaceBand(difference) {
   return "deficit"
 }
 
-if (typeof module !== "undefined") module.exports = { navigationArgs: navigationArgs, turnTiming: turnTiming, durationLabel: durationLabel, timingHint: timingHint, allowancePaceReading: allowancePaceReading, allowancePaceBand: allowancePaceBand, threadKey: threadKey, completionEpisode: completionEpisode, stableThreads: stableThreads, arrivals: arrivals, providerGroups: providerGroups, childHint: childHint, groupThreads: groupThreads, transitions: transitions, dominantState: dominantState, project: project, ageSeconds: ageSeconds, ageLabel: ageLabel }
+// Transport freshness. The runtime states its heartbeat; a snapshot is dropped
+// once no line arrives within one heartbeat plus one coordinator loop wait
+// (LOOP_WAIT, 1 s) plus 1 s of scheduling and pipe margin. An absent or
+// implausible heartbeat falls back to 6 s, the value for today's 4 s heartbeat.
+function receiptTimeoutMs(raw) {
+  var heartbeat = raw && typeof raw === "object" ? number(raw.heartbeat_seconds) : null
+  return heartbeat !== null && heartbeat >= 1 && heartbeat <= 60 ? (heartbeat + 1 + 1) * 1000 : 6000
+}
+
+// Keyboard focus follows a stable thread key, never a position in the view.
+function focusKeys(view, groups) {
+  var keys = []
+  if (!view || !Array.isArray(view.threads) || !Array.isArray(groups)) return keys
+  groups.forEach(function(group) {
+    (group && Array.isArray(group.indices) ? group.indices : []).forEach(function(index) {
+      if (view.threads[index]) keys.push(threadKey(view.threads[index]))
+    })
+  })
+  return keys
+}
+function reconcileFocus(keys, key) { return key && keys.indexOf(key) >= 0 ? key : "" }
+function moveFocus(keys, key, delta) {
+  if (keys.length === 0) return ""
+  var at = key ? keys.indexOf(key) : -1
+  if (at < 0) return keys[0]
+  return keys[Math.max(0, Math.min(keys.length - 1, at + delta))]
+}
+function activationKey(keys, key) { return key && keys.indexOf(key) >= 0 ? key : keys.length ? keys[0] : "" }
+function threadForKey(view, key) {
+  if (!key || !view || !Array.isArray(view.threads)) return null
+  for (var i = 0; i < view.threads.length; i++) if (threadKey(view.threads[i]) === key) return view.threads[i]
+  return null
+}
+
+if (typeof module !== "undefined") module.exports = { navigationArgs: navigationArgs, turnTiming: turnTiming, durationLabel: durationLabel, timingHint: timingHint, allowancePaceReading: allowancePaceReading, allowancePaceBand: allowancePaceBand, threadKey: threadKey, completionEpisode: completionEpisode, stableThreads: stableThreads, arrivals: arrivals, providerGroups: providerGroups, childHint: childHint, groupThreads: groupThreads, transitions: transitions, dominantState: dominantState, project: project, ageSeconds: ageSeconds, ageLabel: ageLabel, receiptTimeoutMs: receiptTimeoutMs, focusKeys: focusKeys, reconcileFocus: reconcileFocus, moveFocus: moveFocus, activationKey: activationKey, threadForKey: threadForKey }

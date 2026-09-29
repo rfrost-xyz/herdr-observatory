@@ -12,24 +12,24 @@ const now = 1_800_000_000_000;
 
 function host(overrides = {}) {
   return {
-    id: 'iapetus', label: 'iapetus', online: true, sampled_at: now / 1000 - 5,
-    agents: [{ id: 'iapetus:4', project: 'Example', title: 'Synthetic task', status: 'working', harness: 'codex' }],
-    metrics: { gpu: { percent: 76 } }, ...overrides
+    id: 'laptop', label: 'laptop', online: true, sampled_at: now / 1000 - 5,
+    agents: [{ id: 'laptop:4', project: 'Example', title: 'Synthetic task', status: 'working', harness: 'codex' }],
+    ...overrides
   };
 }
 
 test('unavailable hosts do not become zero-thread evidence', () => {
-  const view = project({ interval: 5, hosts: [host(), host({ id: 'ws-255', label: 'ws-255', online: false, agents: [] })], allowances: [] }, now);
+  const view = project({ interval: 5, hosts: [host(), host({ id: 'second', label: 'second', online: false, agents: [] })], allowances: [] }, now);
   assert.equal(view.working, 1);
   assert.equal(view.partial, true);
   assert.equal(view.hosts[1].reporting, false);
   assert.equal(view.note, '1 source unavailable');
 });
 
-test('expired sample removes its threads and GPU reading', () => {
+test('expired sample removes its threads', () => {
   const view = project({ interval: 5, hosts: [host({ sampled_at: now / 1000 - 30 })], allowances: [] }, now);
   assert.equal(view.threads.length, 0);
-  assert.equal(view.gpu, null);
+  assert.equal(view.hosts[0].reporting, false);
   assert.equal(view.partial, true);
 });
 
@@ -50,24 +50,12 @@ test('mapped weekly allowance preserves zero and rejects expired reset', () => {
   assert.equal(view.allowances[1].remaining, null);
 });
 
-test('GPU is device evidence and inference remains unavailable', () => {
-  const view = project({ interval: 5, hosts: [host(), host({ id: 'ws-255', label: 'ws-255' })], allowances: [] }, now);
-  assert.equal(view.gpu.percent, 76);
-  assert.equal(view.gpu.host, 'ws-255');
-  assert.equal(view.inference, 'Inference use unavailable');
-});
-
-test('laptop GPU is not presented as ws-255 inference hardware', () => {
-  const view = project({ interval: 5, hosts: [host()], allowances: [] }, now);
-  assert.equal(view.gpu, null);
-});
-
 test('host map identity stays correct when display labels match', () => {
   const view = project({ interval: 5, hosts: [
-    host({ id: 'iapetus', label: 'shared' }),
-    host({ id: 'ws-255', label: 'shared', agents: [] })
+    host({ id: 'laptop', label: 'shared' }),
+    host({ id: 'second', label: 'shared', agents: [] })
   ], allowances: [] }, now);
-  assert.equal(view.threads[0].hostId, 'iapetus');
+  assert.equal(view.threads[0].hostId, 'laptop');
   assert.equal(view.threads.filter(thread => thread.hostId === view.hosts[0].id).length, 1);
   assert.equal(view.threads.filter(thread => thread.hostId === view.hosts[1].id).length, 0);
 });
@@ -85,12 +73,12 @@ test('burn pace compares balance with time remaining and does not assume a reset
   const view = row => project({ hosts: [host()], allowances: [row] }, now).allowances[0];
   assert.equal(view(allowance()).timeRemaining, 50);
   assert.equal(view(allowance()).paceDifference, 20);
-  assert.equal(view(allowance()).pace, 'reserve');
-  assert.equal(view(allowance({ weekly_remaining: 30 })).pace, 'deficit');
-  assert.equal(view(allowance({ weekly_remaining: 53 })).pace, 'reserve');
-  assert.equal(view(allowance({ weekly_remaining: 47 })).pace, 'deficit');
-  assert.equal(view(allowance({ weekly_remaining: 53.1 })).pace, 'reserve');
-  assert.equal(view(allowance({ weekly_remaining: 46.9 })).pace, 'deficit');
+  assert.ok(view(allowance()).paceDifference > 0);
+  assert.ok(view(allowance({ weekly_remaining: 30 })).paceDifference < 0);
+  assert.ok(view(allowance({ weekly_remaining: 53 })).paceDifference > 0);
+  assert.ok(view(allowance({ weekly_remaining: 47 })).paceDifference < 0);
+  assert.ok(view(allowance({ weekly_remaining: 53.1 })).paceDifference > 0);
+  assert.ok(view(allowance({ weekly_remaining: 46.9 })).paceDifference < 0);
   assert.equal(view(allowance()).reset, '3d 12h');
   assert.equal(view(allowance({ weekly_remaining: 0 })).paceDifference, -50);
   assert.equal(view(allowance({ weekly_resets_at: now / 1000 + 604801 })).timeRemaining, null);
@@ -98,36 +86,6 @@ test('burn pace compares balance with time remaining and does not assume a reset
   assert.equal(expired.remaining, null);
   assert.equal(expired.timeRemaining, null);
   assert.equal(expired.paceDifference, null);
-  assert.equal(expired.pace, 'unknown');
-});
-
-test('activity charts preserve reported dates and reject invalid or stale observations', () => {
-  const daily = [{ date: '2026-09-20', tokens: 20 }, { date: '2026-09-22', tokens: 0 }];
-  const allowance = { label: 'Personal', available: true, weekly_remaining: 70,
-    weekly_resets_at: now / 1000 + 1000, sampled_at: now / 1000 - 5, daily_usage: daily };
-  const view = overrides => project({ hosts: [host()], allowances: [{ ...allowance, ...overrides }] }, now).allowances[0];
-  const activity = view({}).activity;
-  assert.equal(activity.count, 2);
-  assert.equal(activity.daily[0].ratio, 1);
-  assert.equal(activity.daily[1].ratio, 0);
-  assert.equal(activity.daily[1].date, '2026-09-22');
-  assert.equal(view({ daily_usage: [...daily, daily[0]] }).activity, null);
-  assert.equal(view({ daily_usage: [{ date: '2026-02-30', tokens: 1 }] }).activity, null);
-  assert.equal(view({ daily_usage: [{ date: '2099-01-01', tokens: 1 }] }).activity, null);
-  assert.equal(view({ daily_usage: [{ date: '2026-09-20', tokens: -1 }] }).activity, null);
-  assert.equal(view({ sampled_at: now / 1000 - 601 }).activity, null);
-});
-
-test('fleet gauges preserve measured zeroes and suppress invalid or expired metrics', () => {
-  const metrics = { cpu_percent: 0, memory: { used: 1, total: 4 }, gpu: { percent: 10, used: 8, total: 10 } };
-  const view = overrides => project({ hosts: [host({ metrics, ...overrides })], allowances: [] }, now).hosts[0];
-  assert.equal(view({}).cpu, 0);
-  assert.equal(view({}).memory, 25);
-  assert.equal(view({}).vram, 80);
-  assert.equal(view({ sampled_at: now / 1000 - 30 }).gpu, null);
-  assert.equal(view({ online: false }).cpu, null);
-  assert.equal(view({ metrics: { cpu_percent: 101, memory: { used: 2, total: 1 }, gpu: { percent: -1 } } }).memory, null);
-  assert.equal(view({ metrics: { cpu_percent: 101 } }).cpu, null);
 });
 
 test('thread instruments use session counters and the original usage timestamp', () => {
@@ -176,11 +134,11 @@ test('menubar state uses blocked, working, done, idle precedence without counts'
 });
 
 
-test('allowance reset metadata and bounded pace strength retain source validity', () => {
+test('allowance reset metadata retains source validity', () => {
   const base = { label: 'Personal', available: true, sampled_at: now / 1000 - 10,
     weekly_remaining: 60, weekly_resets_at: now / 1000 + 302400, reset_count: 0, reset_expires_at: null };
   const view = changes => project({ hosts: [host()], allowances: [{ ...base, ...changes }] }, now).allowances[0];
-  assert.equal(view({}).paceStrength, 2/3);
+  assert.equal(view({}).paceDifference, 10);
   assert.equal(view({}).reset, '3d 12h');
   assert.equal(view({}).resetCount, 0);
   assert.equal(view({ reset_count: 4 }).resetCount, 4);
@@ -190,17 +148,9 @@ test('allowance reset metadata and bounded pace strength retain source validity'
   assert.equal(view({ sampled_at: now / 1000 - 601 }).resetCount, null);
   assert.equal(view({ sampled_at: now / 1000 - 601 }).reset, null);
   assert.equal(view({ weekly_remaining: null }).reset, '3d 12h');
-  assert.equal(view({ weekly_remaining: null }).paceStrength, 0);
+  assert.equal(view({ weekly_remaining: null }).paceDifference, null);
   assert.equal(view({ weekly_resets_at: now / 1000 + 7200 }).reset, '0d 2h');
   assert.equal(view({ weekly_resets_at: now / 1000 + 60 }).reset, '0d <1h');
-});
-
-test('fleet active counts include working and blocked, with unknown distinct from zero', () => {
-  const agents = ['working', 'blocked', 'idle', 'done', 'unknown'].map((status, i) => ({id: String(i), status}));
-  const view = project({hosts:[host({agents}),host({id:'offline',online:false}),host({id:'empty',agents:[]})],allowances:[]},now);
-  assert.equal(view.hosts[0].activeThreads,2);
-  assert.equal(view.hosts[1].activeThreads,null);
-  assert.equal(view.hosts[2].activeThreads,0);
 });
 
 test('subagent observations keep stop counts and original age without inventing a completion ratio', () => {
@@ -269,7 +219,7 @@ test('status filters and collapsed machines preserve totals and remove hidden na
   assert.equal(filtered[0].total,4);
   assert.equal(filtered[0].matching,2);
   assert.deepEqual(Array.from(filtered[0].indices,i=>view.threads[i].id),['working','blocked']);
-  const collapsed = sandbox.module.exports.groupThreads(view, ['idle'], ['iapetus']);
+  const collapsed = sandbox.module.exports.groupThreads(view, ['idle'], ['laptop']);
   assert.equal(collapsed[0].collapsed,true);
   assert.equal(collapsed[0].matching,3);
   assert.equal(collapsed[0].indices.length,0);
@@ -283,17 +233,15 @@ test('every measured deficit is visible and pacing never divides by a tiny time 
   const allowance = {provider:'claude',provider_label:'Claude',account_id:'office',label:'Office',available:true,
     sampled_at:now/1000,weekly_remaining:49.99,weekly_resets_at:now/1000+1800,window_seconds:3600};
   const account = project({hosts:[host()],allowances:[allowance]},now).allowances[0];
-  assert.equal(account.pace,'deficit');
+  assert.ok(account.paceDifference<0);
   assert.equal(account.timeRemaining,50);
-  assert.ok(account.paceStrength>0 && account.paceStrength<1);
   assert.equal(account.provider,'claude');
   assert.equal(account.id,'office');
   assert.equal(account.pacePercent,undefined);
   const nearReset=project({hosts:[host()],allowances:[{...allowance,weekly_remaining:20,weekly_resets_at:now/1000+1}]},now).allowances[0];
-  assert.equal(nearReset.paceStrength,1);
-  assert.equal(nearReset.pace,'reserve');
+  assert.ok(nearReset.paceDifference>0);
   const even=project({hosts:[host()],allowances:[{...allowance,weekly_remaining:50}]},now).allowances[0];
-  assert.equal(even.pace,'even');
+  assert.equal(even.paceDifference,0);
 });
 
 test('providers group any configured accounts and retain legacy identities', () => {
@@ -418,7 +366,6 @@ test('setup needed is a machine hint and never contributes blocked thread priori
   const view=project({fleet_discovery:{state:'available'},hosts:[host(),host({id:'new-profile',connection_state:'setup_needed',online:true,agents:[{id:'stale',status:'blocked'}]})],allowances:[]},now);
   assert.equal(view.hosts[1].connectionLabel,'Setup needed');
   assert.equal(view.hosts[1].reporting,false);
-  assert.equal(view.hosts[1].activeThreads,null);
   assert.equal(view.threads.length,1);
   assert.equal(sandbox.module.exports.dominantState(view.threads),'working');
 });
@@ -441,7 +388,7 @@ test('navigation retains opaque exact profile binding and rejects malformed bind
   const args=sandbox.module.exports.navigationArgs(view.threads[0]);
   assert.deepEqual(Array.from(args.slice(0,3)),['--open-thread','legacy-host','legacy-host:w1:p2']);
   assert.deepEqual(JSON.parse(args[3]),navigation);
-  const fallback=project({hosts:[host({navigation,agents:[{id:'iapetus:w1:p2',navigation:null}]})],allowances:[]},now);
+  const fallback=project({hosts:[host({navigation,agents:[{id:'laptop:w1:p2',navigation:null}]})],allowances:[]},now);
   assert.deepEqual(JSON.parse(sandbox.module.exports.navigationArgs(fallback.threads[0])[3]),navigation);
   for(const binding of [{},false,[],{...navigation,route_key:'short'},{...navigation,target:'other'},{...navigation,profile_id:7}]){
     assert.equal(sandbox.module.exports.navigationArgs({...view.threads[0],navigation:binding}),null);
@@ -456,7 +403,7 @@ test('inventory labels and discovery health do not replay thread entrance or sta
   const after=project({...raw,fleet_discovery:{state:'unavailable'},hosts:[{...raw.hosts[0],label:'Renamed machine'}]},now);
   assert.deepEqual(Object.keys(sandbox.module.exports.arrivals(before,after)),[]);
   assert.deepEqual(Object.keys(sandbox.module.exports.transitions(before.threads,after.threads)),[]);
-  assert.equal(sandbox.module.exports.groupThreads(after,[],['iapetus'])[0].indices.length,0);
+  assert.equal(sandbox.module.exports.groupThreads(after,[],['laptop'])[0].indices.length,0);
   const moved=project({...raw,hosts:[host({navigation:{...navigation,route_key:'b'.repeat(64)},agents:[{id:'new',status:'working'}]})]},now);
   assert.deepEqual(Object.keys(sandbox.module.exports.arrivals(before,moved)),[]);
   assert.notEqual(sandbox.module.exports.completionEpisode(before.threads[0]),sandbox.module.exports.completionEpisode(moved.threads[0]));
@@ -513,3 +460,78 @@ test('configured navigation bindings stay opaque and reject ambiguous identities
   assert.equal(state.navigationArgs({...thread, navigation: {...binding, profile_id: 'saved'}}), null)
   assert.equal(state.navigationArgs({...thread, navigation: {host_id: 'custom-local', extra: 'a'.repeat(64)}}), null)
 })
+
+test('projection omits unused presentation fields', () => {
+  const view = project({ interval: 5, fleet_discovery: { state: 'available' }, hosts: [host({ metrics: { cpu_percent: 5, memory: { used: 1, total: 2 }, gpu: { percent: 5, used: 1, total: 2 } } })],
+    allowances: [{ label: 'Personal', available: true, weekly_remaining: 70, weekly_resets_at: now / 1000 + 302400, sampled_at: now / 1000 - 5,
+      daily_usage: [{ date: '2026-09-20', tokens: 20 }] }] }, now);
+  for (const key of ['gpu', 'inference', 'discoveryState']) assert.equal(key in view, false, key);
+  for (const key of ['activeThreads', 'cpu', 'memory', 'gpu', 'vram']) assert.equal(key in view.hosts[0], false, key);
+  for (const key of ['activity', 'paceStrength', 'pace']) assert.equal(key in view.allowances[0], false, key);
+  for (const key of ['gpu', 'inference', 'discoveryState']) assert.equal(key in project(null, now), false, key);
+  assert.equal(view.allowances[0].paceDifference, 20);
+  assert.equal(view.discoveryLabel, '');
+});
+
+test('receipt timeout derives from the stated heartbeat with a safe fallback', () => {
+  const { receiptTimeoutMs } = sandbox.module.exports;
+  assert.equal(receiptTimeoutMs({ heartbeat_seconds: 4 }), 6000);
+  assert.equal(receiptTimeoutMs({ heartbeat_seconds: 10 }), 12000);
+  assert.equal(receiptTimeoutMs({ heartbeat_seconds: 1 }), 3000);
+  assert.equal(receiptTimeoutMs({ heartbeat_seconds: 60 }), 62000);
+  for (const value of [undefined, null, '4', 0, -4, NaN, Infinity, 61, true, {}]) {
+    assert.equal(receiptTimeoutMs({ heartbeat_seconds: value }), 6000, String(value));
+  }
+  assert.equal(receiptTimeoutMs({}), 6000);
+  assert.equal(receiptTimeoutMs(null), 6000);
+  assert.equal(receiptTimeoutMs(undefined), 6000);
+});
+
+test('keyboard focus keeps the same thread when an earlier thread disappears', () => {
+  const { groupThreads, focusKeys, reconcileFocus, activationKey, threadForKey, threadKey } = sandbox.module.exports;
+  const agents = ids => ids.map(id => ({ id, status: 'working', project: 'Project ' + id }));
+  const before = project({ hosts: [host({ agents: agents(['a', 'b', 'c']) })], allowances: [] }, now);
+  const after = project({ hosts: [host({ agents: agents(['b', 'c']) })], allowances: [] }, now);
+  // The retired model stored a position in overview.threads.
+  const indexOrder = view => [].concat(...groupThreads(view).map(group => group.indices));
+  const focusedIndex = before.threads.findIndex(thread => thread.id === 'b');
+  assert.equal(indexOrder(after).indexOf(focusedIndex) >= 0, true); // old reconciliation keeps it
+  assert.equal(after.threads[focusedIndex].id, 'c'); // and Enter would open the neighbour
+  // Keys identify the thread itself.
+  const key = threadKey(before.threads[focusedIndex]);
+  const keys = Array.from(focusKeys(after, groupThreads(after)));
+  assert.deepEqual(keys, ['laptop:b', 'laptop:c']);
+  assert.equal(reconcileFocus(keys, key), 'laptop:b');
+  assert.equal(activationKey(keys, reconcileFocus(keys, key)), 'laptop:b');
+  assert.equal(threadForKey(after, activationKey(keys, key)).id, 'b');
+});
+
+test('focus helpers clear, move and activate by key in visual order', () => {
+  const { groupThreads, focusKeys, reconcileFocus, moveFocus, activationKey, threadForKey } = sandbox.module.exports;
+  const view = project({ hosts: [
+    host({ id: 'one', agents: [{ id: 'x', status: 'idle', project: 'X' }, { id: 'y', status: 'working', project: 'Y' }] }),
+    host({ id: 'two', agents: [{ id: 'z', status: 'working', project: 'A' }] })
+  ], allowances: [] }, now);
+  const keys = Array.from(focusKeys(view, groupThreads(view)));
+  assert.deepEqual(keys, ['one:y', 'one:x', 'two:z']); // host order, then thread order
+  assert.deepEqual(Array.from(focusKeys(view, groupThreads(view, ['idle'], []))), ['one:y', 'two:z']);
+  assert.deepEqual(Array.from(focusKeys(view, groupThreads(view, [], ['one']))), ['two:z']);
+  assert.deepEqual(Array.from(focusKeys(view, [])), []);
+  assert.deepEqual(Array.from(focusKeys(project(null, now), []), x => x), []);
+  assert.equal(reconcileFocus(keys, 'one:x'), 'one:x');
+  assert.equal(reconcileFocus(['one:y'], 'one:x'), '');
+  assert.equal(reconcileFocus(keys, ''), '');
+  assert.equal(moveFocus([], 'one:x', 1), '');
+  assert.equal(moveFocus(keys, '', 1), 'one:y');
+  assert.equal(moveFocus(keys, 'gone', -1), 'one:y');
+  assert.equal(moveFocus(keys, 'one:y', 1), 'one:x');
+  assert.equal(moveFocus(keys, 'one:x', 5), 'two:z');
+  assert.equal(moveFocus(keys, 'one:x', -5), 'one:y');
+  assert.equal(activationKey(keys, 'two:z'), 'two:z');
+  assert.equal(activationKey(keys, 'gone'), 'one:y');
+  assert.equal(activationKey(keys, ''), 'one:y');
+  assert.equal(activationKey([], 'one:x'), '');
+  assert.equal(threadForKey(view, 'two:z').id, 'z');
+  assert.equal(threadForKey(view, 'gone'), null);
+  assert.equal(threadForKey(view, ''), null);
+});

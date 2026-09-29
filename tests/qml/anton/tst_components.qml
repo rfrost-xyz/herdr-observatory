@@ -21,13 +21,14 @@ Item {
         property color blue: '#abcdef'
         property var contentItem: scene
         property string face: 'monospace'
-        property int focusedThread: -1
+        property string focusedKey: ''
         property color green: '#90ad65'
         property color ink: '#d7d6cd'
         property color line: '#333333'
         property bool motionEnabled: true
         property color muted: '#777777'
         property bool opened: true
+        property var openedKeys: []
         property var overview: ({
                 threads: [
                     {
@@ -81,7 +82,8 @@ Item {
         function alpha(c, a) {
             return Qt.rgba(c.r, c.g, c.b, a);
         }
-        function openThread(i) {
+        function openThread(key) {
+            openedKeys = openedKeys.concat([key]);
         }
         function paceText(a) {
             return '40% left · 50% expected';
@@ -114,9 +116,7 @@ Item {
                 label: 'Example',
                 remaining: 40,
                 timeRemaining: 50,
-                pace: 'deficit',
                 paceDifference: -10,
-                paceStrength: 0.66,
                 reset: '2d 1h',
                 resetCount: 1
             })
@@ -185,10 +185,9 @@ Item {
             compare(balance.color.toString(), fakeUi.ink.toString());
             var initial = allowance.paceColour.toString();
             allowance.entry = Object.assign({}, allowance.entry, {
-                pace: "reserve",
                 paceDifference: 10
             });
-            compare(allowance.entry.pace, "reserve");
+            compare(allowance.entry.paceDifference, 10);
             compare(allowance.entry.remaining, 40);
             wait(220);
             verify(allowance.paceColour.toString() !== initial);
@@ -197,14 +196,12 @@ Item {
         function test_08_closed_colour_changes_are_immediate() {
             fakeUi.opened = false;
             allowance.entry = Object.assign({}, allowance.entry, {
-                pace: "deficit",
                 paceDifference: -10
             });
             compare(allowance.paceColour, fakeUi.red);
             fakeUi.opened = true;
             fakeUi.motionEnabled = false;
             allowance.entry = Object.assign({}, allowance.entry, {
-                pace: "reserve",
                 paceDifference: 10
             });
             compare(allowance.paceColour, fakeUi.green);
@@ -214,7 +211,6 @@ Item {
             fakeUi.opened = true;
             fakeUi.motionEnabled = true;
             allowance.entry = Object.assign({}, allowance.entry, {
-                pace: "deficit",
                 paceDifference: -10
             });
             wait(40);
@@ -224,7 +220,6 @@ Item {
             compare(allowance.paceColour.toString(), target.toString());
             // The binding still follows later telemetry without motion.
             allowance.entry = Object.assign({}, allowance.entry, {
-                pace: "reserve",
                 paceDifference: 10
             });
             target = fakeUi.green;
@@ -233,7 +228,6 @@ Item {
         }
         function test_10_closing_finishes_active_colour_change() {
             allowance.entry = Object.assign({}, allowance.entry, {
-                pace: "deficit",
                 paceDifference: -10
             });
             wait(40);
@@ -472,6 +466,18 @@ Item {
             tryCompare(tooltip, 'opened', true, 1200);
             verify(thread.tooltipSuppressed);
             mouseMove(scene, 2, scene.height - 2);
+        }
+        function test_15_thread_card_focus_and_activation_use_its_key() {
+            fakeUi.focusedKey = '';
+            verify(!thread.keyed);
+            fakeUi.focusedKey = 'h:b';
+            verify(!thread.keyed);
+            fakeUi.focusedKey = 'h:a';
+            verify(thread.keyed);
+            fakeUi.focusedKey = '';
+            fakeUi.openedKeys = [];
+            mouseClick(thread, 8, 8);
+            compare(fakeUi.openedKeys, ['h:a']);
         }
 
         name: 'AntonComponents'
