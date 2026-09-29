@@ -99,8 +99,8 @@ On `cc5f982`:
 ## After measurement (integrated head)
 
 **Source and binary.**
-- The harness ran with `--source-root` set to the worktree at `b1eaf52`, so `git_head` is recorded. After the run, two Rust test functions were renamed (a fixup folded into `d8cb8c1`) and the branch was rewritten to `a2df47e`. `git diff b1eaf52 a2df47e` touches only those two test names.
-- The release binary built by `omarchy/herdr.observatory/build-native.sh` has SHA-256 `74f50d695c89e4cc01198c77df9d31ab9b1230e8e5948a6a73dceb569d76931d`. The same hash was rebuilt from `a2df47e`, so the measured binary is the shipped source.
+- Review round 1 squashed the runtime and presentation commits into `8cc635b` and dropped the unconsumed `status` key from the projected allowance view. The measurement was rerun afterwards with `--source-root` set to the worktree at `a776756`, so `git_head` is recorded.
+- The release binary built by `omarchy/herdr.observatory/build-native.sh` from `a776756` has SHA-256 `74f50d695c89e4cc01198c77df9d31ab9b1230e8e5948a6a73dceb569d76931d`, the same as the first after-measurement, because the Rust source did not change in review.
 - Every later commit on the branch is documentation only.
 
 **Command.** The harness, fixtures, conditions and repeat count are the same as the baseline:
@@ -112,26 +112,26 @@ node tests/measure_anton_popover.mjs --binary <scratch>/anton-runtime --source-r
 
 | Window | CPU (s) | Peak RSS (KiB) | Snapshots | Mean bytes | colors.toml opens |
 | --- | --- | --- | --- | --- | --- |
-| 1 | 0.054 | 7660 | 10 | 27677.1 | 0 |
-| 2 | 0.061 | 4340 | 10 | 27676.8 | 0 |
-| 3 | 0.055 | 4332 | 9 | 27148.9 | 0 |
+| 1 | 0.054 | 4444 | 10 | 27674.2 | 0 |
+| 2 | 0.067 | 4348 | 10 | 27676.3 | 0 |
+| 3 | 0.063 | 4148 | 9 | 27145.0 | 0 |
 
-| Metric | Baseline (`cc5f982`) | After (`a2df47e`) |
+| Metric | Baseline (`cc5f982`) | After (`a776756`) |
 | --- | --- | --- |
 | Snapshots in 30 s (median) | 10 | 10 |
-| Mean snapshot bytes (median) | 27674.6 | 27676.8 |
-| Runtime CPU seconds (median) | 0.058 | 0.055 |
-| Runtime family peak RSS (median) | 7468 KiB | 4340 KiB |
+| Mean snapshot bytes (median) | 27674.6 | 27674.2 |
+| Runtime CPU seconds (median) | 0.058 | 0.063 |
+| Runtime family peak RSS (median) | 7468 KiB | 4348 KiB |
 | `colors.toml` opens in 30 s | 0 | 0 |
-| Local and remote Herdr samples in 30 s | 15 / 6 | 15 / 6 |
+| Local and remote Herdr samples in 30 s | 15 / 6 | 16 / 6 |
 | Snapshot `heartbeat_seconds` | 4 | 4 |
-| Refresh latency after `refresh` on stdin | 2.5 ms, after request | 2.7 ms, after request |
+| Refresh latency after `refresh` on stdin | 2.5 ms, after request | 1.2 ms, after request |
 | Local samples in 3.2 s after 20 refreshes | 2 | 2 |
 | Survives malformed stdin, stops on EOF | yes | yes |
-| Projection median (p95), 32 threads | 0.054 (0.138) ms | 0.055 (0.148) ms |
-| Projection median (p95), 128 threads | 0.124 (0.272) ms | 0.127 (0.259) ms |
-| Projected fields view / thread / host (keys/leaves) | 8/1481, 17/45, 7/8 | 8/1485, 17/45, 7/8 |
-| `projection.allowance_fields` (legacy-shaped harness rows) | 10/10 | 12/12 |
+| Projection median (p95), 32 threads | 0.054 (0.138) ms | 0.053 (0.132) ms |
+| Projection median (p95), 128 threads | 0.124 (0.272) ms | 0.124 (0.313) ms |
+| Projected fields view / thread / host (keys/leaves) | 8/1481, 17/45, 7/8 | 8/1483, 17/45, 7/8 |
+| `projection.allowance_fields` (legacy-shaped harness rows) | 10/10 | 11/11 |
 | View replacements / drops in 60 s | 60 / 0 | 60 / 0 |
 | Receipt timeout | 6000 ms | 6000 ms |
 | `Panel.qml` / `State.js` / `PopupContent.qml` lines | 462 / 376 / 364 | 456 / 422 / 364 |
@@ -144,16 +144,16 @@ node tests/measure_anton_popover.mjs --binary <scratch>/anton-runtime --source-r
 | `allowance_wire`: windows per row / window keys | 0 / none | 1 / `duration_s, kind, label, pacing, resets_at, used_percent` |
 | `allowance_contract`: Codex weekly neutral row | remaining null | remaining 60, time 50, reset `3d 12h` |
 | `allowance_contract`: synthetic monthly neutral row | remaining null | remaining 75, time 50, reset `15d 0h` |
-| `allowance_contract`: `auth_needed` row | no balance, no status field | no balance, `status` and `statusText` present |
-| `allowance_contract`: projected view fields | 10/10 | 12/12 |
+| `allowance_contract`: `auth_needed` row | no balance, no status field | no balance, `statusText` present |
+| `allowance_contract`: projected view fields | 10/10 | 11/11 |
 | `provider_coupling`: `weekly_` / `604800` / `provider ==` / quoted `codex` | 2 / 1 / 3 / 5 | 0 / 0 / 0 / 0 |
 | `provider_coupling`: presentation files naming a provider | 2 | 0 (see note) |
 
 Reading the table:
 
 - **Coupling note.** The quoted-`codex` pattern does not match the two keys `"codex:Personal"` and `"codex:Work"` in the `Panel.qml` legacy alias table (`grep -n 'codex:' omarchy/herdr.observatory/Panel.qml` gives lines 62 and 63). The presentation therefore still names Codex once, in one file, as preference-migration data. It has no projection branch. Adding a provider needs no presentation change.
-- **`projection.allowance_fields`.** This metric projects the legacy-shaped rows in the harness `jsSnapshot`. Those rows now project as unavailable with the 12-key view, so the count moved from 10 to 12 with an unchanged definition (D9). `allowance_contract.view_fields` is the like-for-like figure.
-- **Runtime metrics.** CPU, snapshots, bytes, samples and refresh behaviour are within noise. The runtime fixture has no configured accounts, so snapshot bytes barely move. The third window's 9 snapshots is a boundary effect. The peak RSS median fell from 7468 to 4340 KiB, but window 1 read 7660 KiB. RSS is sampled every 50 ms over a short-lived process family, so no memory improvement is claimed.
+- **`projection.allowance_fields`.** This metric projects the legacy-shaped rows in the harness `jsSnapshot`. Those rows now project as unavailable with the 11-key view, so the count moved from 10 to 11 with an unchanged definition (D9). The new key is `statusText`; source `status` gates freshness but is not projected, because nothing in the card, Panel or IPC reads it (review round 1). `allowance_contract.view_fields` is the like-for-like figure.
+- **Runtime metrics.** CPU, snapshots, bytes, samples and refresh behaviour are within noise. The runtime fixture has no configured accounts, so snapshot bytes barely move. The third window's 9 snapshots is a boundary effect. The peak RSS median fell from 7468 to 4348 KiB; the first after-run read 7660 KiB in one window. RSS is sampled every 50 ms over a short-lived process family, so no memory improvement is claimed. The review rerun changed only `State.js`, so runtime differences between the two after-runs are noise.
 - **Wire bytes.** They fell by 72.5 bytes per row, because token activity left the wire. Codex `used_percent` is emitted as a float (`60.0`).
 
 Scope and limits:
@@ -164,18 +164,17 @@ Scope and limits:
 
 ## Gates on the integrated head
 
-Branch `feat/anton-allowance-windows` was rebased on `origin/main` `cc5f982`. The gates ran on `b1eaf52`, and the Rust suite was rerun on `a2df47e` after the test renames.
+Branch `feat/anton-allowance-windows` was rebased on `origin/main` `cc5f982`. After review round 1 every gate reran on `a776756`, whose source tree is the final source.
 
 | Gate | Result |
 | --- | --- |
 | `cargo fmt --manifest-path omarchy/anton-runtime/Cargo.toml --check` | exit 0 |
 | `cargo clippy --manifest-path omarchy/anton-runtime/Cargo.toml --locked --all-targets -- -D warnings` | exit 0 |
-| `cargo test --manifest-path omarchy/anton-runtime/Cargo.toml --locked` | lib 65, bin 8, `native_navigation` 6, `native_process` 26, all passing on `a2df47e` (see flakes) |
+| `cargo test --manifest-path omarchy/anton-runtime/Cargo.toml --locked` | lib 65, bin 8, `native_navigation` 6, `native_process` 26, all passing (see flakes) |
 | `node --test tests/test_pi_hooks.mjs tests/test_omarchy_state.cjs tests/test_native_distribution.mjs` | 65 passed, 0 failed |
 | `bash tests/run-qml.sh` | 41 passed, 0 failed, 0 binding errors, exit 0 |
 | Seven `/tmp/anton-continuity-*.png` SHA-256 | identical to the reference list above |
 | `openspec validate generalise-anton-allowance-windows --strict` | valid |
-| Runtime commit alone (`git archive` of the runtime commit): cargo test and JS suites | lib 65, bin 8, nav 6, process 26; JS 50, all passing |
 
 **Flaky tests.** The two known flaky lib tests from change 1 are unrelated to allowance windows.
 - On the head, `native::tests::checkpoint_startup_reconciles_expired_and_removed_hosts_without_empty_creation` failed in 2 of 8 runs where failures were named.
@@ -187,47 +186,46 @@ Branch `feat/anton-allowance-windows` was rebased on `origin/main` `cc5f982`. Th
 ## Traceability
 
 Commits:
-- `d8cb8c1` is the runtime commit.
-- `1da8d5d` is the presentation commit.
-- `a2df47e` is the plugin README.
+- `8cc635b` is the contract commit: runtime rows and popover projection change together, so no commit pairs the new wire with the old reader (review round 1 squashed the former separate runtime and presentation commits).
+- `575ef6d` is the plugin README.
 - `5bcfb18` is the harness.
 
 Rust tests are in `allowances.rs` (`A`), `model.rs` (`M`), `main.rs` (`B`) and `tests/native_process.rs` (`P`). Node tests are in `tests/test_omarchy_state.cjs` (`N`). QML tests are in `tests/qml/anton/tst_components.qml` (`C`) and `tst_popup.qml` (`Q`). Status is `verified` when the named test passed on the integrated head.
 
 | Requirement / scenario | Implementation | Verification | Commit | Status |
 | --- | --- | --- | --- | --- |
-| account-allowances: Account-bound allowance observation | `allowances::snapshot`, `public_row` | A `codex_weekly_allowance_becomes_one_pacing_window`; P `unchanged_peer_allowance_row_streams_as_weekly_pacing_window` | `d8cb8c1` | verified |
-| · Account moves machine | unchanged newest-per-account selection in `snapshot_at` | A `several_accounts_keep_newest_observation_one_row_each_in_account_key_order`; P `fleet_rename_preserves_account_worker_then_removal_retires_sources_and_restart` | `d8cb8c1` | verified |
-| · Unrecognised account | unchanged mapping filter | A `mapped_account_without_current_observation_is_unavailable` (unmapped observation adds no row) | `d8cb8c1` | verified |
-| · Small peer clock offset | unchanged `sanitise` | A `stale_or_future_observations_are_unavailable` (+1 s available, +1.001 s unavailable); N `stale and future-skewed samples are not current` | `d8cb8c1`, `1da8d5d` | verified |
-| · Several mapped accounts across machines | `snapshot_at` newest-per-account, sorted by account key | A `several_accounts_keep_newest_observation_one_row_each_in_account_key_order` | `d8cb8c1` | verified |
-| account-allowances: Account token activity | token fields not copied by `public_row`; `DailyUsage` removed | A `token_activity_stays_off_the_popover_wire`; `allowance_wire` keys | `d8cb8c1` | verified |
+| account-allowances: Account-bound allowance observation | `allowances::snapshot`, `public_row` | A `codex_weekly_allowance_becomes_one_pacing_window`; P `unchanged_peer_allowance_row_streams_as_weekly_pacing_window` | `8cc635b` | verified |
+| · Account moves machine | unchanged newest-per-account selection in `snapshot_at` | A `several_accounts_keep_newest_observation_one_row_each_in_account_key_order`; P `fleet_rename_preserves_account_worker_then_removal_retires_sources_and_restart` | `8cc635b` | verified |
+| · Unrecognised account | unchanged mapping filter | A `mapped_account_without_current_observation_is_unavailable` (unmapped observation adds no row) | `8cc635b` | verified |
+| · Small peer clock offset | unchanged `sanitise` | A `stale_or_future_observations_are_unavailable` (+1 s available, +1.001 s unavailable); N `stale and future-skewed samples are not current` | `8cc635b` | verified |
+| · Several mapped accounts across machines | `snapshot_at` newest-per-account, sorted by account key | A `several_accounts_keep_newest_observation_one_row_each_in_account_key_order` | `8cc635b` | verified |
+| account-allowances: Account token activity | token fields not copied by `public_row`; `DailyUsage` removed | A `token_activity_stays_off_the_popover_wire`; `allowance_wire` keys | `8cc635b` | verified |
 | · Supported account activity / Partial or unsupported response / Missing dates / Expired or inconsistent weekly window / Office sharing | unchanged `summarise_usage`, `sanitise`, cache | untouched `synthetic_python_oracle_parity` and existing unit tests; parity fixture unchanged | n/a (unchanged) | verified |
-| · Token activity stays off the popover wire | `public_row` | A `token_activity_stays_off_the_popover_wire`; P legacy peer stream has no token text | `d8cb8c1` | verified |
-| account-allowances: Provider-neutral allowance rows | `model.rs` `AllowanceRow`, `AllowanceWindow`, `AllowanceStatus`; `allowances::status_text` | M `allowance_rows_roundtrip_with_every_contract_key`, `allowance_rows_drop_unknown_and_legacy_fields_and_reject_invented_status`; A `status_text_is_bounded_and_printable`; B snapshot key-set test | `d8cb8c1` | verified |
-| · Codex account with a weekly allowance | `public_row` | A `codex_weekly_allowance_becomes_one_pacing_window` | `d8cb8c1` | verified |
-| · Window order does not select the pacing window | `summarise` 10080-minute selection | A `window_order_does_not_select_the_pacing_window` | `d8cb8c1` | verified |
-| · Past reset invalidates the balance | `sanitise` then `public_row` | A `past_reset_and_pass_expiry_invalidate_only_their_own_fields` | `d8cb8c1` | verified |
-| · Mapped account without a current observation | `public_row` unavailable branch | A `mapped_account_without_current_observation_is_unavailable`; P `profile_removal_cancels_inflight_host_and_allowance_process_groups` | `d8cb8c1` | verified |
-| · Malformed or oversized values | `sanitise` bounds, typed model | A `malformed_or_oversized_values_stay_unknown_and_private_fields_never_pass`, `zero_values_stay_distinct_from_unknown` | `d8cb8c1` | verified |
-| account-allowances: Legacy allowance source compatibility | unchanged `probe`, `receive`, `read_cache`; `remote` parsing moved to `peer_rows` with the same bounds | A tests below; fixture `tests/fixtures/native-allowances-legacy.json` | `d8cb8c1` | verified |
-| · Unchanged peer row | `peer_rows` then `snapshot_at` | A `unchanged_peer_row_converts_through_remote_sanitising`; P `unchanged_peer_allowance_row_streams_as_weekly_pacing_window` | `d8cb8c1` | verified |
-| · Cache written before the update | `read_cache` then `snapshot_at` | A `cache_written_before_the_update_converts_fresh_and_stale_rows`; P `legacy_allowance_cache_is_available_at_startup_when_codex_fails` (every Codex start fails, at most one start, cache byte-unchanged) | `d8cb8c1` | verified |
-| · Older local runtime reads a new peer | unchanged `summarise`, `summarise_usage`, `receive` | A `older_local_runtime_reads_probe_and_cache_rows_unchanged` | `d8cb8c1` | verified |
-| omarchy-companion: Truthful current state | `State.js` `allowanceView`, `pacingWindow`, `statusText` | N converted allowance tests (3d 12h, pace bounds, skew, reset metadata) | `1da8d5d` | verified |
-| · One host stops reporting / Pacing thresholds and independent balance / Deficit hatch and signed pace | unchanged; D1 fixtures | N converted tests; Q existing popup tests | `1da8d5d` | verified |
-| · Long allowance window | `allowanceView`, unchanged `resetLabel` | N `a long allowance window projects from its own duration`; Q `test_12_provider_neutral_rows_render_generically` (`75%`, `↻ 15d 0h`) | `1da8d5d` | verified |
-| · Codex presentation preserved | D8 fixtures, card hint fallback | seven screenshot hashes identical | `1da8d5d` | verified |
-| omarchy-companion: Provider and account collections | `allowanceView`; `AllowanceCard.hint`; `State.accountAlias` | N `providers group any configured accounts in configured order`, `account aliases prefer saved names, then the legacy table, then a stable hash` | `1da8d5d` | verified |
-| · More than two mapped accounts | unchanged grouping | Q `test_06_short_popup_reserves_both_scroll_regions` (four accounts); N provider grouping | `1da8d5d` | verified |
-| · Another provider with a monthly window | generic projection | Q `test_12_provider_neutral_rows_render_generically`; N `an unknown window kind projects generically` | `1da8d5d` | verified |
-| · Account needs authentication | `statusText`; card hint | N `an account needing authentication shows source text and no balance`; C `test_16_auth_needed_uses_source_status_text`; Q `test_12` | `1da8d5d` | verified |
-| · Unavailable without source text | card hint fallback | N `an unavailable account without source text keeps a null status text`; C `test_17_unavailable_without_text_keeps_existing_hint` | `1da8d5d` | verified |
-| · Absent provider | no synthesis in `project` or `providerGroups` | N `only providers present in the snapshot form groups` | `1da8d5d` | verified |
-| · Ambiguous pacing window | `pacingWindow` | N `the pacing window is the single flagged window, never list order` | `1da8d5d` | verified |
-| Malformed, oversized, stale and zero values (AGENTS.md) | `allowanceView` bounds | N `malformed and oversized windows ...`, `zero stays distinct from unknown`, `status text is bounded and never synthesised`, `a row without a valid provider or account id is skipped`, `an unknown or missing status projects as unavailable`, `a legacy weekly_remaining row projects as unavailable`, `the projected allowance view has exactly the twelve contract keys` | `1da8d5d` | verified |
-| Visual preservation (AGENTS.md) | no visible card change | screenshot hashes | `1da8d5d` | verified |
-| Omarchy `limits` mapping (D7) | documentation only: design D7, plugin README "Allowance rows" | review | `a2df47e` | implemented (no adapter, by design) |
+| · Token activity stays off the popover wire | `public_row` | A `token_activity_stays_off_the_popover_wire`; P legacy peer stream has no token text | `8cc635b` | verified |
+| account-allowances: Provider-neutral allowance rows | `model.rs` `AllowanceRow`, `AllowanceWindow`, `AllowanceStatus`; `allowances::status_text` | M `allowance_rows_roundtrip_with_every_contract_key`, `allowance_rows_drop_unknown_and_legacy_fields_and_reject_invented_status`; A `status_text_is_bounded_and_printable`; B snapshot key-set test | `8cc635b` | verified |
+| · Codex account with a weekly allowance | `public_row` | A `codex_weekly_allowance_becomes_one_pacing_window` | `8cc635b` | verified |
+| · Window order does not select the pacing window | `summarise` 10080-minute selection | A `window_order_does_not_select_the_pacing_window` | `8cc635b` | verified |
+| · Past reset invalidates the balance | `sanitise` then `public_row` | A `past_reset_and_pass_expiry_invalidate_only_their_own_fields` | `8cc635b` | verified |
+| · Mapped account without a current observation | `public_row` unavailable branch | A `mapped_account_without_current_observation_is_unavailable`; P `profile_removal_cancels_inflight_host_and_allowance_process_groups` | `8cc635b` | verified |
+| · Malformed or oversized values | `sanitise` bounds, typed model | A `malformed_or_oversized_values_stay_unknown_and_private_fields_never_pass`, `zero_values_stay_distinct_from_unknown` | `8cc635b` | verified |
+| account-allowances: Legacy allowance source compatibility | unchanged `probe`, `receive`, `read_cache`; `remote` parsing moved to `peer_rows` with the same bounds | A tests below; fixture `tests/fixtures/native-allowances-legacy.json` | `8cc635b` | verified |
+| · Unchanged peer row | `peer_rows` then `snapshot_at` | A `unchanged_peer_row_converts_through_remote_sanitising`; P `unchanged_peer_allowance_row_streams_as_weekly_pacing_window` | `8cc635b` | verified |
+| · Cache written before the update | `read_cache` then `snapshot_at` | A `cache_written_before_the_update_converts_fresh_and_stale_rows`; P `legacy_allowance_cache_is_available_at_startup_when_codex_fails` (every Codex start fails, at most one start, cache byte-unchanged) | `8cc635b` | verified |
+| · Older local runtime reads a new peer | unchanged `summarise`, `summarise_usage`, `receive` | A `older_local_runtime_reads_probe_and_cache_rows_unchanged` | `8cc635b` | verified |
+| omarchy-companion: Truthful current state | `State.js` `allowanceView`, `pacingWindow`, `statusText` | N converted allowance tests (3d 12h, pace bounds, skew, reset metadata) | `8cc635b` | verified |
+| · One host stops reporting / Pacing thresholds and independent balance / Deficit hatch and signed pace | unchanged; D1 fixtures | N converted tests; Q existing popup tests | `8cc635b` | verified |
+| · Long allowance window | `allowanceView`, unchanged `resetLabel` | N `a long allowance window projects from its own duration`; Q `test_12_provider_neutral_rows_render_generically` (`75%`, `↻ 15d 0h`) | `8cc635b` | verified |
+| · Codex presentation preserved | D8 fixtures, card hint fallback | seven screenshot hashes identical | `8cc635b` | verified |
+| omarchy-companion: Provider and account collections | `allowanceView`; `AllowanceCard.hint`; `State.accountAlias` | N `providers group any configured accounts in configured order`, `account aliases prefer saved names, then the legacy table, then a stable hash` | `8cc635b` | verified |
+| · More than two mapped accounts | unchanged grouping | Q `test_06_short_popup_reserves_both_scroll_regions` (four accounts); N provider grouping | `8cc635b` | verified |
+| · Another provider with a monthly window | generic projection | Q `test_12_provider_neutral_rows_render_generically`; N `an unknown window kind projects generically` | `8cc635b` | verified |
+| · Account needs authentication | `statusText`; card hint | N `an account needing authentication shows source text and no balance`; C `test_16_auth_needed_uses_source_status_text`; Q `test_12` | `8cc635b` | verified |
+| · Unavailable without source text | card hint fallback | N `an unavailable account without source text keeps a null status text`; C `test_17_unavailable_without_text_keeps_existing_hint` | `8cc635b` | verified |
+| · Absent provider | no synthesis in `project` or `providerGroups` | N `only providers present in the snapshot form groups` | `8cc635b` | verified |
+| · Ambiguous pacing window | `pacingWindow` | N `the pacing window is the single flagged window, never list order` | `8cc635b` | verified |
+| Malformed, oversized, stale and zero values (AGENTS.md) | `allowanceView` bounds | N `malformed and oversized windows ...`, `zero stays distinct from unknown`, `status text is bounded and never synthesised`, `a row without a valid provider or account id is skipped`, `an unknown or missing status projects as unavailable`, `a legacy weekly_remaining row projects as unavailable`, `the projected allowance view has exactly the eleven contract keys` | `8cc635b` | verified |
+| Visual preservation (AGENTS.md) | no visible card change | screenshot hashes | `8cc635b` | verified |
+| Omarchy `limits` mapping (D7) | documentation only: design D7, plugin README "Allowance rows" | review | `575ef6d` | implemented (no adapter, by design) |
 | Measurement comparability (programme) | additive harness commit | baseline and after tables above | `5bcfb18` | verified |
 
 **Known deviation.** Task 2.4 originally asked for zero Codex invocations when starting from a legacy cache. At startup, `main.rs` starts the account refresh worker whenever accounts are configured, so zero cannot be shown without changing runtime behaviour, which is out of scope. The test instead proves the rows come from the cache: every Codex start fails, the cache is byte-unchanged, and starts are bounded at one. The task and spec wording were corrected in the `docs(openspec)` wording commit.
@@ -241,3 +239,14 @@ Rust tests are in `allowances.rs` (`A`), `model.rs` (`M`), `main.rs` (`B`) and `
 ## Independent review
 
 Pending (task 4.4).
+
+## Review round 1
+
+| Finding | Disposition |
+| --- | --- |
+| The view falls back to the provider id for a missing `provider_label`, against the delta spec and D1 | Documents aligned with the code: the omarchy-companion delta, D1 and D5 now allow the row's own provider id as the only fallback label. N `a row without a valid provider or account id is skipped` keeps covering it. |
+| Projected `status` has no consumer | Dropped from `allowanceView`; the view has 11 keys (D5). Node tests now show the status gate by projecting the same row as `available` (balance 70) and as unknown, `auth_needed` or `unavailable` (no balance, no reset count). |
+| Runtime and presentation contract split across two commits | Squashed into `8cc635b` `feat(allowances)!`. The README, harness and OpenSpec commits stay separate. |
+| Proposal says the alias lookup is keyed by account key | Proposal reworded: saved aliases stay keyed by `provider:id`, and the legacy table is keyed by `provider:label`. |
+
+Gates after the round, on `a776756`: cargo fmt and clippy exit 0; cargo test lib 65, bin 8, nav 6, process 26, all passing; JS 65 passed; QML 41 passed; the seven screenshot hashes are identical to the visual reference; `openspec validate --strict` valid.
