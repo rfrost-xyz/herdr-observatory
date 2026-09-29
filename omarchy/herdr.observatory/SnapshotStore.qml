@@ -23,7 +23,19 @@ Item {
         }
         update();
     }
+    // Explicit operator refresh (r, middle-click, IPC): ask a running collector
+    // for a fresh local sample round, or start a collector that has exited.
     function refresh() {
+        if (collector.running)
+            collector.write("refresh\n");
+        else
+            collector.running = true;
+
+        update();
+    }
+    // Opening the popover and the retry timer only restart a dead collector.
+    // They never write to stdin, so opening adds no host sample round.
+    function restart() {
         if (!collector.running)
             collector.running = true;
 
@@ -63,7 +75,7 @@ Item {
 
         interval: 5000
 
-        onTriggered: root.refresh()
+        onTriggered: root.restart()
     }
     Timer {
         interval: 1000

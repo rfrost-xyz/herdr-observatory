@@ -194,7 +194,7 @@ Panel {
         if (opened) {
             focusedKey = "";
             paletteFile.reload();
-            snapshot.refresh();
+            snapshot.restart();
             Qt.callLater(function () {
                 keyCatcher.forceActiveFocus();
             });
