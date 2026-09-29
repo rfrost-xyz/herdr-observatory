@@ -12,8 +12,8 @@ const now = 1_800_000_000_000;
 
 function host(overrides = {}) {
   return {
-    id: 'iapetus', label: 'iapetus', online: true, sampled_at: now / 1000 - 5,
-    agents: [{ id: 'iapetus:4', project: 'Example', title: 'Synthetic task', status: 'working', harness: 'codex' }],
+    id: 'laptop', label: 'laptop', online: true, sampled_at: now / 1000 - 5,
+    agents: [{ id: 'laptop:4', project: 'Example', title: 'Synthetic task', status: 'working', harness: 'codex' }],
     ...overrides
   };
 }
@@ -52,10 +52,10 @@ test('mapped weekly allowance preserves zero and rejects expired reset', () => {
 
 test('host map identity stays correct when display labels match', () => {
   const view = project({ interval: 5, hosts: [
-    host({ id: 'iapetus', label: 'shared' }),
+    host({ id: 'laptop', label: 'shared' }),
     host({ id: 'second', label: 'shared', agents: [] })
   ], allowances: [] }, now);
-  assert.equal(view.threads[0].hostId, 'iapetus');
+  assert.equal(view.threads[0].hostId, 'laptop');
   assert.equal(view.threads.filter(thread => thread.hostId === view.hosts[0].id).length, 1);
   assert.equal(view.threads.filter(thread => thread.hostId === view.hosts[1].id).length, 0);
 });
@@ -219,7 +219,7 @@ test('status filters and collapsed machines preserve totals and remove hidden na
   assert.equal(filtered[0].total,4);
   assert.equal(filtered[0].matching,2);
   assert.deepEqual(Array.from(filtered[0].indices,i=>view.threads[i].id),['working','blocked']);
-  const collapsed = sandbox.module.exports.groupThreads(view, ['idle'], ['iapetus']);
+  const collapsed = sandbox.module.exports.groupThreads(view, ['idle'], ['laptop']);
   assert.equal(collapsed[0].collapsed,true);
   assert.equal(collapsed[0].matching,3);
   assert.equal(collapsed[0].indices.length,0);
@@ -388,7 +388,7 @@ test('navigation retains opaque exact profile binding and rejects malformed bind
   const args=sandbox.module.exports.navigationArgs(view.threads[0]);
   assert.deepEqual(Array.from(args.slice(0,3)),['--open-thread','legacy-host','legacy-host:w1:p2']);
   assert.deepEqual(JSON.parse(args[3]),navigation);
-  const fallback=project({hosts:[host({navigation,agents:[{id:'iapetus:w1:p2',navigation:null}]})],allowances:[]},now);
+  const fallback=project({hosts:[host({navigation,agents:[{id:'laptop:w1:p2',navigation:null}]})],allowances:[]},now);
   assert.deepEqual(JSON.parse(sandbox.module.exports.navigationArgs(fallback.threads[0])[3]),navigation);
   for(const binding of [{},false,[],{...navigation,route_key:'short'},{...navigation,target:'other'},{...navigation,profile_id:7}]){
     assert.equal(sandbox.module.exports.navigationArgs({...view.threads[0],navigation:binding}),null);
@@ -403,7 +403,7 @@ test('inventory labels and discovery health do not replay thread entrance or sta
   const after=project({...raw,fleet_discovery:{state:'unavailable'},hosts:[{...raw.hosts[0],label:'Renamed machine'}]},now);
   assert.deepEqual(Object.keys(sandbox.module.exports.arrivals(before,after)),[]);
   assert.deepEqual(Object.keys(sandbox.module.exports.transitions(before.threads,after.threads)),[]);
-  assert.equal(sandbox.module.exports.groupThreads(after,[],['iapetus'])[0].indices.length,0);
+  assert.equal(sandbox.module.exports.groupThreads(after,[],['laptop'])[0].indices.length,0);
   const moved=project({...raw,hosts:[host({navigation:{...navigation,route_key:'b'.repeat(64)},agents:[{id:'new',status:'working'}]})]},now);
   assert.deepEqual(Object.keys(sandbox.module.exports.arrivals(before,moved)),[]);
   assert.notEqual(sandbox.module.exports.completionEpisode(before.threads[0]),sandbox.module.exports.completionEpisode(moved.threads[0]));
