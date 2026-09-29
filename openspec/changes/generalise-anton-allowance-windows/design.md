@@ -8,7 +8,7 @@ See proposal.md for motivation. Current state at `cc5f982`:
   - `allowances::summarise` turns a Codex `account/rateLimits/read` reply into a source row keyed by account hash. It picks the weekly window as the single `windowDurationMins == 10080` window.
   - `summarise_usage` adds the token-activity fields.
   - `sanitise` bounds and expires a source row. `read_cache` and `remote` both go through it.
-  - `snapshot()` recomputes public rows every 2 s from the cache plus the peer rows. It keeps the newest row per mapped account and emits one row per configured account in configuration order. It hardcodes `provider: "codex"`, `provider_label: "Codex"` and `window_seconds: 604800`.
+  - `snapshot()` recomputes public rows every 2 s from the cache plus the peer rows. It keeps the newest row per mapped account and emits one row per configured account, sorted by private account key (the configuration map is not order-preserving). It hardcodes `provider: "codex"`, `provider_label: "Codex"` and `window_seconds: 604800`.
   - `main.rs:737` deserialises those rows into `model::AllowanceRow` with `if let Ok(..)`. A shape mismatch would silently freeze `state.allowances`.
   - `AllowanceRow::expire` has no caller outside its own tests. Freshness is actually enforced by the 2 s recompute through `sanitise`.
 - **Peer probe.** `--allowances-probe` prints `[row]` or `[]`. The row is the `summarise` output plus the `summarise_usage` output:
@@ -45,7 +45,7 @@ The baseline measurement is in evidence.md. At baseline the presentation contain
 
 ### D1. Wire contract: snapshot allowance row (interface between the lanes)
 
-The `allowances` array in each snapshot line holds one object per configured account, in configured order. Every key is always present.
+The `allowances` array in each snapshot line holds one object per configured account, in a stable order sorted by private account key. Every key is always present.
 
 ```json
 {
@@ -60,7 +60,7 @@ The `allowances` array in each snapshot line holds one object per configured acc
   "reset_count": 1,
   "reset_expires_at": null,
   "windows": [
-    {"kind": "weekly", "label": "Weekly", "used_percent": 40,
+    {"kind": "weekly", "label": "Weekly", "used_percent": 40.0,
      "resets_at": 1800302400, "duration_s": 604800, "pacing": true}
   ]
 }
@@ -226,7 +226,7 @@ The existing `projection.allowance_fields` metric still projects the legacy-shap
 - **The Codex duration constant lives in the runtime.** Mitigation: that is the collector's knowledge, and `summarise` already selects the window by the same duration.
 - **`used_percent` as `f64` changes Codex bytes** (`40` becomes `40.0`). Mitigation: this is harmless to the view, and the measurement records the per-row bytes.
 - **`auth_needed` has no native producer yet.** Mitigation: the contract, view and tests support it, and no Codex error text is parsed to fake it.
-- **Legacy alias table keeps two `codex` literals in `Panel.qml`.** Mitigation: it is data for a preference migration, it is counted by the coupling metric and it is documented.
+- **Legacy alias table keeps two `codex:` keys in `Panel.qml`.** Mitigation: it is data for a preference migration and it is documented. The coupling metric's quoted-`codex` pattern does not match the `"codex:Personal"` and `"codex:Work"` keys, so it reports 0; evidence records them with a separate grep.
 - **Two pre-existing lib test flakes** (recorded in change 1): `native::tests::checkpoint_startup_reconciles_expired_and_removed_hosts_without_empty_creation` and `allowances::tests::account_rpc_is_read_only_and_retains_quota_when_usage_unsupported`. Mitigation: the Rust lane reruns them and records whether they flake; it does not mask them.
 
 ## Migration Plan

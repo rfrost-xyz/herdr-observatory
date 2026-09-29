@@ -23,7 +23,7 @@ Transport sanitisation and presentation SHALL tolerate a source allowance timest
 
 #### Scenario: Several mapped accounts across machines
 - **WHEN** two mapped accounts are each observed on more than one configured source
-- **THEN** the popover snapshot carries exactly one row per mapped account, each from its newest valid observation, in configured account order.
+- **THEN** the popover snapshot carries exactly one row per mapped account, each from its newest valid observation, in a stable order sorted by private account key.
 
 ### Requirement: Account token activity
 The native plugin SHALL read supported ChatGPT-backed account token-activity summaries and daily buckets through its authenticated, read-only account source, bind them to explicit account mapping and keep them separate from local session cache usage. It SHALL export only bounded numeric totals, valid bucket dates, account labels and sample times. The native account state MAY retain bounded dated observations with account scope explicit, and peer allowance responses MAY carry them. The popover snapshot SHALL NOT carry token-activity summaries or daily buckets, because no presentation consumes them. Missing dates SHALL NOT appear as zero or contribute to the sum. Activity SHALL NOT be converted into a remaining quota, cost or depletion forecast. Missing, unsupported, stale or malformed account usage SHALL remain unavailable without hiding a valid allowance window. Reads SHALL remain local to the plugin and explicitly configured peer transport; no web forwarding SHALL occur.
@@ -95,7 +95,7 @@ The local runtime SHALL accept allowance observations in the shape emitted by in
 
 #### Scenario: Cache written before the update
 - **WHEN** the local runtime starts with an allowance cache written by the previous runtime version
-- **THEN** its fresh mapped entries appear as available provider-neutral rows without a new account read, and stale entries appear as unavailable.
+- **THEN** its fresh mapped entries appear as available provider-neutral rows from the cache alone, even when every new account read fails, and stale entries appear as unavailable.
 
 #### Scenario: Older local runtime reads a new peer
 - **WHEN** a runtime that predates this change probes a peer running the new runtime

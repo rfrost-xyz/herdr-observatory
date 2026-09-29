@@ -49,7 +49,7 @@ Both lanes implement against the design D1 contract. Neither edits files owned b
   - "Past reset invalidates the balance" (window fields null, reset count kept);
   - "Mapped account without a current observation";
   - "Malformed or oversized values", covering used 101, `true`, negative reset count, more than four cache rows, and `email`/`theme` extra fields absent from the output;
-  - "Several mapped accounts across machines", covering newest observation wins, one row per account and configured order;
+  - "Several mapped accounts across machines", covering newest observation wins, one row per account and a stable order sorted by account key;
   - "Token activity stays off the popover wire";
   - zero values distinct from unknown: `used_percent` 100 (0% remaining) and reset count 0 stay numeric;
   - stale observations older than 600 s, and future skew greater than 1 s, give `unavailable`;
@@ -66,7 +66,7 @@ Both lanes implement against the design D1 contract. Neither edits files owned b
 - [ ] 2.4 In `main.rs`, assign typed rows from `allowances::snapshot` to `state.allowances`, removing the `from_value` round trip, and keep the revision bump only on change. Update the snapshot key-set test, which leaves top-level and host keys unchanged. In `native_process.rs`:
   - update the existing allowance stream assertions to D1 (`windows[0].used_percent`, `status`), keeping their values;
   - add a process test in which a fake-SSH peer returns a static legacy row with extra fields and token activity, and the stream shows an available row with a `weekly` pacing window and no token or extra fields;
-  - add a process test that starts the runtime with a legacy `allowances.json` and shows the row available without any Codex invocation, counted with a stub.
+  - add a process test that starts the runtime with a legacy `allowances.json` and shows the row available from the cache alone, with a counting Codex stub that always fails and a byte-unchanged cache. The startup refresh worker may start Codex once, so the test bounds starts at one rather than zero.
 
   Verify with `cargo test --locked --test native_process`.
 - [ ] 2.5 Document the D1 row contract, the unchanged peer and cache shapes, and the Omarchy mapping pointer in `omarchy/herdr.observatory/README.md`. Run and record:
@@ -126,7 +126,7 @@ Both lanes implement against the design D1 contract. Neither edits files owned b
 - [ ] 4.2 Build the integrated release binary and run `node tests/measure_anton_popover.mjs --binary <bin> --source-root <worktree> --repeat 3 --json`. Record the comparison with the baseline in evidence.md, including:
   - `allowance_wire` bytes and keys per row;
   - `allowance_contract` (all three neutral cases projected with values);
-  - `provider_coupling` (expected: 0 `weekly_`, 0 `604800`, 0 `provider ==`, 2 `codex` literals in the Panel legacy alias table only);
+  - `provider_coupling` (expected: 0 `weekly_`, 0 `604800`, 0 `provider ==`, 0 quoted `codex`; the metric does not match the two `codex:` keys of the Panel legacy alias table, so evidence reports them with a separate grep);
   - the note from D9 on `projection.allowance_fields`.
 
   Existing runtime metrics are expected to stay within noise.
