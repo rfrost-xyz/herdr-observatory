@@ -178,8 +178,9 @@ Branch `feat/anton-allowance-windows` was rebased on `origin/main` `cc5f982`. Th
 | Runtime commit alone (`git archive` of the runtime commit): cargo test and JS suites | lib 65, bin 8, nav 6, process 26; JS 50, all passing |
 
 **Flaky tests.** The two known flaky lib tests from change 1 are unrelated to allowance windows.
-- `native::tests::checkpoint_startup_reconciles_expired_and_removed_hosts_without_empty_creation` failed in 3 of 11 lib runs on the head.
-- One head run also had a second lib failure; given the baseline behaviour it is presumably `account_rpc_is_read_only_and_retains_quota_when_usage_unsupported`, but the test name was not captured.
+- On the head, `native::tests::checkpoint_startup_reconciles_expired_and_removed_hosts_without_empty_creation` failed in 2 of 8 runs where failures were named.
+- One further head run had two lib failures whose names were not captured.
+- Every other head run passed.
 - On the unchanged `cc5f982` extract, both tests failed in 4 of 12 lib runs (checkpoint 3, account RPC 1).
 - The tests were not masked or retried inside the suite.
 
@@ -232,6 +233,8 @@ Rust tests are in `allowances.rs` (`A`), `model.rs` (`M`), `main.rs` (`B`) and `
 **Known deviation.** Task 2.4 originally asked for zero Codex invocations when starting from a legacy cache. At startup, `main.rs` starts the account refresh worker whenever accounts are configured, so zero cannot be shown without changing runtime behaviour, which is out of scope. The test instead proves the rows come from the cache: every Codex start fails, the cache is byte-unchanged, and starts are bounded at one. The task and spec wording were corrected in the `docs(openspec)` wording commit.
 
 **Root README (task 3.4).** No change was needed. The root `README.md` does not describe allowance fields or Codex-only presentation; its only Codex mention concerns thread metrics.
+
+**Alias fall-through.** `State.accountAlias` treats an empty or non-string saved or legacy alias as absent, and falls through to the hashed alias. Previously, `Panel` returned an empty `personalAlias` or `workAlias` as the displayed name. The plugin never writes an empty value: the defaults are non-empty and `toggleIdentity` only re-saves them. So this differs only for a hand-edited settings file, where the old output was a blank name. The screenshots are unaffected.
 
 **Order.** Rows are ordered by private account key, because the configuration map is not order-preserving. That behaviour predates this change. The spec and design wording were corrected to match.
 
