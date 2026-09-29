@@ -473,6 +473,20 @@ test('projection omits unused presentation fields', () => {
   assert.equal(view.discoveryLabel, '');
 });
 
+test('receipt timeout derives from the stated heartbeat with a safe fallback', () => {
+  const { receiptTimeoutMs } = sandbox.module.exports;
+  assert.equal(receiptTimeoutMs({ heartbeat_seconds: 4 }), 6000);
+  assert.equal(receiptTimeoutMs({ heartbeat_seconds: 10 }), 12000);
+  assert.equal(receiptTimeoutMs({ heartbeat_seconds: 1 }), 3000);
+  assert.equal(receiptTimeoutMs({ heartbeat_seconds: 60 }), 62000);
+  for (const value of [undefined, null, '4', 0, -4, NaN, Infinity, 61, true, {}]) {
+    assert.equal(receiptTimeoutMs({ heartbeat_seconds: value }), 6000, String(value));
+  }
+  assert.equal(receiptTimeoutMs({}), 6000);
+  assert.equal(receiptTimeoutMs(null), 6000);
+  assert.equal(receiptTimeoutMs(undefined), 6000);
+});
+
 test('keyboard focus keeps the same thread when an earlier thread disappears', () => {
   const { groupThreads, focusKeys, reconcileFocus, activationKey, threadForKey, threadKey } = sandbox.module.exports;
   const agents = ids => ids.map(id => ({ id, status: 'working', project: 'Project ' + id }));

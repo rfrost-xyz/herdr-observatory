@@ -47,6 +47,7 @@ function threadUsage(agent, nowMs) {
   var context = counter(t.context), window = counter(t.window)
   var contextPercent = context !== null && window !== null && window > 0 && context <= window
       ? percent(t.context_percent) !== null ? t.context_percent : context / window * 100 : null
+  // Measurement freshness: usage older than 120 s is last-known, not current.
   return { contextPercent: contextPercent, inputTokens: input, outputTokens: output, uncachedTokens: validPartition ? uncached : null, cachePercent: cache, compactions: counter(t.compactions), age: ageLabel(age), stale: age > 120 }
 }
 
@@ -109,6 +110,7 @@ function childCompletion(agent, nowMs) {
     if (value === null) valid = false; else sum += value
   })
   if (!valid || sum !== total) outcomes = null
+  // Measurement freshness: child status older than 120 s is last-known.
   return { total: total, done: done, stamp: stamp, stale: age > 120, age: ageLabel(age), outcomes: outcomes }
 }
 
@@ -123,6 +125,7 @@ function childObservations(agent, nowMs) {
   if (counter(stamp) === null || stamp <= 0 || stamp > t.seq) return null
   var age = ageSeconds(stamp / 1000000, nowMs)
   if (age === null) return null
+  // Measurement freshness: child observations older than 120 s are last-known.
   return { starts: starts, stops: stops, stamp: stamp, stale: age > 120, age: ageLabel(age) }
 }
 
@@ -247,6 +250,8 @@ function project(raw, nowMs) {
   var discovery = raw.fleet_discovery && raw.fleet_discovery.state
   if (["available", "unavailable", "discovering"].indexOf(discovery) < 0) discovery = "disabled"
   var interval = number(raw.interval)
+  // Measurement freshness, not transport: a host sample stays current for its
+  // sampling interval plus 20 s of peer and scheduling slack.
   var maxAge = (interval !== null && interval >= 2 && interval <= 60 ? interval : 5) + 20
   var hosts = [], threads = [], working = 0, missing = 0, reportingCount = 0
   for (var i = 0; i < raw.hosts.length; i++) {
@@ -291,6 +296,7 @@ function project(raw, nowMs) {
     var balance = number(row.weekly_remaining)
     var reset = number(row.weekly_resets_at)
     var age = ageSeconds(row.sampled_at, nowMs, 1)
+    // Measurement freshness: an allowance observation is current for 600 s.
     var current = row.available === true && age !== null && age <= 600
                   && balance !== null && balance >= 0 && balance <= 100
                   && reset !== null && reset > nowMs / 1000
@@ -333,6 +339,15 @@ function allowancePaceBand(difference) {
   return "deficit"
 }
 
+// Transport freshness. The runtime states its heartbeat; a snapshot is dropped
+// once no line arrives within one heartbeat plus one coordinator loop wait
+// (LOOP_WAIT, 1 s) plus 1 s of scheduling and pipe margin. An absent or
+// implausible heartbeat falls back to 6 s, the value for today's 4 s heartbeat.
+function receiptTimeoutMs(raw) {
+  var heartbeat = raw && typeof raw === "object" ? number(raw.heartbeat_seconds) : null
+  return heartbeat !== null && heartbeat >= 1 && heartbeat <= 60 ? (heartbeat + 1 + 1) * 1000 : 6000
+}
+
 // Keyboard focus follows a stable thread key, never a position in the view.
 function focusKeys(view, groups) {
   var keys = []
@@ -358,4 +373,4 @@ function threadForKey(view, key) {
   return null
 }
 
-if (typeof module !== "undefined") module.exports = { navigationArgs: navigationArgs, turnTiming: turnTiming, durationLabel: durationLabel, timingHint: timingHint, allowancePaceReading: allowancePaceReading, allowancePaceBand: allowancePaceBand, threadKey: threadKey, completionEpisode: completionEpisode, stableThreads: stableThreads, arrivals: arrivals, providerGroups: providerGroups, childHint: childHint, groupThreads: groupThreads, transitions: transitions, dominantState: dominantState, project: project, ageSeconds: ageSeconds, ageLabel: ageLabel, focusKeys: focusKeys, reconcileFocus: reconcileFocus, moveFocus: moveFocus, activationKey: activationKey, threadForKey: threadForKey }
+if (typeof module !== "undefined") module.exports = { navigationArgs: navigationArgs, turnTiming: turnTiming, durationLabel: durationLabel, timingHint: timingHint, allowancePaceReading: allowancePaceReading, allowancePaceBand: allowancePaceBand, threadKey: threadKey, completionEpisode: completionEpisode, stableThreads: stableThreads, arrivals: arrivals, providerGroups: providerGroups, childHint: childHint, groupThreads: groupThreads, transitions: transitions, dominantState: dominantState, project: project, ageSeconds: ageSeconds, ageLabel: ageLabel, receiptTimeoutMs: receiptTimeoutMs, focusKeys: focusKeys, reconcileFocus: reconcileFocus, moveFocus: moveFocus, activationKey: activationKey, threadForKey: threadForKey }

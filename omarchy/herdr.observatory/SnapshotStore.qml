@@ -83,7 +83,8 @@ Item {
         running: true
 
         onTriggered: {
-            if (Date.now() - root.lastReceipt > 6000 && root.raw !== null) {
+            // The runtime states its heartbeat; see State.receiptTimeoutMs.
+            if (root.raw !== null && Date.now() - root.lastReceipt > State.receiptTimeoutMs(root.raw)) {
                 root.raw = null;
                 root.update();
             } else if (root.visualUpdates) {
