@@ -26,12 +26,6 @@ function percent(value) {
   return n !== null && n >= 0 && n <= 100 ? n : null
 }
 
-function usedPercent(value) {
-  if (!value || number(value.used) === null || number(value.total) === null
-      || value.total <= 0 || value.used < 0 || value.used > value.total) return null
-  return value.used / value.total * 100
-}
-
 function counter(value) {
   var n = number(value)
   return n !== null && n >= 0 && n <= 9007199254740991 && Math.floor(n) === n ? n : null
@@ -159,31 +153,6 @@ function resetLabel(seconds) {
   return Math.floor(seconds / 86400) + "d " + (seconds < 3600 ? "<1" : Math.floor(seconds % 86400 / 3600)) + "h"
 }
 
-// Only published daily observations become bars. Missing dates are not zeroes.
-function activityView(rows, nowMs) {
-  if (!Array.isArray(rows) || rows.length === 0 || rows.length > 30) return null
-  var seen = {}, daily = [], total = 0, peak = 0
-  var today = new Date(nowMs).toISOString().slice(0, 10)
-  for (var i = 0; i < rows.length; i++) {
-    var row = rows[i], date = row && row.date, tokens = row && row.tokens
-    if (typeof date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(date)
-        || !isFinite(Date.parse(date + "T00:00:00Z"))
-        || new Date(date + "T00:00:00Z").toISOString().slice(0, 10) !== date
-        || date > today || seen[date] || number(tokens) === null
-        || tokens < 0 || tokens > 9007199254740991 || Math.floor(tokens) !== tokens) return null
-    seen[date] = true
-    total += tokens
-    if (total > 9007199254740991) return null
-    peak = Math.max(peak, tokens)
-    daily.push({ date: date, tokens: tokens })
-  }
-  daily.sort(function(a, b) { return a.date.localeCompare(b.date) })
-  for (var j = 0; j < daily.length; j++) daily[j].ratio = peak > 0 ? daily[j].tokens / peak : 0
-  var scale = total >= 1e12 ? 1e12 : total >= 1e9 ? 1e9 : total >= 1e6 ? 1e6 : total >= 1e3 ? 1e3 : 1
-  var unit = scale === 1e12 ? "T" : scale === 1e9 ? "B" : scale === 1e6 ? "M" : scale === 1e3 ? "K" : ""
-  return { daily: daily, count: daily.length, total: (total / scale).toFixed(scale === 1 ? 0 : 1).replace(/\.0$/, "") + unit }
-}
-
 // Highest-priority observed state wins; unavailable sources never imply completion.
 function dominantState(threads, acknowledgements) {
   var priority = { unknown: 0, idle: 0, done: 1, working: 2, blocked: 3 }
@@ -273,32 +242,23 @@ function groupThreads(view, hiddenStates, collapsedHosts) {
 
 function project(raw, nowMs) {
   var empty = { connected: false, working: null, partial: false, threads: [], hosts: [],
-                allowances: [], gpu: null, discoveryState: "disabled", discoveryLabel: "", inference: "Inference use unavailable", note: "Observatory unavailable" }
+                allowances: [], discoveryLabel: "", note: "Observatory unavailable" }
   if (!raw || !Array.isArray(raw.hosts) || !Array.isArray(raw.allowances)) return empty
   var discovery = raw.fleet_discovery && raw.fleet_discovery.state
   if (["available", "unavailable", "discovering"].indexOf(discovery) < 0) discovery = "disabled"
   var interval = number(raw.interval)
   var maxAge = (interval !== null && interval >= 2 && interval <= 60 ? interval : 5) + 20
-  var hosts = [], threads = [], working = 0, missing = 0, reportingCount = 0, gpu = null
+  var hosts = [], threads = [], working = 0, missing = 0, reportingCount = 0
   for (var i = 0; i < raw.hosts.length; i++) {
     var host = raw.hosts[i]
     if (!host || typeof host !== "object") continue
     var age = ageSeconds(host.sampled_at, nowMs)
     var reporting = host.connection_state !== "setup_needed" && host.online === true && age !== null && age < maxAge && Array.isArray(host.agents)
-    var metrics = reporting && host.metrics ? host.metrics : {}
     var connection = host.connection_state === "setup_needed" ? "setup_needed" : host.connection_state === "connecting" ? "connecting" : reporting ? "connected" : "unreachable"
     hosts.push({ connectionState: connection, connectionLabel: connection === "setup_needed" ? "Setup needed" : connection === "connecting" ? "Connecting" : connection === "connected" ? "Connected" : "Unreachable", id: label(host.id, "unknown"), name: label(host.label, label(host.id, "Host")), navigation: host.navigation === undefined ? null : host.navigation,
-                 activeThreads: reporting ? host.agents.filter(function(a) { return a && ["working", "blocked"].indexOf(String(a.status).toLowerCase()) >= 0 }).length : null,
-                 reporting: reporting, age: reporting ? ageLabel(age) : "source unavailable",
-                 cpu: percent(metrics.cpu_percent), memory: usedPercent(metrics.memory),
-                 gpu: metrics.gpu ? percent(metrics.gpu.percent) : null,
-                 vram: usedPercent(metrics.gpu) })
+                 reporting: reporting, age: reporting ? ageLabel(age) : "source unavailable" })
     if (!reporting) { missing++; continue }
     reportingCount++
-    if (host.id === "ws-255" && host.metrics && host.metrics.gpu && number(host.metrics.gpu.percent) !== null
-        && number(host.metrics.gpu.percent) >= 0 && number(host.metrics.gpu.percent) <= 100) {
-      gpu = { host: label(host.label, label(host.id, "Host")), percent: host.metrics.gpu.percent, age: ageLabel(age) }
-    }
     var agents = Array.isArray(host.agents) ? host.agents : []
     for (var j = 0; j < agents.length; j++) {
       var agent = agents[j]
@@ -344,18 +304,14 @@ function project(raw, nowMs) {
     allowances.push({ id: accountId, provider: provider, providerLabel: label(row.provider_label, provider === "codex" ? "Codex" : provider), label: label(row.label, accountId), remaining: current ? balance : null,
                       timeRemaining: timeRemaining,
                       paceDifference: paceDifference,
-                      paceStrength: paceDifference === null ? 0 : Math.min(1, Math.abs(paceDifference) / 15),
                       resetCount: resetCount,
-                      pace: paceDifference === null ? "unknown" : paceDifference > 0 ? "reserve" : paceDifference < 0 ? "deficit" : "even",
                       reset: untilReset !== null ? resetLabel(untilReset) : null,
-                      activity: current ? activityView(row.daily_usage, nowMs) : null,
                       age: current ? ageLabel(age) : "source unavailable" })
   }
   // Account and provider order follows the configured collection order.
   return { connected: true, working: reportingCount > 0 ? working : null, partial: missing > 0, threads: threads,
-           discoveryState: discovery, discoveryLabel: discovery === "unavailable" ? "Discovery unavailable" : discovery === "discovering" ? "Discovering" : "",
-           hosts: hosts, allowances: allowances, gpu: gpu,
-           inference: "Inference use unavailable",
+           discoveryLabel: discovery === "unavailable" ? "Discovery unavailable" : discovery === "discovering" ? "Discovering" : "",
+           hosts: hosts, allowances: allowances,
            note: reportingCount === 0 ? "No sources reporting" : missing > 0 ? missing + " source" + (missing === 1 ? "" : "s") + " unavailable" : "All sources reporting" }
 }
 
