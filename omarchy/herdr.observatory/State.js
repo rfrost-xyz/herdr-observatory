@@ -251,7 +251,7 @@ function statusText(value) {
 }
 
 function boundedLabel(value, limit) {
-  if (typeof value !== "string" || value === "") return null
+  if (typeof value !== "string" || value === "" || /[\u0000-\u001f\u007f-\u009f]/.test(value)) return null
   var length = Array.from(value).length
   return length <= limit ? value : null
 }
@@ -291,7 +291,7 @@ function allowanceView(row, nowMs) {
   var resetCount = fresh && counter(row.reset_count) !== null && row.reset_count <= 10000
     && (row.reset_expires_at === null || row.reset_expires_at === undefined
         || (number(row.reset_expires_at) !== null && row.reset_expires_at > nowS)) ? row.reset_count : null
-  return { id: accountId, provider: provider, providerLabel: label(row.provider_label, provider), label: label(row.label, accountId),
+  return { id: accountId, provider: provider, providerLabel: boundedLabel(row.provider_label, 40) || provider, label: boundedLabel(row.label, 40) || accountId,
            statusText: statusText(row.status_text),
            remaining: remaining, timeRemaining: timeRemaining,
            paceDifference: current && timeRemaining !== null ? remaining - timeRemaining : null,

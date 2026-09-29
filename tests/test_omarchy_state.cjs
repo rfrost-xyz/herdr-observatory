@@ -671,6 +671,17 @@ test('a row without a valid provider or account id is skipped', () => {
   assert.equal(projectOne(allowanceRow({ provider: 'synthetic', provider_label: undefined })).providerLabel, 'synthetic');
 });
 
+test('an invalid provider or row label falls back to the provider or account id', () => {
+  for (const bad of ['', 'x'.repeat(41), 'Syn\u0007thetic', 'Syn\nthetic', 7, null]) {
+    const account = projectOne(allowanceRow({ provider: 'synthetic', provider_label: bad, account_id: 'team', label: bad }));
+    assert.equal(account.providerLabel, 'synthetic');
+    assert.equal(account.label, 'team');
+  }
+  const kept = projectOne(allowanceRow({ provider: 'synthetic', provider_label: 'x'.repeat(40), account_id: 'team', label: 'y'.repeat(40) }));
+  assert.equal(kept.providerLabel, 'x'.repeat(40));
+  assert.equal(kept.label, 'y'.repeat(40));
+});
+
 test('an unknown or missing status projects as unavailable', () => {
   assert.equal(projectOne(allowanceRow({ status: 'available', reset_count: 1 })).remaining, 70);
   for (const status of ['ok', 'Available', undefined, null, true]) {
