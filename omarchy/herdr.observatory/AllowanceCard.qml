@@ -17,13 +17,6 @@ AntonSurface {
     property color paceColour: targetPaceColour
     readonly property color targetPaceColour: paceBand === "surplus" ? ui.green : paceBand === "caution" ? Qt.tint(ui.muted, ui.alpha(ui.yellow, 0.65)) : paceBand === "warning" ? ui.yellow : paceBand === "deficit" ? ui.red : ui.muted
 
-    function activate() {
-        if (entry.setupRequired)
-            ui.openNotionSetup();
-        else
-            ui.toggleIdentity();
-    }
-
     function updatePaceColour(animate) {
         var from = paceColour;
         paceTransition.stop();
@@ -36,13 +29,13 @@ AntonSurface {
         }
     }
 
-    Accessible.name: (accountIdentity.concealed ? accountIdentity.aliasName : accountIdentity.email || entry.label) + ". " + hint
+    Accessible.name: (ui.preferences.namesHidden ? accountIdentity.aliasName : accountIdentity.email || "Unknown account") + ". " + hint
     Accessible.role: Accessible.Button
-    height: Style.space(entry.setupRequired ? 39 : 59)
-    hint: entry.setupRequired ? "Connect your Notion browser session to see monthly usage and its reset date. Click for setup instructions." : known ? (entry.monthly ? Math.ceil(entry.used) + "% of monthly allowance used · " + Math.floor(entry.remaining) + "% left · resets " + entry.resetDate : ui.paceText(entry)) : "Allowance unavailable"
+    height: Style.space(59)
+    hint: known ? ui.paceText(entry) : "Allowance unavailable"
     tint: known ? balanceColour : ui.muted
 
-    Accessible.onPressAction: activate()
+    Accessible.onPressAction: ui.toggleIdentity()
     Component.onCompleted: {
         colourReady = true;
         updatePaceColour(false);
@@ -76,8 +69,8 @@ AntonSurface {
         id: accountIdentity
 
         readonly property string aliasName: ui.accountAlias(allowanceCard.entry)
-        readonly property bool concealed: !allowanceCard.entry.setupRequired && ui.preferences.namesHidden
-        readonly property string email: allowanceCard.entry.provider === "codex" ? (ui.accountEmails[ui.accountKey(allowanceCard.entry)] || ui.accountEmails[allowanceCard.entry.id] || ui.accountEmails[allowanceCard.entry.label] || "") : ""
+        readonly property bool concealed: ui.preferences.namesHidden
+        readonly property string email: ui.accountEmails[ui.accountKey(allowanceCard.entry)] || ui.accountEmails[allowanceCard.entry.id] || ui.accountEmails[allowanceCard.entry.label] || ""
 
         objectName: "allowance-identity"
         height: Style.space(20)
@@ -117,7 +110,7 @@ AntonSurface {
             color: allowanceCard.known ? ui.ink : ui.muted
             font.bold: allowanceCard.known
             objectName: "allowance-balance"
-            text: allowanceCard.entry.setupRequired ? "Set up" : allowanceCard.known ? (allowanceCard.entry.monthly ? Math.ceil(allowanceCard.entry.used) + "% used" : Math.round(allowanceCard.entry.remaining) + "%") : "—"
+            text: allowanceCard.known ? Math.round(allowanceCard.entry.remaining) + "%" : "—"
             ui: allowanceCard.ui
         }
     }
@@ -142,7 +135,7 @@ AntonSurface {
                 color: allowanceCard.balanceColour
                 height: parent.height
                 objectName: "allowance-fill"
-                width: parent.width * (allowanceCard.entry.monthly ? Math.min(100, allowanceCard.entry.used || 0) : (allowanceCard.entry.remaining || 0)) / 100
+                width: parent.width * (allowanceCard.entry.remaining || 0) / 100
             }
             Canvas {
                 id: deficitHatch
@@ -223,20 +216,20 @@ AntonSurface {
     AntonText {
         color: ui.muted
         font.pixelSize: Style.font.caption
-        text: allowanceCard.entry.setupRequired ? "Browser connection required" : "↻ " + (allowanceCard.entry.monthly ? (allowanceCard.entry.resetDate || "Unavailable") : (allowanceCard.entry.reset || "—d —h"))
+        text: "↻ " + (allowanceCard.entry.reset || "—d —h")
         ui: allowanceCard.ui
-        y: Style.space(allowanceCard.entry.setupRequired ? 20 : 38)
+        y: Style.space(38)
     }
     AntonText {
         anchors.right: parent.right
         color: ui.muted
         font.pixelSize: Style.font.caption
-        text: allowanceCard.entry.setupRequired ? "" : allowanceCard.entry.monthly ? "Monthly" : (allowanceCard.entry.resetCount === null ? "—" : allowanceCard.entry.resetCount) + (allowanceCard.entry.resetCount === 1 ? " reset" : " resets")
+        text: (allowanceCard.entry.resetCount === null ? "—" : allowanceCard.entry.resetCount) + (allowanceCard.entry.resetCount === 1 ? " reset" : " resets")
         ui: allowanceCard.ui
-        y: Style.space(allowanceCard.entry.setupRequired ? 20 : 38)
+        y: Style.space(38)
     }
     TapHandler {
-        onTapped: allowanceCard.activate()
+        onTapped: ui.toggleIdentity()
     }
     HoverHandler {
         cursorShape: Qt.PointingHandCursor

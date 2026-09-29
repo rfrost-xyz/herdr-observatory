@@ -13,4 +13,4 @@ jobs:
       - run: cargo fmt --manifest-path omarchy/anton-runtime/Cargo.toml --check
       - run: cargo clippy --manifest-path omarchy/anton-runtime/Cargo.toml --locked --all-targets -- -D warnings
       - run: cargo test --manifest-path omarchy/anton-runtime/Cargo.toml --locked
-      - run: node --test tests/test_pi_hooks.mjs tests/test_omarchy_state.cjs tests/test_native_distribution.mjs tests/test_notion.mjs
+      - run: node --test tests/test_pi_hooks.mjs tests/test_omarchy_state.cjs tests/test_native_distribution.mjs

@@ -155,12 +155,6 @@ function transitions(before, after) {
   return changes
 }
 
-function monthlyResetDate(seconds) {
-  var date = new Date(seconds * 1000)
-  var months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-  return date.getDate() + " " + months[date.getMonth()] + " " + date.getFullYear()
-}
-
 function resetLabel(seconds) {
   return Math.floor(seconds / 86400) + "d " + (seconds < 3600 ? "<1" : Math.floor(seconds % 86400 / 3600)) + "h"
 }
@@ -331,13 +325,11 @@ function project(raw, nowMs) {
     if (!row || typeof row !== "object") continue
     var accountId = label(row.account_id, label(row.label, "")), provider = label(row.provider, "codex")
     if (!accountId || accountId.length > 128 || !/^[A-Za-z0-9_.-]+$/.test(provider)) continue
-    var monthly = provider === "notion"
     var duration = number(row.window_seconds)
     if (duration === null) duration = 604800
-    if (!monthly && (duration <= 0 || duration > 31536000)) continue
-    var used = monthly ? number(row.monthly_used_percent) : null
-    var balance = monthly ? (used !== null && used >= 0 && used <= 1000000 ? Math.max(0, 100 - used) : null) : number(row.weekly_remaining)
-    var reset = number(monthly ? row.monthly_resets_at : row.weekly_resets_at)
+    if (duration <= 0 || duration > 31536000) continue
+    var balance = number(row.weekly_remaining)
+    var reset = number(row.weekly_resets_at)
     var age = ageSeconds(row.sampled_at, nowMs, 1)
     var current = row.available === true && age !== null && age <= 600
                   && balance !== null && balance >= 0 && balance <= 100
@@ -347,11 +339,9 @@ function project(raw, nowMs) {
     var resetCount = fresh && counter(row.reset_count) !== null && row.reset_count <= 10000
       && (row.reset_expires_at === null || row.reset_expires_at === undefined
           || (number(row.reset_expires_at) !== null && row.reset_expires_at > nowMs / 1000)) ? row.reset_count : null
-    var timeRemaining = !monthly && untilReset !== null && untilReset <= duration ? untilReset / duration * 100 : null
+    var timeRemaining = untilReset !== null && untilReset <= duration ? untilReset / duration * 100 : null
     var paceDifference = current && timeRemaining !== null ? balance - timeRemaining : null
     allowances.push({ id: accountId, provider: provider, providerLabel: label(row.provider_label, provider === "codex" ? "Codex" : provider), label: label(row.label, accountId), remaining: current ? balance : null,
-                      monthly: monthly, used: current && monthly ? used : null,
-                      resetDate: current && monthly ? monthlyResetDate(reset) : null,
                       timeRemaining: timeRemaining,
                       paceDifference: paceDifference,
                       paceStrength: paceDifference === null ? 0 : Math.min(1, Math.abs(paceDifference) / 15),
@@ -360,14 +350,6 @@ function project(raw, nowMs) {
                       reset: untilReset !== null ? resetLabel(untilReset) : null,
                       activity: current ? activityView(row.daily_usage, nowMs) : null,
                       age: current ? ageLabel(age) : "source unavailable" })
-  }
-  // An unconnected provider is a setup action, never an account observation.
-  if (!allowances.some(function(a) { return a.provider === "notion" })) {
-    allowances.push({id: "notion-setup", provider: "notion", providerLabel: "Notion",
-      label: "Monthly allowance", setupRequired: true, monthly: true,
-      remaining: null, used: null, resetDate: null, timeRemaining: null,
-      paceDifference: null, paceStrength: 0, resetCount: null, pace: "unknown",
-      reset: null, activity: null, age: "Not connected"})
   }
   // Account and provider order follows the configured collection order.
   return { connected: true, working: reportingCount > 0 ? working : null, partial: missing > 0, threads: threads,

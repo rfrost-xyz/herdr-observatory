@@ -18,7 +18,7 @@ for entry in "$target"/* "$target"/.[!.]* "$target"/..?*; do
   [[ -e $entry || -L $entry ]] || continue
   [[ -f $entry && ! -L $entry && -O $entry ]] || { echo 'Unsafe plugin payload; preserving installation' >&2; exit 1; }
   case ${entry##*/} in
-    .notion-bridge.json|.hooks-receipt.json|.hooks-before-native.json|.peers.json|anton-runtime|.config.json|manifest.json|Panel.qml|PopupContent.qml|SectionHeader.qml|AntonText.qml|AntonSurface.qml|ThreadSignal.qml|SheenTitle.qml|BurnEffect.qml|MetricDial.qml|ThreadCard.qml|AllowanceCard.qml|.accounts.json|SnapshotStore.qml|State.js|README.md|uninstall.sh|.herdr-observatory-install) ;;
+    .hooks-receipt.json|.hooks-before-native.json|.peers.json|anton-runtime|.config.json|manifest.json|Panel.qml|PopupContent.qml|SectionHeader.qml|AntonText.qml|AntonSurface.qml|ThreadSignal.qml|SheenTitle.qml|BurnEffect.qml|MetricDial.qml|ThreadCard.qml|AllowanceCard.qml|.accounts.json|SnapshotStore.qml|State.js|README.md|uninstall.sh|.herdr-observatory-install) ;;
     *) echo "Unknown plugin file remains: $entry" >&2; exit 1 ;;
   esac
 done
@@ -26,7 +26,6 @@ done
 # Complete recorded peer removal before deleting the local receipt. An unreachable
 # peer keeps this installation available for a safe retry.
 if [[ -f $target/anton-runtime ]]; then
-  "$target/anton-runtime" --unregister-notion-bridge
   "$target/anton-runtime" --remove-peers
   "$target/anton-runtime" --uninstall-hooks
 elif [[ $marker != "$id:retired" ]]; then
@@ -59,7 +58,7 @@ if [[ -e $state_dir ]]; then
     [[ -e $entry || -L $entry ]] || continue
     name=${entry##*/}
     case $name in
-      notion.json|notion.lock|privacy.ini|allowances.json|allowances.json.lock|allowances-refresh.lock|hook.lock|sessions.json|replay-checkpoints.json|replay-checkpoints.lock) ;;
+      privacy.ini|allowances.json|allowances.json.lock|allowances-refresh.lock|hook.lock|sessions.json|replay-checkpoints.json|replay-checkpoints.lock) ;;
       .replay-checkpoints-*) [[ $name =~ ^\.replay-checkpoints-[0-9a-f]{16}$ ]] || continue ;;
       *) continue ;;
     esac

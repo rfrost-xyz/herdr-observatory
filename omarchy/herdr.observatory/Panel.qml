@@ -77,10 +77,6 @@ Panel {
     function alpha(colour, opacity) {
         return Qt.rgba(colour.r, colour.g, colour.b, opacity);
     }
-    function openNotionSetup() {
-        Qt.openUrlExternally("https://github.com/rfrost-xyz/herdr-observatory/blob/1935185/omarchy/notion-extension/README.md");
-    }
-
     function openThread(index) {
         if (index < 0 || index >= overview.threads.length || threadLauncher.running)
             return;

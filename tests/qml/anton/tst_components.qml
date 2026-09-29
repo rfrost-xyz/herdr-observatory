@@ -1,6 +1,5 @@
 import QtQuick
 import QtTest
-import "../../../omarchy/herdr.observatory/State.js" as State
 import "../../../omarchy/herdr.observatory" as Anton
 
 Item {
@@ -73,8 +72,6 @@ Item {
         signal newThreads(var keys)
         signal observedChange(var changes)
 
-        property int setupOpened: 0
-        function openNotionSetup() { setupOpened++; }
         function accountAlias(a) {
             return 'Gilfoyle';
         }
@@ -128,31 +125,6 @@ Item {
         y: 100
     }
     TestCase {
-        function test_00_notion_setup() {
-            var saved = allowance.entry;
-            allowance.entry = State.project({hosts: [], allowances: []}, Date.now()).allowances[0];
-            compare(findChild(allowance, "allowance-balance").text, "Set up");
-            verify(allowance.hint.indexOf("Connect your Notion browser session") >= 0);
-            verify(!findChild(allowance, "allowance-expected-tick").visible);
-            verify(allowance.Accessible.name.indexOf("Monthly allowance") === 0);
-            allowance.activate();
-            compare(fakeUi.setupOpened, 1);
-            allowance.entry = saved;
-        }
-        function test_00_notion_monthly() {
-            var saved = allowance.entry;
-            var now = new Date(2026, 9, 1).getTime();
-            var reset = new Date(2026, 9, 27).getTime() / 1000;
-            allowance.entry = State.project({hosts: [], allowances: [{account_id: "notion-monthly", provider: "notion", label: "Work", available: true, window_seconds: 0, sampled_at: now / 1000, monthly_used_percent: 1.61, monthly_resets_at: reset}]}, now).allowances[0];
-            fakeUi.accountEmails = {Work: "codex@example.invalid"};
-            compare(findChild(allowance, "allowance-identity").email, "");
-            verify(allowance.Accessible.name.indexOf("codex@example.invalid") < 0);
-            compare(findChild(allowance, "allowance-balance").text, "2% used");
-            verify(allowance.hint.indexOf("27 Oct 2026") >= 0);
-            verify(!findChild(allowance, "allowance-expected-tick").visible);
-            fakeUi.accountEmails = {};
-            allowance.entry = saved;
-        }
         function test_01_initial_static() {
             compare(thread.entrance, 1);
             compare(thread.flash, 0);

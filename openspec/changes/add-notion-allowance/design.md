@@ -1,23 +1,26 @@
-# Design
+# Context
 
-## Context
+Codex allowance collection invokes bounded read-only account RPCs through the
+already authenticated Codex process. Authentication remains outside the popover.
+The same principle applies to Notion.
 
-Codex owns its authentication and provides bounded account RPCs. Notion’s CLI owns a workspace-scoped public API token; a direct read of the web allowance endpoint returned HTTP 401. Its supported catalogue has no personal monthly allowance endpoint.
+# Decisions
 
-## Goals / Non-Goals
+The popover is passive allowance presentation. Provider login is performed
+separately using provider-supported authentication. No extension or setup card is
+an acceptable substitute for the requested integration.
 
-Goals: monthly used percentage and exact reset date, explicit user/workspace binding, existing freshness semantics, browser-owned credentials. Non-goals: credit balances, purchases, billing changes, general browser automation, remote credential sharing, invented pacing.
+# Source Blocker
 
-## Decisions
+On 2026-09-29, installed ntn 0.23.10 exposes no monthly allowance command. Its
+public API catalogue has no personal monthly allowance endpoint. The catalogue's
+agent credit-limit mutation is unrelated and must not be used. A prior read of
+the web usage endpoint with the CLI token returned HTTP 401. The official help
+centre documents usage in Notion Settings, which does not establish a CLI/API
+contract. Do not promise that CLI authentication alone provides allowance data.
 
-An optional Manifest V3 extension uses the browser’s normal authenticated fetch to the fixed app.notion.com getSpaces and getCreditRateLimitStatus endpoints. It verifies the configured user/workspace through getSpaces, sets the explicit active-user header and forwards only normalised numeric values and the configured identity. A five-minute alarm refreshes while the browser runs. No cookies permission, content script, page scraping, externally connectable surface or exported session credential.
+# Next Acceptance Gate
 
-A one-message Rust native receiver validates the exact extension origin against private configuration, enforces a small frame and deadline, hashes the user/workspace binding and atomically saves a bounded observation under the existing owned state directory. The collector reads it independently of Codex refresh. Monthly values use dedicated optional fields; no weekly or calendar-start assumption is introduced. UI shows used percentage and reset date; pace remains unknown unless source period start is available (not implemented).
-
-## Risks / Trade-offs
-
-The web endpoint is unsupported and may change. Fail closed and keep the adapter isolated. Cross-origin extension fetch must be qualified in the user’s actual Chromium Profile 1 before claiming live support. Browser closure leads to stale/unavailable data after ten minutes. Native messaging registration is explicitly pinned to the installed extension ID; activation requires user approval.
-
-## Migration Plan
-
-Ship disabled by default. Review source and run synthetic gates, then register the bridge for the user-approved extension ID and configure the account privately. Verify live reading, logout/unavailable behaviour and restart. Keep the change active until live acceptance; do not archive based solely on fixtures. Remove only exact receipt-owned bridge files during rollback.
+Establish a read-only, account-bound allowance source usable through the existing
+provider-owned authentication model. If unavailable, keep this change blocked;
+do not invent readings, transfer credentials or add a new login system.
