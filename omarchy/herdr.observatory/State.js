@@ -361,6 +361,14 @@ function project(raw, nowMs) {
                       activity: current ? activityView(row.daily_usage, nowMs) : null,
                       age: current ? ageLabel(age) : "source unavailable" })
   }
+  // An unconnected provider is a setup action, never an account observation.
+  if (!allowances.some(function(a) { return a.provider === "notion" })) {
+    allowances.push({id: "notion-setup", provider: "notion", providerLabel: "Notion",
+      label: "Monthly allowance", setupRequired: true, monthly: true,
+      remaining: null, used: null, resetDate: null, timeRemaining: null,
+      paceDifference: null, paceStrength: 0, resetCount: null, pace: "unknown",
+      reset: null, activity: null, age: "Not connected"})
+  }
   // Account and provider order follows the configured collection order.
   return { connected: true, working: reportingCount > 0 ? working : null, partial: missing > 0, threads: threads,
            discoveryState: discovery, discoveryLabel: discovery === "unavailable" ? "Discovery unavailable" : discovery === "discovering" ? "Discovering" : "",

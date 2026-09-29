@@ -3,6 +3,10 @@
 ### Requirement: Browser-owned Notion monthly allowance
 The plugin SHALL optionally show the explicitly configured Notion user/workspace monthly AI allowance used percentage, remaining balance and source reset date. The browser SHALL retain authentication and send only allowlisted observations through a bounded local native messaging bridge. Anton SHALL NOT read browser cookies, CLI tokens, pages or transcripts. The extension SHALL request access only to app.notion.com and native messaging, with scheduled refresh. Purchased credits and spending controls SHALL remain out of scope.
 
+#### Scenario: Notion has not been connected
+- **WHEN** no Notion account observation is configured
+- **THEN** the allowance section shows a Notion setup action that opens its browser-connection guide, without claiming an account, balance or reset date.
+
 #### Scenario: Valid monthly observation
 - **WHEN** the configured browser account reports a valid monthly used/limit ratio and future reset
 - **THEN** the Notion card shows monthly usage and reset date beside the existing providers without assuming a weekly or fixed 30-day pacing window.

@@ -7,7 +7,7 @@ import "State.js" as State
 Item {
     id: popup
 
-    readonly property real allowanceHeight: ui.allowancesCollapsed ? 0 : Math.min(allowanceRows.implicitHeight, Style.space(180), Math.max(0, availableBodyHeight - reservedThreadHeight))
+    readonly property real allowanceHeight: ui.allowancesCollapsed ? 0 : Math.min(allowanceRows.implicitHeight, Style.space(220), Math.max(0, availableBodyHeight - reservedThreadHeight))
     readonly property alias allowanceViewport: allowanceFlick
     readonly property real availableBodyHeight: Math.max(0, height - Style.space(95) - (navigationNotice.visible ? navigationNotice.implicitHeight : 0))
     readonly property bool moving: threadFlick.moving || allowanceFlick.moving
@@ -16,7 +16,7 @@ Item {
     readonly property alias threadViewport: threadFlick
     required property var ui
 
-    implicitHeight: Style.space(95) + (ui.threadsCollapsed ? 0 : Math.min(threadContent.implicitHeight, Style.space(300))) + (ui.allowancesCollapsed ? 0 : Math.min(allowanceRows.implicitHeight, Style.space(180))) + (navigationNotice.visible ? navigationNotice.implicitHeight : 0)
+    implicitHeight: Style.space(95) + (ui.threadsCollapsed ? 0 : Math.min(threadContent.implicitHeight, Style.space(300))) + (ui.allowancesCollapsed ? 0 : Math.min(allowanceRows.implicitHeight, Style.space(220))) + (navigationNotice.visible ? navigationNotice.implicitHeight : 0)
 
     Column {
         anchors.fill: parent

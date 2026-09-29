@@ -301,7 +301,9 @@ test('providers group any configured accounts and retain legacy identities', () 
     {label:'Work'},{provider:'codex',account_id:'third',label:'Third'}];
   const view=project({hosts:[host()],allowances:rows},now);
   const groups=sandbox.module.exports.providerGroups(view.allowances);
-  assert.equal(groups.length,2); assert.equal(groups[0].accounts.length,3);
+  assert.equal(groups.length,3); assert.equal(groups[0].accounts.length,3);
+  assert.equal(groups[2].id,"notion");
+  assert.equal(groups[2].accounts[0].setupRequired,true);
   assert.equal(groups[1].label,'Claude');
   assert.equal(groups[0].accounts[0].id,'Personal');
   assert.equal(groups[0].accounts[2].id,'third');
@@ -527,4 +529,16 @@ test('Notion monthly allowance preserves zero and overage without weekly pace', 
   for (const bad of [{monthly_used_percent:null},{monthly_used_percent:-1},{monthly_resets_at:now/1000},{sampled_at:now/1000-601},{available:false}]) {
     assert.equal(view({...row,...bad}).remaining,null);
   }
+});
+
+test('unconfigured Notion stays visible as setup without an invented balance', () => {
+  const view = project({hosts:[],allowances:[]},now);
+  const notion = view.allowances.find(a => a.provider === 'notion');
+  assert.equal(notion.setupRequired,true);
+  assert.equal(notion.remaining,null);
+  assert.equal(notion.resetDate,null);
+  const row={provider:'notion',account_id:'notion-monthly',label:'Work',available:false,window_seconds:0};
+  const configured=project({hosts:[],allowances:[row]},now).allowances;
+  assert.equal(configured.filter(a=>a.provider==='notion').length,1);
+  assert.notEqual(configured[0].setupRequired,true);
 });

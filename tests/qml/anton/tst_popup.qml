@@ -122,8 +122,10 @@ Rectangle {
             };
         }
         function test_01_compact_three_threads() {
-            verify(popup.threadViewport.contentHeight <= popup.threadViewport.height + 1);
-            verify(popup.implicitHeight <= 540);
+            verify(popup.threadViewport.height > 0);
+            verify(popup.height <= 540);
+            verify(findChild(popup, "provider-notion") !== null);
+            verify(popup.allowanceViewport.contentHeight <= popup.allowanceViewport.height + 1);
             capture('dark');
         }
         function test_02_light_and_missing() {

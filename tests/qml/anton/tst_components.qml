@@ -73,6 +73,8 @@ Item {
         signal newThreads(var keys)
         signal observedChange(var changes)
 
+        property int setupOpened: 0
+        function openNotionSetup() { setupOpened++; }
         function accountAlias(a) {
             return 'Gilfoyle';
         }
@@ -126,6 +128,16 @@ Item {
         y: 100
     }
     TestCase {
+        function test_00_notion_setup() {
+            var saved = allowance.entry;
+            allowance.entry = State.project({hosts: [], allowances: []}, Date.now()).allowances[0];
+            compare(findChild(allowance, "allowance-balance").text, "Set up");
+            verify(allowance.hint.indexOf("Connect your Notion browser session") >= 0);
+            verify(!findChild(allowance, "allowance-expected-tick").visible);
+            allowance.activate();
+            compare(fakeUi.setupOpened, 1);
+            allowance.entry = saved;
+        }
         function test_00_notion_monthly() {
             var saved = allowance.entry;
             var now = new Date(2026, 9, 1).getTime();
