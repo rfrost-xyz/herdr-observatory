@@ -190,3 +190,24 @@ On `23cf82d`, both the `push` run (36641275420) and the `pull_request` run (3664
 The first `qml` job used Ubuntu's apt Qt 6.4.2 (runs 36638574975 and 36638583558 on the earlier head `b922a32`). It passed while logging 1225 QWARNs, all colour bindings reading the stub `qs.Commons.Color` as undefined (`AntonSurface.qml` lines 61, 62 and 68, and `Unable to assign [undefined] to QColor` in `AllowanceCard.qml`). The cause on 6.4 was not investigated; design D6 records the switch to Qt 6.8.3 and the binding-error gate, which fails that setup.
 
 The old-code reproductions above were produced by the implementation lanes (a `746ca31` extract for the Rust process tests, the old index API for `test_08`, the old store for `tst_store`) and were not rerun at integration.
+
+## Independent review
+
+An independent adversarial review of the frozen source against the proposal, specs, design, tasks and AGENTS.md ran in two rounds. Round 1 findings were remediated on the branch (among them the strict refresh check and the strace fallback in the harness, recorded above). Round 2 at `9e62a89` was clean, with no findings. CI (`native` and `qml`) was green on that head.
+
+## Live installed check
+
+The parent ran this check on 2026-09-29 against the reviewed source at `9e62a89`, on the local workstation with the installed Omarchy plugin.
+
+- The local plugin payload was replaced from this branch's reviewed source: every `install.sh` payload file plus the release binary, each byte-compared with its source after copying. `SnapshotStore.qml` was copied last.
+- The existing private configuration validated with the new binary's `--migrate-config`.
+- Omarchy was warm-restarted once.
+- The owner marker kept its inode.
+- The private `.accounts.json`, `.config.json` and `.peers.json` files were byte-identical before and after.
+- `privacy.ini` was rewritten by the popover's existing preference persistence, with an unchanged key set.
+- Exactly one collector process was running after the restart, and its stdin was the owner pipe.
+- Diagnostics after the restart had the same shape as before the update: 3 configured hosts connected and reporting, 3 threads, one allowance account available and one unavailable.
+- IPC `refresh`, `open`, `status` and `close` all succeeded.
+- The SSH peers were not updated and kept reporting through the new local collector, confirming peer backward compatibility (scenario "Older peer sample" on a live fleet).
+
+Not live-measured: CPU and RSS of the installed process, and Qt or GPU cost. The CPU and RSS figures above come only from the synthetic fixture.
