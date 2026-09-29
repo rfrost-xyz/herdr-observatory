@@ -78,7 +78,7 @@ Panel {
         return Qt.rgba(colour.r, colour.g, colour.b, opacity);
     }
     function openNotionSetup() {
-        Qt.openUrlExternally("https://github.com/rfrost-xyz/herdr-observatory/blob/feat/notion-allowance/omarchy/notion-extension/README.md");
+        Qt.openUrlExternally("https://github.com/rfrost-xyz/herdr-observatory/blob/1935185/omarchy/notion-extension/README.md");
     }
 
     function openThread(index) {

@@ -36,7 +36,7 @@ AntonSurface {
         }
     }
 
-    Accessible.name: (ui.preferences.namesHidden ? accountIdentity.aliasName : accountIdentity.email || entry.label) + ". " + hint
+    Accessible.name: (accountIdentity.concealed ? accountIdentity.aliasName : accountIdentity.email || entry.label) + ". " + hint
     Accessible.role: Accessible.Button
     height: Style.space(entry.setupRequired ? 39 : 59)
     hint: entry.setupRequired ? "Connect your Notion browser session to see monthly usage and its reset date. Click for setup instructions." : known ? (entry.monthly ? Math.ceil(entry.used) + "% of monthly allowance used · " + Math.floor(entry.remaining) + "% left · resets " + entry.resetDate : ui.paceText(entry)) : "Allowance unavailable"

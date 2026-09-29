@@ -134,6 +134,7 @@ Item {
             compare(findChild(allowance, "allowance-balance").text, "Set up");
             verify(allowance.hint.indexOf("Connect your Notion browser session") >= 0);
             verify(!findChild(allowance, "allowance-expected-tick").visible);
+            verify(allowance.Accessible.name.indexOf("Monthly allowance") === 0);
             allowance.activate();
             compare(fakeUi.setupOpened, 1);
             allowance.entry = saved;
