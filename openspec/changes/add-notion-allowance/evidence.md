@@ -31,7 +31,8 @@ synthetic fixtures do not establish live compatibility.
 - Independent review at `3eb429e` found cross-provider legacy email fallback.
   Notion now uses its configured label; production QML tests verify that a
   conflicting Codex email cannot appear visually or in the accessible name.
-  Review of the fix is pending.
+  Independent re-review accepted frozen source `1935185` for controlled live
+  qualification with no remaining actionable findings.
 
 ## Live acceptance outstanding
 
@@ -40,3 +41,12 @@ claimed. Chromium Profile 1 extension activation, private native registration,
 comparison with Notion Usage, restart/expiry and installed fleet regression
 checks remain required. No live CPU/RSS result is claimed. Canonical spec sync
 and archive remain pending these checks.
+
+## Local preparation
+
+The reviewed release binary, State.js, AllowanceCard.qml, uninstaller and README
+were installed locally. Source/payload hashes matched. Private config, account
+and peer files and owner-marker inode/content were verified unchanged. The live
+Omarchy plugin remains enabled and its running collector uses the current
+executable. No native host is registered until the user supplies the loaded
+extension ID. No remote peer changes or full live fleet acceptance are claimed.

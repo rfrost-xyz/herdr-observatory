@@ -12,6 +12,6 @@
 
 ## 3. Acceptance
 
-- [ ] 3.1 Run required repository gates and independent source review; record requirement traceability and fix findings.
+- [x] 3.1 Run required repository gates and independent source review; record requirement traceability and fix findings.
 - [ ] 3.2 Activate the approved extension in Chromium Profile 1 and verify live allowance, browser/session expiry and restart; preserve private state and existing fleet behaviour.
 - [ ] 3.3 Synchronise and archive after live acceptance, publish a reviewed PR and report exact completion state.
