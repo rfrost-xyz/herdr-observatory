@@ -513,3 +513,18 @@ test('configured navigation bindings stay opaque and reject ambiguous identities
   assert.equal(state.navigationArgs({...thread, navigation: {...binding, profile_id: 'saved'}}), null)
   assert.equal(state.navigationArgs({...thread, navigation: {host_id: 'custom-local', extra: 'a'.repeat(64)}}), null)
 })
+
+test('Notion monthly allowance preserves zero and overage without weekly pace', () => {
+  const row = {provider:'notion',provider_label:'Notion',account_id:'notion-monthly',label:'Work',available:true,window_seconds:0,sampled_at:now/1000,monthly_used_percent:1.61,monthly_resets_at:now/1000+86400};
+  const view = value => project({hosts:[],allowances:[value]},now).allowances[0];
+  assert.equal(view(row).used,1.61);
+  assert.equal(view(row).remaining,98.39);
+  assert.equal(view(row).paceDifference,null);
+  assert.equal(view(row).timeRemaining,null);
+  assert.ok(view(row).resetDate);
+  assert.equal(view({...row,monthly_used_percent:0}).remaining,100);
+  assert.equal(view({...row,monthly_used_percent:125}).remaining,0);
+  for (const bad of [{monthly_used_percent:null},{monthly_used_percent:-1},{monthly_resets_at:now/1000},{sampled_at:now/1000-601},{available:false}]) {
+    assert.equal(view({...row,...bad}).remaining,null);
+  }
+});

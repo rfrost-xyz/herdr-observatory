@@ -101,6 +101,7 @@ pub fn validate(config: Value) -> Result<Value> {
         return Err("Unknown theme host".into());
     }
     crate::allowances::validate_config(config.get("allowances"))?;
+    crate::notion::validate(config.get("notion"))?;
     Ok(config)
 }
 

@@ -202,3 +202,13 @@ profiles are revalidated against the current Herdr inventory. A changed route or
 missing binding fails before focus. Local named sessions use that exact session
 and configured executable. Socket-only collection has no verified terminal route,
 so activation reports an error without attempting another session.
+
+## Optional Notion allowance
+
+The optional [Notion browser bridge](https://github.com/rfrost-xyz/herdr-observatory/blob/feat/notion-allowance/omarchy/notion-extension/README.md) supplies a
+monthly AI usage percentage and reset date through browser-owned authentication.
+It is separate from the official Notion CLI's public API login. Enable it only
+after reviewing its narrowly scoped browser permissions and binding the exact
+user, workspace and extension in private configuration. Notion's web endpoint is
+unsupported; missing or expired observations remain unavailable. Purchased credits
+and billing changes are outside this integration.

@@ -19,3 +19,5 @@ mod turns;
 pub mod packaging;
 
 pub mod fleet;
+
+pub mod notion;

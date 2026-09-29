@@ -641,7 +641,12 @@ fn stream(root: PathBuf, state_path: PathBuf) -> Result<()> {
     while !cancel.stopped() {
         if last_allowances.elapsed() >= Duration::from_secs(2) {
             let remote: Vec<_> = remote_rows.values().flatten().cloned().collect();
-            let rows = allowances::snapshot(&state.config, &state_path, &remote);
+            let mut rows = allowances::snapshot(&state.config, &state_path, &remote);
+            rows.extend(anton_runtime::notion::snapshot(
+                &state.config,
+                &state_path,
+                common::now(),
+            ));
             if let Ok(rows) = serde_json::from_value::<Vec<AllowanceRow>>(json!(rows)) {
                 if rows != state.allowances {
                     state.allowances = rows;
@@ -818,8 +823,24 @@ fn cli() -> Result<()> {
     let home = common::expand_home("~");
     let owner = root.join(".herdr-observatory-install");
     let mode = commands.first().map(String::as_str).unwrap_or("");
+    if mode.starts_with("chrome-extension://") && commands.len() == 1 {
+        return anton_runtime::notion::bridge(&root, &state, mode, &load(&root)?);
+    }
+    let config_home = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".config"));
     match mode {
         "" => stream(root, state),
+        "--register-notion-bridge" => {
+            anton_runtime::notion::register(&root, &load(&root)?, &config_home)
+        }
+        "--unregister-notion-bridge" => anton_runtime::notion::unregister(&root, &config_home),
+        "--notion-bridge" => {
+            if commands.len() != 2 {
+                return Err("Invalid Notion bridge arguments".into());
+            }
+            anton_runtime::notion::bridge(&root, &state, &commands[1], &load(&root)?)
+        }
         "--version" => {
             println!("anton-runtime {}", env!("CARGO_PKG_VERSION"));
             Ok(())

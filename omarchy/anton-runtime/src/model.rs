@@ -105,6 +105,10 @@ pub struct DailyUsage {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct AllowanceRow {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub monthly_used_percent: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub monthly_resets_at: Option<u64>,
     pub plan: Option<String>,
     pub weekly_remaining: Option<u64>,
     pub weekly_resets_at: Option<u64>,
@@ -129,7 +133,18 @@ impl AllowanceRow {
         let before = self.clone();
         if self
             .sampled_at
-            .is_some_and(|at| now < at || now - at > 600.0)
+            .is_none_or(|at| now - at > 600.0 || at > now + 1.0)
+            || self.monthly_resets_at.is_none_or(|at| at as f64 <= now)
+        {
+            if self.provider == "notion" {
+                self.available = false;
+            }
+            self.monthly_used_percent = None;
+            self.monthly_resets_at = None;
+        }
+        if self
+            .sampled_at
+            .is_some_and(|at| now + 1.0 < at || now - at > 600.0)
         {
             self.available = false;
             self.sampled_at = None;
