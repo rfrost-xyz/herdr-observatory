@@ -50,3 +50,18 @@ and peer files and owner-marker inode/content were verified unchanged. The live
 Omarchy plugin remains enabled and its running collector uses the current
 executable. No native host is registered until the user supplies the loaded
 extension ID. No remote peer changes or full live fleet acceptance are claimed.
+
+## Visible setup correction
+
+Source `d614094` passed independent review, State tests, 27 production QML tests,
+manifest validation and strict OpenSpec validation. The presentation now includes
+an explicit Notion setup action when no account is configured, without adding an
+account observation or inventing usage. Two Codex cards and the Notion setup card
+fit in the allowance viewport. Setup opens the immutable reviewed guide URL.
+
+Installed the four reviewed QML/JS files and verified source equality and private
+configuration/owner preservation. Plugin rescan retained cached presentation;
+restarting the Omarchy shell loaded the new code. A live screen inspection then
+confirmed the Notion heading, Monthly allowance, Set up and Browser connection
+required beneath the existing Codex cards. No private screenshot is committed.
+Actual Notion usage, reset and browser-session acceptance remain pending.
