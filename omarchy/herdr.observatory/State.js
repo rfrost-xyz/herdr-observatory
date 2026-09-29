@@ -7,11 +7,11 @@ function label(value, fallback) {
   return typeof value === "string" && value !== "" ? value : fallback
 }
 
-function ageSeconds(value, nowMs) {
+function ageSeconds(value, nowMs, futureTolerance) {
   var at = number(value)
   if (at === null || at <= 0) return null
   var age = nowMs / 1000 - at
-  return age >= 0 && isFinite(age) ? age : null
+  return age >= -(futureTolerance || 0) && isFinite(age) ? Math.max(0, age) : null
 }
 
 function ageLabel(age) {
@@ -21,10 +21,260 @@ function ageLabel(age) {
   return Math.floor(age / 3600) + "h ago"
 }
 
+function percent(value) {
+  var n = number(value)
+  return n !== null && n >= 0 && n <= 100 ? n : null
+}
+
+function usedPercent(value) {
+  if (!value || number(value.used) === null || number(value.total) === null
+      || value.total <= 0 || value.used < 0 || value.used > value.total) return null
+  return value.used / value.total * 100
+}
+
+function counter(value) {
+  var n = number(value)
+  return n !== null && n >= 0 && n <= 9007199254740991 && Math.floor(n) === n ? n : null
+}
+
+function threadUsage(agent, nowMs) {
+  var empty = { contextPercent: null, inputTokens: null, outputTokens: null, uncachedTokens: null, cachePercent: null, compactions: null, age: null, stale: false }
+  var t = agent.technical && agent.technical.telemetry
+  if (!t || counter(t.seq) === null || t.seq <= 0 || t.seq / 1000 > nowMs) return empty
+  var stamp = t.usage_seq === null || t.usage_seq === undefined ? t.seq : t.usage_seq
+  if (counter(stamp) === null || stamp <= 0 || stamp > t.seq) return empty
+  var age = ageSeconds(stamp / 1000000, nowMs)
+  if (age === null) return empty
+  var input = counter(t.total_input), output = counter(t.total_output)
+  var cached = counter(t.total_cache_read), uncached = counter(t.total_uncached_input), written = counter(t.total_cache_write)
+  var validPartition = input !== null && cached !== null && uncached !== null
+      && cached <= input && uncached <= input - cached && input - cached - uncached === (written || 0)
+  var cache = validPartition && input > 0 ? cached / input * 100 : null
+  var context = counter(t.context), window = counter(t.window)
+  var contextPercent = context !== null && window !== null && window > 0 && context <= window
+      ? percent(t.context_percent) !== null ? t.context_percent : context / window * 100 : null
+  return { contextPercent: contextPercent, inputTokens: input, outputTokens: output, uncachedTokens: validPartition ? uncached : null, cachePercent: cache, compactions: counter(t.compactions), age: ageLabel(age), stale: age > 120 }
+}
+
+// Native turn boundaries measure wall-clock time, including tool waits. No Herdr
+// status duration is used. An old source freezes at its verified observation.
+function turnTiming(agent, nowMs, hostReporting) {
+  var source = agent.technical && agent.technical.turn_timing
+  if (!source || typeof source !== "object") return null
+  var observed = number(source.observed_at_s), start = number(source.started_at_s)
+  // Fleet clocks may differ by a fraction of a second. Keep the source time
+  // intact; only native timing freshness/display accepts up to one second ahead.
+  var age = observed !== null && observed > 0 && observed <= nowMs / 1000 + 1
+      ? Math.max(0, nowMs / 1000 - observed) : null
+  var freshness = number(source.freshness_seconds)
+  if (freshness === null) freshness = 12
+  if (freshness < 1 || freshness > 180 || age === null) return null
+  var stale = !hostReporting || age > freshness
+  var last = counter(source.last_duration_s), total = counter(source.total_finished_duration_s)
+  var active = source.active === true, elapsed = null
+  if (active && start !== null && start > 0 && start <= observed) {
+    elapsed = Math.max(0, Math.floor((stale ? observed : nowMs / 1000) - start))
+  } else if (source.active === false) {
+    elapsed = last
+  }
+  var complete = source.complete === true && total !== null
+  var accumulated = complete ? total + (active && elapsed !== null ? elapsed : 0) : null
+  if (accumulated !== null && accumulated > 9007199254740991) accumulated = null
+  return { active: active, elapsed: elapsed, last: last, total: accumulated,
+           complete: complete, stale: stale, age: ageLabel(age), observedAt: observed,
+           outcome: ["completed", "aborted"].indexOf(source.last_outcome) >= 0 ? source.last_outcome : null }
+}
+
+function durationLabel(seconds) {
+  if (counter(seconds) === null) return "—"
+  if (seconds < 60) return seconds + "s"
+  if (seconds < 3600) return Math.floor(seconds / 60) + "m " + String(seconds % 60).padStart(2, "0") + "s"
+  return Math.floor(seconds / 3600) + "h " + String(Math.floor(seconds % 3600 / 60)).padStart(2, "0") + "m"
+}
+
+function timingHint(timing) {
+  if (!timing || timing.elapsed === null) return "Turn time unavailable"
+  var result = (timing.active ? "Wall-clock turn " : "Last wall-clock turn ") + durationLabel(timing.elapsed)
+  if (!timing.active && timing.outcome === "aborted") result += " · interrupted"
+  result += "\n" + (timing.total === null ? "Total unavailable" : "Total turn time " + durationLabel(timing.total))
+  if (timing.stale) result += "\nLast observed " + timing.age
+  return result
+}
+
+// Hook observations are events, not a live roster or successful completions.
+function childCompletion(agent, nowMs) {
+  var t = agent.technical && agent.technical.telemetry
+  if (!t || counter(t.seq) === null || t.seq / 1000 > nowMs) return null
+  var total = counter(t.subagent_total), done = counter(t.subagent_done), stamp = counter(t.subagent_status_seq)
+  if (total === null || done === null || total > 128 || done > total || stamp === null || stamp <= 0 || stamp > t.seq) return null
+  var age = ageSeconds(stamp / 1000000, nowMs)
+  if (age === null) return null
+  var outcomes = {}, sum = done, valid = true
+  ;["running", "interrupted", "failed", "unknown"].forEach(function(name) {
+    var value = counter(t["subagent_" + name]); outcomes[name] = value
+    if (value === null) valid = false; else sum += value
+  })
+  if (!valid || sum !== total) outcomes = null
+  return { total: total, done: done, stamp: stamp, stale: age > 120, age: ageLabel(age), outcomes: outcomes }
+}
+
+function childObservations(agent, nowMs) {
+  var t = agent.technical && agent.technical.telemetry
+  if (!t || counter(t.seq) === null || t.seq <= 0 || t.seq / 1000 > nowMs) return null
+  var starts = counter(t.subagent_starts), stops = counter(t.subagent_stops)
+  if (starts === null || stops === null || starts > 999 || stops > 999) return null
+  var stamp = t.subagent_seq
+  if (starts === 0 && stops === 0 && (stamp === null || stamp === undefined))
+    return { starts: 0, stops: 0, stamp: null, stale: false, age: null }
+  if (counter(stamp) === null || stamp <= 0 || stamp > t.seq) return null
+  var age = ageSeconds(stamp / 1000000, nowMs)
+  if (age === null) return null
+  return { starts: starts, stops: stops, stamp: stamp, stale: age > 120, age: ageLabel(age) }
+}
+
+// Compare stable host/thread identities across sorting, not delegate positions.
+function transitions(before, after) {
+  var previous = {}, changes = {}
+  for (var i = 0; i < before.length; i++) previous[before[i].hostId + ":" + before[i].id] = before[i]
+  for (var j = 0; j < after.length; j++) {
+    var thread = after[j], key = thread.hostId + ":" + thread.id, old = previous[key]
+    if (!old) continue
+    if (old.generation !== thread.generation || navigationKey(old.navigation) !== navigationKey(thread.navigation)) continue
+    var state = old.state !== thread.state && old.state !== "unknown" && thread.state !== "unknown"
+    var a = old.children, b = thread.children
+    var children = !!(a && b && !b.stale && a.stamp !== null && b.stamp > a.stamp
+      && b.starts >= a.starts && b.stops >= a.stops && (b.starts > a.starts || b.stops > a.stops))
+    // The first event after an observed zero baseline is also a measured change.
+    children = children || !!(a && b && !b.stale && a.starts === 0 && a.stops === 0 && b.stamp !== null && (b.starts > 0 || b.stops > 0))
+    var c = old.completion, d = thread.completion
+    children = children || !!(c && d && !d.stale && d.stamp > c.stamp && d.done > c.done)
+    var compaction = !!(old.usage && thread.usage && !thread.usage.stale
+      && old.usage.compactions !== null && thread.usage.compactions > old.usage.compactions)
+    if (state || children || compaction) changes[key] = { state: state, children: children, compaction: compaction }
+  }
+  return changes
+}
+
+function resetLabel(seconds) {
+  return Math.floor(seconds / 86400) + "d " + (seconds < 3600 ? "<1" : Math.floor(seconds % 86400 / 3600)) + "h"
+}
+
+// Only published daily observations become bars. Missing dates are not zeroes.
+function activityView(rows, nowMs) {
+  if (!Array.isArray(rows) || rows.length === 0 || rows.length > 30) return null
+  var seen = {}, daily = [], total = 0, peak = 0
+  var today = new Date(nowMs).toISOString().slice(0, 10)
+  for (var i = 0; i < rows.length; i++) {
+    var row = rows[i], date = row && row.date, tokens = row && row.tokens
+    if (typeof date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(date)
+        || !isFinite(Date.parse(date + "T00:00:00Z"))
+        || new Date(date + "T00:00:00Z").toISOString().slice(0, 10) !== date
+        || date > today || seen[date] || number(tokens) === null
+        || tokens < 0 || tokens > 9007199254740991 || Math.floor(tokens) !== tokens) return null
+    seen[date] = true
+    total += tokens
+    if (total > 9007199254740991) return null
+    peak = Math.max(peak, tokens)
+    daily.push({ date: date, tokens: tokens })
+  }
+  daily.sort(function(a, b) { return a.date.localeCompare(b.date) })
+  for (var j = 0; j < daily.length; j++) daily[j].ratio = peak > 0 ? daily[j].tokens / peak : 0
+  var scale = total >= 1e12 ? 1e12 : total >= 1e9 ? 1e9 : total >= 1e6 ? 1e6 : total >= 1e3 ? 1e3 : 1
+  var unit = scale === 1e12 ? "T" : scale === 1e9 ? "B" : scale === 1e6 ? "M" : scale === 1e3 ? "K" : ""
+  return { daily: daily, count: daily.length, total: (total / scale).toFixed(scale === 1 ? 0 : 1).replace(/\.0$/, "") + unit }
+}
+
+// Highest-priority observed state wins; unavailable sources never imply completion.
+function dominantState(threads, acknowledgements) {
+  var priority = { unknown: 0, idle: 0, done: 1, working: 2, blocked: 3 }
+  var state = "idle"
+  for (var i = 0; i < threads.length; i++) {
+    if (threads[i].state === "done" && acknowledgements && acknowledgements[threadKey(threads[i])] === completionEpisode(threads[i])) continue
+    if (priority[threads[i].state] > priority[state]) state = threads[i].state
+  }
+  return state
+}
+
+function threadKey(thread) { return thread.hostId + ":" + thread.id }
+function navigationKey(binding) { return binding && typeof binding === "object" ? String(binding.profile_id || "") + ":" + String(binding.route_key || "") : "" }
+function navigationArgs(thread) {
+  var args = ["--open-thread", thread.hostId, thread.id]
+  if (thread.navigation !== null && thread.navigation !== undefined) {
+    var binding = thread.navigation
+    if (!binding || typeof binding !== "object" || Array.isArray(binding) || Object.keys(binding).length !== 2
+        || typeof binding.profile_id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/.test(binding.profile_id)
+        || typeof binding.route_key !== "string" || !/^[a-f0-9]{64}$/.test(binding.route_key)) return null
+    args.push(JSON.stringify(binding))
+  }
+  return args
+}
+function completionEpisode(thread) {
+  var route = navigationKey(thread.navigation)
+  return String(thread.generation || 0) + ":" + String(thread.statusGeneration || 0) + (route ? ":" + route : "")
+}
+
+// Keep surviving rows in place, append genuine arrivals. State changes never move a target.
+function stableThreads(before, after) {
+  var current = {}, result = []
+  after.forEach(function(thread) { current[threadKey(thread)] = thread })
+  before.forEach(function(thread) {
+    var key = threadKey(thread)
+    if (current[key]) { result.push(current[key]); delete current[key] }
+  })
+  after.forEach(function(thread) { var key = threadKey(thread); if (current[key]) { result.push(thread); delete current[key] } })
+  return result
+}
+
+// Only continuous reporting establishes an arrival. Reconnection is hydration.
+function arrivals(before, after) {
+  var existing = {}, liveHosts = {}, result = {}
+  before.threads.forEach(function(thread) { existing[threadKey(thread)] = true })
+  before.hosts.forEach(function(host) { if (host.reporting) liveHosts[host.id] = navigationKey(host.navigation) })
+  after.threads.forEach(function(thread) { if (liveHosts[thread.hostId] !== undefined && liveHosts[thread.hostId] === navigationKey(thread.navigation) && !existing[threadKey(thread)]) result[threadKey(thread)] = true })
+  return result
+}
+
+function providerGroups(allowances) {
+  var groups = [], indices = Object.create(null)
+  allowances.forEach(function(account) {
+    if (indices[account.provider] === undefined) { indices[account.provider] = groups.length; groups.push({ id: account.provider, label: account.providerLabel, accounts: [] }) }
+    groups[indices[account.provider]].accounts.push(account)
+  })
+  return groups
+}
+
+function childHint(completion) {
+  if (!completion) return "Subagent status unavailable"
+  var parts = [completion.done + " completed"]
+  if (completion.outcomes) {
+    ;["running", "interrupted", "failed", "unknown"].forEach(function(name) {
+      if (completion.outcomes[name]) parts.push(completion.outcomes[name] + " " + (name === "unknown" ? "unavailable" : name))
+    })
+  } else if (completion.total > completion.done) parts.push((completion.total - completion.done) + " unresolved")
+  return parts.join(" · ") + (completion.stale ? "\nLast reported " + completion.age : "")
+}
+
+// Preserve configured host order and each thread's original navigation index.
+function groupThreads(view, hiddenStates, collapsedHosts) {
+  hiddenStates = hiddenStates || []
+  collapsedHosts = collapsedHosts || []
+  return view.hosts.map(function(host) {
+    var indices = []
+    view.threads.forEach(function(thread, index) {
+      if (host.reporting && thread.hostId === host.id) indices.push(index)
+    })
+    var filtered = indices.filter(function(index) { return hiddenStates.indexOf(view.threads[index].state) < 0 })
+    var collapsed = collapsedHosts.indexOf(host.id) >= 0
+    return { host: host, total: indices.length, matching: filtered.length, collapsed: collapsed, indices: collapsed ? [] : filtered }
+  })
+}
+
 function project(raw, nowMs) {
   var empty = { connected: false, working: null, partial: false, threads: [], hosts: [],
-                allowances: [], gpu: null, inference: "Inference use unavailable", note: "Observatory unavailable" }
-  if (!raw || !Array.isArray(raw.hosts) || raw.hosts.length === 0 || !Array.isArray(raw.allowances)) return empty
+                allowances: [], gpu: null, discoveryState: "disabled", discoveryLabel: "", inference: "Inference use unavailable", note: "Observatory unavailable" }
+  if (!raw || !Array.isArray(raw.hosts) || !Array.isArray(raw.allowances)) return empty
+  var discovery = raw.fleet_discovery && raw.fleet_discovery.state
+  if (["available", "unavailable", "discovering"].indexOf(discovery) < 0) discovery = "disabled"
   var interval = number(raw.interval)
   var maxAge = (interval !== null && interval >= 2 && interval <= 60 ? interval : 5) + 20
   var hosts = [], threads = [], working = 0, missing = 0, reportingCount = 0, gpu = null
@@ -32,9 +282,15 @@ function project(raw, nowMs) {
     var host = raw.hosts[i]
     if (!host || typeof host !== "object") continue
     var age = ageSeconds(host.sampled_at, nowMs)
-    var reporting = host.online === true && age !== null && age < maxAge && Array.isArray(host.agents)
-    hosts.push({ id: label(host.id, "unknown"), name: label(host.label, label(host.id, "Host")),
-                 reporting: reporting, age: reporting ? ageLabel(age) : "source unavailable" })
+    var reporting = host.connection_state !== "setup_needed" && host.online === true && age !== null && age < maxAge && Array.isArray(host.agents)
+    var metrics = reporting && host.metrics ? host.metrics : {}
+    var connection = host.connection_state === "setup_needed" ? "setup_needed" : host.connection_state === "connecting" ? "connecting" : reporting ? "connected" : "unreachable"
+    hosts.push({ connectionState: connection, connectionLabel: connection === "setup_needed" ? "Setup needed" : connection === "connecting" ? "Connecting" : connection === "connected" ? "Connected" : "Unreachable", id: label(host.id, "unknown"), name: label(host.label, label(host.id, "Host")), navigation: host.navigation === undefined ? null : host.navigation,
+                 activeThreads: reporting ? host.agents.filter(function(a) { return a && ["working", "blocked"].indexOf(String(a.status).toLowerCase()) >= 0 }).length : null,
+                 reporting: reporting, age: reporting ? ageLabel(age) : "source unavailable",
+                 cpu: percent(metrics.cpu_percent), memory: usedPercent(metrics.memory),
+                 gpu: metrics.gpu ? percent(metrics.gpu.percent) : null,
+                 vram: usedPercent(metrics.gpu) })
     if (!reporting) { missing++; continue }
     reportingCount++
     if (host.id === "ws-255" && host.metrics && host.metrics.gpu && number(host.metrics.gpu.percent) !== null
@@ -48,8 +304,12 @@ function project(raw, nowMs) {
       var state = label(agent.status, "unknown").toLowerCase()
       if (["working", "blocked", "done", "idle", "unknown"].indexOf(state) < 0) state = "unknown"
       if (state === "working") working++
-      threads.push({ id: label(agent.id, ""), project: label(agent.project, "Untitled"),
+      threads.push({ id: label(agent.id, ""), hostId: label(host.id, "unknown"), project: label(agent.project, "Untitled"),
+                     navigation: agent.navigation !== undefined && agent.navigation !== null ? agent.navigation : host.navigation === undefined ? null : host.navigation,
                      title: label(agent.title, "No task title reported"), host: label(host.label, label(host.id, "Host")),
+                     timing: turnTiming(agent, nowMs, reporting), branch: label(agent.branch, ""), checkout: label(agent.checkout, ""), usage: threadUsage(agent, nowMs), children: childObservations(agent, nowMs), completion: childCompletion(agent, nowMs),
+                     generation: counter(agent.technical && agent.technical.session_generation) || 0,
+                     statusGeneration: counter(agent.technical && agent.technical.state_change_seq) || 0,
                      state: state, harness: label(agent.harness, "Unknown"), age: ageLabel(age) })
     }
   }
@@ -60,21 +320,59 @@ function project(raw, nowMs) {
   var allowances = []
   for (var k = 0; k < raw.allowances.length; k++) {
     var row = raw.allowances[k]
-    if (!row || (row.label !== "Personal" && row.label !== "Work")) continue
+    if (!row || typeof row !== "object") continue
+    var accountId = label(row.account_id, label(row.label, "")), provider = label(row.provider, "codex")
+    if (!accountId || accountId.length > 128 || !/^[A-Za-z0-9_.-]+$/.test(provider)) continue
+    var duration = number(row.window_seconds)
+    if (duration === null) duration = 604800
+    if (duration <= 0 || duration > 31536000) continue
     var balance = number(row.weekly_remaining)
     var reset = number(row.weekly_resets_at)
-    var age = ageSeconds(row.sampled_at, nowMs)
+    var age = ageSeconds(row.sampled_at, nowMs, 1)
     var current = row.available === true && age !== null && age <= 600
                   && balance !== null && balance >= 0 && balance <= 100
                   && reset !== null && reset > nowMs / 1000
-    allowances.push({ label: row.label, remaining: current ? balance : null,
+    var fresh = row.available === true && age !== null && age <= 600
+    var untilReset = fresh && reset !== null && reset > nowMs / 1000 ? reset - nowMs / 1000 : null
+    var resetCount = fresh && counter(row.reset_count) !== null && row.reset_count <= 10000
+      && (row.reset_expires_at === null || row.reset_expires_at === undefined
+          || (number(row.reset_expires_at) !== null && row.reset_expires_at > nowMs / 1000)) ? row.reset_count : null
+    var timeRemaining = untilReset !== null && untilReset <= duration ? untilReset / duration * 100 : null
+    var paceDifference = current && timeRemaining !== null ? balance - timeRemaining : null
+    allowances.push({ id: accountId, provider: provider, providerLabel: label(row.provider_label, provider === "codex" ? "Codex" : provider), label: label(row.label, accountId), remaining: current ? balance : null,
+                      timeRemaining: timeRemaining,
+                      paceDifference: paceDifference,
+                      paceStrength: paceDifference === null ? 0 : Math.min(1, Math.abs(paceDifference) / 15),
+                      resetCount: resetCount,
+                      pace: paceDifference === null ? "unknown" : paceDifference > 0 ? "reserve" : paceDifference < 0 ? "deficit" : "even",
+                      reset: untilReset !== null ? resetLabel(untilReset) : null,
+                      activity: current ? activityView(row.daily_usage, nowMs) : null,
                       age: current ? ageLabel(age) : "source unavailable" })
   }
-  allowances.sort(function(a, b) { return a.label === "Personal" ? -1 : b.label === "Personal" ? 1 : 0 })
+  // Account and provider order follows the configured collection order.
   return { connected: true, working: reportingCount > 0 ? working : null, partial: missing > 0, threads: threads,
+           discoveryState: discovery, discoveryLabel: discovery === "unavailable" ? "Discovery unavailable" : discovery === "discovering" ? "Discovering" : "",
            hosts: hosts, allowances: allowances, gpu: gpu,
            inference: "Inference use unavailable",
            note: reportingCount === 0 ? "No sources reporting" : missing > 0 ? missing + " source" + (missing === 1 ? "" : "s") + " unavailable" : "All sources reporting" }
 }
 
-if (typeof module !== "undefined") module.exports = { project: project, ageSeconds: ageSeconds, ageLabel: ageLabel }
+function allowancePaceReading(difference) {
+  if (typeof difference !== "number" || !isFinite(difference))
+    return { difference: null, text: "—", band: "unknown" }
+  var rounded = Math.round(Math.abs(difference) * 10 + 1e-9) / 10
+  if (difference < 0 && rounded !== 0) rounded = -rounded
+  return { difference: rounded,
+           text: (rounded > 0 ? "+" : rounded < 0 ? "−" : "") + Math.abs(rounded).toFixed(1) + "%",
+           band: allowancePaceBand(rounded) }
+}
+
+function allowancePaceBand(difference) {
+  if (typeof difference !== "number" || !isFinite(difference)) return "unknown"
+  if (difference >= 0) return "surplus"
+  if (difference >= -5) return "caution"
+  if (difference > -10) return "warning"
+  return "deficit"
+}
+
+if (typeof module !== "undefined") module.exports = { navigationArgs: navigationArgs, turnTiming: turnTiming, durationLabel: durationLabel, timingHint: timingHint, allowancePaceReading: allowancePaceReading, allowancePaceBand: allowancePaceBand, threadKey: threadKey, completionEpisode: completionEpisode, stableThreads: stableThreads, arrivals: arrivals, providerGroups: providerGroups, childHint: childHint, groupThreads: groupThreads, transitions: transitions, dominantState: dominantState, project: project, ageSeconds: ageSeconds, ageLabel: ageLabel }

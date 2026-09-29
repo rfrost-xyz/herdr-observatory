@@ -1,0 +1,2936 @@
+{
+  "now": 1800000000,
+  "session": "fixture-session",
+  "cases": [
+    {
+      "name": "usage-total-and-baseline",
+      "lines": [
+        {
+          "json": {
+            "type": "event_msg",
+            "timestamp": "2027-01-15T07:59:59+00:00",
+            "payload": {
+              "type": "token_count",
+              "info": {
+                "last_token_usage": {
+                  "input_tokens": 12,
+                  "output_tokens": 3,
+                  "cached_input_tokens": 0,
+                  "cache_write_input_tokens": 4,
+                  "total_tokens": 185000
+                },
+                "total_token_usage": {
+                  "input_tokens": 21700000,
+                  "output_tokens": 4200,
+                  "cached_input_tokens": 20000000,
+                  "cache_write_input_tokens": 0
+                },
+                "model_context_window": 258400
+              }
+            }
+          }
+        }
+      ],
+      "expected_usage": {
+        "input": 12,
+        "output_tokens": 3,
+        "cache_read": 0,
+        "cache_write": 4,
+        "context": 185000,
+        "total_input": 21700000,
+        "total_output": 4200,
+        "total_cache_read": 20000000,
+        "total_cache_write": 0,
+        "total_uncached_input": 1700000,
+        "compactions": 0,
+        "window": 258400,
+        "context_percent": 70,
+        "usage_seq": 1799999999000000,
+        "usage_source": "codex-rollout"
+      },
+      "expected_cursor": {
+        "children": {},
+        "seq": 1800000000000000,
+        "valid": true,
+        "compactions_valid": true,
+        "compaction_markers": 0,
+        "compaction_summaries": 0,
+        "caught_up": true,
+        "skipping": false,
+        "turns": {
+          "valid": true,
+          "supported": false,
+          "current_known": false,
+          "active": null,
+          "start": null,
+          "last": null,
+          "last_duration": null,
+          "last_outcome": null,
+          "last_end": null,
+          "total": 0,
+          "finished": {}
+        }
+      }
+    },
+    {
+      "name": "usage-zero",
+      "lines": [
+        {
+          "json": {
+            "type": "event_msg",
+            "timestamp": "2027-01-15T07:59:59+00:00",
+            "payload": {
+              "type": "token_count",
+              "info": {
+                "last_token_usage": {
+                  "input_tokens": 0,
+                  "output_tokens": 0,
+                  "total_tokens": 0,
+                  "cached_input_tokens": 0
+                },
+                "total_token_usage": {
+                  "input_tokens": 21700000,
+                  "output_tokens": 4200,
+                  "cached_input_tokens": 20000000,
+                  "cache_write_input_tokens": 0
+                },
+                "model_context_window": 12000
+              }
+            }
+          }
+        }
+      ],
+      "expected_usage": {
+        "input": 0,
+        "output_tokens": 0,
+        "cache_read": 0,
+        "cache_write": null,
+        "context": 0,
+        "total_input": 21700000,
+        "total_output": 4200,
+        "total_cache_read": 20000000,
+        "total_cache_write": 0,
+        "total_uncached_input": 1700000,
+        "compactions": 0,
+        "window": 12000,
+        "context_percent": 100,
+        "usage_seq": 1799999999000000,
+        "usage_source": "codex-rollout"
+      },
+      "expected_cursor": {
+        "children": {},
+        "seq": 1800000000000000,
+        "valid": true,
+        "compactions_valid": true,
+        "compaction_markers": 0,
+        "compaction_summaries": 0,
+        "caught_up": true,
+        "skipping": false,
+        "turns": {
+          "valid": true,
+          "supported": false,
+          "current_known": false,
+          "active": null,
+          "start": null,
+          "last": null,
+          "last_duration": null,
+          "last_outcome": null,
+          "last_end": null,
+          "total": 0,
+          "finished": {}
+        }
+      }
+    },
+    {
+      "name": "usage-invalid-bool",
+      "lines": [
+        {
+          "json": {
+            "type": "event_msg",
+            "timestamp": "2027-01-15T07:59:59+00:00",
+            "payload": {
+              "type": "token_count",
+              "info": {
+                "last_token_usage": {
+                  "input_tokens": true,
+                  "total_tokens": 1
+                },
+                "total_token_usage": {
+                  "input_tokens": 21700000,
+                  "output_tokens": 4200,
+                  "cached_input_tokens": 20000000,
+                  "cache_write_input_tokens": 0
+                },
+                "model_context_window": 258400
+              }
+            }
+          }
+        }
+      ],
+      "expected_usage": {
+        "input": null,
+        "output_tokens": null,
+        "cache_read": null,
+        "cache_write": null,
+        "context": 1,
+        "total_input": 21700000,
+        "total_output": 4200,
+        "total_cache_read": 20000000,
+        "total_cache_write": 0,
+        "total_uncached_input": 1700000,
+        "compactions": 0,
+        "window": 258400,
+        "context_percent": 0,
+        "usage_seq": 1799999999000000,
+        "usage_source": "codex-rollout"
+      },
+      "expected_cursor": {
+        "children": {},
+        "seq": 1800000000000000,
+        "valid": true,
+        "compactions_valid": true,
+        "compaction_markers": 0,
+        "compaction_summaries": 0,
+        "caught_up": true,
+        "skipping": false,
+        "turns": {
+          "valid": true,
+          "supported": false,
+          "current_known": false,
+          "active": null,
+          "start": null,
+          "last": null,
+          "last_duration": null,
+          "last_outcome": null,
+          "last_end": null,
+          "total": 0,
+          "finished": {}
+        }
+      }
+    },
+    {
+      "name": "usage-missing-totals",
+      "lines": [
+        {
+          "json": {
+            "type": "event_msg",
+            "timestamp": "2027-01-15T07:59:59+00:00",
+            "payload": {
+              "type": "token_count",
+              "info": {
+                "last_token_usage": {
+                  "input_tokens": 12,
+                  "output_tokens": 3,
+                  "cached_input_tokens": 0,
+                  "cache_write_input_tokens": 4,
+                  "total_tokens": 185000
+                },
+                "total_token_usage": null,
+                "model_context_window": 258400
+              }
+            }
+          }
+        }
+      ],
+      "expected_usage": {
+        "input": 12,
+        "output_tokens": 3,
+        "cache_read": 0,
+        "cache_write": 4,
+        "context": 185000,
+        "total_input": null,
+        "total_output": null,
+        "total_cache_read": null,
+        "total_cache_write": null,
+        "total_uncached_input": null,
+        "compactions": 0,
+        "window": 258400,
+        "context_percent": 70,
+        "usage_seq": 1799999999000000,
+        "usage_source": "codex-rollout"
+      },
+      "expected_cursor": {
+        "children": {},
+        "seq": 1800000000000000,
+        "valid": true,
+        "compactions_valid": true,
+        "compaction_markers": 0,
+        "compaction_summaries": 0,
+        "caught_up": true,
+        "skipping": false,
+        "turns": {
+          "valid": true,
+          "supported": false,
+          "current_known": false,
+          "active": null,
+          "start": null,
+          "last": null,
+          "last_duration": null,
+          "last_outcome": null,
+          "last_end": null,
+          "total": 0,
+          "finished": {}
+        }
+      }
+    },
+    {
+      "name": "usage-inconsistent-cache",
+      "lines": [
+        {
+          "json": {
+            "type": "event_msg",
+            "timestamp": "2027-01-15T07:59:59+00:00",
+            "payload": {
+              "type": "token_count",
+              "info": {
+                "last_token_usage": {
+                  "input_tokens": 12,
+                  "output_tokens": 3,
+                  "cached_input_tokens": 0,
+                  "cache_write_input_tokens": 4,
+                  "total_tokens": 185000
+                },
+                "total_token_usage": {
+                  "input_tokens": 3,
+                  "cached_input_tokens": 4
+                },
+                "model_context_window": 258400
+              }
+            }
+          }
+        }
+      ],
+      "expected_usage": {
+        "input": 12,
+        "output_tokens": 3,
+        "cache_read": 0,
+        "cache_write": 4,
+        "context": 185000,
+        "total_input": 3,
+        "total_output": null,
+        "total_cache_read": 4,
+        "total_cache_write": null,
+        "total_uncached_input": null,
+        "compactions": 0,
+        "window": 258400,
+        "context_percent": 70,
+        "usage_seq": 1799999999000000,
+        "usage_source": "codex-rollout"
+      },
+      "expected_cursor": {
+        "children": {},
+        "seq": 1800000000000000,
+        "valid": true,
+        "compactions_valid": true,
+        "compaction_markers": 0,
+        "compaction_summaries": 0,
+        "caught_up": true,
+        "skipping": false,
+        "turns": {
+          "valid": true,
+          "supported": false,
+          "current_known": false,
+          "active": null,
+          "start": null,
+          "last": null,
+          "last_duration": null,
+          "last_outcome": null,
+          "last_end": null,
+          "total": 0,
+          "finished": {}
+        }
+      }
+    },
+    {
+      "name": "usage-invalid-window",
+      "lines": [
+        {
+          "json": {
+            "type": "event_msg",
+            "timestamp": "2027-01-15T07:59:59+00:00",
+            "payload": {
+              "type": "token_count",
+              "info": {
+                "last_token_usage": {
+                  "input_tokens": 12,
+                  "output_tokens": 3,
+                  "cached_input_tokens": 0,
+                  "cache_write_input_tokens": 4,
+                  "total_tokens": 185000
+                },
+                "total_token_usage": {
+                  "input_tokens": 21700000,
+                  "output_tokens": 4200,
+                  "cached_input_tokens": 20000000,
+                  "cache_write_input_tokens": 0
+                },
+                "model_context_window": 10
+              }
+            }
+          }
+        }
+      ],
+      "expected_usage": {
+        "input": 12,
+        "output_tokens": 3,
+        "cache_read": 0,
+        "cache_write": 4,
+        "context": null,
+        "total_input": 21700000,
+        "total_output": 4200,
+        "total_cache_read": 20000000,
+        "total_cache_write": 0,
+        "total_uncached_input": 1700000,
+        "compactions": 0,
+        "window": null,
+        "context_percent": null,
+        "usage_seq": 1799999999000000,
+        "usage_source": "codex-rollout"
+      },
+      "expected_cursor": {
+        "children": {},
+        "seq": 1800000000000000,
+        "valid": true,
+        "compactions_valid": true,
+        "compaction_markers": 0,
+        "compaction_summaries": 0,
+        "caught_up": true,
+        "skipping": false,
+        "turns": {
+          "valid": true,
+          "supported": false,
+          "current_known": false,
+          "active": null,
+          "start": null,
+          "last": null,
+          "last_duration": null,
+          "last_outcome": null,
+          "last_end": null,
+          "total": 0,
+          "finished": {}
+        }
+      }
+    },
+    {
+      "name": "usage-zero-window",
+      "lines": [
+        {
+          "json": {
+            "type": "event_msg",
+            "timestamp": "2027-01-15T07:59:59+00:00",
+            "payload": {
+              "type": "token_count",
+              "info": {
+                "last_token_usage": {
+                  "input_tokens": 12,
+                  "output_tokens": 3,
+                  "cached_input_tokens": 0,
+                  "cache_write_input_tokens": 4,
+                  "total_tokens": 185000
+                },
+                "total_token_usage": {
+                  "input_tokens": 21700000,
+                  "output_tokens": 4200,
+                  "cached_input_tokens": 20000000,
+                  "cache_write_input_tokens": 0
+                },
+                "model_context_window": 0
+              }
+            }
+          }
+        }
+      ],
+      "expected_usage": {
+        "input": 12,
+        "output_tokens": 3,
+        "cache_read": 0,
+        "cache_write": 4,
+        "context": null,
+        "total_input": 21700000,
+        "total_output": 4200,
+        "total_cache_read": 20000000,
+        "total_cache_write": 0,
+        "total_uncached_input": 1700000,
+        "compactions": 0,
+        "window": null,
+        "context_percent": null,
+        "usage_seq": 1799999999000000,
+        "usage_source": "codex-rollout"
+      },
+      "expected_cursor": {
+        "children": {},
+        "seq": 1800000000000000,
+        "valid": true,
+        "compactions_valid": true,
+        "compaction_markers": 0,
+        "compaction_summaries": 0,
+        "caught_up": true,
+        "skipping": false,
+        "turns": {
+          "valid": true,
+          "supported": false,
+          "current_known": false,
+          "active": null,
+          "start": null,
+          "last": null,
+          "last_duration": null,
+          "last_outcome": null,
+          "last_end": null,
+          "total": 0,
+          "finished": {}
+        }
+      }
+    },
+    {
+      "name": "usage-reserve-only",
+      "lines": [
+        {
+          "json": {
+            "type": "event_msg",
+            "timestamp": "2027-01-15T07:59:59+00:00",
+            "payload": {
+              "type": "token_count",
+              "info": {
+                "last_token_usage": {
+                  "total_tokens": 12000
+                },
+                "total_token_usage": {
+                  "input_tokens": 21700000,
+                  "output_tokens": 4200,
+                  "cached_input_tokens": 20000000,
+                  "cache_write_input_tokens": 0
+                },
+                "model_context_window": 258400
+              }
+            }
+          }
+        }
+      ],
+      "expected_usage": {
+        "input": null,
+        "output_tokens": null,
+        "cache_read": null,
+        "cache_write": null,
+        "context": 12000,
+        "total_input": 21700000,
+        "total_output": 4200,
+        "total_cache_read": 20000000,
+        "total_cache_write": 0,
+        "total_uncached_input": 1700000,
+        "compactions": 0,
+        "window": 258400,
+        "context_percent": 0,
+        "usage_seq": 1799999999000000,
+        "usage_source": "codex-rollout"
+      },
+      "expected_cursor": {
+        "children": {},
+        "seq": 1800000000000000,
+        "valid": true,
+        "compactions_valid": true,
+        "compaction_markers": 0,
+        "compaction_summaries": 0,
+        "caught_up": true,
+        "skipping": false,
+        "turns": {
+          "valid": true,
+          "supported": false,
+          "current_known": false,
+          "active": null,
+          "start": null,
+          "last": null,
+          "last_duration": null,
+          "last_outcome": null,
+          "last_end": null,
+          "total": 0,
+          "finished": {}
+        }
+      }
+    },
+    {
+      "name": "future-usage",
+      "lines": [
+        {
+          "json": {
+            "type": "event_msg",
+            "timestamp": "2027-01-15T08:00:01+00:00",
+            "payload": {
+              "type": "token_count",
+              "info": {
+                "last_token_usage": {
+                  "input_tokens": 12,
+                  "output_tokens": 3,
+                  "cached_input_tokens": 0,
+                  "cache_write_input_tokens": 4,
+                  "total_tokens": 185000
+                },
+                "total_token_usage": {
+                  "input_tokens": 21700000,
+                  "output_tokens": 4200,
+                  "cached_input_tokens": 20000000,
+                  "cache_write_input_tokens": 0
+                },
+                "model_context_window": 258400
+              }
+            }
+          }
+        }
+      ],
+      "expected_usage": {},
+      "expected_cursor": {
+        "children": {},
+        "seq": 1800000000000000,
+        "valid": true,
+        "compactions_valid": true,
+        "compaction_markers": 0,
+        "compaction_summaries": 0,
+        "caught_up": true,
+        "skipping": false,
+        "turns": {
+          "valid": true,
+          "supported": false,
+          "current_known": false,
+          "active": null,
+          "start": null,
+          "last": null,
+          "last_duration": null,
+          "last_outcome": null,
+          "last_end": null,
+          "total": 0,
+          "finished": {}
+        }
+      }
+    },
+    {
+      "name": "naive-usage",
+      "lines": [
+        {
+          "json": {
+            "type": "event_msg",
+            "timestamp": "2027-01-15T08:00:00",
+            "payload": {
+              "type": "token_count",
+              "info": {
+                "last_token_usage": {
+                  "input_tokens": 12,
+                  "output_tokens": 3,
+                  "cached_input_tokens": 0,
+                  "cache_write_input_tokens": 4,
+                  "total_tokens": 185000
+                },
+                "total_token_usage": {
+                  "input_tokens": 21700000,
+                  "output_tokens": 4200,
+                  "cached_input_tokens": 20000000,
+                  "cache_write_input_tokens": 0
+                },
+                "model_context_window": 258400
+              }
+            }
+          }
+        }
+      ],
+      "expected_usage": {},
+      "expected_cursor": {
+        "children": {},
+        "seq": 1800000000000000,
+        "valid": true,
+        "compactions_valid": true,
+        "compaction_markers": 0,
+        "compaction_summaries": 0,
+        "caught_up": true,
+        "skipping": false,
+        "turns": {
+          "valid": true,
+          "supported": false,
+          "current_known": false,
+          "active": null,
+          "start": null,
+          "last": null,
+          "last_duration": null,
+          "last_outcome": null,
+          "last_end": null,
+          "total": 0,
+          "finished": {}
+        }
+      }
+    },
+    {
+      "name": "partial-usage",
+      "lines": [
+        {
+          "text": "{\"type\": \"event_msg\", \"timestamp\": \"2027-01-15T07:59:59+00:00\", \"payload\": {\"type\": \"token_count\", \"info\": {\"last_token_usage\": {\"input_tokens\": 12, \"output_tokens\": 3, \"cached_input_tokens\": 0, \"cache_write_input_tokens\": 4, \"total_tokens\": 185000}, \"total_token_usage\": {\"input_tokens\": 21700000, \"output_tokens\": 4200, \"cached_input_tokens\": 20000000, \"cache_write_input_tokens\": 0}, \"model_context_window\": 258400}}}",
+          "repeat": 0,
+          "newline": false
+        }
+      ],
+      "expected_usage": {},
+      "expected_cursor": {
+        "children": {},
+        "seq": 1800000000000000,
+        "valid": true,
+        "compactions_valid": true,
+        "compaction_markers": 0,
+        "compaction_summaries": 0,
+        "caught_up": false,
+        "skipping": false,
+        "turns": {
+          "valid": true,
+          "supported": false,
+          "current_known": false,
+          "active": null,
+          "start": null,
+          "last": null,
+          "last_duration": null,
+          "last_outcome": null,
+          "last_end": null,
+          "total": 0,
+          "finished": {}
+        }
+      }
+    },
+    {
+      "name": "compaction-pair",
+      "lines": [
+        {
+          "json": {
+            "type": "compacted",
+            "payload": {}
+          }
+        },
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "context_compacted"
+            }
+          }
+        },
+        {
+          "json": {
+            "type": "event_msg",
+            "timestamp": "2027-01-15T07:59:59+00:00",
+            "payload": {
+              "type": "token_count",
+              "info": {
+                "last_token_usage": {
+                  "input_tokens": 12,
+                  "output_tokens": 3,
+                  "cached_input_tokens": 0,
+                  "cache_write_input_tokens": 4,
+                  "total_tokens": 185000
+                },
+                "total_token_usage": {
+                  "input_tokens": 21700000,
+                  "output_tokens": 4200,
+                  "cached_input_tokens": 20000000,
+                  "cache_write_input_tokens": 0
+                },
+                "model_context_window": 258400
+              }
+            }
+          }
+        }
+      ],
+      "expected_usage": {
+        "input": 12,
+        "output_tokens": 3,
+        "cache_read": 0,
+        "cache_write": 4,
+        "context": 185000,
+        "total_input": 21700000,
+        "total_output": 4200,
+        "total_cache_read": 20000000,
+        "total_cache_write": 0,
+        "total_uncached_input": 1700000,
+        "compactions": 1,
+        "window": 258400,
+        "context_percent": 70,
+        "usage_seq": 1799999999000000,
+        "usage_source": "codex-rollout"
+      },
+      "expected_cursor": {
+        "children": {},
+        "seq": 1800000000000000,
+        "valid": true,
+        "compactions_valid": true,
+        "compaction_markers": 1,
+        "compaction_summaries": 1,
+        "caught_up": true,
+        "skipping": false,
+        "turns": {
+          "valid": true,
+          "supported": false,
+          "current_known": false,
+          "active": null,
+          "start": null,
+          "last": null,
+          "last_duration": null,
+          "last_outcome": null,
+          "last_end": null,
+          "total": 0,
+          "finished": {}
+        }
+      }
+    },
+    {
+      "name": "usage-bounded-tail",
+      "lines": [
+        {
+          "json": {
+            "type": "event_msg",
+            "timestamp": "2027-01-15T07:59:59+00:00",
+            "payload": {
+              "type": "token_count",
+              "info": {
+                "last_token_usage": {
+                  "input_tokens": 12,
+                  "output_tokens": 3,
+                  "cached_input_tokens": 0,
+                  "cache_write_input_tokens": 4,
+                  "total_tokens": 185000
+                },
+                "total_token_usage": {
+                  "input_tokens": 21700000,
+                  "output_tokens": 4200,
+                  "cached_input_tokens": 20000000,
+                  "cache_write_input_tokens": 0
+                },
+                "model_context_window": 258400
+              }
+            }
+          }
+        },
+        {
+          "text": "{\"type\":\"response_item\",\"payload\":\"@PAYLOAD@\"}",
+          "repeat": 600000,
+          "newline": true
+        }
+      ],
+      "expected_usage": {},
+      "expected_cursor": {
+        "children": {},
+        "seq": 1800000000000000,
+        "valid": true,
+        "compactions_valid": true,
+        "compaction_markers": 0,
+        "compaction_summaries": 0,
+        "caught_up": true,
+        "skipping": false,
+        "turns": {
+          "valid": true,
+          "supported": false,
+          "current_known": false,
+          "active": null,
+          "start": null,
+          "last": null,
+          "last_duration": null,
+          "last_outcome": null,
+          "last_end": null,
+          "total": 0,
+          "finished": {}
+        }
+      }
+    },
+    {
+      "name": "usage-after-truncated-history",
+      "lines": [
+        {
+          "text": "{\"type\":\"response_item\",\"payload\":\"@PAYLOAD@\"}",
+          "repeat": 600000,
+          "newline": true
+        },
+        {
+          "json": {
+            "type": "event_msg",
+            "timestamp": "2027-01-15T07:59:59+00:00",
+            "payload": {
+              "type": "token_count",
+              "info": {
+                "last_token_usage": {
+                  "input_tokens": 12,
+                  "output_tokens": 3,
+                  "cached_input_tokens": 0,
+                  "cache_write_input_tokens": 4,
+                  "total_tokens": 185000
+                },
+                "total_token_usage": {
+                  "input_tokens": 21700000,
+                  "output_tokens": 4200,
+                  "cached_input_tokens": 20000000,
+                  "cache_write_input_tokens": 0
+                },
+                "model_context_window": 258400
+              }
+            }
+          }
+        }
+      ],
+      "expected_usage": {
+        "input": 12,
+        "output_tokens": 3,
+        "cache_read": 0,
+        "cache_write": 4,
+        "context": 185000,
+        "total_input": 21700000,
+        "total_output": 4200,
+        "total_cache_read": 20000000,
+        "total_cache_write": 0,
+        "total_uncached_input": 1700000,
+        "compactions": null,
+        "window": 258400,
+        "context_percent": 70,
+        "usage_seq": 1799999999000000,
+        "usage_source": "codex-rollout"
+      },
+      "expected_cursor": {
+        "children": {},
+        "seq": 1800000000000000,
+        "valid": true,
+        "compactions_valid": true,
+        "compaction_markers": 0,
+        "compaction_summaries": 0,
+        "caught_up": true,
+        "skipping": false,
+        "turns": {
+          "valid": true,
+          "supported": false,
+          "current_known": false,
+          "active": null,
+          "start": null,
+          "last": null,
+          "last_duration": null,
+          "last_outcome": null,
+          "last_end": null,
+          "total": 0,
+          "finished": {}
+        }
+      }
+    },
+    {
+      "name": "child-start",
+      "lines": [
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "sub_agent_activity",
+              "agent_path": "/root/worker",
+              "kind": "started",
+              "occurred_at_ms": 1799999998000
+            }
+          }
+        }
+      ],
+      "expected_usage": {},
+      "expected_cursor": {
+        "children": {
+          "e75c94502a7fbb74b08bc4ffc5219f31d5d16266272e870171adc0310a3e01f7": "running"
+        },
+        "seq": 1799999998000000,
+        "valid": true,
+        "compactions_valid": true,
+        "compaction_markers": 0,
+        "compaction_summaries": 0,
+        "caught_up": true,
+        "skipping": false,
+        "turns": {
+          "valid": true,
+          "supported": false,
+          "current_known": false,
+          "active": null,
+          "start": null,
+          "last": null,
+          "last_duration": null,
+          "last_outcome": null,
+          "last_end": null,
+          "total": 0,
+          "finished": {}
+        }
+      }
+    },
+    {
+      "name": "child-complete-duplicate",
+      "lines": [
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "sub_agent_activity",
+              "agent_path": "/root/worker",
+              "kind": "started",
+              "occurred_at_ms": 1799999998000
+            }
+          }
+        },
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "sub_agent_activity",
+              "agent_path": "/root/worker",
+              "kind": "completed",
+              "occurred_at_ms": 1799999998000
+            }
+          }
+        },
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "sub_agent_activity",
+              "agent_path": "/root/worker",
+              "kind": "completed",
+              "occurred_at_ms": 1799999998000
+            }
+          }
+        }
+      ],
+      "expected_usage": {},
+      "expected_cursor": {
+        "children": {
+          "e75c94502a7fbb74b08bc4ffc5219f31d5d16266272e870171adc0310a3e01f7": "completed"
+        },
+        "seq": 1799999998000000,
+        "valid": true,
+        "compactions_valid": true,
+        "compaction_markers": 0,
+        "compaction_summaries": 0,
+        "caught_up": true,
+        "skipping": false,
+        "turns": {
+          "valid": true,
+          "supported": false,
+          "current_known": false,
+          "active": null,
+          "start": null,
+          "last": null,
+          "last_duration": null,
+          "last_outcome": null,
+          "last_end": null,
+          "total": 0,
+          "finished": {}
+        }
+      }
+    },
+    {
+      "name": "child-interrupt-resume-failed",
+      "lines": [
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "sub_agent_activity",
+              "agent_path": "/root/worker",
+              "kind": "started",
+              "occurred_at_ms": 1799999998000
+            }
+          }
+        },
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "sub_agent_activity",
+              "agent_path": "/root/worker",
+              "kind": "interrupted",
+              "occurred_at_ms": 1799999998000
+            }
+          }
+        },
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "sub_agent_activity",
+              "agent_path": "/root/worker",
+              "kind": "interacted",
+              "occurred_at_ms": 1799999998000
+            }
+          }
+        },
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "sub_agent_activity",
+              "agent_path": "/root/worker",
+              "kind": "failed",
+              "occurred_at_ms": 1799999998000
+            }
+          }
+        }
+      ],
+      "expected_usage": {},
+      "expected_cursor": {
+        "children": {
+          "e75c94502a7fbb74b08bc4ffc5219f31d5d16266272e870171adc0310a3e01f7": "errored"
+        },
+        "seq": 1799999998000000,
+        "valid": true,
+        "compactions_valid": true,
+        "compaction_markers": 0,
+        "compaction_summaries": 0,
+        "caught_up": true,
+        "skipping": false,
+        "turns": {
+          "valid": true,
+          "supported": false,
+          "current_known": false,
+          "active": null,
+          "start": null,
+          "last": null,
+          "last_duration": null,
+          "last_outcome": null,
+          "last_end": null,
+          "total": 0,
+          "finished": {}
+        }
+      }
+    },
+    {
+      "name": "child-unknown-baseline",
+      "lines": [
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "sub_agent_activity",
+              "agent_path": "/root/worker",
+              "kind": "completed",
+              "occurred_at_ms": 1799999998000
+            }
+          }
+        }
+      ],
+      "expected_usage": {},
+      "expected_cursor": {
+        "children": {},
+        "seq": 1800000000000000,
+        "valid": false,
+        "compactions_valid": true,
+        "compaction_markers": 0,
+        "compaction_summaries": 0,
+        "caught_up": true,
+        "skipping": false,
+        "turns": {
+          "valid": true,
+          "supported": false,
+          "current_known": false,
+          "active": null,
+          "start": null,
+          "last": null,
+          "last_duration": null,
+          "last_outcome": null,
+          "last_end": null,
+          "total": 0,
+          "finished": {}
+        }
+      }
+    },
+    {
+      "name": "child-invalid-path",
+      "lines": [
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "sub_agent_activity",
+              "agent_path": "/unsafe/worker",
+              "kind": "started",
+              "occurred_at_ms": 1799999998000
+            }
+          }
+        }
+      ],
+      "expected_usage": {},
+      "expected_cursor": {
+        "children": {},
+        "seq": 1800000000000000,
+        "valid": false,
+        "compactions_valid": true,
+        "compaction_markers": 0,
+        "compaction_summaries": 0,
+        "caught_up": true,
+        "skipping": false,
+        "turns": {
+          "valid": true,
+          "supported": false,
+          "current_known": false,
+          "active": null,
+          "start": null,
+          "last": null,
+          "last_duration": null,
+          "last_outcome": null,
+          "last_end": null,
+          "total": 0,
+          "finished": {}
+        }
+      }
+    },
+    {
+      "name": "child-future-time",
+      "lines": [
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "sub_agent_activity",
+              "agent_path": "/root/worker",
+              "kind": "started",
+              "occurred_at_ms": 1800000001000
+            }
+          }
+        }
+      ],
+      "expected_usage": {},
+      "expected_cursor": {
+        "children": {},
+        "seq": 1800000000000000,
+        "valid": false,
+        "compactions_valid": true,
+        "compaction_markers": 0,
+        "compaction_summaries": 0,
+        "caught_up": true,
+        "skipping": false,
+        "turns": {
+          "valid": true,
+          "supported": false,
+          "current_known": false,
+          "active": null,
+          "start": null,
+          "last": null,
+          "last_duration": null,
+          "last_outcome": null,
+          "last_end": null,
+          "total": 0,
+          "finished": {}
+        }
+      }
+    },
+    {
+      "name": "child-wrapped",
+      "lines": [
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "item_completed",
+              "thread_id": "fixture-session",
+              "completed_at_ms": 1799999998000,
+              "item": {
+                "type": "SubAgentActivity",
+                "agent_path": "/root/worker",
+                "kind": "started"
+              }
+            }
+          }
+        }
+      ],
+      "expected_usage": {},
+      "expected_cursor": {
+        "children": {
+          "e75c94502a7fbb74b08bc4ffc5219f31d5d16266272e870171adc0310a3e01f7": "running"
+        },
+        "seq": 1799999998000000,
+        "valid": true,
+        "compactions_valid": true,
+        "compaction_markers": 0,
+        "compaction_summaries": 0,
+        "caught_up": true,
+        "skipping": false,
+        "turns": {
+          "valid": true,
+          "supported": false,
+          "current_known": false,
+          "active": null,
+          "start": null,
+          "last": null,
+          "last_duration": null,
+          "last_outcome": null,
+          "last_end": null,
+          "total": 0,
+          "finished": {}
+        }
+      }
+    },
+    {
+      "name": "child-wrong-parent",
+      "lines": [
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "item_completed",
+              "thread_id": "another",
+              "completed_at_ms": 1799999998000,
+              "item": {
+                "type": "SubAgentActivity",
+                "agent_path": "/root/worker",
+                "kind": "started"
+              }
+            }
+          }
+        }
+      ],
+      "expected_usage": {},
+      "expected_cursor": {
+        "children": {},
+        "seq": 1800000000000000,
+        "valid": false,
+        "compactions_valid": true,
+        "compaction_markers": 0,
+        "compaction_summaries": 0,
+        "caught_up": true,
+        "skipping": false,
+        "turns": {
+          "valid": true,
+          "supported": false,
+          "current_known": false,
+          "active": null,
+          "start": null,
+          "last": null,
+          "last_duration": null,
+          "last_outcome": null,
+          "last_end": null,
+          "total": 0,
+          "finished": {}
+        }
+      }
+    },
+    {
+      "name": "large-response_item",
+      "lines": [
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "sub_agent_activity",
+              "agent_path": "/root/worker",
+              "kind": "started",
+              "occurred_at_ms": 1799999998000
+            }
+          }
+        },
+        {
+          "text": "{\"type\":\"response_item\",\"payload\":\"@PAYLOAD@\"}",
+          "repeat": 100000,
+          "newline": true
+        },
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "sub_agent_activity",
+              "agent_path": "/root/worker",
+              "kind": "completed",
+              "occurred_at_ms": 1799999998000
+            }
+          }
+        },
+        {
+          "json": {
+            "type": "event_msg",
+            "timestamp": "2027-01-15T07:59:59+00:00",
+            "payload": {
+              "type": "token_count",
+              "info": {
+                "last_token_usage": {
+                  "input_tokens": 12,
+                  "output_tokens": 3,
+                  "cached_input_tokens": 0,
+                  "cache_write_input_tokens": 4,
+                  "total_tokens": 185000
+                },
+                "total_token_usage": {
+                  "input_tokens": 21700000,
+                  "output_tokens": 4200,
+                  "cached_input_tokens": 20000000,
+                  "cache_write_input_tokens": 0
+                },
+                "model_context_window": 258400
+              }
+            }
+          }
+        }
+      ],
+      "expected_usage": {
+        "input": 12,
+        "output_tokens": 3,
+        "cache_read": 0,
+        "cache_write": 4,
+        "context": 185000,
+        "total_input": 21700000,
+        "total_output": 4200,
+        "total_cache_read": 20000000,
+        "total_cache_write": 0,
+        "total_uncached_input": 1700000,
+        "compactions": null,
+        "window": 258400,
+        "context_percent": 70,
+        "usage_seq": 1799999999000000,
+        "usage_source": "codex-rollout"
+      },
+      "expected_cursor": {
+        "children": {
+          "e75c94502a7fbb74b08bc4ffc5219f31d5d16266272e870171adc0310a3e01f7": "completed"
+        },
+        "seq": 1799999998000000,
+        "valid": true,
+        "compactions_valid": true,
+        "compaction_markers": 0,
+        "compaction_summaries": 0,
+        "caught_up": true,
+        "skipping": false,
+        "turns": {
+          "valid": true,
+          "supported": false,
+          "current_known": false,
+          "active": null,
+          "start": null,
+          "last": null,
+          "last_duration": null,
+          "last_outcome": null,
+          "last_end": null,
+          "total": 0,
+          "finished": {}
+        }
+      }
+    },
+    {
+      "name": "large-session_meta",
+      "lines": [
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "sub_agent_activity",
+              "agent_path": "/root/worker",
+              "kind": "started",
+              "occurred_at_ms": 1799999998000
+            }
+          }
+        },
+        {
+          "text": "{\"type\":\"session_meta\",\"payload\":\"@PAYLOAD@\"}",
+          "repeat": 100000,
+          "newline": true
+        },
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "sub_agent_activity",
+              "agent_path": "/root/worker",
+              "kind": "completed",
+              "occurred_at_ms": 1799999998000
+            }
+          }
+        },
+        {
+          "json": {
+            "type": "event_msg",
+            "timestamp": "2027-01-15T07:59:59+00:00",
+            "payload": {
+              "type": "token_count",
+              "info": {
+                "last_token_usage": {
+                  "input_tokens": 12,
+                  "output_tokens": 3,
+                  "cached_input_tokens": 0,
+                  "cache_write_input_tokens": 4,
+                  "total_tokens": 185000
+                },
+                "total_token_usage": {
+                  "input_tokens": 21700000,
+                  "output_tokens": 4200,
+                  "cached_input_tokens": 20000000,
+                  "cache_write_input_tokens": 0
+                },
+                "model_context_window": 258400
+              }
+            }
+          }
+        }
+      ],
+      "expected_usage": {
+        "input": 12,
+        "output_tokens": 3,
+        "cache_read": 0,
+        "cache_write": 4,
+        "context": 185000,
+        "total_input": 21700000,
+        "total_output": 4200,
+        "total_cache_read": 20000000,
+        "total_cache_write": 0,
+        "total_uncached_input": 1700000,
+        "compactions": null,
+        "window": 258400,
+        "context_percent": 70,
+        "usage_seq": 1799999999000000,
+        "usage_source": "codex-rollout"
+      },
+      "expected_cursor": {
+        "children": {
+          "e75c94502a7fbb74b08bc4ffc5219f31d5d16266272e870171adc0310a3e01f7": "completed"
+        },
+        "seq": 1799999998000000,
+        "valid": true,
+        "compactions_valid": true,
+        "compaction_markers": 0,
+        "compaction_summaries": 0,
+        "caught_up": true,
+        "skipping": false,
+        "turns": {
+          "valid": true,
+          "supported": false,
+          "current_known": false,
+          "active": null,
+          "start": null,
+          "last": null,
+          "last_duration": null,
+          "last_outcome": null,
+          "last_end": null,
+          "total": 0,
+          "finished": {}
+        }
+      }
+    },
+    {
+      "name": "large-turn_context",
+      "lines": [
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "sub_agent_activity",
+              "agent_path": "/root/worker",
+              "kind": "started",
+              "occurred_at_ms": 1799999998000
+            }
+          }
+        },
+        {
+          "text": "{\"type\":\"turn_context\",\"payload\":\"@PAYLOAD@\"}",
+          "repeat": 100000,
+          "newline": true
+        },
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "sub_agent_activity",
+              "agent_path": "/root/worker",
+              "kind": "completed",
+              "occurred_at_ms": 1799999998000
+            }
+          }
+        },
+        {
+          "json": {
+            "type": "event_msg",
+            "timestamp": "2027-01-15T07:59:59+00:00",
+            "payload": {
+              "type": "token_count",
+              "info": {
+                "last_token_usage": {
+                  "input_tokens": 12,
+                  "output_tokens": 3,
+                  "cached_input_tokens": 0,
+                  "cache_write_input_tokens": 4,
+                  "total_tokens": 185000
+                },
+                "total_token_usage": {
+                  "input_tokens": 21700000,
+                  "output_tokens": 4200,
+                  "cached_input_tokens": 20000000,
+                  "cache_write_input_tokens": 0
+                },
+                "model_context_window": 258400
+              }
+            }
+          }
+        }
+      ],
+      "expected_usage": {
+        "input": 12,
+        "output_tokens": 3,
+        "cache_read": 0,
+        "cache_write": 4,
+        "context": 185000,
+        "total_input": 21700000,
+        "total_output": 4200,
+        "total_cache_read": 20000000,
+        "total_cache_write": 0,
+        "total_uncached_input": 1700000,
+        "compactions": null,
+        "window": 258400,
+        "context_percent": 70,
+        "usage_seq": 1799999999000000,
+        "usage_source": "codex-rollout"
+      },
+      "expected_cursor": {
+        "children": {
+          "e75c94502a7fbb74b08bc4ffc5219f31d5d16266272e870171adc0310a3e01f7": "completed"
+        },
+        "seq": 1799999998000000,
+        "valid": true,
+        "compactions_valid": true,
+        "compaction_markers": 0,
+        "compaction_summaries": 0,
+        "caught_up": true,
+        "skipping": false,
+        "turns": {
+          "valid": true,
+          "supported": false,
+          "current_known": false,
+          "active": null,
+          "start": null,
+          "last": null,
+          "last_duration": null,
+          "last_outcome": null,
+          "last_end": null,
+          "total": 0,
+          "finished": {}
+        }
+      }
+    },
+    {
+      "name": "large-compacted",
+      "lines": [
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "sub_agent_activity",
+              "agent_path": "/root/worker",
+              "kind": "started",
+              "occurred_at_ms": 1799999998000
+            }
+          }
+        },
+        {
+          "text": "{\"type\":\"compacted\",\"payload\":\"@PAYLOAD@\"}",
+          "repeat": 100000,
+          "newline": true
+        },
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "sub_agent_activity",
+              "agent_path": "/root/worker",
+              "kind": "completed",
+              "occurred_at_ms": 1799999998000
+            }
+          }
+        },
+        {
+          "json": {
+            "type": "event_msg",
+            "timestamp": "2027-01-15T07:59:59+00:00",
+            "payload": {
+              "type": "token_count",
+              "info": {
+                "last_token_usage": {
+                  "input_tokens": 12,
+                  "output_tokens": 3,
+                  "cached_input_tokens": 0,
+                  "cache_write_input_tokens": 4,
+                  "total_tokens": 185000
+                },
+                "total_token_usage": {
+                  "input_tokens": 21700000,
+                  "output_tokens": 4200,
+                  "cached_input_tokens": 20000000,
+                  "cache_write_input_tokens": 0
+                },
+                "model_context_window": 258400
+              }
+            }
+          }
+        }
+      ],
+      "expected_usage": {
+        "input": 12,
+        "output_tokens": 3,
+        "cache_read": 0,
+        "cache_write": 4,
+        "context": 185000,
+        "total_input": 21700000,
+        "total_output": 4200,
+        "total_cache_read": 20000000,
+        "total_cache_write": 0,
+        "total_uncached_input": 1700000,
+        "compactions": null,
+        "window": 258400,
+        "context_percent": 70,
+        "usage_seq": 1799999999000000,
+        "usage_source": "codex-rollout"
+      },
+      "expected_cursor": {
+        "children": {
+          "e75c94502a7fbb74b08bc4ffc5219f31d5d16266272e870171adc0310a3e01f7": "completed"
+        },
+        "seq": 1799999998000000,
+        "valid": true,
+        "compactions_valid": true,
+        "compaction_markers": 0,
+        "compaction_summaries": 1,
+        "caught_up": true,
+        "skipping": false,
+        "turns": {
+          "valid": true,
+          "supported": false,
+          "current_known": false,
+          "active": null,
+          "start": null,
+          "last": null,
+          "last_duration": null,
+          "last_outcome": null,
+          "last_end": null,
+          "total": 0,
+          "finished": {}
+        }
+      }
+    },
+    {
+      "name": "large-item-CommandExecution",
+      "lines": [
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "sub_agent_activity",
+              "agent_path": "/root/worker",
+              "kind": "started",
+              "occurred_at_ms": 1799999998000
+            }
+          }
+        },
+        {
+          "text": "{\"type\":\"event_msg\",\"payload\":{\"type\":\"item_completed\",\"item\":{\"type\":\"CommandExecution\",\"output\":\"@PAYLOAD@\"}}}",
+          "repeat": 100000,
+          "newline": true
+        },
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "sub_agent_activity",
+              "agent_path": "/root/worker",
+              "kind": "completed",
+              "occurred_at_ms": 1799999998000
+            }
+          }
+        },
+        {
+          "json": {
+            "type": "event_msg",
+            "timestamp": "2027-01-15T07:59:59+00:00",
+            "payload": {
+              "type": "token_count",
+              "info": {
+                "last_token_usage": {
+                  "input_tokens": 12,
+                  "output_tokens": 3,
+                  "cached_input_tokens": 0,
+                  "cache_write_input_tokens": 4,
+                  "total_tokens": 185000
+                },
+                "total_token_usage": {
+                  "input_tokens": 21700000,
+                  "output_tokens": 4200,
+                  "cached_input_tokens": 20000000,
+                  "cache_write_input_tokens": 0
+                },
+                "model_context_window": 258400
+              }
+            }
+          }
+        }
+      ],
+      "expected_usage": {
+        "input": 12,
+        "output_tokens": 3,
+        "cache_read": 0,
+        "cache_write": 4,
+        "context": 185000,
+        "total_input": 21700000,
+        "total_output": 4200,
+        "total_cache_read": 20000000,
+        "total_cache_write": 0,
+        "total_uncached_input": 1700000,
+        "compactions": null,
+        "window": 258400,
+        "context_percent": 70,
+        "usage_seq": 1799999999000000,
+        "usage_source": "codex-rollout"
+      },
+      "expected_cursor": {
+        "children": {
+          "e75c94502a7fbb74b08bc4ffc5219f31d5d16266272e870171adc0310a3e01f7": "completed"
+        },
+        "seq": 1799999998000000,
+        "valid": true,
+        "compactions_valid": true,
+        "compaction_markers": 0,
+        "compaction_summaries": 0,
+        "caught_up": true,
+        "skipping": false,
+        "turns": {
+          "valid": true,
+          "supported": false,
+          "current_known": false,
+          "active": null,
+          "start": null,
+          "last": null,
+          "last_duration": null,
+          "last_outcome": null,
+          "last_end": null,
+          "total": 0,
+          "finished": {}
+        }
+      }
+    },
+    {
+      "name": "large-item-McpToolCall",
+      "lines": [
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "sub_agent_activity",
+              "agent_path": "/root/worker",
+              "kind": "started",
+              "occurred_at_ms": 1799999998000
+            }
+          }
+        },
+        {
+          "text": "{\"type\":\"event_msg\",\"payload\":{\"type\":\"item_completed\",\"item\":{\"type\":\"McpToolCall\",\"output\":\"@PAYLOAD@\"}}}",
+          "repeat": 100000,
+          "newline": true
+        },
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "sub_agent_activity",
+              "agent_path": "/root/worker",
+              "kind": "completed",
+              "occurred_at_ms": 1799999998000
+            }
+          }
+        },
+        {
+          "json": {
+            "type": "event_msg",
+            "timestamp": "2027-01-15T07:59:59+00:00",
+            "payload": {
+              "type": "token_count",
+              "info": {
+                "last_token_usage": {
+                  "input_tokens": 12,
+                  "output_tokens": 3,
+                  "cached_input_tokens": 0,
+                  "cache_write_input_tokens": 4,
+                  "total_tokens": 185000
+                },
+                "total_token_usage": {
+                  "input_tokens": 21700000,
+                  "output_tokens": 4200,
+                  "cached_input_tokens": 20000000,
+                  "cache_write_input_tokens": 0
+                },
+                "model_context_window": 258400
+              }
+            }
+          }
+        }
+      ],
+      "expected_usage": {
+        "input": 12,
+        "output_tokens": 3,
+        "cache_read": 0,
+        "cache_write": 4,
+        "context": 185000,
+        "total_input": 21700000,
+        "total_output": 4200,
+        "total_cache_read": 20000000,
+        "total_cache_write": 0,
+        "total_uncached_input": 1700000,
+        "compactions": null,
+        "window": 258400,
+        "context_percent": 70,
+        "usage_seq": 1799999999000000,
+        "usage_source": "codex-rollout"
+      },
+      "expected_cursor": {
+        "children": {
+          "e75c94502a7fbb74b08bc4ffc5219f31d5d16266272e870171adc0310a3e01f7": "completed"
+        },
+        "seq": 1799999998000000,
+        "valid": true,
+        "compactions_valid": true,
+        "compaction_markers": 0,
+        "compaction_summaries": 0,
+        "caught_up": true,
+        "skipping": false,
+        "turns": {
+          "valid": true,
+          "supported": false,
+          "current_known": false,
+          "active": null,
+          "start": null,
+          "last": null,
+          "last_duration": null,
+          "last_outcome": null,
+          "last_end": null,
+          "total": 0,
+          "finished": {}
+        }
+      }
+    },
+    {
+      "name": "large-item-SubAgentActivity",
+      "lines": [
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "sub_agent_activity",
+              "agent_path": "/root/worker",
+              "kind": "started",
+              "occurred_at_ms": 1799999998000
+            }
+          }
+        },
+        {
+          "text": "{\"type\":\"event_msg\",\"payload\":{\"type\":\"item_completed\",\"item\":{\"type\":\"SubAgentActivity\",\"output\":\"@PAYLOAD@\"}}}",
+          "repeat": 100000,
+          "newline": true
+        },
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "sub_agent_activity",
+              "agent_path": "/root/worker",
+              "kind": "completed",
+              "occurred_at_ms": 1799999998000
+            }
+          }
+        },
+        {
+          "json": {
+            "type": "event_msg",
+            "timestamp": "2027-01-15T07:59:59+00:00",
+            "payload": {
+              "type": "token_count",
+              "info": {
+                "last_token_usage": {
+                  "input_tokens": 12,
+                  "output_tokens": 3,
+                  "cached_input_tokens": 0,
+                  "cache_write_input_tokens": 4,
+                  "total_tokens": 185000
+                },
+                "total_token_usage": {
+                  "input_tokens": 21700000,
+                  "output_tokens": 4200,
+                  "cached_input_tokens": 20000000,
+                  "cache_write_input_tokens": 0
+                },
+                "model_context_window": 258400
+              }
+            }
+          }
+        }
+      ],
+      "expected_usage": {
+        "input": 12,
+        "output_tokens": 3,
+        "cache_read": 0,
+        "cache_write": 4,
+        "context": 185000,
+        "total_input": 21700000,
+        "total_output": 4200,
+        "total_cache_read": 20000000,
+        "total_cache_write": 0,
+        "total_uncached_input": 1700000,
+        "compactions": null,
+        "window": 258400,
+        "context_percent": 70,
+        "usage_seq": 1799999999000000,
+        "usage_source": "codex-rollout"
+      },
+      "expected_cursor": {
+        "children": {
+          "e75c94502a7fbb74b08bc4ffc5219f31d5d16266272e870171adc0310a3e01f7": "completed"
+        },
+        "seq": 1799999998000000,
+        "valid": false,
+        "compactions_valid": true,
+        "compaction_markers": 0,
+        "compaction_summaries": 0,
+        "caught_up": true,
+        "skipping": false,
+        "turns": {
+          "valid": true,
+          "supported": false,
+          "current_known": false,
+          "active": null,
+          "start": null,
+          "last": null,
+          "last_duration": null,
+          "last_outcome": null,
+          "last_end": null,
+          "total": 0,
+          "finished": {}
+        }
+      }
+    },
+    {
+      "name": "large-duplicate",
+      "lines": [
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "sub_agent_activity",
+              "agent_path": "/root/worker",
+              "kind": "started",
+              "occurred_at_ms": 1799999998000
+            }
+          }
+        },
+        {
+          "text": "{\"type\":\"response_item\",\"payload\":\"@PAYLOAD@\",\"type\":\"compacted\"}",
+          "repeat": 100000,
+          "newline": true
+        },
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "sub_agent_activity",
+              "agent_path": "/root/worker",
+              "kind": "completed",
+              "occurred_at_ms": 1799999998000
+            }
+          }
+        }
+      ],
+      "expected_usage": {},
+      "expected_cursor": {
+        "children": {
+          "e75c94502a7fbb74b08bc4ffc5219f31d5d16266272e870171adc0310a3e01f7": "completed"
+        },
+        "seq": 1799999998000000,
+        "valid": false,
+        "compactions_valid": false,
+        "compaction_markers": 0,
+        "compaction_summaries": 0,
+        "caught_up": true,
+        "skipping": false,
+        "turns": {
+          "valid": false,
+          "supported": false,
+          "current_known": false,
+          "active": null,
+          "start": null,
+          "last": null,
+          "last_duration": null,
+          "last_outcome": null,
+          "last_end": null,
+          "total": 0,
+          "finished": {}
+        }
+      }
+    },
+    {
+      "name": "large-invalid",
+      "lines": [
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "sub_agent_activity",
+              "agent_path": "/root/worker",
+              "kind": "started",
+              "occurred_at_ms": 1799999998000
+            }
+          }
+        },
+        {
+          "text": "{\"type\":\"response_item\",\"payload\":\"@PAYLOAD@\",\"broken\":}",
+          "repeat": 100000,
+          "newline": true
+        },
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "sub_agent_activity",
+              "agent_path": "/root/worker",
+              "kind": "completed",
+              "occurred_at_ms": 1799999998000
+            }
+          }
+        }
+      ],
+      "expected_usage": {},
+      "expected_cursor": {
+        "children": {
+          "e75c94502a7fbb74b08bc4ffc5219f31d5d16266272e870171adc0310a3e01f7": "completed"
+        },
+        "seq": 1799999998000000,
+        "valid": false,
+        "compactions_valid": false,
+        "compaction_markers": 0,
+        "compaction_summaries": 0,
+        "caught_up": true,
+        "skipping": false,
+        "turns": {
+          "valid": false,
+          "supported": false,
+          "current_known": false,
+          "active": null,
+          "start": null,
+          "last": null,
+          "last_duration": null,
+          "last_outcome": null,
+          "last_end": null,
+          "total": 0,
+          "finished": {}
+        }
+      }
+    },
+    {
+      "name": "large-unterminated",
+      "lines": [
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "sub_agent_activity",
+              "agent_path": "/root/worker",
+              "kind": "started",
+              "occurred_at_ms": 1799999998000
+            }
+          }
+        },
+        {
+          "text": "{\"type\":\"response_item\",\"payload\":\"@PAYLOAD@\"",
+          "repeat": 100000,
+          "newline": true
+        },
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "sub_agent_activity",
+              "agent_path": "/root/worker",
+              "kind": "completed",
+              "occurred_at_ms": 1799999998000
+            }
+          }
+        }
+      ],
+      "expected_usage": {},
+      "expected_cursor": {
+        "children": {
+          "e75c94502a7fbb74b08bc4ffc5219f31d5d16266272e870171adc0310a3e01f7": "completed"
+        },
+        "seq": 1799999998000000,
+        "valid": false,
+        "compactions_valid": false,
+        "compaction_markers": 0,
+        "compaction_summaries": 0,
+        "caught_up": true,
+        "skipping": false,
+        "turns": {
+          "valid": false,
+          "supported": false,
+          "current_known": false,
+          "active": null,
+          "start": null,
+          "last": null,
+          "last_duration": null,
+          "last_outcome": null,
+          "last_end": null,
+          "total": 0,
+          "finished": {}
+        }
+      }
+    },
+    {
+      "name": "large-unfinished",
+      "lines": [
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "sub_agent_activity",
+              "agent_path": "/root/worker",
+              "kind": "started",
+              "occurred_at_ms": 1799999998000
+            }
+          }
+        },
+        {
+          "text": "{\"type\":\"response_item\",\"payload\":\"@PAYLOAD@",
+          "repeat": 700000,
+          "newline": false
+        }
+      ],
+      "expected_usage": {},
+      "expected_cursor": {
+        "children": {
+          "e75c94502a7fbb74b08bc4ffc5219f31d5d16266272e870171adc0310a3e01f7": "running"
+        },
+        "seq": 1799999998000000,
+        "valid": true,
+        "compactions_valid": true,
+        "compaction_markers": 0,
+        "compaction_summaries": 0,
+        "caught_up": false,
+        "skipping": true,
+        "turns": {
+          "valid": true,
+          "supported": false,
+          "current_known": false,
+          "active": null,
+          "start": null,
+          "last": null,
+          "last_duration": null,
+          "last_outcome": null,
+          "last_end": null,
+          "total": 0,
+          "finished": {}
+        }
+      }
+    },
+    {
+      "name": "malformed-line",
+      "lines": [
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "sub_agent_activity",
+              "agent_path": "/root/worker",
+              "kind": "started",
+              "occurred_at_ms": 1799999998000
+            }
+          }
+        },
+        {
+          "text": "{bad json}",
+          "repeat": 0,
+          "newline": true
+        },
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "sub_agent_activity",
+              "agent_path": "/root/worker",
+              "kind": "completed",
+              "occurred_at_ms": 1799999998000
+            }
+          }
+        }
+      ],
+      "expected_usage": {},
+      "expected_cursor": {
+        "children": {
+          "e75c94502a7fbb74b08bc4ffc5219f31d5d16266272e870171adc0310a3e01f7": "completed"
+        },
+        "seq": 1799999998000000,
+        "valid": false,
+        "compactions_valid": false,
+        "compaction_markers": 0,
+        "compaction_summaries": 0,
+        "caught_up": true,
+        "skipping": false,
+        "turns": {
+          "valid": false,
+          "supported": false,
+          "current_known": false,
+          "active": null,
+          "start": null,
+          "last": null,
+          "last_duration": null,
+          "last_outcome": null,
+          "last_end": null,
+          "total": 0,
+          "finished": {}
+        }
+      }
+    },
+    {
+      "name": "multi-chunk-content",
+      "lines": [
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "sub_agent_activity",
+              "agent_path": "/root/worker",
+              "kind": "started",
+              "occurred_at_ms": 1799999998000
+            }
+          }
+        },
+        {
+          "text": "{\"type\":\"response_item\",\"payload\":\"@PAYLOAD@\"}",
+          "repeat": 1500000,
+          "newline": true
+        },
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "sub_agent_activity",
+              "agent_path": "/root/worker",
+              "kind": "completed",
+              "occurred_at_ms": 1799999998000
+            }
+          }
+        }
+      ],
+      "expected_usage": {},
+      "expected_cursor": {
+        "children": {
+          "e75c94502a7fbb74b08bc4ffc5219f31d5d16266272e870171adc0310a3e01f7": "completed"
+        },
+        "seq": 1799999998000000,
+        "valid": true,
+        "compactions_valid": true,
+        "compaction_markers": 0,
+        "compaction_summaries": 0,
+        "caught_up": true,
+        "skipping": false,
+        "turns": {
+          "valid": true,
+          "supported": false,
+          "current_known": false,
+          "active": null,
+          "start": null,
+          "last": null,
+          "last_duration": null,
+          "last_outcome": null,
+          "last_end": null,
+          "total": 0,
+          "finished": {}
+        }
+      }
+    },
+    {
+      "name": "turn-complete",
+      "lines": [
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "task_started",
+              "turn_id": "turn-a",
+              "started_at": 1799999900
+            }
+          }
+        },
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "task_complete",
+              "turn_id": "turn-a",
+              "started_at": 1799999900,
+              "completed_at": 1799999920
+            }
+          }
+        }
+      ],
+      "expected_usage": {},
+      "expected_cursor": {
+        "children": {},
+        "seq": 1800000000000000,
+        "valid": true,
+        "compactions_valid": true,
+        "compaction_markers": 0,
+        "compaction_summaries": 0,
+        "caught_up": true,
+        "skipping": false,
+        "turns": {
+          "valid": true,
+          "supported": true,
+          "current_known": true,
+          "active": null,
+          "start": null,
+          "last": "c78b22a48bfc0578699a553b",
+          "last_duration": 20,
+          "last_outcome": "completed",
+          "last_end": 1799999920,
+          "total": 20,
+          "finished": {
+            "c78b22a48bfc0578699a553b": [
+              1799999900,
+              1799999920,
+              "completed"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "turn-duplicates",
+      "lines": [
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "task_started",
+              "turn_id": "turn-a",
+              "started_at": 1799999900
+            }
+          }
+        },
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "task_started",
+              "turn_id": "turn-a",
+              "started_at": 1799999900
+            }
+          }
+        },
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "task_complete",
+              "turn_id": "turn-a",
+              "started_at": 1799999900,
+              "completed_at": 1799999920
+            }
+          }
+        },
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "task_complete",
+              "turn_id": "turn-a",
+              "started_at": 1799999900,
+              "completed_at": 1799999920
+            }
+          }
+        }
+      ],
+      "expected_usage": {},
+      "expected_cursor": {
+        "children": {},
+        "seq": 1800000000000000,
+        "valid": true,
+        "compactions_valid": true,
+        "compaction_markers": 0,
+        "compaction_summaries": 0,
+        "caught_up": true,
+        "skipping": false,
+        "turns": {
+          "valid": true,
+          "supported": true,
+          "current_known": true,
+          "active": null,
+          "start": null,
+          "last": "c78b22a48bfc0578699a553b",
+          "last_duration": 20,
+          "last_outcome": "completed",
+          "last_end": 1799999920,
+          "total": 20,
+          "finished": {
+            "c78b22a48bfc0578699a553b": [
+              1799999900,
+              1799999920,
+              "completed"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "turn-aborted",
+      "lines": [
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "task_started",
+              "turn_id": "turn-a",
+              "started_at": 1799999900
+            }
+          }
+        },
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "turn_aborted",
+              "turn_id": "turn-a",
+              "started_at": 1799999900,
+              "completed_at": 1799999910
+            }
+          }
+        }
+      ],
+      "expected_usage": {},
+      "expected_cursor": {
+        "children": {},
+        "seq": 1800000000000000,
+        "valid": true,
+        "compactions_valid": true,
+        "compaction_markers": 0,
+        "compaction_summaries": 0,
+        "caught_up": true,
+        "skipping": false,
+        "turns": {
+          "valid": true,
+          "supported": true,
+          "current_known": true,
+          "active": null,
+          "start": null,
+          "last": "c78b22a48bfc0578699a553b",
+          "last_duration": 10,
+          "last_outcome": "aborted",
+          "last_end": 1799999910,
+          "total": 10,
+          "finished": {
+            "c78b22a48bfc0578699a553b": [
+              1799999900,
+              1799999910,
+              "aborted"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "turn-idle-gap",
+      "lines": [
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "task_started",
+              "turn_id": "turn-a",
+              "started_at": 1799999900
+            }
+          }
+        },
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "task_complete",
+              "turn_id": "turn-a",
+              "started_at": 1799999900,
+              "completed_at": 1799999920
+            }
+          }
+        },
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "task_started",
+              "turn_id": "turn-b",
+              "started_at": 1799999970
+            }
+          }
+        },
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "task_complete",
+              "turn_id": "turn-b",
+              "started_at": 1799999970,
+              "completed_at": 1799999980
+            }
+          }
+        }
+      ],
+      "expected_usage": {},
+      "expected_cursor": {
+        "children": {},
+        "seq": 1800000000000000,
+        "valid": true,
+        "compactions_valid": true,
+        "compaction_markers": 0,
+        "compaction_summaries": 0,
+        "caught_up": true,
+        "skipping": false,
+        "turns": {
+          "valid": true,
+          "supported": true,
+          "current_known": true,
+          "active": null,
+          "start": null,
+          "last": "1cbba23a7bc1385afc2ecd8b",
+          "last_duration": 10,
+          "last_outcome": "completed",
+          "last_end": 1799999980,
+          "total": 30,
+          "finished": {
+            "c78b22a48bfc0578699a553b": [
+              1799999900,
+              1799999920,
+              "completed"
+            ],
+            "1cbba23a7bc1385afc2ecd8b": [
+              1799999970,
+              1799999980,
+              "completed"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "turn-active",
+      "lines": [
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "task_started",
+              "turn_id": "turn-a",
+              "started_at": 1799999900
+            }
+          }
+        }
+      ],
+      "expected_usage": {},
+      "expected_cursor": {
+        "children": {},
+        "seq": 1800000000000000,
+        "valid": true,
+        "compactions_valid": true,
+        "compaction_markers": 0,
+        "compaction_summaries": 0,
+        "caught_up": true,
+        "skipping": false,
+        "turns": {
+          "valid": true,
+          "supported": true,
+          "current_known": true,
+          "active": "c78b22a48bfc0578699a553b",
+          "start": 1799999900,
+          "last": null,
+          "last_duration": null,
+          "last_outcome": null,
+          "last_end": null,
+          "total": 0,
+          "finished": {}
+        }
+      }
+    },
+    {
+      "name": "turn-missing-start",
+      "lines": [
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "task_complete",
+              "turn_id": "turn-a",
+              "started_at": 1799999900,
+              "completed_at": 1799999920
+            }
+          }
+        }
+      ],
+      "expected_usage": {},
+      "expected_cursor": {
+        "children": {},
+        "seq": 1800000000000000,
+        "valid": true,
+        "compactions_valid": true,
+        "compaction_markers": 0,
+        "compaction_summaries": 0,
+        "caught_up": true,
+        "skipping": false,
+        "turns": {
+          "valid": false,
+          "supported": true,
+          "current_known": false,
+          "active": null,
+          "start": null,
+          "last": "c78b22a48bfc0578699a553b",
+          "last_duration": 20,
+          "last_outcome": "completed",
+          "last_end": 1799999920,
+          "total": 20,
+          "finished": {
+            "c78b22a48bfc0578699a553b": [
+              1799999900,
+              1799999920,
+              "completed"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "turn-overlap",
+      "lines": [
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "task_started",
+              "turn_id": "turn-a",
+              "started_at": 1799999900
+            }
+          }
+        },
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "task_started",
+              "turn_id": "turn-b",
+              "started_at": 1799999910
+            }
+          }
+        },
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "task_complete",
+              "turn_id": "turn-a",
+              "started_at": 1799999900,
+              "completed_at": 1799999920
+            }
+          }
+        }
+      ],
+      "expected_usage": {},
+      "expected_cursor": {
+        "children": {},
+        "seq": 1800000000000000,
+        "valid": true,
+        "compactions_valid": true,
+        "compaction_markers": 0,
+        "compaction_summaries": 0,
+        "caught_up": true,
+        "skipping": false,
+        "turns": {
+          "valid": false,
+          "supported": true,
+          "current_known": false,
+          "active": null,
+          "start": null,
+          "last": "c78b22a48bfc0578699a553b",
+          "last_duration": 20,
+          "last_outcome": "completed",
+          "last_end": 1799999920,
+          "total": 20,
+          "finished": {
+            "c78b22a48bfc0578699a553b": [
+              1799999900,
+              1799999920,
+              "completed"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "turn-delayed-start",
+      "lines": [
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "task_started",
+              "turn_id": "turn-a",
+              "started_at": 1799999900
+            }
+          }
+        },
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "task_started",
+              "turn_id": "turn-b",
+              "started_at": 1799999890
+            }
+          }
+        }
+      ],
+      "expected_usage": {},
+      "expected_cursor": {
+        "children": {},
+        "seq": 1800000000000000,
+        "valid": true,
+        "compactions_valid": true,
+        "compaction_markers": 0,
+        "compaction_summaries": 0,
+        "caught_up": true,
+        "skipping": false,
+        "turns": {
+          "valid": false,
+          "supported": true,
+          "current_known": true,
+          "active": "c78b22a48bfc0578699a553b",
+          "start": 1799999900,
+          "last": null,
+          "last_duration": null,
+          "last_outcome": null,
+          "last_end": null,
+          "total": 0,
+          "finished": {}
+        }
+      }
+    },
+    {
+      "name": "turn-bad-start",
+      "lines": [
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "task_started",
+              "turn_id": "turn-a",
+              "started_at": true
+            }
+          }
+        }
+      ],
+      "expected_usage": {},
+      "expected_cursor": {
+        "children": {},
+        "seq": 1800000000000000,
+        "valid": true,
+        "compactions_valid": true,
+        "compaction_markers": 0,
+        "compaction_summaries": 0,
+        "caught_up": true,
+        "skipping": false,
+        "turns": {
+          "valid": false,
+          "supported": true,
+          "current_known": false,
+          "active": null,
+          "start": null,
+          "last": null,
+          "last_duration": null,
+          "last_outcome": null,
+          "last_end": null,
+          "total": 0,
+          "finished": {}
+        }
+      }
+    },
+    {
+      "name": "turn-bad-finish",
+      "lines": [
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "task_started",
+              "turn_id": "turn-a",
+              "started_at": 1799999900
+            }
+          }
+        },
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "task_complete",
+              "turn_id": "turn-a",
+              "started_at": 1799999900,
+              "completed_at": 1800000010
+            }
+          }
+        }
+      ],
+      "expected_usage": {},
+      "expected_cursor": {
+        "children": {},
+        "seq": 1800000000000000,
+        "valid": true,
+        "compactions_valid": true,
+        "compaction_markers": 0,
+        "compaction_summaries": 0,
+        "caught_up": true,
+        "skipping": false,
+        "turns": {
+          "valid": false,
+          "supported": true,
+          "current_known": false,
+          "active": null,
+          "start": null,
+          "last": null,
+          "last_duration": null,
+          "last_outcome": null,
+          "last_end": null,
+          "total": 0,
+          "finished": {}
+        }
+      }
+    },
+    {
+      "name": "turn-large-ambiguous",
+      "lines": [
+        {
+          "json": {
+            "type": "event_msg",
+            "payload": {
+              "type": "task_started",
+              "turn_id": "turn-a",
+              "started_at": 1799999900
+            }
+          }
+        },
+        {
+          "text": "{\"type\":\"event_msg\",\"payload\":{\"type\":\"unknown\",\"text\":\"@PAYLOAD@\"}}",
+          "repeat": 100000,
+          "newline": true
+        }
+      ],
+      "expected_usage": {},
+      "expected_cursor": {
+        "children": {},
+        "seq": 1800000000000000,
+        "valid": false,
+        "compactions_valid": false,
+        "compaction_markers": 0,
+        "compaction_summaries": 0,
+        "caught_up": true,
+        "skipping": false,
+        "turns": {
+          "valid": false,
+          "supported": true,
+          "current_known": false,
+          "active": null,
+          "start": null,
+          "last": null,
+          "last_duration": null,
+          "last_outcome": null,
+          "last_end": null,
+          "total": 0,
+          "finished": {}
+        }
+      }
+    }
+  ]
+}

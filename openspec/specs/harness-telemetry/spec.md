@@ -6,54 +6,36 @@ Provide bounded harness activity metadata shared by native Herdr and the Observa
 ## Requirements
 
 ### Requirement: Supplementary harness reports
-Installed Codex and Pi adapters SHALL report supported tool, model, phase and compaction events as expiring Herdr presentation metadata, without changing lifecycle authority, session references or sending agent input. Reports SHALL be limited to the matching native session in the configured local Herdr instance.
+The installed Pi adapter SHALL report supported tool, model, phase and compaction events as expiring Herdr presentation metadata, without changing lifecycle authority, session references or sending agent input. Reports SHALL be limited to the matching native session in the configured local Herdr instance.
 
 #### Scenario: Matching session
 - **WHEN** a supported event occurs in the identified Herdr pane
 - **THEN** Herdr exposes supplementary activity metadata and a concise display label while preserving its semantic state.
 
 #### Scenario: Unavailable or replaced session
-- **WHEN** Docker or Herdr is unavailable, the adapter runs outside Herdr, or its native session no longer matches
+- **WHEN** the native helper or Herdr is unavailable, the adapter runs outside Herdr, or its native session no longer matches
 - **THEN** reporting fails silently within a bounded time without blocking or changing the harness operation.
 
 ### Requirement: Truthful and private telemetry
-The system SHALL export only allowlisted metadata, omit raw arguments, output, prompts and reasoning content, enforce Work disclosure before publishing, reject future or mismatched telemetry, and leave unsupported metrics unavailable. Older session-bound values SHALL retain their original source times. Context estimates SHALL be distinguished from reported usage; usage SHALL name its scope and retain its source timestamp.
+The system SHALL export only allowlisted metadata, omit raw arguments, output, prompts and reasoning content, reject future or mismatched telemetry, and leave unsupported metrics unavailable. Older session-bound values SHALL retain their original source times. Context estimates SHALL be distinguished from reported usage; usage SHALL name its scope and retain its source timestamp.
 
 #### Scenario: Supported and unsupported metrics
 - **WHEN** a harness supplies supported recent usage through its extension or verified hook-time numeric enrichment
 - **THEN** the display shows supported last-response counters and labelled context estimates, while absent counters remain unknown and newer activity does not renew old usage.
 
 #### Scenario: Personal activity
-- **WHEN** telemetry belongs to a personal or unclassified project
-- **THEN** it is absent from the Work browser and Work feed, even if metadata contains unexpected fields.
-
-### Requirement: Sampled activity display
-The TUI SHALL display the latest observed telemetry alongside clear thread state and add concise notable telemetry changes to its bounded CLI feed. It SHALL identify sampling and expiry rather than claim a complete event stream.
-
-#### Scenario: Tool or compaction changes
-- **WHEN** polling observes a changed tool or compaction event
-- **THEN** the CLI shows a concise event with existing local motion and the thread retains its authoritative Herdr state.
+- **WHEN** native metadata contains arguments, paths, transcript content or unknown fields
+- **THEN** those fields are absent from the popover state and peer telemetry response.
 
 ### Requirement: Minimal adapter lifecycle
-Telemetry processing and install payloads SHALL ship in the existing Docker image. Installation and removal SHALL be idempotent, preserve unrelated/native integrations and require no additional persistent service or network listener.
+Telemetry processing and required install payloads SHALL ship with the native plugin or its marked native peer. No Python or Docker process SHALL be required. Redundant plugin Codex callbacks SHALL be removed only when proven owned; native Herdr integrations SHALL remain untouched. Installation and removal SHALL be idempotent, preserve unrelated/native integrations and require no additional persistent service or network listener.
 
 #### Scenario: Repeat installation and removal
 - **WHEN** an operator installs twice and later removes the adapters
 - **THEN** there is one owned integration per harness and removal leaves unrelated hooks and extensions intact.
 
-### Requirement: Bounded subagent observations
-Codex adapters SHALL report supported SubagentStart and SubagentStop events as latest observed parent-bound presentation activity. They SHALL discard child identifiers, agent descriptions, transcript paths and content. The display SHALL NOT infer a complete child roster, running count or permanent completion from these events. Pi SHALL retain unknown subagent coverage when no general lifecycle event is available.
-
-#### Scenario: Child lifecycle hook
-- **WHEN** a Codex subagent hook identifies the matching native parent session
-- **THEN** the card and sampled observation feed can show Subagent started or Subagent stopped without changing the parent's Herdr state or disclosing child content.
-
-#### Scenario: Session mismatch
-- **WHEN** a hook's parent session differs from the pane's native session
-- **THEN** the reporter drops the event without writing metadata.
-
 ### Requirement: Hook-time structured usage enrichment
-The existing Codex adapter SHALL enrich hooks from supported numeric usage records in the exact local session file named by the hook, without a daemon or session-directory container mount. It SHALL verify the file belongs to the user, reject symlink traversal, restrict reads to the configured session directory, verify the session header and bound file reads and execution. Only allowlisted numeric fields and their source time SHALL leave the adapter; transcript text, arguments, file paths and child identities SHALL NOT be forwarded. Pi SHALL report supported live extension usage and seed it from the current session branch when available on reload. Missing counters SHALL remain unknown, and an older usage source SHALL not be made fresh by a newer hook.
+The native Codex reader SHALL enrich collection from supported numeric usage records in the exact local session established by Herdr, without synchronous Codex callbacks or a daemon. It SHALL verify the file belongs to the user, reject symlink traversal, restrict reads to the configured session directory, verify the session header and bound file reads and execution. Only allowlisted numeric fields and their source time SHALL leave the adapter; transcript text, arguments, file paths and child identities SHALL NOT be forwarded. Pi SHALL report supported live extension usage and seed it from the current session branch when available on reload. Missing counters SHALL remain unknown, and an older usage source SHALL not be made fresh by a newer hook.
 
 #### Scenario: Supported Codex usage
 - **WHEN** a matching bounded session file contains a supported token_count record
@@ -61,14 +43,14 @@ The existing Codex adapter SHALL enrich hooks from supported numeric usage recor
 
 #### Scenario: Unsafe or incompatible source
 - **WHEN** the file escapes the session root, is a symlink, mismatches identity, lacks a supported record, reports a future time or is malformed
-- **THEN** numeric enrichment is omitted while ordinary hook reporting remains best-effort and silent.
+- **THEN** numeric enrichment is omitted while native Herdr state remains available.
 
 #### Scenario: Pi reload
 - **WHEN** Pi reloads the extension in a session whose active branch contains timestamped assistant usage
 - **THEN** supported last-response usage is available without waiting for another assistant response and without reading transcript files.
 
 ### Requirement: Scoped cumulative harness metrics
-Hook adapters SHALL expose supported cumulative input/output and cached/uncached token counters independently of last-response usage, preserving their source timestamp and harness scope. Codex context percentage SHALL follow the verified installed harness calculation when its required inputs exist; Pi SHALL use its supported context API. Cache hits/misses SHALL be labelled as token quantities rather than request counts. Compaction totals SHALL be exported only with complete trustworthy coverage; truncated or incompatible sources SHALL remain unknown. Existing session identity, file bounds, numeric allowlisting, privacy and source-time validation SHALL apply to all added fields. Bound presentation metadata SHALL remain until replaced or the pane closes, with observations older than two minutes labelled last known rather than silently removed. A Codex hook without valid usage SHALL retain a previous valid sample only for the same bound session, preserving its original source time until a newer valid sample arrives. Reports SHALL fit the native metadata key/value limits and publish one coherent numeric sample atomically, while accepting valid previous-version samples during migration.
+Native collection and required harness adapters SHALL expose supported cumulative input/output and cached/uncached token counters independently of last-response usage, preserving their source timestamp and harness scope. Codex context percentage SHALL follow the verified installed harness calculation when its required inputs exist; Pi SHALL use its supported context API. Cache hits/misses SHALL be labelled as token quantities rather than request counts. Compaction totals SHALL be exported only with complete trustworthy coverage; truncated or incompatible sources SHALL remain unknown. Existing session identity, file bounds, numeric allowlisting, privacy and source-time validation SHALL apply to all added fields. Bound presentation metadata SHALL remain until replaced or the pane closes, with observations older than two minutes labelled last known rather than silently removed. A native Codex sample without valid new usage SHALL retain a previous valid sample only for the same bound session, preserving its original source time until a newer valid sample arrives. Reports SHALL fit the native metadata key/value limits and publish one coherent numeric sample atomically, while accepting valid previous-version samples during migration.
 
 #### Scenario: Cumulative versus last-response usage
 - **WHEN** a supported Codex record contains cumulative and last-response counters
@@ -80,53 +62,72 @@ Hook adapters SHALL expose supported cumulative input/output and cached/uncached
 
 #### Scenario: Incomplete or invalid accounting
 - **WHEN** bounded reads cannot establish full compaction or cumulative coverage, counters are malformed or a new hook has no recent supported usage
-- **THEN** affected totals remain unknown when no prior valid sample exists, and a newer hook does not manufacture freshness or zeroes.
+- **THEN** affected totals remain unknown when no prior valid sample exists, and a newer collection does not manufacture freshness or zeroes.
 
 #### Scenario: Native report limits and migration
 - **WHEN** an expanded numeric sample is reported beside retained previous-version metadata
 - **THEN** the native report stays within its key/value limits and the reader selects one complete version without mixing old and new counters.
 
 #### Scenario: Intermittent Codex usage read
-- **WHEN** a Codex hook has no supported usage after an earlier valid sample for the same bound session
+- **WHEN** a native Codex collection has no supported usage after an earlier valid sample for the same bound session
 - **THEN** the report retains that sample and its original usage-source time until a newer valid sample arrives or the session changes.
 
-### Requirement: Recent Codex cache activity
-The display SHALL derive a bounded recent cache-read share from distinct, monotonically increasing cumulative input and cached-input samples for the same Codex session. It SHALL retain sample times, show measured missing intervals and mark observed model changes and compactions without attributing a cache miss cause. Repeated hooks, session changes, counter resets and incomplete or stale values SHALL NOT create invented token activity or a misleading percentage. The session-wide balance SHALL remain independently visible.
+### Requirement: Plugin-owned native enrichment
+A native desktop collector MAY follow validated session-bound Codex records on local and configured SSH sources independently of hook events. Remote reads SHALL run ephemerally over the existing authenticated transport with opaque replay cursors retained locally, using an explicitly installed plugin-owned native peer without a resident service. It SHALL retain exact session/header checks, owner and symlink restrictions, configured session roots, bounded file reads, bounded caches and original source timestamps. It SHALL emit only allowlisted numeric and lifecycle summaries and keep transcript content, raw child identity and source paths private. Native hooks SHALL avoid repeated transcript enrichment on their synchronous critical path; Codex collection SHALL NOT depend on an Observatory hook callback.
 
-#### Scenario: Distinct cumulative samples
-- **WHEN** two valid increasing cumulative usage samples arrive for one session
-- **THEN** their input and cached-input differences form one recent cache-read observation with its actual source time.
+#### Scenario: Native completion without a hook
+- **WHEN** a bound parent on a local or configured SSH source receives a supported native child completion while waiting
+- **THEN** collector-owned enrichment updates the sanitised completion summary without requiring a subsequent parent hook.
 
-#### Scenario: Repeated or reset sample
-- **WHEN** a hook repeats the same usage record, a session changes, counters fall or required counters are absent
-- **THEN** no new cache observation is added and the next valid sample establishes a fresh baseline.
+#### Scenario: Replaced or unsafe source
+- **WHEN** a pane session changes, a source is untrusted, replay is incomplete or the owner exits
+- **THEN** the collector refuses cross-session enrichment, preserves unknown values and stops with its plugin owner.
 
-#### Scenario: Model or compaction marker
-- **WHEN** a supported hook observes a model change or compaction between usage samples
-- **THEN** the recent view marks that event as an observation without claiming it explains cache reuse.
+### Requirement: Bounded native outcome summaries
+Supported native lifecycle evidence MAY expose a coherent bounded partition of completed, running, interrupted, failed and unknown children with an original source timestamp. Counts SHALL sum to the validated total and remain within the existing metadata key/value limits. Older total/done-only reports SHALL remain compatible. Hook start/stop counts SHALL NOT establish an outcome partition. The same numeric and source-time validation SHALL apply at each peer boundary.
 
-### Requirement: Opaque Codex turn association
-The local Codex adapter SHALL retain bounded opaque turn and child association for supported hook events to permit later source attribution, while preserving the parent session binding. Browser and published Work telemetry SHALL NOT contain child identifiers, transcript paths, child content or an inferred complete subagent count. A child-stop event SHALL NOT independently increment usage totals without a distinct child usage measurement.
+#### Scenario: Failed or interrupted child
+- **WHEN** typed native records distinguish failure or interruption from running and completed
+- **THEN** the summary retains those outcomes without counting them as successful completion or publishing raw child details.
 
-#### Scenario: Child hook
-- **WHEN** a SubagentStop hook supplies a turn ID, child ID and child transcript path
-- **THEN** only validated opaque association is kept in the local adapter and the parent event remains a sampled lifecycle observation.
+#### Scenario: Invalid or older partition
+- **WHEN** outcome counts are incomplete, exceed bounds, disagree with total/done or are absent on an older report
+- **THEN** no invented outcome partition is displayed and independently valid legacy completion remains usable.
 
-#### Scenario: Invalid association
-- **WHEN** identifiers or paths are malformed or a child usage record is not independently available
-- **THEN** attribution is unavailable and parent usage is not duplicated.
+### Requirement: Native turn wall-clock summaries
+The plugin-owned native reader MAY derive a bounded per-session turn summary from saved `task_started`, `task_complete` and `turn_aborted` events with exact validated turn association. Supported Unix-second start and completion bounds SHALL define elapsed wall time, including waits inside the turn and excluding inter-turn idle gaps. Native `duration_ms` SHALL NOT replace missing timestamp bounds or silently change this time scope. Valid completed and aborted intervals SHALL contribute once to accumulated finished-turn time. Duplicate, conflicting, malformed, out-of-order or incomplete evidence SHALL NOT fabricate zeroes, double-count turns or claim complete accumulated coverage. The current or last valid interval MAY remain independently available when complete accumulated coverage is unknown. Public native output SHALL contain only allowlisted numeric timing, coverage, outcome and source-freshness fields; hashed private associations SHALL remain bounded. Native cursor retention and timing observation validation MAY tolerate at most one second of transport clock skew while preserving original timestamps. Larger future values and expired readings SHALL remain invalid. Usage source-time validation and hook metadata constraints SHALL remain unchanged. Allowance validation SHALL follow its independently specified bounded transport policy.
 
-### Requirement: Parent-turn subagent event summary
-The Codex adapter SHALL carry bounded counts of SubagentStart and SubagentStop hooks observed since the current parent UserPromptSubmit. It SHALL reset counts at each new parent turn, bind them to the native parent session, retain them across unrelated hooks, and leave counts unavailable when no turn baseline has been observed. Counts SHALL represent observed events only, not a complete roster, current active count, successful outcome or permanent child completion. Child identifiers and content SHALL remain private.
+#### Scenario: Wait within a turn and gap between turns
+- **WHEN** saved bounds establish two finished turns separated by idle time and one turn includes a wait
+- **THEN** accumulated time sums the two wall-clock intervals once, includes the wait and excludes the idle gap.
 
-#### Scenario: Starts and stops during one turn
-- **WHEN** a matching parent turn receives two SubagentStart hooks, one SubagentStop hook and an unrelated tool hook
-- **THEN** the reported summary retains two observed starts and one observed stop after the tool hook.
+#### Scenario: Aborted, duplicated or incomplete events
+- **WHEN** a valid turn abort is repeated or older records do not establish complete coverage
+- **THEN** the abort contributes at most once, and incomplete accumulated time stays unknown even if an independently valid last duration can be shown.
 
-#### Scenario: New turn or session
-- **WHEN** a new UserPromptSubmit arrives or the native parent session changes
-- **THEN** previous-turn counts do not appear on the new turn or session.
+#### Scenario: Native-only timing and freshness
+- **WHEN** a successful exact-bound native read reaches the current source end
+- **THEN** its observation time may advance for current elapsed display, while checkpoint load, pipe heartbeats do not manufacture a fresh timing reading or export private timing identity.
 
-#### Scenario: Missing baseline or invalid summary
-- **WHEN** no parent turn baseline was observed or carried metadata is malformed
-- **THEN** the summary is unavailable rather than zero or a reconstructed roster.
+### Requirement: Private native replay checkpoints
+The plugin-owned collector MAY retain restart checkpoints locally for configured local and SSH native readers. Checkpoints SHALL be versioned, owner-only, atomically written and globally bounded to 32 sessions, 256 KiB and 24 hours. They SHALL contain only hashed associations, allowlisted numeric or lifecycle parser state, source cursor identity and original timestamps, never raw native identifiers, source paths or transcript content. Reuse SHALL validate exact session/header binding, file identity, consumed source identity, expiry, truncation and replacement before continuing. Corrupt, unsafe, incompatible or ambiguous state SHALL be discarded for bounded fresh replay. A loaded checkpoint SHALL NOT itself become a current measurement. Writes SHALL be throttled to meaningful cursor progress, with bounded periodic retention refresh and an owner-shutdown flush where possible. Guarded plugin uninstallation SHALL retire its owned checkpoint file and writer lock before runtime removal, preventing in-flight writes, delayed startup and final shutdown flush from recreating them while preserving unrelated state. The same ownership retirement SHALL prevent late collector binding-registry and already-loaded reporter or allowance-receiver state writes. Unsafe or busy retirement SHALL fail visibly within a bounded wait.
+
+#### Scenario: Warm collector restart
+- **WHEN** an owner restart finds a valid bounded checkpoint and revalidates its exact unchanged source binding
+- **THEN** native replay continues from retained progress and publishes current values only after successful source validation and catch-up.
+
+#### Scenario: Replaced, expired or malicious checkpoint
+- **WHEN** a saved cursor is expired, oversized, malformed, owned by someone else, symlinked or inconsistent with its session or source
+- **THEN** it is refused without exposing raw content, treating its timestamps as fresh or reusing another session's measurements.
+
+#### Scenario: Unchanged polling and uninstall
+- **WHEN** repeated successful polls advance no meaningful parser state
+- **THEN** the collector does not rewrite the checkpoint on every poll, and guarded uninstallation removes the owned checkpoint when the plugin is removed.
+
+#### Scenario: Uninstall races a checkpoint writer
+- **WHEN** uninstall overlaps an in-flight checkpoint write or an old owner subsequently attempts a final flush or delayed startup
+- **THEN** successful retirement leaves no owned checkpoint or writer lock, late attempts cannot recreate them, and unrelated files remain intact.
+
+#### Scenario: Small remote clock offset
+- **WHEN** a validated remote observation and cursor are at most one second ahead of local time
+- **THEN** native timing and checkpoint retention accept the bounded offset without rewriting original source timestamps, while larger future offsets remain invalid, usage freshness stays strict and allowances follow their independently specified transport tolerance.

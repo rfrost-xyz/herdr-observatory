@@ -1,0 +1,798 @@
+{
+  "now": 1700000000,
+  "summary": [
+    {
+      "name": "capped-passes",
+      "raw": {
+        "accountId": "synthetic-account",
+        "rateLimits": {
+          "planType": "pro",
+          "primary": {
+            "windowDurationMins": 10080,
+            "usedPercent": 74,
+            "resetsAt": 1700003600
+          }
+        },
+        "rateLimitResetCredits": {
+          "availableCount": 2,
+          "credits": [
+            {
+              "id": "one",
+              "status": "available",
+              "resetType": "codexRateLimits",
+              "expiresAt": 1700007200
+            }
+          ]
+        }
+      },
+      "expected": {
+        "account_key": "1d5df28778acbb3f8c15d77c097f7fabec4b3932ddeec3f67041c8afb25498d2",
+        "plan": "pro",
+        "weekly_remaining": 26,
+        "weekly_resets_at": 1700003600,
+        "reset_count": 2,
+        "reset_expires_at": null,
+        "sampled_at": 1700000000
+      }
+    },
+    {
+      "name": "zero-balance",
+      "raw": {
+        "accountId": "synthetic-account",
+        "rateLimits": {
+          "planType": "pro",
+          "primary": {
+            "windowDurationMins": 10080,
+            "usedPercent": 100,
+            "resetsAt": 1700003600
+          }
+        },
+        "rateLimitResetCredits": {
+          "availableCount": 2,
+          "credits": [
+            {
+              "id": "one",
+              "status": "available",
+              "resetType": "codexRateLimits",
+              "expiresAt": 1700007200
+            }
+          ]
+        }
+      },
+      "expected": {
+        "account_key": "1d5df28778acbb3f8c15d77c097f7fabec4b3932ddeec3f67041c8afb25498d2",
+        "plan": "pro",
+        "weekly_remaining": 0,
+        "weekly_resets_at": 1700003600,
+        "reset_count": 2,
+        "reset_expires_at": null,
+        "sampled_at": 1700000000
+      }
+    },
+    {
+      "name": "zero-use",
+      "raw": {
+        "accountId": "synthetic-account",
+        "rateLimits": {
+          "planType": "pro",
+          "primary": {
+            "windowDurationMins": 10080,
+            "usedPercent": 0,
+            "resetsAt": 1700003600
+          }
+        },
+        "rateLimitResetCredits": {
+          "availableCount": 2,
+          "credits": [
+            {
+              "id": "one",
+              "status": "available",
+              "resetType": "codexRateLimits",
+              "expiresAt": 1700007200
+            }
+          ]
+        }
+      },
+      "expected": {
+        "account_key": "1d5df28778acbb3f8c15d77c097f7fabec4b3932ddeec3f67041c8afb25498d2",
+        "plan": "pro",
+        "weekly_remaining": 100,
+        "weekly_resets_at": 1700003600,
+        "reset_count": 2,
+        "reset_expires_at": null,
+        "sampled_at": 1700000000
+      }
+    },
+    {
+      "name": "bool-used",
+      "raw": {
+        "accountId": "synthetic-account",
+        "rateLimits": {
+          "planType": "pro",
+          "primary": {
+            "windowDurationMins": 10080,
+            "usedPercent": true,
+            "resetsAt": 1700003600
+          }
+        },
+        "rateLimitResetCredits": {
+          "availableCount": 2,
+          "credits": [
+            {
+              "id": "one",
+              "status": "available",
+              "resetType": "codexRateLimits",
+              "expiresAt": 1700007200
+            }
+          ]
+        }
+      },
+      "expected": {
+        "account_key": "1d5df28778acbb3f8c15d77c097f7fabec4b3932ddeec3f67041c8afb25498d2",
+        "plan": "pro",
+        "weekly_remaining": null,
+        "weekly_resets_at": null,
+        "reset_count": 2,
+        "reset_expires_at": null,
+        "sampled_at": 1700000000
+      }
+    },
+    {
+      "name": "float-used",
+      "raw": {
+        "accountId": "synthetic-account",
+        "rateLimits": {
+          "planType": "pro",
+          "primary": {
+            "windowDurationMins": 10080,
+            "usedPercent": 1.5,
+            "resetsAt": 1700003600
+          }
+        },
+        "rateLimitResetCredits": {
+          "availableCount": 2,
+          "credits": [
+            {
+              "id": "one",
+              "status": "available",
+              "resetType": "codexRateLimits",
+              "expiresAt": 1700007200
+            }
+          ]
+        }
+      },
+      "expected": {
+        "account_key": "1d5df28778acbb3f8c15d77c097f7fabec4b3932ddeec3f67041c8afb25498d2",
+        "plan": "pro",
+        "weekly_remaining": null,
+        "weekly_resets_at": null,
+        "reset_count": 2,
+        "reset_expires_at": null,
+        "sampled_at": 1700000000
+      }
+    },
+    {
+      "name": "elapsed-reset",
+      "raw": {
+        "accountId": "synthetic-account",
+        "rateLimits": {
+          "planType": "pro",
+          "primary": {
+            "windowDurationMins": 10080,
+            "usedPercent": 74,
+            "resetsAt": 1700000000
+          }
+        },
+        "rateLimitResetCredits": {
+          "availableCount": 2,
+          "credits": [
+            {
+              "id": "one",
+              "status": "available",
+              "resetType": "codexRateLimits",
+              "expiresAt": 1700007200
+            }
+          ]
+        }
+      },
+      "expected": {
+        "account_key": "1d5df28778acbb3f8c15d77c097f7fabec4b3932ddeec3f67041c8afb25498d2",
+        "plan": "pro",
+        "weekly_remaining": null,
+        "weekly_resets_at": null,
+        "reset_count": 2,
+        "reset_expires_at": null,
+        "sampled_at": 1700000000
+      }
+    },
+    {
+      "name": "wrong-window",
+      "raw": {
+        "accountId": "synthetic-account",
+        "rateLimits": {
+          "planType": "pro",
+          "primary": {
+            "windowDurationMins": 300,
+            "usedPercent": 74,
+            "resetsAt": 1700003600
+          }
+        },
+        "rateLimitResetCredits": {
+          "availableCount": 2,
+          "credits": [
+            {
+              "id": "one",
+              "status": "available",
+              "resetType": "codexRateLimits",
+              "expiresAt": 1700007200
+            }
+          ]
+        }
+      },
+      "expected": {
+        "account_key": "1d5df28778acbb3f8c15d77c097f7fabec4b3932ddeec3f67041c8afb25498d2",
+        "plan": "pro",
+        "weekly_remaining": null,
+        "weekly_resets_at": null,
+        "reset_count": 2,
+        "reset_expires_at": null,
+        "sampled_at": 1700000000
+      }
+    },
+    {
+      "name": "no-passes",
+      "raw": {
+        "accountId": "synthetic-account",
+        "rateLimits": {
+          "planType": "pro",
+          "primary": {
+            "windowDurationMins": 10080,
+            "usedPercent": 74,
+            "resetsAt": 1700003600
+          }
+        },
+        "rateLimitResetCredits": {
+          "availableCount": 0,
+          "credits": [
+            {
+              "id": "one",
+              "status": "available",
+              "resetType": "codexRateLimits",
+              "expiresAt": 1700007200
+            }
+          ]
+        }
+      },
+      "expected": {
+        "account_key": "1d5df28778acbb3f8c15d77c097f7fabec4b3932ddeec3f67041c8afb25498d2",
+        "plan": "pro",
+        "weekly_remaining": 26,
+        "weekly_resets_at": 1700003600,
+        "reset_count": 0,
+        "reset_expires_at": null,
+        "sampled_at": 1700000000
+      }
+    },
+    {
+      "name": "invalid-pass-count",
+      "raw": {
+        "accountId": "synthetic-account",
+        "rateLimits": {
+          "planType": "pro",
+          "primary": {
+            "windowDurationMins": 10080,
+            "usedPercent": 74,
+            "resetsAt": 1700003600
+          }
+        },
+        "rateLimitResetCredits": {
+          "availableCount": true,
+          "credits": [
+            {
+              "id": "one",
+              "status": "available",
+              "resetType": "codexRateLimits",
+              "expiresAt": 1700007200
+            }
+          ]
+        }
+      },
+      "expected": {
+        "account_key": "1d5df28778acbb3f8c15d77c097f7fabec4b3932ddeec3f67041c8afb25498d2",
+        "plan": "pro",
+        "weekly_remaining": 26,
+        "weekly_resets_at": 1700003600,
+        "reset_count": null,
+        "reset_expires_at": null,
+        "sampled_at": 1700000000
+      }
+    },
+    {
+      "name": "complete-pass-detail",
+      "raw": {
+        "accountId": "synthetic-account",
+        "rateLimits": {
+          "planType": "pro",
+          "primary": {
+            "windowDurationMins": 10080,
+            "usedPercent": 74,
+            "resetsAt": 1700003600
+          }
+        },
+        "rateLimitResetCredits": {
+          "availableCount": 1,
+          "credits": [
+            {
+              "id": "one",
+              "status": "available",
+              "resetType": "codexRateLimits",
+              "expiresAt": 1700007200
+            }
+          ]
+        }
+      },
+      "expected": {
+        "account_key": "1d5df28778acbb3f8c15d77c097f7fabec4b3932ddeec3f67041c8afb25498d2",
+        "plan": "pro",
+        "weekly_remaining": 26,
+        "weekly_resets_at": 1700003600,
+        "reset_count": 1,
+        "reset_expires_at": 1700007200,
+        "sampled_at": 1700000000
+      }
+    },
+    {
+      "name": "ambiguous-weekly-window",
+      "raw": {
+        "accountId": "synthetic-account",
+        "rateLimits": {
+          "planType": "pro",
+          "primary": {
+            "windowDurationMins": 10080,
+            "usedPercent": 74,
+            "resetsAt": 1700003600
+          },
+          "secondary": {
+            "windowDurationMins": 10080,
+            "usedPercent": 74,
+            "resetsAt": 1700003600
+          }
+        },
+        "rateLimitResetCredits": {
+          "availableCount": 2,
+          "credits": [
+            {
+              "id": "one",
+              "status": "available",
+              "resetType": "codexRateLimits",
+              "expiresAt": 1700007200
+            }
+          ]
+        }
+      },
+      "expected": {
+        "account_key": "1d5df28778acbb3f8c15d77c097f7fabec4b3932ddeec3f67041c8afb25498d2",
+        "plan": "pro",
+        "weekly_remaining": null,
+        "weekly_resets_at": null,
+        "reset_count": 2,
+        "reset_expires_at": null,
+        "sampled_at": 1700000000
+      }
+    },
+    {
+      "name": "other-meter",
+      "raw": {
+        "accountId": "synthetic-account",
+        "rateLimits": {
+          "planType": "pro",
+          "primary": {
+            "windowDurationMins": 10080,
+            "usedPercent": 74,
+            "resetsAt": 1700003600
+          },
+          "limitId": "other-model"
+        },
+        "rateLimitResetCredits": {
+          "availableCount": 2,
+          "credits": [
+            {
+              "id": "one",
+              "status": "available",
+              "resetType": "codexRateLimits",
+              "expiresAt": 1700007200
+            }
+          ]
+        }
+      },
+      "expected": null
+    },
+    {
+      "name": "expired-complete-pass",
+      "raw": {
+        "accountId": "synthetic-account",
+        "rateLimits": {
+          "planType": "pro",
+          "primary": {
+            "windowDurationMins": 10080,
+            "usedPercent": 74,
+            "resetsAt": 1700003600
+          }
+        },
+        "rateLimitResetCredits": {
+          "availableCount": 1,
+          "credits": [
+            {
+              "id": "one",
+              "status": "available",
+              "resetType": "codexRateLimits",
+              "expiresAt": 1700000000
+            }
+          ]
+        }
+      },
+      "expected": {
+        "account_key": "1d5df28778acbb3f8c15d77c097f7fabec4b3932ddeec3f67041c8afb25498d2",
+        "plan": "pro",
+        "weekly_remaining": 26,
+        "weekly_resets_at": 1700003600,
+        "reset_count": null,
+        "reset_expires_at": null,
+        "sampled_at": 1700000000
+      }
+    },
+    {
+      "name": "duplicate-pass-ids",
+      "raw": {
+        "accountId": "synthetic-account",
+        "rateLimits": {
+          "planType": "pro",
+          "primary": {
+            "windowDurationMins": 10080,
+            "usedPercent": 74,
+            "resetsAt": 1700003600
+          }
+        },
+        "rateLimitResetCredits": {
+          "availableCount": 2,
+          "credits": [
+            {
+              "id": "one",
+              "status": "available",
+              "resetType": "codexRateLimits",
+              "expiresAt": 1700007200
+            },
+            {
+              "id": "one",
+              "status": "available",
+              "resetType": "codexRateLimits",
+              "expiresAt": 1700007200
+            }
+          ]
+        }
+      },
+      "expected": {
+        "account_key": "1d5df28778acbb3f8c15d77c097f7fabec4b3932ddeec3f67041c8afb25498d2",
+        "plan": "pro",
+        "weekly_remaining": 26,
+        "weekly_resets_at": 1700003600,
+        "reset_count": 2,
+        "reset_expires_at": null,
+        "sampled_at": 1700000000
+      }
+    }
+  ],
+  "sanitise": [
+    {
+      "name": "valid",
+      "raw": {
+        "account_key": "1d5df28778acbb3f8c15d77c097f7fabec4b3932ddeec3f67041c8afb25498d2",
+        "plan": "pro",
+        "weekly_remaining": 26,
+        "weekly_resets_at": 1700003600,
+        "reset_count": 2,
+        "reset_expires_at": null,
+        "sampled_at": 1700000000
+      },
+      "expected": {
+        "account_key": "1d5df28778acbb3f8c15d77c097f7fabec4b3932ddeec3f67041c8afb25498d2",
+        "sampled_at": 1700000000,
+        "plan": "pro",
+        "weekly_remaining": 26,
+        "weekly_resets_at": 1700003600,
+        "reset_count": 2,
+        "reset_expires_at": null,
+        "lifetime_tokens": null,
+        "peak_daily_tokens": null,
+        "daily_usage": null
+      }
+    },
+    {
+      "name": "future",
+      "raw": {
+        "account_key": "1d5df28778acbb3f8c15d77c097f7fabec4b3932ddeec3f67041c8afb25498d2",
+        "plan": "pro",
+        "weekly_remaining": 26,
+        "weekly_resets_at": 1700003600,
+        "reset_count": 2,
+        "reset_expires_at": null,
+        "sampled_at": 1700000001
+      },
+      "expected": null
+    },
+    {
+      "name": "expired",
+      "raw": {
+        "account_key": "1d5df28778acbb3f8c15d77c097f7fabec4b3932ddeec3f67041c8afb25498d2",
+        "plan": "pro",
+        "weekly_remaining": 26,
+        "weekly_resets_at": 1700003600,
+        "reset_count": 2,
+        "reset_expires_at": null,
+        "sampled_at": 1699999399
+      },
+      "expected": null
+    },
+    {
+      "name": "zero-valid",
+      "raw": {
+        "account_key": "1d5df28778acbb3f8c15d77c097f7fabec4b3932ddeec3f67041c8afb25498d2",
+        "plan": "pro",
+        "weekly_remaining": 0,
+        "weekly_resets_at": 1700003600,
+        "reset_count": 0,
+        "reset_expires_at": null,
+        "sampled_at": 1700000000
+      },
+      "expected": {
+        "account_key": "1d5df28778acbb3f8c15d77c097f7fabec4b3932ddeec3f67041c8afb25498d2",
+        "sampled_at": 1700000000,
+        "plan": "pro",
+        "weekly_remaining": 0,
+        "weekly_resets_at": 1700003600,
+        "reset_count": 0,
+        "reset_expires_at": null,
+        "lifetime_tokens": null,
+        "peak_daily_tokens": null,
+        "daily_usage": null
+      }
+    },
+    {
+      "name": "bool-values",
+      "raw": {
+        "account_key": "1d5df28778acbb3f8c15d77c097f7fabec4b3932ddeec3f67041c8afb25498d2",
+        "plan": "pro",
+        "weekly_remaining": true,
+        "weekly_resets_at": 1700003600,
+        "reset_count": false,
+        "reset_expires_at": null,
+        "sampled_at": 1700000000
+      },
+      "expected": {
+        "account_key": "1d5df28778acbb3f8c15d77c097f7fabec4b3932ddeec3f67041c8afb25498d2",
+        "sampled_at": 1700000000,
+        "plan": "pro",
+        "weekly_remaining": null,
+        "weekly_resets_at": 1700003600,
+        "reset_count": null,
+        "reset_expires_at": null,
+        "lifetime_tokens": null,
+        "peak_daily_tokens": null,
+        "daily_usage": null
+      }
+    },
+    {
+      "name": "elapsed-weekly",
+      "raw": {
+        "account_key": "1d5df28778acbb3f8c15d77c097f7fabec4b3932ddeec3f67041c8afb25498d2",
+        "plan": "pro",
+        "weekly_remaining": 26,
+        "weekly_resets_at": 1700000000,
+        "reset_count": 2,
+        "reset_expires_at": null,
+        "sampled_at": 1700000000
+      },
+      "expected": {
+        "account_key": "1d5df28778acbb3f8c15d77c097f7fabec4b3932ddeec3f67041c8afb25498d2",
+        "sampled_at": 1700000000,
+        "plan": "pro",
+        "weekly_remaining": null,
+        "weekly_resets_at": null,
+        "reset_count": 2,
+        "reset_expires_at": null,
+        "lifetime_tokens": null,
+        "peak_daily_tokens": null,
+        "daily_usage": null
+      }
+    },
+    {
+      "name": "expired-pass",
+      "raw": {
+        "account_key": "1d5df28778acbb3f8c15d77c097f7fabec4b3932ddeec3f67041c8afb25498d2",
+        "plan": "pro",
+        "weekly_remaining": 26,
+        "weekly_resets_at": 1700003600,
+        "reset_count": 2,
+        "reset_expires_at": 1700000000,
+        "sampled_at": 1700000000
+      },
+      "expected": {
+        "account_key": "1d5df28778acbb3f8c15d77c097f7fabec4b3932ddeec3f67041c8afb25498d2",
+        "sampled_at": 1700000000,
+        "plan": "pro",
+        "weekly_remaining": 26,
+        "weekly_resets_at": 1700003600,
+        "reset_count": null,
+        "reset_expires_at": null,
+        "lifetime_tokens": null,
+        "peak_daily_tokens": null,
+        "daily_usage": null
+      }
+    },
+    {
+      "name": "unknown-plan",
+      "raw": {
+        "account_key": "1d5df28778acbb3f8c15d77c097f7fabec4b3932ddeec3f67041c8afb25498d2",
+        "plan": "private-plan",
+        "weekly_remaining": 26,
+        "weekly_resets_at": 1700003600,
+        "reset_count": 2,
+        "reset_expires_at": null,
+        "sampled_at": 1700000000
+      },
+      "expected": {
+        "account_key": "1d5df28778acbb3f8c15d77c097f7fabec4b3932ddeec3f67041c8afb25498d2",
+        "sampled_at": 1700000000,
+        "plan": null,
+        "weekly_remaining": 26,
+        "weekly_resets_at": 1700003600,
+        "reset_count": 2,
+        "reset_expires_at": null,
+        "lifetime_tokens": null,
+        "peak_daily_tokens": null,
+        "daily_usage": null
+      }
+    },
+    {
+      "name": "raw-field-stripping",
+      "raw": {
+        "account_key": "1d5df28778acbb3f8c15d77c097f7fabec4b3932ddeec3f67041c8afb25498d2",
+        "plan": "pro",
+        "weekly_remaining": 26,
+        "weekly_resets_at": 1700003600,
+        "reset_count": 2,
+        "reset_expires_at": null,
+        "sampled_at": 1700000000,
+        "email": "private@example.invalid",
+        "pass_id": "PRIVATE"
+      },
+      "expected": {
+        "account_key": "1d5df28778acbb3f8c15d77c097f7fabec4b3932ddeec3f67041c8afb25498d2",
+        "sampled_at": 1700000000,
+        "plan": "pro",
+        "weekly_remaining": 26,
+        "weekly_resets_at": 1700003600,
+        "reset_count": 2,
+        "reset_expires_at": null,
+        "lifetime_tokens": null,
+        "peak_daily_tokens": null,
+        "daily_usage": null
+      }
+    },
+    {
+      "name": "invalid-key",
+      "raw": {
+        "account_key": "not-hashed",
+        "plan": "pro",
+        "weekly_remaining": 26,
+        "weekly_resets_at": 1700003600,
+        "reset_count": 2,
+        "reset_expires_at": null,
+        "sampled_at": 1700000000
+      },
+      "expected": null
+    }
+  ],
+  "usage": [
+    {
+      "name": "unknown",
+      "raw": null,
+      "expected": {
+        "lifetime_tokens": null,
+        "peak_daily_tokens": null,
+        "daily_usage": null
+      }
+    },
+    {
+      "name": "zero",
+      "raw": {
+        "summary": {
+          "lifetimeTokens": 0,
+          "peakDailyTokens": 0
+        },
+        "dailyUsageBuckets": []
+      },
+      "expected": {
+        "lifetime_tokens": 0,
+        "peak_daily_tokens": 0,
+        "daily_usage": []
+      }
+    },
+    {
+      "name": "valid",
+      "raw": {
+        "summary": {
+          "lifetimeTokens": 42
+        },
+        "dailyUsageBuckets": [
+          {
+            "startDate": "2020-02-29",
+            "tokens": 0
+          }
+        ]
+      },
+      "expected": {
+        "lifetime_tokens": 42,
+        "peak_daily_tokens": null,
+        "daily_usage": [
+          {
+            "date": "2020-02-29",
+            "tokens": 0
+          }
+        ]
+      }
+    },
+    {
+      "name": "duplicate",
+      "raw": {
+        "dailyUsageBuckets": [
+          {
+            "startDate": "2020-02-29",
+            "tokens": 1
+          },
+          {
+            "startDate": "2020-02-29",
+            "tokens": 1
+          }
+        ]
+      },
+      "expected": {
+        "lifetime_tokens": null,
+        "peak_daily_tokens": null,
+        "daily_usage": null
+      }
+    },
+    {
+      "name": "invalid-date",
+      "raw": {
+        "dailyUsageBuckets": [
+          {
+            "startDate": "2021-02-29",
+            "tokens": 1
+          }
+        ]
+      },
+      "expected": {
+        "lifetime_tokens": null,
+        "peak_daily_tokens": null,
+        "daily_usage": null
+      }
+    },
+    {
+      "name": "future",
+      "raw": {
+        "dailyUsageBuckets": [
+          {
+            "startDate": "9999-01-01",
+            "tokens": 1
+          }
+        ]
+      },
+      "expected": {
+        "lifetime_tokens": null,
+        "peak_daily_tokens": null,
+        "daily_usage": null
+      }
+    }
+  ]
+}

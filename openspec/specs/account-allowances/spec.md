@@ -7,7 +7,11 @@ Provide passive, account-bound visibility of Codex subscription allowances and r
 ## Requirements
 
 ### Requirement: Account-bound allowance observation
-The service SHALL expose only explicitly labelled accounts, deduplicate the same account across machines, and use the actual source account identity rather than the source host as account authority. Browser output SHALL contain only labels, plan, bounded allowance values and timestamps, with no raw account identifiers, email, credentials or session material. Collection SHALL be read-only and SHALL NOT redeem resets, change login, mount credentials or install a persistent host process.
+The native plugin SHALL expose only explicitly labelled accounts, deduplicate the same account across machines, and use the actual source account identity rather than the source host as account authority. Ordinary telemetry SHALL contain only labels, plan, bounded allowance values and timestamps, with no raw account identifiers, email, credentials or session material. Collection SHALL be read-only and SHALL NOT redeem resets, change login, mount credentials or install a persistent host process.
+
+The source SHALL be a bounded native read-only account RPC, available independently of threads. Remote sources SHALL invoke the marked native peer over SSH without a Docker exporter or Python helper.
+
+Transport sanitisation and presentation SHALL tolerate a source allowance timestamp up to one second ahead of local time, preserving the original timestamp and strict cache ordering. Larger future offsets and observations older than ten minutes SHALL be rejected. Weekly reset and reset-credit expiry checks SHALL continue to use actual local time without a grace period.
 
 #### Scenario: Account moves machine
 - **WHEN** an account is signed in on another configured host
@@ -15,44 +19,18 @@ The service SHALL expose only explicitly labelled accounts, deduplicate the same
 
 #### Scenario: Unrecognised account
 - **WHEN** a source reports an account not explicitly mapped in private configuration
-- **THEN** its allowance data is absent from browser responses and publication.
+- **THEN** its allowance data is absent from the popover and ordinary peer responses.
 
-### Requirement: Honest allowance instruments
-The footer SHALL persistently show Personal and Work panels. Each SHALL lead with the reported weekly percentage remaining without a redundant visible weekly-left label, a full-panel-width remaining-share bar, scheduled reset and sample age. When a fresh future reset falls inside the seven-day window, the same bar SHALL mark time remaining and visually distinguish the percentage-point gap as reserve, deficit or on pace. A smaller signed percentage-point variance from even weekly pace SHALL appear beside the percentage when both values are valid, green ahead and red behind. Unknown pace SHALL show no signed variance. The exact pace meaning and difference SHALL remain accessible without requiring a long visible pace sentence. This comparison SHALL NOT imply future depletion time or a token quota. The panel SHALL NOT invent a session window. Available reset passes SHALL remain distinct, with expiry accessible. Missing or stale data SHALL remain unknown; passing a scheduled reset SHALL NOT fabricate a refreshed balance.
-
-#### Scenario: Supported snapshot
-- **WHEN** the current account source reports a valid weekly percentage and future reset in its seven-day window
-- **THEN** the card uses its full width for remaining share and a time-remaining marker, with accessible pace meaning, reset timing, passes and sample age.
-
-#### Scenario: Incomplete weekly snapshot
-- **WHEN** the balance is current but reset timing is absent or outside its window
-- **THEN** the reported balance remains visible and pace is unknown without a fabricated session limit or depletion estimate.
-
-#### Scenario: Exhausted allowance
-- **WHEN** the source reports zero weekly balance
-- **THEN** zero remains distinct from unknown and the panel invents no pass or depletion time.
-
-#### Scenario: Missing or expired data
-- **WHEN** the source fails, the sample expires or a scheduled reset passes
-- **THEN** balance and pace become unknown without a fabricated refill or pass.
-
-#### Scenario: Signed pace variance
-- **WHEN** remaining allowance and time to reset are valid
-- **THEN** the card shows a signed variance beside the remaining percentage with the correct colour and accessible explanation; unknown pace shows none.
-
-### Requirement: Explicit allowance sharing
-Account allowance sharing SHALL be separately configured from project disclosure and limited to selected labelled numeric account summaries over existing authenticated transport. Work project exclusions SHALL remain unchanged, including when both account allowances are intentionally shown on the office display.
-
-#### Scenario: Office allowance display
-- **WHEN** allowance sharing is enabled for Personal and Work accounts
-- **THEN** both permitted summaries can appear on the office display without publishing Personal agents, project names or transcripts.
+#### Scenario: Small peer clock offset
+- **WHEN** a mapped native peer allowance is at most one second ahead of local time
+- **THEN** it remains available with its original source time, while larger future offsets, stale samples and expired resets remain unavailable.
 
 ### Requirement: Account token activity
-The service SHALL read supported ChatGPT-backed account token-activity summaries and daily buckets through its authenticated, read-only account source, bind them to explicit account mapping and keep them separate from local session cache usage. It SHALL export only bounded numeric totals, valid bucket dates, account labels and sample times. The panel MAY show a full-panel-width bounded daily-token histogram and sum for reported dates, with its observed-day count and account scope explicit. Missing dates SHALL NOT appear as zero or contribute to the sum. Activity SHALL NOT be converted into a remaining quota, cost or depletion forecast. Missing, unsupported, stale or malformed account usage SHALL remain unavailable without hiding a valid weekly allowance. Existing explicit sharing boundaries SHALL apply.
+The native plugin SHALL read supported ChatGPT-backed account token-activity summaries and daily buckets through its authenticated, read-only account source, bind them to explicit account mapping and keep them separate from local session cache usage. It SHALL export only bounded numeric totals, valid bucket dates, account labels and sample times. The native account state MAY retain bounded dated observations with account scope explicit. Missing dates SHALL NOT appear as zero or contribute to the sum. Activity SHALL NOT be converted into a remaining quota, cost or depletion forecast. Missing, unsupported, stale or malformed account usage SHALL remain unavailable without hiding a valid weekly allowance. Reads SHALL remain local to the plugin and explicitly configured peer transport; no web forwarding SHALL occur.
 
 #### Scenario: Supported account activity
 - **WHEN** a mapped account returns valid daily token buckets
-- **THEN** the panel spans the available width with only reported dates, their numeric sum and observed-day count, separately from weekly allowance pace.
+- **THEN** the native account state retains only reported dates and their bounded numeric values, separately from weekly allowance pace.
 
 #### Scenario: Partial or unsupported response
 - **WHEN** activity buckets are absent or malformed
@@ -60,12 +38,28 @@ The service SHALL read supported ChatGPT-backed account token-activity summaries
 
 #### Scenario: Missing dates
 - **WHEN** reported dates have gaps
-- **THEN** no omitted date is rendered or added as zero.
+- **THEN** no omitted date is exported or added as zero.
 
 #### Scenario: Expired or inconsistent weekly window
 - **WHEN** the allowance is stale or its reset window is invalid
 - **THEN** pace is unavailable without inventing a token balance.
 
+
 #### Scenario: Office sharing
-- **WHEN** sharing is enabled for both explicitly mapped accounts
-- **THEN** the office display receives only bounded account summaries and no personal agent or raw account identity data.
+- **WHEN** an existing configuration still names a retired office publisher
+- **THEN** explicit migration removes that forwarding configuration and account summaries remain local to the plugin, without modifying the old remote service.
+
+### Requirement: Fleet-bound account sources
+When fleet discovery is enabled, native remote allowance collection SHALL follow enabled saved machine profiles independently of whether their hosts have active threads. Explicit profile-bound source overrides SHALL retain private mappings and follow the profile's current target. A removed or disabled profile SHALL cease contributing an allowance source; an otherwise unreferenced target SHALL stop its probes and invalidate late results. Another enabled profile or explicit source for the same target SHALL retain that shared account worker. Label/session-only changes and unchanged discovery results SHALL preserve account collection cadence. Account identity SHALL remain authoritative: only explicitly mapped accounts SHALL appear, and observations of the same account on multiple machines SHALL produce one row. Discovery SHALL NOT create account mappings or expose account email in shared snapshots.
+
+#### Scenario: Newly discovered empty machine
+- **WHEN** an enabled saved machine has no threads and its native peer reports an already mapped account
+- **THEN** its valid allowance is eligible independently of thread activity and is deduplicated with other readings of that account.
+
+#### Scenario: Removed source has an in-flight result
+- **WHEN** a profile is disabled, removed or changes target during an allowance request, leaving its former target without any active reference
+- **THEN** the retired result cannot restore its old source, while unrelated valid account readings remain available.
+
+#### Scenario: Stable shared account route
+- **WHEN** only a profile label/session changes, the inventory repeats unchanged, or another enabled profile still uses the same target
+- **THEN** the account worker and its refresh cadence remain unchanged.

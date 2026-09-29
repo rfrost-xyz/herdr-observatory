@@ -1,0 +1,28 @@
+## MODIFIED Requirements
+
+### Requirement: Truthful current state
+A failed or expired host sample SHALL be unavailable rather than contributing zero threads. Codex allowance SHALL show only mapped accounts and valid source-dated weekly values. Remaining allowance SHALL use a solid theme-accent bar of six logical pixels and a normal foreground percentage. A separate two-logical-pixel pacing strip below it SHALL span only the interval between actual and expected remaining allowance. A neutral tick SHALL mark expected remaining allowance. Pace SHALL use the percentage-point difference on the allowance scale: green at or above expected, amber for deficits up to and including five points, stronger amber above five and below ten points, and red at ten points or more. Missing pacing data SHALL NOT produce a coloured strip. Valid session counters SHALL remain visible while their live thread is reported, with older values softened and their original age shown, rather than blanked after two minutes. Missing and disconnected data SHALL stay explicit. All mapped accounts SHALL show days/hours until reset and valid reset-pass counts. The concise hover SHALL compare remaining and expected balance directly; visible pace SHALL avoid an unbounded relative ratio near reset.
+
+#### Scenario: One host stops reporting
+- **WHEN** a previously reporting host becomes unavailable
+- **THEN** its threads disappear, its active-thread count becomes unavailable and reporting remains labelled as partial.
+
+#### Scenario: Pacing thresholds and independent balance
+- **WHEN** expected allowance is 70% and remaining allowance is 70%, 66%, 65%, 64% or 60%
+- **THEN** pace colours are green, amber, amber, stronger amber and red respectively, while the theme-accent balance fill and foreground percentage remain independent of pace.
+
+### Requirement: Restrained visual feedback
+Fine inset separators SHALL distinguish adjacent threads. Working titles MAY show a visible periodic glyph sheen; idle, done and blocked titles SHALL NOT shimmer continuously. A newly observed state MAY briefly highlight its row and icon. Effects SHALL match stable host/thread identities across reordering, and SHALL NOT treat initial snapshots or source disappearance as state changes. Hovering allowance SHALL show dense sparks for both surplus and deficit confined to the measured difference interval, preserving the bar geometry. Allowance hover glow and sparks SHALL be clipped to the separate pacing interval below the balance bar; the main fill and percentage SHALL retain their normal colour without a pace halo. Motion SHALL stop when the popover closes and support a reduced-motion override.
+
+#### Scenario: Allowance hover
+- **WHEN** an available allowance row is hovered
+- **THEN** its positive or negative difference sparkles within that interval, stopping on mouse exit, source expiry or popover closure.
+
+#### Scenario: A genuinely new thread arrives
+- **WHEN** a previously unseen thread arrives while its reporting host and group are already visible
+- **THEN** it enters with a restrained approximately 300 ms transition.
+- **AND** initial hydration, source reconnect, popover reopening, filtering, reordering and expand/collapse SHALL NOT replay that entrance.
+
+#### Scenario: Stable interaction and compaction
+- **WHEN** state changes while the operator is interacting with the popover
+- **THEN** existing rows retain their order, and a trustworthy increased compaction count may briefly highlight its context dial without inventing a count from incomplete history.

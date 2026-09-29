@@ -1,0 +1,18 @@
+[package]
+name = "anton-runtime"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+
+[dependencies]
+libc = "=0.2.183"
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = { version = "=1.0.150", features = ["float_roundtrip"] }
+sha2 = "=0.10.9"
+toml = "=0.5.11"
+
+[profile.release]
+lto = "thin"
+strip = true
+codegen-units = 1
