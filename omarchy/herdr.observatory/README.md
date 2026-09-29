@@ -105,6 +105,56 @@ locally persisted aliases. Concealed identities stay out of tooltips and
 accessibility text. `--refresh-allowances` requests a bounded local account
 refresh without starting an agent; periodic remote account reads run independently.
 
+### Allowance rows
+
+Each snapshot `allowances` entry is one provider-neutral row per configured
+account, in a stable order sorted by account key. Every key is always present,
+with `null` where unknown:
+
+```json
+{"provider":"codex","provider_label":"Codex","account_id":"Personal",
+ "label":"Personal","status":"available","status_text":null,"plan":"pro",
+ "sampled_at":1800000000.25,"reset_count":1,"reset_expires_at":null,
+ "windows":[{"kind":"weekly","label":"Weekly","used_percent":40.0,
+ "resets_at":1800302400,"duration_s":604800,"pacing":true}]}
+```
+
+- `status` is `available`, `unavailable` or `auth_needed`. A row that is not
+  available has `windows: []` and null `sampled_at`, `plan`, `reset_count` and
+  `reset_expires_at`. `status_text` is null or 1 to 80 characters supplied by
+  the source; Codex always sends null.
+- `sampled_at` is the original source time. An observation older than 600 s,
+  or more than 1 s in the future, makes the account unavailable.
+- `windows` holds at most eight windows. `used_percent` is 0 to 100,
+  `resets_at` is Unix seconds and `duration_s` is the source's window length.
+  Exactly one window has `pacing: true`; the popover projects balance and pace
+  from that window only and never from list order. A past reset nulls
+  `used_percent` and `resets_at`; pass expiry nulls only `reset_count` and
+  `reset_expires_at`.
+- Codex rows always carry one `weekly` window of 604800 s. The runtime selects
+  it by its 10080-minute duration, never by field order, and reports
+  `reset_count` from the native `availableCount`.
+- Account token activity (`lifetime_tokens`, `peak_daily_tokens`,
+  `daily_usage`) is still collected and cached but is not part of the popover
+  row.
+
+The private `allowances.json` cache and the peer `--allowances-probe` output keep
+their earlier Codex source shape (`weekly_remaining`, `weekly_resets_at` and the
+token activity fields). An updated plugin therefore reads caches written by
+earlier builds and rows from peers that have not been updated, and an earlier
+plugin still reads what an updated one writes. Extra peer fields such as `theme`
+or `email` are dropped. The runtime converts source rows to the row above in one
+place, `allowances::snapshot`.
+
+Omarchy's own agents plugin records a provider as `limits: [{label, percent,
+resetsAt}]` with `tierLabel` and `usageStatusText`. A window `label` maps to
+`label`, `percent` is `used_percent / 100` and `resetsAt` is `resets_at` as
+ISO 8601 UTC; `plan` maps to `tierLabel` and `status_text` to
+`usageStatusText`. That record has no duration, kind or pacing, so consuming it
+needs a source-supplied duration or pace stays unknown, and reset passes are not
+representable. Design D7 of the `generalise-anton-allowance-windows` OpenSpec
+change has the full table. No adapter is implemented.
+
 ## Native peer
 
 A peer is required for native remote collection. Provision the reviewed executable
