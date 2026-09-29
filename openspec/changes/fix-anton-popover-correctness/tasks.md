@@ -48,7 +48,7 @@ Lane A (runtime) owns groups 2 and 3. Lane B (QML, JS, tests, CI) owns groups 4 
 
 ## 7. CI and visual preservation (lane B)
 
-- [ ] 7.1 Add a `qml` job to `.github/workflows/checks.yml` that installs Qt 6 QML test packages via apt on `ubuntu-latest`, as in design D6, and runs `tests/run-qml.sh`. Verify the job passes on the pushed head, iterating on packages if needed.
+- [x] 7.1 Add a `qml` job to `.github/workflows/checks.yml` that installs Qt 6.8.3 on `ubuntu-latest`, as in design D6, and runs `tests/run-qml.sh`, which fails on binding errors (`TypeError`, `ReferenceError`, `Unable to assign`) as well as test failures. Show that the gate fails on the rejected apt Qt 6.4.2 and passes on Qt 6.8.3, and verify the job passes on the pushed head with no binding errors in its log.
 - [x] 7.2 Check that the deterministic QML screenshots (`/tmp/anton-continuity-*.png`) from the lane B head are byte-identical to the baseline hashes in evidence.md, and explain any difference before accepting it.
 - [x] 7.3 Update the root README where it describes refresh or theming. Run `node --test tests/test_pi_hooks.mjs tests/test_omarchy_state.cjs tests/test_native_distribution.mjs` and `tests/run-qml.sh`, and record the results.
 
@@ -58,4 +58,4 @@ Lane A (runtime) owns groups 2 and 3. Lane B (QML, JS, tests, CI) owns groups 4 
 - [x] 8.2 Build the release binary of the integrated head, run `tests/measure_anton_popover.mjs --repeat 3`, and record the comparison with the baseline in evidence.md. Expect no colors.toml opens, smaller snapshots, fewer projected fields, a refresh latency around 1 s or less, bounded burst samples and CI running the QML tests.
 - [x] 8.3 Complete the evidence.md traceability, mapping each requirement and scenario to its implementation path, verification, result and commit.
 - [ ] 8.4 Obtain an independent adversarial review of the frozen source against the proposal, specs, design, tasks and AGENTS.md. Fix every in-scope finding and repeat the review until it is clean.
-- [ ] 8.5 Rebase onto `origin/main`, rerun affected gates, push with `--force-with-lease`, update the PR and confirm CI is green on the pushed head. Spec sync, archive and live installation follow change-lifecycle and the parent.
+- [x] 8.5 Rebase onto `origin/main`, rerun affected gates, push with `--force-with-lease`, update the PR and confirm CI is green on the pushed head. Spec sync, archive and live installation follow change-lifecycle and the parent.
