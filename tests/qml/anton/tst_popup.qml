@@ -28,16 +28,29 @@ Rectangle {
         y: 14
     }
     TestCase {
+        // A D1 snapshot row. The runtime names the provider; the view does not.
         function account(id, balance, expected) {
             return {
                 provider: 'codex',
+                provider_label: 'Codex',
                 account_id: id,
                 label: id,
-                available: true,
+                status: 'available',
+                status_text: null,
+                plan: null,
                 sampled_at: fixtureUi.now / 1000,
-                weekly_remaining: balance,
-                weekly_resets_at: fixtureUi.now / 1000 + 604800 * expected / 100,
-                reset_count: 1
+                reset_count: 1,
+                reset_expires_at: null,
+                windows: [
+                    {
+                        kind: 'weekly',
+                        label: 'Weekly',
+                        used_percent: 100 - balance,
+                        resets_at: fixtureUi.now / 1000 + 604800 * expected / 100,
+                        duration_s: 604800,
+                        pacing: true
+                    }
+                ]
             };
         }
         function agent(id, state, missing) {
@@ -345,6 +358,74 @@ Rectangle {
             wait(0);
             verify(cardFor('laptop:b') !== null);
             compare(keyedThreads(), []);
+        }
+
+        function allowanceCards(item, found) {
+            found = found || [];
+            if (!item)
+                return found;
+            if (item.entry !== undefined && item.paceReading !== undefined && item.visible)
+                found.push(item);
+            for (var i = 0; i < item.children.length; i++)
+                allowanceCards(item.children[i], found);
+            return found;
+        }
+        function caption(item) {
+            if (!item)
+                return '';
+            if (typeof item.text === 'string' && item.text.indexOf('↻ ') === 0)
+                return item.text;
+            for (var i = 0; i < item.children.length; i++) {
+                var text = caption(item.children[i]);
+                if (text)
+                    return text;
+            }
+            return '';
+        }
+        // Any provider renders through the same cards with no provider code.
+        function test_12_provider_neutral_rows_render_generically() {
+            var synthetic = account('team', 75, 50);
+            synthetic.provider = 'synthetic';
+            synthetic.provider_label = 'Synthetic';
+            synthetic.windows = [
+                {
+                    kind: 'monthly',
+                    label: 'Monthly',
+                    used_percent: 25,
+                    resets_at: fixtureUi.now / 1000 + 15 * 86400,
+                    duration_s: 30 * 86400,
+                    pacing: true
+                }
+            ];
+            var locked = account('office', 0, 0);
+            locked.provider = 'synthetic';
+            locked.provider_label = 'Synthetic';
+            locked.status = 'auth_needed';
+            locked.status_text = 'Sign in required';
+            locked.sampled_at = null;
+            locked.reset_count = null;
+            locked.windows = [];
+            fixtureUi.raw = {
+                hosts: [host('laptop', [agent('a', 'working', false)], 'connected')],
+                allowances: [account('one', 73, 74), synthetic, locked]
+            };
+            wait(40);
+            compare(fixtureUi.providers.map(function (group) {
+                return group.label;
+            }), ['Codex', 'Synthetic']);
+            verify(findChild(popup, 'provider-codex') !== null);
+            verify(findChild(popup, 'provider-synthetic') !== null);
+            var cards = allowanceCards(popup);
+            compare(cards.length, 3);
+            compare(cards[1].entry.id, 'team');
+            compare(findChild(cards[1], 'allowance-balance').text, '75%');
+            compare(caption(cards[1]), '↻ 15d 0h');
+            compare(cards[1].entry.paceDifference, 25);
+            compare(cards[2].entry.id, 'office');
+            compare(findChild(cards[2], 'allowance-balance').text, '—');
+            verify(!findChild(cards[2], 'allowance-fill').visible);
+            verify(!findChild(cards[2], 'allowance-pace-reading').visible);
+            compare(cards[2].hint, 'Sign in required');
         }
 
         name: 'AntonPopup'

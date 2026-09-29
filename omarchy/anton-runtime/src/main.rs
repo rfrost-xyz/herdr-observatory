@@ -734,11 +734,9 @@ fn stream(root: PathBuf, state_path: PathBuf) -> Result<()> {
         if last_allowances.elapsed() >= Duration::from_secs(2) {
             let remote: Vec<_> = remote_rows.values().flatten().cloned().collect();
             let rows = allowances::snapshot(&state.config, &state_path, &remote);
-            if let Ok(rows) = serde_json::from_value::<Vec<AllowanceRow>>(json!(rows)) {
-                if rows != state.allowances {
-                    state.allowances = rows;
-                    state.revision += 1;
-                }
+            if rows != state.allowances {
+                state.allowances = rows;
+                state.revision += 1;
             }
             last_allowances = Instant::now();
         }
@@ -1191,6 +1189,32 @@ mod tests {
             ]
         );
         assert_eq!(snapshot["heartbeat_seconds"], 4);
+        // Typed rows are assigned directly and serialise with every D1 key.
+        state.allowances = allowances::snapshot(
+            &json!({"accounts":{"a".repeat(64):"Personal"}}),
+            Path::new("/nonexistent/anton-allowances"),
+            &[],
+        );
+        let row = &state.snapshot()["allowances"][0];
+        let allowance: Vec<_> = row.as_object().unwrap().keys().cloned().collect();
+        assert_eq!(
+            allowance,
+            [
+                "account_id",
+                "label",
+                "plan",
+                "provider",
+                "provider_label",
+                "reset_count",
+                "reset_expires_at",
+                "sampled_at",
+                "status",
+                "status_text",
+                "windows"
+            ]
+        );
+        assert_eq!(row["status"], "unavailable");
+        assert_eq!(row["windows"], json!([]));
         let host: Vec<_> = snapshot["hosts"][0]
             .as_object()
             .unwrap()

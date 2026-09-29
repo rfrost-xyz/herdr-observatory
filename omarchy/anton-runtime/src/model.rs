@@ -97,67 +97,50 @@ pub struct Telemetry {
     pub usage_source: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct DailyUsage {
-    pub date: String,
-    pub tokens: u64,
+/// Source status of one configured account. The view never synthesises it.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AllowanceStatus {
+    Available,
+    Unavailable,
+    AuthNeeded,
 }
 
+/// One provider-neutral allowance window. `used_percent` is 0 to 100 and a
+/// past `resets_at` is already null. Exactly one window per available row
+/// has `pacing` set.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct AllowanceWindow {
+    pub kind: String,
+    pub label: String,
+    pub used_percent: Option<f64>,
+    pub resets_at: Option<u64>,
+    pub duration_s: u64,
+    pub pacing: bool,
+}
+
+/// Popover allowance row: one per configured account, every key always
+/// present. A row that is not available carries no windows, sample time or
+/// reset metadata.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct AllowanceRow {
-    pub plan: Option<String>,
-    pub weekly_remaining: Option<u64>,
-    pub weekly_resets_at: Option<u64>,
-    pub reset_count: Option<u64>,
-    pub reset_expires_at: Option<u64>,
-    pub sampled_at: Option<f64>,
-    pub lifetime_tokens: Option<u64>,
-    pub peak_daily_tokens: Option<u64>,
-    pub daily_usage: Option<Vec<DailyUsage>>,
-    pub label: String,
-    pub available: bool,
     pub provider: String,
     pub provider_label: String,
     pub account_id: String,
-    pub window_seconds: u64,
-}
-
-impl AllowanceRow {
-    /// Match the domain cache's ten-minute source TTL and independent reset
-    /// deadlines even while a remote refresh is blocked or unavailable.
-    pub fn expire(&mut self, now: f64) -> bool {
-        let before = self.clone();
-        if self
-            .sampled_at
-            .is_some_and(|at| now < at || now - at > 600.0)
-        {
-            self.available = false;
-            self.sampled_at = None;
-            self.plan = None;
-            self.weekly_remaining = None;
-            self.weekly_resets_at = None;
-            self.reset_count = None;
-            self.reset_expires_at = None;
-            self.lifetime_tokens = None;
-            self.peak_daily_tokens = None;
-            self.daily_usage = None;
-        }
-        if self.weekly_resets_at.is_none_or(|at| at as f64 <= now) {
-            self.weekly_remaining = None;
-            self.weekly_resets_at = None;
-        }
-        if self.reset_expires_at.is_some_and(|at| at as f64 <= now) {
-            self.reset_count = None;
-            self.reset_expires_at = None;
-        }
-        *self != before
-    }
+    pub label: String,
+    pub status: AllowanceStatus,
+    pub status_text: Option<String>,
+    pub plan: Option<String>,
+    pub sampled_at: Option<f64>,
+    pub reset_count: Option<u64>,
+    pub reset_expires_at: Option<u64>,
+    pub windows: Vec<AllowanceWindow>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     #[test]
     fn private_unknown_fields_are_not_reemitted() {
@@ -180,26 +163,6 @@ mod tests {
     }
 
     #[test]
-    fn reset_and_source_expiry_are_independent_of_refresh() {
-        let mut row: AllowanceRow = serde_json::from_value(json!({
-            "weekly_remaining":70,"weekly_resets_at":1010,"reset_count":2,
-            "reset_expires_at":1020,"sampled_at":1000,"label":"Synthetic",
-            "available":true,"provider":"codex","provider_label":"Codex",
-            "account_id":"synthetic","window_seconds":604800
-        }))
-        .unwrap();
-        assert!(row.expire(1010.0));
-        assert!(row.weekly_remaining.is_none());
-        assert_eq!(row.reset_count, Some(2));
-        assert!(row.available);
-        assert!(row.expire(1020.0));
-        assert!(row.reset_count.is_none());
-        assert!(row.expire(1601.0));
-        assert!(!row.available);
-        assert!(row.sampled_at.is_none());
-    }
-
-    #[test]
     fn complete_telemetry_contract_roundtrips_zero_and_unknown() {
         let value = json!({
             "seq":2000000,"event":"turn","phase":"working","tool":null,
@@ -218,20 +181,91 @@ mod tests {
     }
 
     #[test]
-    fn turn_timing_and_allowance_preserve_original_source_times() {
+    fn turn_timing_preserves_original_source_times() {
         let timing = json!({"active":true,"started_at_s":1000,"observed_at_s":1002.5,
             "complete":false,"last_duration_s":0,"total_finished_duration_s":null,
             "last_outcome":"completed","freshness_seconds":15.0});
         let parsed: TurnTiming = serde_json::from_value(timing.clone()).unwrap();
         assert_eq!(serde_json::to_value(parsed).unwrap(), timing);
-        let allowance = json!({"plan":"pro","weekly_remaining":0,"weekly_resets_at":2000,
-            "reset_count":0,"reset_expires_at":3000,"sampled_at":1000.5,
-            "lifetime_tokens":1234,"peak_daily_tokens":1234,
-            "daily_usage":[{"date":"2026-01-01","tokens":1234}],
-            "label":"Synthetic","available":true,"provider":"codex",
-            "provider_label":"Codex","account_id":"synthetic","window_seconds":604800});
-        let mut row: AllowanceRow = serde_json::from_value(allowance.clone()).unwrap();
-        assert!(!row.expire(1050.0));
-        assert_eq!(serde_json::to_value(row).unwrap(), allowance);
+    }
+
+    const ALLOWANCE_KEYS: [&str; 11] = [
+        "account_id",
+        "label",
+        "plan",
+        "provider",
+        "provider_label",
+        "reset_count",
+        "reset_expires_at",
+        "sampled_at",
+        "status",
+        "status_text",
+        "windows",
+    ];
+
+    fn roundtrip(value: &Value) -> Value {
+        let row: AllowanceRow = serde_json::from_value(value.clone()).unwrap();
+        let emitted = serde_json::to_value(row).unwrap();
+        let keys: Vec<_> = emitted.as_object().unwrap().keys().cloned().collect();
+        assert_eq!(keys, ALLOWANCE_KEYS);
+        for window in emitted["windows"].as_array().unwrap() {
+            let keys: Vec<_> = window.as_object().unwrap().keys().cloned().collect();
+            assert_eq!(
+                keys,
+                [
+                    "duration_s",
+                    "kind",
+                    "label",
+                    "pacing",
+                    "resets_at",
+                    "used_percent"
+                ]
+            );
+        }
+        emitted
+    }
+
+    #[test]
+    fn allowance_rows_roundtrip_with_every_contract_key() {
+        let available = json!({"provider":"codex","provider_label":"Codex",
+            "account_id":"synthetic","label":"Synthetic","status":"available",
+            "status_text":null,"plan":"pro","sampled_at":1000.5,"reset_count":0,
+            "reset_expires_at":3000,"windows":[{"kind":"weekly","label":"Weekly",
+            "used_percent":100.0,"resets_at":2000,"duration_s":604800,"pacing":true}]});
+        assert_eq!(roundtrip(&available), available);
+        let unavailable = json!({"provider":"codex","provider_label":"Codex",
+            "account_id":"synthetic","label":"Synthetic","status":"unavailable",
+            "status_text":null,"plan":null,"sampled_at":null,"reset_count":null,
+            "reset_expires_at":null,"windows":[]});
+        assert_eq!(roundtrip(&unavailable), unavailable);
+        let unknown = json!({"provider":"synthetic","provider_label":"Synthetic",
+            "account_id":"synthetic","label":"Synthetic","status":"available",
+            "status_text":"Synthetic status","plan":null,"sampled_at":1000.5,
+            "reset_count":null,"reset_expires_at":null,"windows":[{"kind":"monthly",
+            "label":"Monthly","used_percent":null,"resets_at":null,
+            "duration_s":2592000,"pacing":true}]});
+        assert_eq!(roundtrip(&unknown), unknown);
+        let auth = json!({"provider":"synthetic","provider_label":"Synthetic",
+            "account_id":"synthetic","label":"Synthetic","status":"auth_needed",
+            "status_text":"Sign in again","plan":null,"sampled_at":null,
+            "reset_count":null,"reset_expires_at":null,"windows":[]});
+        assert_eq!(roundtrip(&auth), auth);
+    }
+
+    #[test]
+    fn allowance_rows_drop_unknown_and_legacy_fields_and_reject_invented_status() {
+        let mut value = json!({"provider":"codex","provider_label":"Codex",
+            "account_id":"synthetic","label":"Synthetic","status":"available",
+            "status_text":null,"plan":null,"sampled_at":1000.0,"reset_count":null,
+            "reset_expires_at":null,"windows":[{"kind":"weekly","label":"Weekly",
+            "used_percent":40.0,"resets_at":2000,"duration_s":604800,"pacing":true,
+            "theme":"PRIVATE"}],"email":"PRIVATE","weekly_remaining":60,
+            "lifetime_tokens":1234,"daily_usage":[]});
+        let emitted = roundtrip(&value);
+        assert!(!emitted.to_string().contains("PRIVATE"));
+        assert!(emitted.get("weekly_remaining").is_none());
+        assert!(emitted.get("lifetime_tokens").is_none());
+        value["status"] = json!("invented");
+        assert!(serde_json::from_value::<AllowanceRow>(value).is_err());
     }
 }

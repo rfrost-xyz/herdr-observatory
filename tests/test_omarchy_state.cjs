@@ -18,6 +18,22 @@ function host(overrides = {}) {
   };
 }
 
+// A D1 snapshot allowance row. `balance` is the remaining percentage, so
+// existing expectations read as before; the wire carries the used percentage.
+function weekly(overrides = {}) {
+  return { kind: 'weekly', label: 'Weekly', used_percent: 30, resets_at: now / 1000 + 302400,
+    duration_s: 604800, pacing: true, ...overrides };
+}
+function allowanceRow(overrides = {}, windowOverrides = {}) {
+  return { provider: 'codex', provider_label: 'Codex', account_id: 'Personal', label: 'Personal',
+    status: 'available', status_text: null, plan: null, sampled_at: now / 1000 - 5,
+    reset_count: null, reset_expires_at: null, windows: [weekly(windowOverrides)], ...overrides };
+}
+function remainingRow(balance, reset, overrides = {}, windowOverrides = {}) {
+  return allowanceRow(overrides, { used_percent: balance === null ? null : 100 - balance,
+    resets_at: reset, ...windowOverrides });
+}
+
 test('unavailable hosts do not become zero-thread evidence', () => {
   const view = project({ interval: 5, hosts: [host(), host({ id: 'second', label: 'second', online: false, agents: [] })], allowances: [] }, now);
   assert.equal(view.working, 1);
@@ -43,8 +59,8 @@ test('all unavailable hosts leave the active count unknown', () => {
 
 test('mapped weekly allowance preserves zero and rejects expired reset', () => {
   const view = project({ interval: 5, hosts: [host()], allowances: [
-    { label: 'Personal', available: true, weekly_remaining: 0, weekly_resets_at: now / 1000 + 100, sampled_at: now / 1000 - 12 },
-    { label: 'Work', available: true, weekly_remaining: 45, weekly_resets_at: now / 1000 - 1, sampled_at: now / 1000 - 12 }
+    remainingRow(0, now / 1000 + 100, { sampled_at: now / 1000 - 12 }),
+    remainingRow(45, now / 1000 - 1, { account_id: 'Work', label: 'Work', sampled_at: now / 1000 - 12 })
   ] }, now);
   assert.equal(view.allowances[0].remaining, 0);
   assert.equal(view.allowances[1].remaining, null);
@@ -68,21 +84,20 @@ test('disconnection discards the last snapshot', () => {
 });
 
 test('burn pace compares balance with time remaining and does not assume a reset', () => {
-  const allowance = overrides => ({ label: 'Personal', available: true, weekly_remaining: 70,
-    weekly_resets_at: now / 1000 + 302400, sampled_at: now / 1000 - 5, ...overrides });
+  const allowance = (balance = 70, reset = now / 1000 + 302400) => remainingRow(balance, reset);
   const view = row => project({ hosts: [host()], allowances: [row] }, now).allowances[0];
   assert.equal(view(allowance()).timeRemaining, 50);
   assert.equal(view(allowance()).paceDifference, 20);
   assert.ok(view(allowance()).paceDifference > 0);
-  assert.ok(view(allowance({ weekly_remaining: 30 })).paceDifference < 0);
-  assert.ok(view(allowance({ weekly_remaining: 53 })).paceDifference > 0);
-  assert.ok(view(allowance({ weekly_remaining: 47 })).paceDifference < 0);
-  assert.ok(view(allowance({ weekly_remaining: 53.1 })).paceDifference > 0);
-  assert.ok(view(allowance({ weekly_remaining: 46.9 })).paceDifference < 0);
+  assert.ok(view(allowance(30)).paceDifference < 0);
+  assert.ok(view(allowance(53)).paceDifference > 0);
+  assert.ok(view(allowance(47)).paceDifference < 0);
+  assert.ok(view(allowance(53.1)).paceDifference > 0);
+  assert.ok(view(allowance(46.9)).paceDifference < 0);
   assert.equal(view(allowance()).reset, '3d 12h');
-  assert.equal(view(allowance({ weekly_remaining: 0 })).paceDifference, -50);
-  assert.equal(view(allowance({ weekly_resets_at: now / 1000 + 604801 })).timeRemaining, null);
-  const expired = view(allowance({ weekly_resets_at: now / 1000 }));
+  assert.equal(view(allowance(0)).paceDifference, -50);
+  assert.equal(view(allowance(70, now / 1000 + 604801)).timeRemaining, null);
+  const expired = view(allowance(70, now / 1000));
   assert.equal(expired.remaining, null);
   assert.equal(expired.timeRemaining, null);
   assert.equal(expired.paceDifference, null);
@@ -135,9 +150,9 @@ test('menubar state uses blocked, working, done, idle precedence without counts'
 
 
 test('allowance reset metadata retains source validity', () => {
-  const base = { label: 'Personal', available: true, sampled_at: now / 1000 - 10,
-    weekly_remaining: 60, weekly_resets_at: now / 1000 + 302400, reset_count: 0, reset_expires_at: null };
-  const view = changes => project({ hosts: [host()], allowances: [{ ...base, ...changes }] }, now).allowances[0];
+  const base = { sampled_at: now / 1000 - 10, reset_count: 0, reset_expires_at: null };
+  const view = (changes, window = {}) => project({ hosts: [host()],
+    allowances: [remainingRow(60, now / 1000 + 302400, { ...base, ...changes }, window)] }, now).allowances[0];
   assert.equal(view({}).paceDifference, 10);
   assert.equal(view({}).reset, '3d 12h');
   assert.equal(view({}).resetCount, 0);
@@ -147,10 +162,11 @@ test('allowance reset metadata retains source validity', () => {
   assert.equal(view({ reset_count: 1.5 }).resetCount, null);
   assert.equal(view({ sampled_at: now / 1000 - 601 }).resetCount, null);
   assert.equal(view({ sampled_at: now / 1000 - 601 }).reset, null);
-  assert.equal(view({ weekly_remaining: null }).reset, '3d 12h');
-  assert.equal(view({ weekly_remaining: null }).paceDifference, null);
-  assert.equal(view({ weekly_resets_at: now / 1000 + 7200 }).reset, '0d 2h');
-  assert.equal(view({ weekly_resets_at: now / 1000 + 60 }).reset, '0d <1h');
+  assert.equal(view({}, { used_percent: null }).reset, '3d 12h');
+  assert.equal(view({}, { used_percent: null }).paceDifference, null);
+  assert.equal(view({}, { used_percent: null }).resetCount, 0);
+  assert.equal(view({}, { resets_at: now / 1000 + 7200 }).reset, '0d 2h');
+  assert.equal(view({}, { resets_at: now / 1000 + 60 }).reset, '0d <1h');
 });
 
 test('subagent observations keep stop counts and original age without inventing a completion ratio', () => {
@@ -230,26 +246,29 @@ test('status filters and collapsed machines preserve totals and remove hidden na
 
 
 test('every measured deficit is visible and pacing never divides by a tiny time balance', () => {
-  const allowance = {provider:'claude',provider_label:'Claude',account_id:'office',label:'Office',available:true,
-    sampled_at:now/1000,weekly_remaining:49.99,weekly_resets_at:now/1000+1800,window_seconds:3600};
-  const account = project({hosts:[host()],allowances:[allowance]},now).allowances[0];
+  const identity={provider:'claude',provider_label:'Claude',account_id:'office',label:'Office',sampled_at:now/1000};
+  const window={kind:'session',label:'Session',duration_s:3600};
+  const allowance=(balance,reset)=>remainingRow(balance,reset,identity,window);
+  const account = project({hosts:[host()],allowances:[allowance(49.99,now/1000+1800)]},now).allowances[0];
   assert.ok(account.paceDifference<0);
   assert.equal(account.timeRemaining,50);
   assert.equal(account.provider,'claude');
   assert.equal(account.id,'office');
   assert.equal(account.pacePercent,undefined);
-  const nearReset=project({hosts:[host()],allowances:[{...allowance,weekly_remaining:20,weekly_resets_at:now/1000+1}]},now).allowances[0];
+  const nearReset=project({hosts:[host()],allowances:[allowance(20,now/1000+1)]},now).allowances[0];
   assert.ok(nearReset.paceDifference>0);
-  const even=project({hosts:[host()],allowances:[{...allowance,weekly_remaining:50}]},now).allowances[0];
+  const even=project({hosts:[host()],allowances:[allowance(50,now/1000+1800)]},now).allowances[0];
   assert.equal(even.paceDifference,0);
 });
 
-test('providers group any configured accounts and retain legacy identities', () => {
-  const rows=[{label:'Personal'},{provider:'claude',provider_label:'Claude',account_id:'team',label:'Team'},
-    {label:'Work'},{provider:'codex',account_id:'third',label:'Third'}];
+test('providers group any configured accounts in configured order', () => {
+  const unavailable={status:'unavailable',sampled_at:null,windows:[]};
+  const rows=[allowanceRow(unavailable),allowanceRow({...unavailable,provider:'claude',provider_label:'Claude',account_id:'team',label:'Team'}),
+    allowanceRow({...unavailable,account_id:'Work',label:'Work'}),allowanceRow({...unavailable,account_id:'third',label:'Third'})];
   const view=project({hosts:[host()],allowances:rows},now);
   const groups=sandbox.module.exports.providerGroups(view.allowances);
   assert.equal(groups.length,2); assert.equal(groups[0].accounts.length,3);
+  assert.equal(groups[0].label,'Codex');
   assert.equal(groups[1].label,'Claude');
   assert.equal(groups[0].accounts[0].id,'Personal');
   assert.equal(groups[0].accounts[2].id,'third');
@@ -435,7 +454,7 @@ test('bounded allowance skew preserves usage rejection and expiry boundaries', (
   const agent={id:'a',status:'working',technical:{turn_timing:{active:true,started_at_s:now/1000-10,
     observed_at_s:now/1000+0.019,freshness_seconds:12,complete:false},
     telemetry:{seq:now*1000+19000,usage_seq:now*1000+19000,total_input:1000,total_output:10}}};
-  const row={label:'Personal',available:true,sampled_at:now/1000+0.019,weekly_remaining:70,weekly_resets_at:now/1000+100};
+  const row=remainingRow(70,now/1000+100,{sampled_at:now/1000+0.019});
   const view=project({hosts:[host({agents:[agent]})],allowances:[row]},now);
   assert.equal(view.threads[0].timing.elapsed,10);
   assert.equal(view.threads[0].usage.inputTokens,null);
@@ -446,7 +465,7 @@ test('bounded allowance skew preserves usage rejection and expiry boundaries', (
   for (const offset of [1.001, -600.001]) {
     assert.equal(project({hosts:[host({agents:[]})],allowances:[{...row,sampled_at:now/1000+offset}]},now).allowances[0].remaining,null);
   }
-  const expired=project({hosts:[host({agents:[]})],allowances:[{...row,weekly_resets_at:now/1000,reset_count:2,reset_expires_at:now/1000}]},now).allowances[0];
+  const expired=project({hosts:[host({agents:[]})],allowances:[remainingRow(70,now/1000,{sampled_at:now/1000+0.019,reset_count:2,reset_expires_at:now/1000})]},now).allowances[0];
   assert.equal(expired.remaining,null);
   assert.equal(expired.resetCount,null);
 });
@@ -463,8 +482,7 @@ test('configured navigation bindings stay opaque and reject ambiguous identities
 
 test('projection omits unused presentation fields', () => {
   const view = project({ interval: 5, fleet_discovery: { state: 'available' }, hosts: [host({ metrics: { cpu_percent: 5, memory: { used: 1, total: 2 }, gpu: { percent: 5, used: 1, total: 2 } } })],
-    allowances: [{ label: 'Personal', available: true, weekly_remaining: 70, weekly_resets_at: now / 1000 + 302400, sampled_at: now / 1000 - 5,
-      daily_usage: [{ date: '2026-09-20', tokens: 20 }] }] }, now);
+    allowances: [allowanceRow({ plan: 'pro', daily_usage: [{ date: '2026-09-20', tokens: 20 }] })] }, now);
   for (const key of ['gpu', 'inference', 'discoveryState']) assert.equal(key in view, false, key);
   for (const key of ['activeThreads', 'cpu', 'memory', 'gpu', 'vram']) assert.equal(key in view.hosts[0], false, key);
   for (const key of ['activity', 'paceStrength', 'pace']) assert.equal(key in view.allowances[0], false, key);
@@ -534,4 +552,177 @@ test('focus helpers clear, move and activate by key in visual order', () => {
   assert.equal(threadForKey(view, 'two:z').id, 'z');
   assert.equal(threadForKey(view, 'gone'), null);
   assert.equal(threadForKey(view, ''), null);
+});
+
+// Provider-neutral allowance windows (generalise-anton-allowance-windows D1, D5).
+const projectOne = row => project({ hosts: [host()], allowances: [row] }, now).allowances[0];
+const unknownBalance = account => {
+  assert.equal(account.remaining, null);
+  assert.equal(account.timeRemaining, null);
+  assert.equal(account.paceDifference, null);
+};
+
+test('a long allowance window projects from its own duration', () => {
+  const account = projectOne(allowanceRow({ provider: 'synthetic', provider_label: 'Synthetic', account_id: 'team', label: 'Team' },
+    { kind: 'monthly', label: 'Monthly', used_percent: 25, resets_at: now / 1000 + 15 * 86400, duration_s: 30 * 86400 }));
+  assert.equal(account.remaining, 75);
+  assert.equal(account.timeRemaining, 50);
+  assert.equal(account.paceDifference, 25);
+  assert.equal(account.reset, '15d 0h');
+  assert.equal(account.providerLabel, 'Synthetic');
+});
+
+test('an account needing authentication shows source text and no balance', () => {
+  const account = projectOne(allowanceRow({ provider: 'synthetic', provider_label: 'Synthetic', status: 'auth_needed',
+    status_text: 'Sign in required', sampled_at: null, windows: [] }));
+  assert.equal(account.statusText, 'Sign in required');
+  unknownBalance(account);
+  assert.equal(account.reset, null);
+  assert.equal(account.resetCount, null);
+  assert.equal(account.age, 'source unavailable');
+  // Status alone gates the balance: the same window shows none unless available.
+  const gated = status => projectOne(allowanceRow({ status, reset_count: 1 }));
+  assert.equal(gated('available').remaining, 70);
+  for (const status of ['auth_needed', 'unavailable']) {
+    unknownBalance(gated(status));
+    assert.equal(gated(status).resetCount, null, status);
+  }
+});
+
+test('an unavailable account without source text keeps a null status text', () => {
+  const account = projectOne(allowanceRow({ status: 'unavailable', sampled_at: null, windows: [] }));
+  assert.equal(account.statusText, null);
+  unknownBalance(account);
+});
+
+test('the pacing window is the single flagged window, never list order', () => {
+  const other = weekly({ kind: 'session', label: 'Session', used_percent: 90, duration_s: 18000, resets_at: now / 1000 + 9000, pacing: false });
+  unknownBalance(projectOne(allowanceRow({ windows: [weekly({ pacing: false })] })));
+  unknownBalance(projectOne(allowanceRow({ windows: [weekly(), weekly({ kind: 'monthly' })] })));
+  const second = projectOne(allowanceRow({ windows: [other, weekly()] }));
+  assert.equal(second.remaining, 70);
+  assert.equal(second.timeRemaining, 50);
+  assert.equal(second.reset, '3d 12h');
+  // A non-pacing window never supplies a reset caption.
+  assert.equal(projectOne(allowanceRow({ windows: [other] })).reset, null);
+});
+
+test('an unknown window kind projects generically', () => {
+  const account = projectOne(allowanceRow({}, { kind: 'credits_pool', label: 'Credits pool' }));
+  assert.equal(account.remaining, 70);
+  assert.equal(account.paceDifference, 20);
+});
+
+test('malformed and oversized windows leave balance and pace unknown without throwing', () => {
+  const nine = Array.from({ length: 9 }, (_, i) => weekly({ pacing: i === 0 }));
+  unknownBalance(projectOne(allowanceRow({ windows: nine })));
+  for (const used of [-1, 101, NaN, '40', Infinity]) {
+    const account = projectOne(allowanceRow({}, { used_percent: used }));
+    assert.equal(account.remaining, null, String(used));
+    assert.equal(account.paceDifference, null, String(used));
+  }
+  for (const duration of [0, 31622401, 1.5, null, '604800', -604800]) unknownBalance(projectOne(allowanceRow({}, { duration_s: duration })));
+  for (const kind of ['', 'Weekly', 'a'.repeat(25), 7]) unknownBalance(projectOne(allowanceRow({}, { kind })));
+  for (const windowLabel of ['', 'x'.repeat(41), null]) unknownBalance(projectOne(allowanceRow({}, { label: windowLabel })));
+  unknownBalance(projectOne(allowanceRow({}, { resets_at: now / 1000 - 1 })));
+  assert.equal(projectOne(allowanceRow({}, { resets_at: now / 1000 - 1 })).reset, null);
+  const missing = weekly(); delete missing.pacing;
+  unknownBalance(projectOne(allowanceRow({ windows: [missing] })));
+  unknownBalance(projectOne(allowanceRow({}, { pacing: 'true' })));
+  for (const windows of [null, undefined, 'weekly', {}, [null], [7]]) unknownBalance(projectOne(allowanceRow({ windows })));
+  // The window bound is inclusive: eight windows with one pacing entry are valid.
+  const eight = Array.from({ length: 8 }, (_, i) => weekly({ kind: 'k' + i, pacing: i === 7 }));
+  assert.equal(projectOne(allowanceRow({ windows: eight })).remaining, 70);
+  assert.equal(projectOne(allowanceRow({}, { duration_s: 31622400 })).remaining, 70);
+});
+
+test('stale and future-skewed samples are not current', () => {
+  unknownBalance(projectOne(allowanceRow({ sampled_at: now / 1000 - 600.001 })));
+  unknownBalance(projectOne(allowanceRow({ sampled_at: now / 1000 + 1.001 })));
+  assert.equal(projectOne(allowanceRow({ sampled_at: now / 1000 - 600 })).remaining, 70);
+  assert.equal(projectOne(allowanceRow({ sampled_at: now / 1000 + 1 })).remaining, 70);
+  unknownBalance(projectOne(allowanceRow({ sampled_at: null })));
+});
+
+test('zero stays distinct from unknown', () => {
+  const account = projectOne(allowanceRow({ reset_count: 0 }, { used_percent: 100 }));
+  assert.equal(account.remaining, 0);
+  assert.equal(account.paceDifference, -50);
+  assert.equal(account.resetCount, 0);
+  assert.equal(projectOne(allowanceRow({}, { used_percent: 0 })).remaining, 100);
+});
+
+test('status text is bounded and never synthesised', () => {
+  const text = value => projectOne(allowanceRow({ status: 'unavailable', status_text: value, sampled_at: null, windows: [] })).statusText;
+  assert.equal(text('x'.repeat(80)), 'x'.repeat(80));
+  for (const value of ['x'.repeat(81), '', 'Sign\nin', 'Sign\u0000in', 'Sign\u007fin', 'Sign\u009bin', 7, true, {}, ['Sign in']])
+    assert.equal(text(value), null, JSON.stringify(value));
+  assert.equal(projectOne(allowanceRow({ status_text: 'Degraded source' })).statusText, 'Degraded source');
+});
+
+test('a row without a valid provider or account id is skipped', () => {
+  const rows = [allowanceRow({ provider: undefined }), allowanceRow({ provider: '' }), allowanceRow({ provider: 'Codex' }),
+    allowanceRow({ provider: 'a'.repeat(33) }), allowanceRow({ provider: '-codex' }), allowanceRow({ provider: 7 }),
+    allowanceRow({ account_id: 'bad id', label: 'bad id' }), allowanceRow({ account_id: 'x'.repeat(129) }),
+    allowanceRow({ account_id: undefined, label: undefined }), allowanceRow({ provider: 'a'.repeat(32), account_id: 'kept' })];
+  const view = project({ hosts: [host()], allowances: rows }, now);
+  assert.deepEqual(Array.from(view.allowances, account => account.id), ['kept']);
+  assert.equal(view.allowances[0].providerLabel, 'Codex');
+  assert.equal(projectOne(allowanceRow({ provider: 'synthetic', provider_label: undefined })).providerLabel, 'synthetic');
+});
+
+test('an unknown or missing status projects as unavailable', () => {
+  assert.equal(projectOne(allowanceRow({ status: 'available', reset_count: 1 })).remaining, 70);
+  for (const status of ['ok', 'Available', undefined, null, true]) {
+    const account = projectOne(allowanceRow({ status, reset_count: 1 }));
+    unknownBalance(account);
+    assert.equal(account.resetCount, null);
+  }
+});
+
+test('a legacy weekly_remaining row projects as unavailable', () => {
+  const legacy = { provider: 'codex', provider_label: 'Codex', account_id: 'Personal', label: 'Personal', available: true,
+    sampled_at: now / 1000 - 5, weekly_remaining: 70, weekly_resets_at: now / 1000 + 302400, window_seconds: 604800, reset_count: 1 };
+  const account = projectOne(legacy);
+  unknownBalance(account);
+  assert.equal(account.reset, null);
+  assert.equal(account.resetCount, null);
+});
+
+test('only providers present in the snapshot form groups', () => {
+  const rows = [allowanceRow(), allowanceRow({ provider: 'synthetic', provider_label: 'Synthetic', account_id: 'team', label: 'Team' },
+    { kind: 'monthly', label: 'Monthly', duration_s: 30 * 86400, resets_at: now / 1000 + 15 * 86400, used_percent: 25 })];
+  const view = project({ hosts: [host()], allowances: rows }, now);
+  const groups = sandbox.module.exports.providerGroups(view.allowances);
+  assert.deepEqual(Array.from(groups, group => group.label), ['Codex', 'Synthetic']);
+  const alone = project({ hosts: [host()], allowances: [rows[1]] }, now);
+  assert.deepEqual(Array.from(alone.allowances, account => account.provider), ['synthetic']);
+  assert.deepEqual(Array.from(sandbox.module.exports.providerGroups(alone.allowances), group => group.id), ['synthetic']);
+  assert.equal(project({ hosts: [host()], allowances: [] }, now).allowances.length, 0);
+});
+
+test('the projected allowance view has exactly the eleven contract keys', () => {
+  const keys = ['id', 'provider', 'providerLabel', 'label', 'statusText', 'remaining', 'timeRemaining',
+    'paceDifference', 'resetCount', 'reset', 'age'];
+  for (const row of [allowanceRow({ reset_count: 1 }), allowanceRow({ status: 'auth_needed', status_text: 'Sign in required', sampled_at: null, windows: [] })])
+    assert.deepEqual(Object.keys(projectOne(row)).sort(), keys.slice().sort());
+});
+
+test('account aliases prefer saved names, then the legacy table, then a stable hash', () => {
+  const { accountAlias } = sandbox.module.exports;
+  const pool = ['Gilfoyle', 'Jared Dunn', 'Monica Hall', 'Big Head'];
+  const legacy = { 'codex:Personal': 'Richard Hendricks', 'codex:Work': 'Laurie Bream' };
+  const today = (key, aliases) => { let hash = 0; for (let i = 0; i < key.length; i++) hash = ((hash * 31) + key.charCodeAt(i)) >>> 0; return aliases[hash % aliases.length]; };
+  const personal = { provider: 'codex', id: 'Personal', label: 'Personal' };
+  assert.equal(accountAlias(personal, { 'codex:Personal': 'Saved' }, legacy, pool), 'Saved');
+  assert.equal(accountAlias(personal, {}, legacy, pool), 'Richard Hendricks');
+  assert.equal(accountAlias({ provider: 'codex', id: 'Work', label: 'Work' }, {}, legacy, pool), 'Laurie Bream');
+  const synthetic = { provider: 'synthetic', id: 'Personal', label: 'Personal' };
+  assert.equal(accountAlias(synthetic, {}, legacy, pool), today('synthetic:Personal', pool));
+  for (const account of [{ provider: 'codex', id: 'third', label: 'Third' }, { provider: 'claude', id: 'team', label: 'Team' }])
+    assert.equal(accountAlias(account, null, null, pool), today(account.provider + ':' + account.id, pool));
+  // Legacy matching stays by label, and an empty legacy preference falls through.
+  assert.equal(accountAlias({ provider: 'codex', id: 'custom', label: 'Personal' }, {}, legacy, pool), 'Richard Hendricks');
+  assert.equal(accountAlias(personal, {}, { 'codex:Personal': '' }, pool), today('codex:Personal', pool));
+  assert.equal(accountAlias({ provider: 'constructor', id: 'toString', label: 'toString' }, {}, {}, pool), today('constructor:toString', pool));
 });
