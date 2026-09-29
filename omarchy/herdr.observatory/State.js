@@ -196,13 +196,15 @@ function dominantState(threads, acknowledgements) {
 }
 
 function threadKey(thread) { return thread.hostId + ":" + thread.id }
-function navigationKey(binding) { return binding && typeof binding === "object" ? String(binding.profile_id || "") + ":" + String(binding.route_key || "") : "" }
+function navigationKey(binding) { return binding && typeof binding === "object" ? String(binding.profile_id || binding.host_id || "") + ":" + String(binding.route_key || "") : "" }
 function navigationArgs(thread) {
   var args = ["--open-thread", thread.hostId, thread.id]
   if (thread.navigation !== null && thread.navigation !== undefined) {
     var binding = thread.navigation
+    var routeId = binding && (binding.profile_id || binding.host_id)
     if (!binding || typeof binding !== "object" || Array.isArray(binding) || Object.keys(binding).length !== 2
-        || typeof binding.profile_id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/.test(binding.profile_id)
+        || typeof routeId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/.test(routeId)
+        || (Object.prototype.hasOwnProperty.call(binding, "profile_id") === Object.prototype.hasOwnProperty.call(binding, "host_id"))
         || typeof binding.route_key !== "string" || !/^[a-f0-9]{64}$/.test(binding.route_key)) return null
     args.push(JSON.stringify(binding))
   }

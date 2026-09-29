@@ -66,3 +66,31 @@ Root explicitly approved final installed acceptance. All five local payload hash
 All seven tasks are complete. Both added requirements and all eight scenarios were synchronised verbatim into their existing canonical capabilities, preserving prior requirements. Strict validation passed 4/4 before archive and 3/3 afterwards; the active change list is empty and the whitespace diff check passes. The change is archived as `2026-09-28-discover-herdr-fleet-profiles`.
 
 Both source-owned release stages, the synthetic visual captures and source-baseline scratch directory were removed after installed acceptance. Worker fixture/proof directories clean themselves up; the ordinary ignored Cargo build cache remains. Root removed its private rollout rollback and account-check temporary files. Pre-existing private history and unrelated dirty work are preserved. No Git/forge operation was performed.
+
+## PR integration review, 29 September 2026
+
+PR #14 preserves the installed native migration and all completed follow-up
+archives in Git. Independent native review reproduced a wrong-session local
+navigation defect using only mocked executables: a configured non-default source
+could focus the same pane identifier in `default`.
+
+The correction in `main.rs`, `navigation.rs` and `State.js` enforces the existing
+exact-route contract. Every configured source carries an opaque observation
+binding. Activation revalidates configuration, preserves the selected local
+session/executable, and requires a unique enabled saved target/session for SSH.
+Missing, changed and socket-only routes fail before control. Window matching uses
+the exact local session. Paths and targets remain outside the projected binding.
+
+`tests/native_navigation.rs` covers exact named/default local sessions, custom
+local IDs, hostname-colliding SSH IDs, stale and missing bindings, socket-only
+sources and absent/ambiguous/changed saved routes. `test_omarchy_state.cjs` covers
+opaque configured binding arguments and malformed identities; navigation unit
+fixtures verify that a window from another local session is never selected.
+All six navigation process fixtures and 51 JavaScript cases pass. The full serial
+native suite, production QML fixtures (25), manifest and three canonical OpenSpec
+specifications pass; formatting and all-target Clippy deny warnings.
+
+This is repository delivery, without installed payload/config changes or a
+plugin restart. The installed files matched the preserved migration before the
+review correction; that correction is source-only in this PR. Existing historical
+live acceptance remains separate from these synthetic regression results.

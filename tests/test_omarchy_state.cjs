@@ -503,3 +503,13 @@ test('bounded allowance skew preserves usage rejection and expiry boundaries', (
   assert.equal(expired.remaining,null);
   assert.equal(expired.resetCount,null);
 });
+
+
+test('configured navigation bindings stay opaque and reject ambiguous identities', () => {
+  const state = sandbox.module.exports
+  const binding = {host_id: 'custom-local', route_key: 'a'.repeat(64)}
+  const thread = {hostId: 'custom-local', id: 'custom-local:w1:p2', navigation: binding}
+  assert.deepEqual(Array.from(state.navigationArgs(thread)), ['--open-thread', thread.hostId, thread.id, JSON.stringify(binding)])
+  assert.equal(state.navigationArgs({...thread, navigation: {...binding, profile_id: 'saved'}}), null)
+  assert.equal(state.navigationArgs({...thread, navigation: {host_id: 'custom-local', extra: 'a'.repeat(64)}}), null)
+})

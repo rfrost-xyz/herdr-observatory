@@ -94,12 +94,7 @@ impl State {
             .map(|host| {
                 let id = host["id"].as_str().unwrap().to_owned();
                 HostState {
-                    navigation: host["profile_id"].as_str().and_then(|id| {
-                        navigation::profile_binding(
-                            &json!({"id":id,"target":host["target"],"session":host["session"]}),
-                        )
-                        .ok()
-                    }),
+                    navigation: navigation::host_binding(host).ok(),
                     label: collection::clean(host.get("label").unwrap_or(&host["id"]), &id),
                     id,
                     online: false,
@@ -874,7 +869,7 @@ fn cli() -> Result<()> {
                     }
                 })
                 .transpose()?;
-            navigation::open_observed(&commands[1], &commands[2], observed.as_ref())
+            navigation::open_observed(&root, &commands[1], &commands[2], observed.as_ref())
         }
         "--focus" => {
             let _owner = common::owner_guard(&owner)?;

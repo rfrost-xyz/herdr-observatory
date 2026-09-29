@@ -69,6 +69,77 @@ pub fn profile_binding(profile: &Value) -> Result<Value> {
         .map_err(|_| "Invalid Herdr route")?;
     Ok(json!({"profile_id":id,"route_key":common::sha256(&bytes)}))
 }
+/// Bind configured routes without publishing executable, socket or SSH paths.
+pub fn host_binding(host: &Value) -> Result<Value> {
+    let id = host["id"]
+        .as_str()
+        .filter(|v| crate::fleet::profile_id(v))
+        .ok_or("Invalid configured host")?;
+    if let Some(profile) = host["profile_id"].as_str() {
+        return profile_binding(&json!({"id":profile,"target":host["target"],
+            "session":host.get("session").cloned().unwrap_or(json!("default"))}));
+    }
+    let bytes = serde_json::to_vec(&json!([
+        "anton-configured-route-v1",
+        id,
+        host.get("transport").cloned().unwrap_or(json!("local")),
+        host["target"],
+        host.get("session").cloned().unwrap_or(json!("default")),
+        host.get("herdr").cloned().unwrap_or(json!("herdr")),
+        host["socket_path"]
+    ]))
+    .map_err(|_| "Invalid configured route")?;
+    Ok(json!({"host_id":id,"route_key":common::sha256(&bytes)}))
+}
+pub fn configured_route(
+    host: &str,
+    thread: &str,
+    config: &Value,
+    observed: &Value,
+) -> Result<Route> {
+    let target = thread_pane(host, thread)?;
+    let matches: Vec<_> = config["hosts"]
+        .as_array()
+        .ok_or("Configured hosts unavailable")?
+        .iter()
+        .filter(|h| h["id"] == host)
+        .collect();
+    if matches.len() != 1 || observed["host_id"] != host || host_binding(matches[0])? != *observed {
+        return Err("Machine changed. Try again shortly.".into());
+    }
+    let host = matches[0];
+    if host.get("socket_path").is_some() {
+        return Err("This socket-only source has no verified navigation route.".into());
+    }
+    let session = host
+        .get("session")
+        .and_then(Value::as_str)
+        .unwrap_or("default");
+    if !selector(session) {
+        return Err("Invalid configured session".into());
+    }
+    if host["transport"] == "ssh" {
+        return remote_route(
+            target,
+            &json!({"id":host["id"],"target":host["target"],"session":session}),
+        );
+    }
+    let binary = host.get("herdr").and_then(Value::as_str).unwrap_or("herdr");
+    if !selector(binary) {
+        return Err("Invalid configured executable".into());
+    }
+    let command = vec![
+        crate::collection::herdr_binary(binary),
+        "--session".into(),
+        session.into(),
+    ];
+    Ok(Route {
+        focus: command.clone(),
+        launch: command,
+        pane: target.into(),
+        profile: None,
+    })
+}
 pub fn route_observed(
     host: &str,
     thread: &str,
@@ -187,6 +258,7 @@ pub fn matching_window(
     clients: &Value,
     profile: Option<&Value>,
     selected: Option<&str>,
+    local_session: &str,
     proc: &Path,
 ) -> Option<String> {
     let mut processes = BTreeMap::new();
@@ -259,7 +331,9 @@ pub fn matching_window(
                         .unwrap_or("default"))
                 || (remote.is_none() && session == "default" && selected == profile["id"].as_str())
         } else {
-            remote.is_none() && session == "default" && selected.is_none()
+            remote.is_none()
+                && session == local_session
+                && (session != "default" || selected.is_none())
         };
         if !matches {
             continue;
@@ -373,33 +447,59 @@ pub fn peer_focus(request: &Value) -> Result<()> {
     common::run_bounded(&command, b"", Duration::from_secs(8), 65536, None)?;
     Ok(())
 }
-pub fn open(host: &str, thread: &str) -> Result<()> {
-    open_observed(host, thread, None)
+fn saved_profiles() -> Result<Value> {
+    let raw: Value = serde_json::from_slice(&run(
+        &[
+            "herdr".into(),
+            "machine".into(),
+            "list".into(),
+            "--json".into(),
+        ],
+        b"",
+    )?)
+    .map_err(|_| "Herdr machines unavailable")?;
+    Ok(json!(crate::fleet::profiles(&raw)?))
 }
-pub fn open_observed(host: &str, thread: &str, observed: Option<&Value>) -> Result<()> {
-    let mut name = [0u8; 256];
-    if unsafe { libc::gethostname(name.as_mut_ptr().cast(), name.len()) } != 0 {
-        return Err("Local hostname unavailable".into());
-    }
-    let end = name.iter().position(|b| *b == 0).unwrap_or(name.len());
-    let hostname = String::from_utf8_lossy(&name[..end]);
-    let profiles =
-        if observed.is_none() && (host == hostname || Some(host) == hostname.split('.').next()) {
-            json!([])
+pub fn open_observed(
+    root: &Path,
+    host: &str,
+    thread: &str,
+    observed: Option<&Value>,
+) -> Result<()> {
+    let observed = observed.ok_or("Thread route unavailable. Wait for a fresh observation.")?;
+    let route = if observed.get("host_id").is_some() {
+        let bytes = common::read_owned(&root.join(".config.json"), 1024 * 1024, false)?;
+        let config = crate::config::validate(
+            serde_json::from_slice(&bytes).map_err(|_| "Invalid configuration")?,
+        )?;
+        let configured = configured_route(host, thread, &config, observed)?;
+        if let Some(expected) = &configured.profile {
+            let profiles = saved_profiles()?;
+            let matches: Vec<_> = profiles
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|profile| {
+                    profile["enabled"] == true
+                        && profile["target"] == expected["target"]
+                        && profile
+                            .get("session")
+                            .and_then(Value::as_str)
+                            .unwrap_or("default")
+                            == expected["session"].as_str().unwrap()
+                })
+                .collect();
+            if matches.len() != 1 {
+                return Err("No unique enabled Herdr machine matches this route.".into());
+            }
+            remote_route(&configured.pane, matches[0])?
         } else {
-            let raw: Value = serde_json::from_slice(&run(
-                &[
-                    "herdr".into(),
-                    "machine".into(),
-                    "list".into(),
-                    "--json".into(),
-                ],
-                b"",
-            )?)
-            .map_err(|_| "Herdr machines unavailable")?;
-            json!(crate::fleet::profiles(&raw)?)
-        };
-    let route = route_observed(host, thread, &profiles, &hostname, observed)?;
+            configured
+        }
+    } else {
+        let profiles = saved_profiles()?;
+        route_observed(host, thread, &profiles, "", Some(observed))?
+    };
     let clients: Value = serde_json::from_slice(&run(
         &["hyprctl".into(), "clients".into(), "-j".into()],
         b"",
@@ -423,6 +523,7 @@ pub fn open_observed(host: &str, thread: &str, observed: Option<&Value>) -> Resu
             .and_then(|v| v.get("selected_profile"))
             .filter(|v| !v.is_null())
             .map(|v| v.as_str().unwrap_or("")),
+        option(&route.launch, "--session").unwrap_or("default"),
         Path::new("/proc"),
     );
     focus_agent(&route)?;
@@ -589,12 +690,22 @@ mod tests {
         }
         let windows = json!([{"pid":10,"class":"ghostty","address":"0xaaa","focusHistoryID":3},{"pid":20,"class":"ghostty","address":"0xbbb","focusHistoryID":0}]);
         assert_eq!(
-            matching_window(&windows, None, None, &root),
+            matching_window(&windows, None, None, "default", &root),
             Some("0xbbb".into())
         );
-        assert!(matching_window(&windows, None, Some("remote"), &root).is_none());
+        assert!(matching_window(&windows, None, Some("remote"), "default", &root).is_none());
+        fs::write(root.join("21/cmdline"), "herdr\0--session\0other").unwrap();
+        assert_eq!(
+            matching_window(&windows, None, None, "other", &root),
+            Some("0xbbb".into())
+        );
+        assert_eq!(
+            matching_window(&windows, None, None, "default", &root),
+            Some("0xaaa".into())
+        );
+        assert!(matching_window(&windows, None, None, "missing", &root).is_none());
         let shared = json!([windows[0], windows[0]]);
-        assert!(matching_window(&shared, None, None, &root).is_none());
+        assert!(matching_window(&shared, None, None, "default", &root).is_none());
         fs::remove_dir_all(root).unwrap();
     }
 }

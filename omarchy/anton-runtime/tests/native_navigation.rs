@@ -57,6 +57,39 @@ impl Fixture {
             .output()
             .unwrap()
     }
+    fn configured_click(
+        &self,
+        config: &Value,
+        host: &str,
+        binding: Option<&Value>,
+    ) -> std::process::Output {
+        fs::write(self.0.join(".config.json"), config.to_string()).unwrap();
+        self.script(
+            "herdr",
+            "if [ \"$1\" = machine ]; then cat \"$ANTON_TEST_FIXTURE/profiles.json\"; else printf '%s\\n' \"$@\" > \"$ANTON_TEST_FIXTURE/local-focus\"; fi",
+        );
+        let mut command = Command::new(env!("CARGO_BIN_EXE_anton-runtime"));
+        command.args([
+            "--root",
+            self.0.to_str().unwrap(),
+            "--open-thread",
+            host,
+            &format!("{host}:w1:p2"),
+        ]);
+        if let Some(binding) = binding {
+            command.arg(binding.to_string());
+        }
+        command
+            .env("HOME", &self.0)
+            .env("XDG_STATE_HOME", self.0.join("state"))
+            .env(
+                "PATH",
+                format!("{}:/usr/bin:/bin", self.0.join("bin").display()),
+            )
+            .env("ANTON_TEST_FIXTURE", &self.0)
+            .output()
+            .unwrap()
+    }
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
@@ -115,4 +148,107 @@ fn changed_removed_disabled_or_ambiguous_profile_never_reaches_control_commands(
     );
     assert!(!output.status.success());
     assert!(!f.0.join("calls").exists());
+}
+
+#[test]
+fn configured_local_sources_focus_exact_session_with_custom_ids() {
+    for session in ["default", "synthetic-other", "work; quoted value"] {
+        let f = Fixture::new();
+        let host = json!({"id":"custom-local","transport":"local","session":session});
+        let binding = navigation::host_binding(&host).unwrap();
+        assert!(!binding.to_string().contains(session));
+        let output = f.configured_click(&json!({"hosts":[host]}), "custom-local", Some(&binding));
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            fs::read_to_string(f.0.join("local-focus")).unwrap(),
+            format!("--session\n{session}\nagent\nfocus\nw1:p2\n")
+        );
+        assert!(!f.0.join("focus.json").exists());
+    }
+}
+
+#[test]
+fn configured_ssh_host_never_uses_hostname_as_local_authority() {
+    let f = Fixture::new();
+    let output = Command::new("hostname").output().unwrap();
+    let name = String::from_utf8(output.stdout).unwrap().trim().to_owned();
+    let host =
+        json!({"id":name,"transport":"ssh","target":"user@fixture","session":"remote-other"});
+    let binding = navigation::host_binding(&host).unwrap();
+    fs::write(
+        f.0.join("profiles.json"),
+        json!([{"id":"saved","target":"user@fixture","session":"remote-other","enabled":true}])
+            .to_string(),
+    )
+    .unwrap();
+    let output = f.configured_click(&json!({"hosts":[host]}), &name, Some(&binding));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!f.0.join("local-focus").exists());
+    let focus: Value = serde_json::from_slice(&fs::read(f.0.join("focus.json")).unwrap()).unwrap();
+    assert_eq!(focus, json!({"pane":"w1:p2","session":"remote-other"}));
+}
+
+#[test]
+fn configured_stale_missing_socket_and_malformed_routes_never_control() {
+    let host = json!({"id":"custom-local","transport":"local","session":"work"});
+    let binding = navigation::host_binding(&host).unwrap();
+    let mut cases = vec![
+        (json!({"hosts":[host]}), None),
+        (json!({"hosts":[{"id":"other"}]}), Some(binding.clone())),
+        (
+            json!({"hosts":[host]}),
+            Some(json!({"host_id":"custom-local","route_key":"bad"})),
+        ),
+    ];
+    for (key, value) in [
+        ("session", json!("replacement")),
+        ("herdr", json!("/other/herdr")),
+        ("transport", json!("ssh")),
+    ] {
+        let mut changed = host.clone();
+        changed[key] = value;
+        changed["target"] = json!("user@other");
+        cases.push((json!({"hosts":[changed]}), Some(binding.clone())));
+    }
+    let socket = json!({"id":"custom-local","socket_path":"/synthetic/herdr.sock"});
+    cases.push((
+        json!({"hosts":[socket]}),
+        Some(navigation::host_binding(&socket).unwrap()),
+    ));
+    for (config, binding) in cases {
+        let f = Fixture::new();
+        let output = f.configured_click(&config, "custom-local", binding.as_ref());
+        assert!(!output.status.success());
+        for file in ["calls", "local-focus", "focus.json"] {
+            assert!(!f.0.join(file).exists(), "{file}");
+        }
+    }
+}
+
+#[test]
+fn configured_ssh_requires_unique_current_saved_route() {
+    let host = json!({"id":"remote","transport":"ssh","target":"user@fixture","session":"work"});
+    let binding = navigation::host_binding(&host).unwrap();
+    let profile = json!({"id":"saved","target":"user@fixture","session":"work","enabled":true});
+    for profiles in [
+        json!([]),
+        json!([profile, profile]),
+        json!([{"id":"saved","target":"user@other","session":"work","enabled":true}]),
+    ] {
+        let f = Fixture::new();
+        fs::write(f.0.join("profiles.json"), profiles.to_string()).unwrap();
+        let output = f.configured_click(&json!({"hosts":[host]}), "remote", Some(&binding));
+        assert!(!output.status.success());
+        for file in ["calls", "local-focus", "focus.json"] {
+            assert!(!f.0.join(file).exists());
+        }
+    }
 }

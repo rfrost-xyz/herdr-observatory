@@ -184,7 +184,9 @@ For a separately provisioned peer, its explicit standalone removal command is:
 cargo fmt --manifest-path omarchy/anton-runtime/Cargo.toml --check
 cargo clippy --manifest-path omarchy/anton-runtime/Cargo.toml --locked --offline --all-targets -- -D warnings
 cargo test --manifest-path omarchy/anton-runtime/Cargo.toml --locked --offline
-node --test tests/test_pi_hooks.mjs tests/test_omarchy_state.cjs
+node --test tests/test_pi_hooks.mjs tests/test_omarchy_state.cjs tests/test_native_distribution.mjs
+bash tests/run-qml.sh
+omarchy-plugin-validate omarchy/herdr.observatory
 openspec validate --all --strict
 ```
 
@@ -192,3 +194,11 @@ Production QML fixtures exercise the actual `PopupContent.qml`; include their
 layout/keyboard/reduced-motion checks and `omarchy-plugin-validate` for UI changes.
 Resource comparisons must include all local children, state their scope and avoid
 claims about unmeasured remote CPU or Qt/GPU work.
+
+
+Thread activation requires the opaque route binding from its observation. Local
+and static SSH routes are revalidated against current configuration; saved
+profiles are revalidated against the current Herdr inventory. A changed route or
+missing binding fails before focus. Local named sessions use that exact session
+and configured executable. Socket-only collection has no verified terminal route,
+so activation reports an error without attempting another session.
