@@ -10,6 +10,20 @@ Codex session records and invokes the same executable on explicitly configured
 SSH peers. It stops on owner-pipe closure. No Python, Docker, listening service,
 independent autostart or music forwarding is required.
 
+The collector writes one JSON snapshot per line. It emits when state changes and
+otherwise every `heartbeat_seconds` (4 s), a value carried in each snapshot so
+the popover can derive how long to keep a snapshot without a new one. The
+coordinator waits at most 1 s for events between heartbeat checks.
+
+The owner pipe (the collector's stdin) accepts newline-delimited commands of at
+most 64 bytes. The only command is `refresh`. Longer lines, invalid UTF-8 and
+unknown commands are ignored; EOF stops the collector. `refresh` wakes only local
+Herdr sampling, recomputes allowances from the local cache without a Codex call
+and emits once the fresh local samples arrive, typically within about a second.
+Refreshes are honoured at most once every 2 s; requests in between coalesce into
+one. SSH peers, account reads and fleet discovery keep their own cadence. The
+popover sends `refresh` for `r`, middle-click and the IPC `refresh` call.
+
 The collector no longer reads the Omarchy theme; the popover follows the theme
 itself. Existing `theme_host` and per-host `theme_path` settings are still
 validated as before so installed configurations keep loading, and are otherwise

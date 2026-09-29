@@ -7,13 +7,29 @@ use anton_runtime::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
+/// Snapshot heartbeat: an unchanged state is re-emitted at least this often. It
+/// is published as `heartbeat_seconds`, from which QML derives its receipt
+/// timeout (heartbeat plus one `LOOP_WAIT` plus pipe margin).
+const HEARTBEAT: Duration = Duration::from_secs(4);
+/// Longest coordinator wait for an event before it re-checks the heartbeat,
+/// allowance recompute and pending refresh, so emissions can lag by this much.
+const LOOP_WAIT: Duration = Duration::from_secs(1);
+/// Minimum spacing between honoured owner refreshes. Requests inside the window
+/// coalesce into one pending refresh served when it ends. It matches the local
+/// sampling cadence, so refresh at most doubles local Herdr reads.
+const REFRESH_SPACING: Duration = Duration::from_secs(2);
+/// Upper bound on waiting for nudged local samples before a forced emission
+/// goes out anyway. It exceeds the six-second local Herdr RPC deadline.
+const REFRESH_DEADLINE: Duration = Duration::from_secs(8);
+/// Longest owner command line in bytes, excluding the newline.
+const OWNER_LINE_LIMIT: usize = 64;
 static SIGNAL_STOP: AtomicBool = AtomicBool::new(false);
 extern "C" fn stop_signal(_: libc::c_int) {
     SIGNAL_STOP.store(true, Ordering::Relaxed);
@@ -21,6 +37,7 @@ extern "C" fn stop_signal(_: libc::c_int) {
 #[derive(Default)]
 struct Cancellation {
     flag: AtomicBool,
+    nudged: AtomicBool,
     lock: Mutex<()>,
     changed: Condvar,
     notifier: Mutex<Option<mpsc::SyncSender<Event>>>,
@@ -36,11 +53,66 @@ impl Cancellation {
             let _ = sender.try_send(Event::Stop);
         }
     }
+    /// Wakes a cadence `wait`. A nudge that arrives while the worker is busy
+    /// stays pending, so its next `wait` returns at once. The lock is held while
+    /// notifying so the wake cannot fall between predicate check and park.
+    fn nudge(&self) {
+        let _guard = self.lock.lock().unwrap();
+        self.nudged.store(true, Ordering::Relaxed);
+        self.changed.notify_all();
+    }
+    /// Cadence wait: returns on stop, timeout or a pending nudge, which it clears.
     fn wait(&self, delay: Duration) {
+        let guard = self.lock.lock().unwrap();
+        let _ = self.changed.wait_timeout_while(guard, delay, |_| {
+            !self.stopped() && !self.nudged.load(Ordering::Relaxed)
+        });
+        self.nudged.store(false, Ordering::Relaxed);
+    }
+    /// Backoff pause that honours only stop and never consumes a nudge.
+    fn pause(&self, delay: Duration) {
         let guard = self.lock.lock().unwrap();
         let _ = self
             .changed
             .wait_timeout_while(guard, delay, |_| !self.stopped());
+    }
+}
+/// Commands the owner (QML) may write on stdin, one per line.
+#[derive(Debug, PartialEq)]
+enum OwnerCommand {
+    Refresh,
+}
+/// Bounded framing for the owner pipe. The buffer never exceeds
+/// `OWNER_LINE_LIMIT`: an oversized line is discarded up to its newline.
+#[derive(Default)]
+struct OwnerLines {
+    line: Vec<u8>,
+    discarding: bool,
+}
+impl OwnerLines {
+    fn push(&mut self, bytes: &[u8], mut command: impl FnMut(OwnerCommand)) {
+        for &byte in bytes {
+            if byte == b'\n' {
+                if !self.discarding {
+                    let mut line = self.line.as_slice();
+                    if let [rest @ .., b'\r'] = line {
+                        line = rest;
+                    }
+                    if std::str::from_utf8(line) == Ok("refresh") {
+                        command(OwnerCommand::Refresh);
+                    }
+                }
+                self.line.clear();
+                self.discarding = false;
+            } else if !self.discarding {
+                if self.line.len() == OWNER_LINE_LIMIT {
+                    self.line.clear();
+                    self.discarding = true;
+                } else {
+                    self.line.push(byte);
+                }
+            }
+        }
     }
 }
 #[derive(Clone, PartialEq, Serialize)]
@@ -71,6 +143,7 @@ struct Sample {
 }
 enum Event {
     Stop,
+    Refresh,
     Host(String, u64, Result<Sample>),
     RemoteAllowances(String, u64, Vec<Value>),
     Discovery(Result<Vec<Value>>),
@@ -113,7 +186,7 @@ impl State {
         }
     }
     fn snapshot(&self) -> Value {
-        json!({"at":common::now(),"interval":self.config.get("interval").cloned().unwrap_or(json!(5)),"hosts":self.hosts,"allowances":self.allowances,"fleet_discovery":{"state":self.discovery}})
+        json!({"at":common::now(),"interval":self.config.get("interval").cloned().unwrap_or(json!(5)),"heartbeat_seconds":HEARTBEAT.as_secs(),"hosts":self.hosts,"allowances":self.allowances,"fleet_discovery":{"state":self.discovery}})
     }
     fn sample(&mut self, id: &str, result: Result<Sample>) -> Option<Value> {
         let index = self.hosts.iter().position(|v| v.id == id)?;
@@ -160,6 +233,9 @@ impl State {
                         None
                     };
                     agent.since = previous.map(|old| old.since).unwrap_or_else(common::now);
+                    // Turn-timing measurement freshness: three sampling
+                    // intervals, never under 12 s. This is measurement
+                    // freshness, independent of the transport heartbeat.
                     if let Some(timing) = &mut agent.technical.turn_timing {
                         timing.freshness_seconds = (interval * 3.0).max(12.0);
                     }
@@ -214,7 +290,7 @@ fn send(sender: &mpsc::SyncSender<Event>, mut event: Event, cancellation: &Cance
         if cancellation.stopped() {
             return;
         }
-        cancellation.wait(Duration::from_millis(20));
+        cancellation.pause(Duration::from_millis(20));
     }
 }
 fn emit(value: &Value, cancel: &Cancellation) -> Result<()> {
@@ -538,11 +614,29 @@ fn stream(root: PathBuf, state_path: PathBuf) -> Result<()> {
     let cancel = Arc::new(Cancellation::default());
     let (tx, rx) = mpsc::sync_channel(64);
     *cancel.notifier.lock().unwrap() = Some(tx.clone());
+    // Owner pipe: newline-delimited commands. EOF or a hard read error means
+    // the owner has gone and stops the runtime. `queued` keeps at most one
+    // refresh event in the channel, however fast the owner writes.
     let stdin_cancel = cancel.clone();
+    let stdin_sender = tx.clone();
+    let queued = Arc::new(AtomicBool::new(false));
+    let stdin_queued = queued.clone();
     thread::spawn(move || {
         let mut input = io::stdin().lock();
         let mut bytes = [0; 1024];
-        while matches!(input.read(&mut bytes), Ok(1..)) {}
+        let mut lines = OwnerLines::default();
+        loop {
+            match input.read(&mut bytes) {
+                Ok(0) => break,
+                Ok(count) => lines.push(&bytes[..count], |OwnerCommand::Refresh| {
+                    if !stdin_queued.swap(true, Ordering::Relaxed) {
+                        send(&stdin_sender, Event::Refresh, &stdin_cancel);
+                    }
+                }),
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                Err(_) => break,
+            }
+        }
         stdin_cancel.stop();
     });
     let mut state = State::new(initial_config.clone());
@@ -604,6 +698,14 @@ fn stream(root: PathBuf, state_path: PathBuf) -> Result<()> {
     let mut last_checkpoint = Instant::now();
     let mut last_emitted = Instant::now();
     let mut emitted = None;
+    // Owner refresh: `refresh_pending` holds one coalesced request until the
+    // spacing window allows it. `awaiting` names nudged local hosts whose
+    // post-refresh sample has not yet been accepted.
+    let mut refresh_pending = false;
+    let mut last_refresh: Option<Instant> = None;
+    let mut refresh_at = 0.0;
+    let mut awaiting = BTreeSet::new();
+    let mut force_emit = false;
     unsafe {
         let flags = libc::fcntl(libc::STDOUT_FILENO, libc::F_GETFL);
         if flags >= 0 {
@@ -611,6 +713,24 @@ fn stream(root: PathBuf, state_path: PathBuf) -> Result<()> {
         }
     }
     while !cancel.stopped() {
+        if refresh_pending && last_refresh.is_none_or(|at| at.elapsed() >= REFRESH_SPACING) {
+            refresh_pending = false;
+            last_refresh = Some(Instant::now());
+            refresh_at = common::now();
+            awaiting.clear();
+            for (id, worker) in &hosts {
+                if worker.host["transport"] != "ssh" {
+                    worker.cancel.nudge();
+                    awaiting.insert(id.clone());
+                }
+            }
+            // Recompute from the local cache only; no Codex RPC is made here.
+            last_allowances = Instant::now().checked_sub(Duration::from_secs(2)).unwrap();
+            force_emit = true;
+        }
+        if !awaiting.is_empty() && last_refresh.is_some_and(|at| at.elapsed() >= REFRESH_DEADLINE) {
+            awaiting.clear();
+        }
         if last_allowances.elapsed() >= Duration::from_secs(2) {
             let remote: Vec<_> = remote_rows.values().flatten().cloned().collect();
             let rows = allowances::snapshot(&state.config, &state_path, &remote);
@@ -622,13 +742,19 @@ fn stream(root: PathBuf, state_path: PathBuf) -> Result<()> {
             }
             last_allowances = Instant::now();
         }
-        if emitted != Some(state.revision) || last_emitted.elapsed() >= Duration::from_secs(4) {
+        if emitted != Some(state.revision)
+            || last_emitted.elapsed() >= HEARTBEAT
+            || (force_emit && awaiting.is_empty())
+        {
             if emit(&state.snapshot(), &cancel).is_err() {
                 cancel.stop();
                 break;
             }
             emitted = Some(state.revision);
             last_emitted = Instant::now();
+            if awaiting.is_empty() {
+                force_emit = false;
+            }
         }
         if inventory_known && last_checkpoint.elapsed() >= Duration::from_secs(10) {
             let values = checkpoint_values(&state.config, &cursors.lock().unwrap());
@@ -637,10 +763,29 @@ fn stream(root: PathBuf, state_path: PathBuf) -> Result<()> {
             }
             last_checkpoint = Instant::now();
         }
-        match rx.recv_timeout(Duration::from_secs(1)) {
+        // Wake in time to serve a pending refresh when its window ends.
+        let wait = match (refresh_pending, last_refresh) {
+            (true, Some(at)) => LOOP_WAIT.min(REFRESH_SPACING.saturating_sub(at.elapsed())),
+            _ => LOOP_WAIT,
+        };
+        match rx.recv_timeout(wait) {
             Ok(Event::Stop) => break,
+            Ok(Event::Refresh) => {
+                queued.store(false, Ordering::Relaxed);
+                refresh_pending = true;
+            }
             Ok(Event::Host(id, epoch, sample)) => {
-                accept_host(&mut state, &hosts, &cursors, &id, epoch, sample)
+                accept_host(&mut state, &hosts, &cursors, &id, epoch, sample);
+                // A sample stamped before the refresh was in flight already and
+                // cannot satisfy it; the nudge makes the worker sample again.
+                if state
+                    .hosts
+                    .iter()
+                    .find(|host| host.id == id)
+                    .is_none_or(|host| host.sampled_at.is_some_and(|at| at >= refresh_at))
+                {
+                    awaiting.remove(&id);
+                }
             }
             Ok(Event::RemoteAllowances(target, epoch, rows)) => {
                 if accept_allowances(&accounts, &mut remote_rows, target, epoch, rows) {
@@ -671,6 +816,7 @@ fn stream(root: PathBuf, state_path: PathBuf) -> Result<()> {
                             &mut generation,
                             &tx,
                         );
+                        awaiting.retain(|id| hosts.contains_key(id));
                         let values = checkpoint_values(&state.config, &cursors.lock().unwrap());
                         // Force route retirement even when all live cursor maps are empty.
                         let _ = checkpoints.reconcile(&values);
@@ -958,6 +1104,70 @@ mod tests {
     fn sample(status: &str, at: f64) -> Sample {
         serde_json::from_value(json!({"agents":[{"id":"test:pane","host":"test","status":status,"technical":{}}],"theme":null,"sampled_at":at,"error":null,"protocol":1,"version":"test","cursors":{}})).unwrap()
     }
+    fn frame(chunks: &[&[u8]]) -> usize {
+        let mut lines = OwnerLines::default();
+        let mut count = 0;
+        for chunk in chunks {
+            lines.push(chunk, |command| {
+                assert_eq!(command, OwnerCommand::Refresh);
+                count += 1;
+            });
+            assert!(lines.line.len() <= OWNER_LINE_LIMIT);
+        }
+        count
+    }
+    #[test]
+    fn owner_lines_frame_split_reads_crlf_and_known_commands_only() {
+        assert_eq!(frame(&[b"refresh\n"]), 1);
+        assert_eq!(frame(&[b"ref", b"re", b"sh", b"\n"]), 1);
+        assert_eq!(frame(&[b"refresh\r\n", b"refresh\r", b"\n"]), 2);
+        assert_eq!(
+            frame(&[b"refresh"]),
+            0,
+            "an unterminated line is not a command"
+        );
+        assert_eq!(frame(&[b"\n\n", b"Refresh\n", b"refresh \n", b"stop\n"]), 0);
+        assert_eq!(frame(&[b"\r\rrefresh\n", b"refresh\r\r\n"]), 0);
+        assert_eq!(frame(&[b"junk\nrefresh\nmore junk\n"]), 1);
+    }
+    #[test]
+    fn owner_lines_discard_oversized_and_invalid_utf8_without_growing() {
+        let long = vec![b'x'; 10 * 1024];
+        assert_eq!(frame(&[&long, b"refresh\n", b"refresh\n"]), 1);
+        assert_eq!(frame(&[&long[..OWNER_LINE_LIMIT + 1], b"\nrefresh\n"]), 1);
+        let mut padded = vec![b' '; OWNER_LINE_LIMIT - 7];
+        padded.extend_from_slice(b"refresh\n");
+        assert_eq!(frame(&[&padded]), 0, "a 64-byte unknown line is ignored");
+        assert_eq!(frame(&[b"\xffrefresh\n", b"refr\xc3\n", b"refresh\n"]), 1);
+        assert_eq!(frame(&[b"refresh\xff\n"]), 0);
+    }
+    #[test]
+    fn nudge_wakes_wait_once_and_survives_busy_worker_but_not_pause() {
+        let cancel = Arc::new(Cancellation::default());
+        cancel.nudge();
+        cancel.pause(Duration::from_millis(30));
+        let began = Instant::now();
+        cancel.wait(Duration::from_secs(5));
+        assert!(
+            began.elapsed() < Duration::from_secs(1),
+            "pending nudge must wake"
+        );
+        let began = Instant::now();
+        cancel.wait(Duration::from_millis(100));
+        assert!(
+            began.elapsed() >= Duration::from_millis(100),
+            "nudge is consumed once"
+        );
+        let waiter = cancel.clone();
+        let join = thread::spawn(move || {
+            let began = Instant::now();
+            waiter.wait(Duration::from_secs(5));
+            began.elapsed()
+        });
+        thread::sleep(Duration::from_millis(50));
+        cancel.nudge();
+        assert!(join.join().unwrap() < Duration::from_secs(1));
+    }
     #[test]
     fn old_peer_theme_is_accepted_and_new_snapshot_has_contract_keys() {
         let mut value = serde_json::to_value(json!({"agents":[],"theme":{"name":"Legacy","colours":{"accent":"#123456"}},"sampled_at":common::now(),"error":null,"protocol":1,"version":"old","cursors":{}})).unwrap();
@@ -971,8 +1181,16 @@ mod tests {
         let keys: Vec<_> = snapshot.as_object().unwrap().keys().cloned().collect();
         assert_eq!(
             keys,
-            ["allowances", "at", "fleet_discovery", "hosts", "interval"]
+            [
+                "allowances",
+                "at",
+                "fleet_discovery",
+                "heartbeat_seconds",
+                "hosts",
+                "interval"
+            ]
         );
+        assert_eq!(snapshot["heartbeat_seconds"], 4);
         let host: Vec<_> = snapshot["hosts"][0]
             .as_object()
             .unwrap()
