@@ -21,13 +21,14 @@ Item {
         property color blue: '#abcdef'
         property var contentItem: scene
         property string face: 'monospace'
-        property int focusedThread: -1
+        property string focusedKey: ''
         property color green: '#90ad65'
         property color ink: '#d7d6cd'
         property color line: '#333333'
         property bool motionEnabled: true
         property color muted: '#777777'
         property bool opened: true
+        property var openedKeys: []
         property var overview: ({
                 threads: [
                     {
@@ -81,7 +82,8 @@ Item {
         function alpha(c, a) {
             return Qt.rgba(c.r, c.g, c.b, a);
         }
-        function openThread(i) {
+        function openThread(key) {
+            openedKeys = openedKeys.concat([key]);
         }
         function paceText(a) {
             return '40% left · 50% expected';
@@ -464,6 +466,18 @@ Item {
             tryCompare(tooltip, 'opened', true, 1200);
             verify(thread.tooltipSuppressed);
             mouseMove(scene, 2, scene.height - 2);
+        }
+        function test_15_thread_card_focus_and_activation_use_its_key() {
+            fakeUi.focusedKey = '';
+            verify(!thread.keyed);
+            fakeUi.focusedKey = 'h:b';
+            verify(!thread.keyed);
+            fakeUi.focusedKey = 'h:a';
+            verify(thread.keyed);
+            fakeUi.focusedKey = '';
+            fakeUi.openedKeys = [];
+            mouseClick(thread, 8, 8);
+            compare(fakeUi.openedKeys, ['h:a']);
         }
 
         name: 'AntonComponents'

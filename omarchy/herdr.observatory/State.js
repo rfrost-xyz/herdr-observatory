@@ -333,4 +333,29 @@ function allowancePaceBand(difference) {
   return "deficit"
 }
 
-if (typeof module !== "undefined") module.exports = { navigationArgs: navigationArgs, turnTiming: turnTiming, durationLabel: durationLabel, timingHint: timingHint, allowancePaceReading: allowancePaceReading, allowancePaceBand: allowancePaceBand, threadKey: threadKey, completionEpisode: completionEpisode, stableThreads: stableThreads, arrivals: arrivals, providerGroups: providerGroups, childHint: childHint, groupThreads: groupThreads, transitions: transitions, dominantState: dominantState, project: project, ageSeconds: ageSeconds, ageLabel: ageLabel }
+// Keyboard focus follows a stable thread key, never a position in the view.
+function focusKeys(view, groups) {
+  var keys = []
+  if (!view || !Array.isArray(view.threads) || !Array.isArray(groups)) return keys
+  groups.forEach(function(group) {
+    (group && Array.isArray(group.indices) ? group.indices : []).forEach(function(index) {
+      if (view.threads[index]) keys.push(threadKey(view.threads[index]))
+    })
+  })
+  return keys
+}
+function reconcileFocus(keys, key) { return key && keys.indexOf(key) >= 0 ? key : "" }
+function moveFocus(keys, key, delta) {
+  if (keys.length === 0) return ""
+  var at = key ? keys.indexOf(key) : -1
+  if (at < 0) return keys[0]
+  return keys[Math.max(0, Math.min(keys.length - 1, at + delta))]
+}
+function activationKey(keys, key) { return key && keys.indexOf(key) >= 0 ? key : keys.length ? keys[0] : "" }
+function threadForKey(view, key) {
+  if (!key || !view || !Array.isArray(view.threads)) return null
+  for (var i = 0; i < view.threads.length; i++) if (threadKey(view.threads[i]) === key) return view.threads[i]
+  return null
+}
+
+if (typeof module !== "undefined") module.exports = { navigationArgs: navigationArgs, turnTiming: turnTiming, durationLabel: durationLabel, timingHint: timingHint, allowancePaceReading: allowancePaceReading, allowancePaceBand: allowancePaceBand, threadKey: threadKey, completionEpisode: completionEpisode, stableThreads: stableThreads, arrivals: arrivals, providerGroups: providerGroups, childHint: childHint, groupThreads: groupThreads, transitions: transitions, dominantState: dominantState, project: project, ageSeconds: ageSeconds, ageLabel: ageLabel, focusKeys: focusKeys, reconcileFocus: reconcileFocus, moveFocus: moveFocus, activationKey: activationKey, threadForKey: threadForKey }

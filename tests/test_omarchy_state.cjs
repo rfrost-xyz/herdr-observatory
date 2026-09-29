@@ -473,3 +473,51 @@ test('projection omits unused presentation fields', () => {
   assert.equal(view.discoveryLabel, '');
 });
 
+test('keyboard focus keeps the same thread when an earlier thread disappears', () => {
+  const { groupThreads, focusKeys, reconcileFocus, activationKey, threadForKey, threadKey } = sandbox.module.exports;
+  const agents = ids => ids.map(id => ({ id, status: 'working', project: 'Project ' + id }));
+  const before = project({ hosts: [host({ agents: agents(['a', 'b', 'c']) })], allowances: [] }, now);
+  const after = project({ hosts: [host({ agents: agents(['b', 'c']) })], allowances: [] }, now);
+  // The retired model stored a position in overview.threads.
+  const indexOrder = view => [].concat(...groupThreads(view).map(group => group.indices));
+  const focusedIndex = before.threads.findIndex(thread => thread.id === 'b');
+  assert.equal(indexOrder(after).indexOf(focusedIndex) >= 0, true); // old reconciliation keeps it
+  assert.equal(after.threads[focusedIndex].id, 'c'); // and Enter would open the neighbour
+  // Keys identify the thread itself.
+  const key = threadKey(before.threads[focusedIndex]);
+  const keys = Array.from(focusKeys(after, groupThreads(after)));
+  assert.deepEqual(keys, ['laptop:b', 'laptop:c']);
+  assert.equal(reconcileFocus(keys, key), 'laptop:b');
+  assert.equal(activationKey(keys, reconcileFocus(keys, key)), 'laptop:b');
+  assert.equal(threadForKey(after, activationKey(keys, key)).id, 'b');
+});
+
+test('focus helpers clear, move and activate by key in visual order', () => {
+  const { groupThreads, focusKeys, reconcileFocus, moveFocus, activationKey, threadForKey } = sandbox.module.exports;
+  const view = project({ hosts: [
+    host({ id: 'one', agents: [{ id: 'x', status: 'idle', project: 'X' }, { id: 'y', status: 'working', project: 'Y' }] }),
+    host({ id: 'two', agents: [{ id: 'z', status: 'working', project: 'A' }] })
+  ], allowances: [] }, now);
+  const keys = Array.from(focusKeys(view, groupThreads(view)));
+  assert.deepEqual(keys, ['one:y', 'one:x', 'two:z']); // host order, then thread order
+  assert.deepEqual(Array.from(focusKeys(view, groupThreads(view, ['idle'], []))), ['one:y', 'two:z']);
+  assert.deepEqual(Array.from(focusKeys(view, groupThreads(view, [], ['one']))), ['two:z']);
+  assert.deepEqual(Array.from(focusKeys(view, [])), []);
+  assert.deepEqual(Array.from(focusKeys(project(null, now), []), x => x), []);
+  assert.equal(reconcileFocus(keys, 'one:x'), 'one:x');
+  assert.equal(reconcileFocus(['one:y'], 'one:x'), '');
+  assert.equal(reconcileFocus(keys, ''), '');
+  assert.equal(moveFocus([], 'one:x', 1), '');
+  assert.equal(moveFocus(keys, '', 1), 'one:y');
+  assert.equal(moveFocus(keys, 'gone', -1), 'one:y');
+  assert.equal(moveFocus(keys, 'one:y', 1), 'one:x');
+  assert.equal(moveFocus(keys, 'one:x', 5), 'two:z');
+  assert.equal(moveFocus(keys, 'one:x', -5), 'one:y');
+  assert.equal(activationKey(keys, 'two:z'), 'two:z');
+  assert.equal(activationKey(keys, 'gone'), 'one:y');
+  assert.equal(activationKey(keys, ''), 'one:y');
+  assert.equal(activationKey([], 'one:x'), '');
+  assert.equal(threadForKey(view, 'two:z').id, 'z');
+  assert.equal(threadForKey(view, 'gone'), null);
+  assert.equal(threadForKey(view, ''), null);
+});

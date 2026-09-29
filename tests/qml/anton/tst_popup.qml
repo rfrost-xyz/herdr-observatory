@@ -2,6 +2,7 @@ import QtQuick
 import QtTest
 import qs.Commons
 import "../../../omarchy/herdr.observatory" as Anton
+import "../../../omarchy/herdr.observatory/State.js" as State
 
 Rectangle {
     id: scene
@@ -108,7 +109,8 @@ Rectangle {
             };
             fixtureUi.collapsedHosts = [];
             fixtureUi.hiddenStates = [];
-            fixtureUi.focusedThread = -1;
+            fixtureUi.focusedKey = '';
+            fixtureUi.openedKeys = [];
             fixtureUi.navigationError = "";
             popup.height = Qt.binding(function () {
                 return Math.min(540, popup.implicitHeight);
@@ -152,7 +154,7 @@ Rectangle {
             var heading = findChild(popup, 'anton-heading'), allowances = findChild(popup, 'allowances-section');
             var headerY = heading.mapToItem(scene, 0, 0).y, allowanceY = allowances.mapToItem(scene, 0, 0).y;
             verify(popup.threadViewport.interactive);
-            fixtureUi.focusedThread = fixtureUi.threadOrder[fixtureUi.threadOrder.length - 1];
+            fixtureUi.focusedKey = fixtureUi.threadKeys[fixtureUi.threadKeys.length - 1];
             wait(40);
             verify(popup.threadViewport.contentY > 0);
             compare(heading.mapToItem(scene, 0, 0).y, headerY);
@@ -228,6 +230,121 @@ Rectangle {
             compare(fixtureUi.threadGroups[0].indices.length, 0);
             compare(popup.implicitHeight < initial, true);
             capture('discovery-setup');
+        }
+
+        function threadCards(item, found) {
+            found = found || [];
+            if (!item)
+                return found;
+            if (item.threadIndex !== undefined && item.keyed !== undefined && item.visible)
+                found.push(item);
+            for (var i = 0; i < item.children.length; i++)
+                threadCards(item.children[i], found);
+            return found;
+        }
+        function keyedThreads() {
+            return threadCards(popup).filter(function (card) {
+                return card.keyed;
+            }).map(function (card) {
+                return card.entry.hostId + ':' + card.entry.id;
+            });
+        }
+        function focusData(ids) {
+            var laptop = [], workstation = [];
+            ids.forEach(function (id) {
+                (id === 'c' ? workstation : laptop).push(agent(id, 'working', true));
+            });
+            return {
+                hosts: [host('laptop', laptop, 'connected'), host('workstation', workstation, 'connected')],
+                allowances: []
+            };
+        }
+        function cardFor(key) {
+            return threadCards(popup).filter(function (card) {
+                return card.entry.hostId + ':' + card.entry.id === key;
+            })[0] || null;
+        }
+        function focusB() {
+            fixtureUi.raw = focusData(['a', 'b', 'c']);
+            wait(0);
+            fixtureUi.focusedKey = 'laptop:b';
+            wait(0);
+            compare(keyedThreads(), ['laptop:b']);
+        }
+        function test_08_focus_survives_earlier_thread_disappearing() {
+            focusB();
+            fixtureUi.raw = focusData(['b', 'c']);
+            wait(0);
+            compare(fixtureUi.focusedKey, 'laptop:b');
+            compare(keyedThreads(), ['laptop:b']);
+            compare(State.activationKey(fixtureUi.threadKeys, fixtureUi.focusedKey), 'laptop:b');
+            var card = cardFor('laptop:b');
+            verify(card !== null);
+            mouseClick(card, 8, 8);
+            compare(fixtureUi.openedKeys, ['laptop:b']);
+        }
+        function test_09_focus_clears_when_its_thread_disappears() {
+            focusB();
+            fixtureUi.raw = focusData(['a', 'c']);
+            wait(0);
+            compare(fixtureUi.focusedKey, '');
+            compare(keyedThreads(), []);
+            compare(State.activationKey(fixtureUi.threadKeys, fixtureUi.focusedKey), fixtureUi.threadKeys[0]);
+            fixtureUi.raw = focusData(['a', 'b', 'c']);
+            wait(0);
+            compare(fixtureUi.focusedKey, '');
+            compare(keyedThreads(), []);
+        }
+        function test_10_focus_clears_when_filtered() {
+            focusB();
+            // A later snapshot moves the focused thread into a hidden status.
+            fixtureUi.hiddenStates = ['done'];
+            var data = focusData(['a', 'b', 'c']);
+            data.hosts[0].agents[1].status = 'done';
+            fixtureUi.raw = data;
+            wait(0);
+            compare(fixtureUi.focusedKey, '');
+            compare(keyedThreads(), []);
+            fixtureUi.hiddenStates = [];
+            fixtureUi.raw = focusData(['a', 'b', 'c']);
+            focusB();
+            fixtureUi.toggleList('hiddenStates', 'working');
+            wait(0);
+            compare(fixtureUi.focusedKey, '');
+            fixtureUi.toggleList('hiddenStates', 'working');
+            wait(0);
+            compare(keyedThreads(), []);
+        }
+        function test_11_focus_clears_on_machine_and_section_collapse() {
+            focusB();
+            // Reconciliation alone clears focus, without the toggle reset.
+            fixtureUi.collapsedHosts = ['laptop'];
+            wait(0);
+            compare(fixtureUi.focusedKey, '');
+            fixtureUi.collapsedHosts = [];
+            wait(0);
+            verify(cardFor('laptop:b') !== null);
+            compare(keyedThreads(), []);
+            focusB();
+            fixtureUi.toggleList('collapsedHosts', 'laptop');
+            wait(0);
+            compare(fixtureUi.focusedKey, '');
+            fixtureUi.toggleList('collapsedHosts', 'laptop');
+            wait(0);
+            compare(keyedThreads(), []);
+            focusB();
+            fixtureUi.preferences = Object.assign({}, fixtureUi.preferences, {
+                collapsedSections: '["threads"]'
+            });
+            wait(0);
+            compare(fixtureUi.threadKeys.length, 0);
+            compare(fixtureUi.focusedKey, '');
+            fixtureUi.preferences = Object.assign({}, fixtureUi.preferences, {
+                collapsedSections: '[]'
+            });
+            wait(0);
+            verify(cardFor('laptop:b') !== null);
+            compare(keyedThreads(), []);
         }
 
         name: 'AntonPopup'

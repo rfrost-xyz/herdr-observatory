@@ -24,7 +24,7 @@ Panel {
     readonly property var contentItem: popupContent.threadContent
     readonly property color cyan: palette.cyan || Color.accent
     readonly property string face: bar ? bar.fontFamily : Style.font.family
-    property int focusedThread: -1
+    property string focusedKey: ""
     readonly property color green: palette.green || Color.accent
     readonly property var hiddenStates: parseList(identitySettings.hiddenStates)
     readonly property color ink: Color.popups.text
@@ -46,9 +46,7 @@ Panel {
         return h.reporting;
     }).length
     readonly property var threadGroups: State.groupThreads(overview, hiddenStates, collapsedHosts)
-    readonly property var threadOrder: threadsCollapsed ? [] : threadGroups.reduce(function (order, group) {
-        return order.concat(group.indices);
-    }, [])
+    readonly property var threadKeys: threadsCollapsed ? [] : State.focusKeys(overview, threadGroups)
     readonly property var threadViewport: popupContent.threadViewport
     readonly property bool threadsCollapsed: parseList(identitySettings.collapsedSections).indexOf("threads") >= 0
     readonly property var tooltipHost: popupContent
@@ -77,10 +75,10 @@ Panel {
     function alpha(colour, opacity) {
         return Qt.rgba(colour.r, colour.g, colour.b, opacity);
     }
-    function openThread(index) {
-        if (index < 0 || index >= overview.threads.length || threadLauncher.running)
+    function openThread(key) {
+        var entry = State.threadForKey(overview, key);
+        if (entry === null || threadLauncher.running)
             return;
-        var entry = overview.threads[index];
         var args = State.navigationArgs(entry);
         if (args === null) {
             navigationError = "Invalid thread route. Try again shortly.";
@@ -176,7 +174,7 @@ Panel {
         identitySettings[key] = JSON.stringify(list);
         identitySettings.setValue(key, identitySettings[key]);
         identitySettings.sync();
-        focusedThread = -1;
+        focusedKey = "";
     }
     function tokens(value) {
         if (value === null || value === undefined)
@@ -194,7 +192,7 @@ Panel {
     onOpenedChanged: {
         visualEpoch++;
         if (opened) {
-            focusedThread = -1;
+            focusedKey = "";
             paletteFile.reload();
             snapshot.refresh();
             Qt.callLater(function () {
@@ -231,8 +229,8 @@ Panel {
                 root.newThreads(added);
             });
     }
-    onThreadOrderChanged: if (threadOrder.indexOf(focusedThread) < 0)
-        focusedThread = -1
+    // Focus is a thread key; it clears when that thread leaves the visible order.
+    onThreadKeysChanged: focusedKey = State.reconcileFocus(threadKeys, focusedKey)
 
     Core.Settings {
         id: identitySettings
@@ -437,13 +435,10 @@ Panel {
 
             anchors.fill: parent
 
-            onActivateRequested: root.openThread(root.focusedThread < 0 ? (root.threadOrder.length ? root.threadOrder[0] : -1) : root.focusedThread)
+            onActivateRequested: root.openThread(State.activationKey(root.threadKeys, root.focusedKey))
             onCloseRequested: root.close()
             onMoveRequested: function (dx, dy) {
-                if (root.threadOrder.length > 0) {
-                    var position = root.threadOrder.indexOf(root.focusedThread);
-                    root.focusedThread = root.threadOrder[Math.max(0, Math.min(root.threadOrder.length - 1, position < 0 ? 0 : position + dx + dy))];
-                }
+                root.focusedKey = State.moveFocus(root.threadKeys, root.focusedKey, dx + dy);
             }
             onTabRequested: function (direction) {
                 root.switchPanel(direction);
