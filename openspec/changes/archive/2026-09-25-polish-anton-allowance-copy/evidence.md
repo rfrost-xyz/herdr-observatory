@@ -1,0 +1,3 @@
+# Evidence
+
+Native caption-sized pace is baseline-aligned beside the unchanged balance. Hover shows one compact left/expected comparison using %. Existing Qt expectation and documentation updated. All 14 Qt cases passed, independently repeated by the reviewer without warnings; review approved. Plugin validation and diff checks passed. Installed presentation files match source byte-for-byte. Actual popover inspected; after startup both hosts, both allowances and all three usage readings report. Latest shell log contains no plugin errors. Canonical delta parity verified. Local presentation only; no collection, remote service or forge changes. Task-owned temporary files removed after acceptance.

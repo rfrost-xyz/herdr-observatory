@@ -1,13 +1,14 @@
 {
   "interval": 5,
-  "theme_host": "desktop",
   "hosts": [
     {
       "id": "desktop",
-      "label": "Desktop",
-      "transport": "local",
-      "work_roots": [],
-      "personal_roots": []
+      "socket_path": "/run/user/1000/herdr/main.sock"
+    },
+    {
+      "id": "workstation",
+      "transport": "ssh",
+      "target": "user@workstation"
     }
   ]
 }

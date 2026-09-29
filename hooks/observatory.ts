@@ -1,6 +1,7 @@
-// herdr-observatory adapter v1; installed from the running image
+// herdr-observatory native adapter v2; installed by the Omarchy plugin
 // Reports event metadata only. Never returns hook decisions or message content.
 import { spawn } from 'node:child_process';
+const nativeRuntime = '';
 
 export default function (pi) {
   const pane = process.env.HERDR_PANE_ID;
@@ -17,8 +18,8 @@ export default function (pi) {
       while (queue.length) {
         const item = queue.shift();
         await new Promise((resolve) => {
-          const child = spawn('docker', ['exec', '-i', '__CONTAINER__', 'python3', '-m',
-            'observatory.telemetry', 'pi', pane, String(item.seq)], { stdio: ['pipe', 'ignore', 'ignore'] });
+          const command = [nativeRuntime, '--report', 'pi', pane, String(item.seq)];
+          const child = spawn(command[0], command.slice(1), { stdio: ['pipe', 'ignore', 'ignore'] });
           const timer = setTimeout(() => { child.kill('SIGKILL'); resolve(); }, 2000);
           const done = () => { clearTimeout(timer); resolve(); };
           child.on('error', done); child.on('close', done);

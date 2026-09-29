@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "herdr.observatory",
+  "name": "Anton",
+  "version": "0.1.0",
+  "author": "Herdr Observatory",
+  "description": "Native Herdr threads and account allowances",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Anton",
+    "description": "Herdr threads and account allowances across your fleet",
+    "category": "AI",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
