@@ -358,6 +358,18 @@ Rectangle {
             mouseClick(card, 8, 8);
             compare(fixtureController.launcher.command, ['/synthetic/anton-runtime', '--open-thread', 'laptop', 'b']);
         }
+        function test_08b_tap_after_closing_launches_nothing() {
+            focusB();
+            var card = cardFor('laptop:b');
+            verify(card !== null);
+            fixtureController.opened = false;
+            mouseClick(card, 8, 8);
+            fixtureController.opened = true;
+            verify(!fixtureController.launcher.running);
+            compare(fixtureController.launcher.command, []);
+            mouseClick(card, 8, 8);
+            compare(fixtureController.launcher.command, ['/synthetic/anton-runtime', '--open-thread', 'laptop', 'b']);
+        }
         function test_09_focus_clears_when_its_thread_disappears() {
             focusB();
             scene.raw = focusData(['a', 'c']);

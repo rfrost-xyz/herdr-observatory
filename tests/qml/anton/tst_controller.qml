@@ -358,6 +358,24 @@ Item {
             compare(preferences.namesHidden, false);
             compare(preferences.accountAliases, expected, "Showing names keeps the saved aliases");
         }
+        function test_13_closed_popover_launches_nothing() {
+            // Only an explicit action while the popover is open may navigate:
+            // a tap or accessibility press during the fade-out, or a stray
+            // activation after closing, starts no process and sets no error.
+            standard();
+            controller.moveFocus(1);
+            controller.opened = false;
+            controller.activate();
+            controller.openThread("laptop:a");
+            controller.openThread("laptop:b");
+            verify(!controller.launcher.running);
+            compare(controller.launcher.command, []);
+            compare(controller.navigationTarget, null);
+            compare(controller.navigationError, "");
+            controller.opened = true;
+            controller.openThread("laptop:a");
+            compare(controller.launcher.command, ["/synthetic/anton-runtime", "--open-thread", "laptop", "a"]);
+        }
         function test_12_refresh_is_a_request() {
             var spy = Qt.createQmlObject('import QtTest; SignalSpy { signalName: "refreshRequested" }', scene);
             spy.target = controller;

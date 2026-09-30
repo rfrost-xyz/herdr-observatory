@@ -64,9 +64,13 @@ QtObject {
     function moveFocus(delta) {
         focusedKey = State.moveFocus(threadKeys, focusedKey, delta);
     }
+    // Navigation runs only for an explicit key, tap or accessibility action
+    // while the popover is open; a closed or fading popover launches nothing.
     function openThread(key) {
+        if (!opened || launcher.running)
+            return;
         var entry = State.threadForKey(view, key);
-        if (entry === null || launcher.running)
+        if (entry === null)
             return;
         var args = State.navigationArgs(entry);
         if (args === null) {

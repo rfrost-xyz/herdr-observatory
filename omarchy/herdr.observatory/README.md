@@ -322,4 +322,6 @@ and static SSH routes are revalidated against current configuration; saved
 profiles are revalidated against the current Herdr inventory. A changed route or
 missing binding fails before focus. Local named sessions use that exact session
 and configured executable. Socket-only collection has no verified terminal route,
-so activation reports an error without attempting another session.
+so activation reports an error without attempting another session. Activation
+comes only from a key, tap or accessibility press while the popover is open; the
+controller ignores it once the popover has closed, including during the fade.
