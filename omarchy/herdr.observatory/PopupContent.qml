@@ -8,9 +8,17 @@ Item {
 
     // Verified emails keyed provider:id, id or label (the .accounts.json map).
     property var accountEmails: ({})
-    readonly property real allowanceHeight: preferences.allowancesCollapsed ? 0 : Math.min(allowanceRows.implicitHeight, Style.space(180), Math.max(0, availableBodyHeight - reservedThreadHeight))
+    // Space rules: the allowance list takes up to allowanceCap, but leaves the
+    // threads at least min(threadReserve, threadShare of the body); the thread
+    // list takes the rest. Unconstrained, the popover asks for up to threadCap
+    // of threads plus up to allowanceCap of allowances.
+    readonly property real allowanceCap: Style.space(180)
+    readonly property real allowanceHeight: preferences.allowancesCollapsed ? 0 : Math.min(allowanceRows.implicitHeight, allowanceCap, Math.max(0, availableBodyHeight - reservedThreadHeight))
     readonly property alias allowanceViewport: allowanceFlick
-    readonly property real availableBodyHeight: Math.max(0, height - Style.space(95) - (navigationNotice.visible ? navigationNotice.implicitHeight : 0))
+    readonly property real availableBodyHeight: Math.max(0, height - chromeHeight - noticeHeight)
+    // The heading and the two section headers (95 logical pixels).
+    readonly property real chromeHeight: headingHeight + 2 * sectionHeight
+    readonly property real headingHeight: Style.space(35)
     readonly property bool moving: threadFlick.moving || allowanceFlick.moving
     readonly property bool animate: controller.opened && controller.motionEnabled
     required property AntonController controller
@@ -20,9 +28,15 @@ Item {
     readonly property int reporting: view.hosts.filter(function (h) {
         return h.reporting;
     }).length
-    readonly property real reservedThreadHeight: preferences.threadsCollapsed ? 0 : Math.min(threadContent.implicitHeight, Style.space(85), availableBodyHeight * 0.55)
+    readonly property real noticeHeight: navigationNotice.visible ? navigationNotice.implicitHeight : 0
+    readonly property real reservedThreadHeight: preferences.threadsCollapsed ? 0 : Math.min(threadContent.implicitHeight, threadReserve, availableBodyHeight * threadShare)
+    readonly property real sectionHeight: Style.space(30)
+    readonly property real threadCap: Style.space(300)
     readonly property alias threadContent: threadContent
+    readonly property real threadReserve: Style.space(85)
+    readonly property real threadShare: 0.55
     readonly property alias threadViewport: threadFlick
+    readonly property real threadViewportHeight: preferences.threadsCollapsed ? 0 : Math.max(0, Math.min(threadContent.implicitHeight, availableBodyHeight - allowanceHeight))
     required property AntonTheme theme
     readonly property alias tooltip: tip
     required property var view
@@ -66,7 +80,7 @@ Item {
         providerModel.sync(keys);
     }
 
-    implicitHeight: Style.space(95) + (preferences.threadsCollapsed ? 0 : Math.min(threadContent.implicitHeight, Style.space(300))) + (preferences.allowancesCollapsed ? 0 : Math.min(allowanceRows.implicitHeight, Style.space(180))) + (navigationNotice.visible ? navigationNotice.implicitHeight : 0)
+    implicitHeight: chromeHeight + (preferences.threadsCollapsed ? 0 : Math.min(threadContent.implicitHeight, threadCap)) + (preferences.allowancesCollapsed ? 0 : Math.min(allowanceRows.implicitHeight, allowanceCap)) + noticeHeight
 
     Component.onCompleted: {
         syncHosts();
@@ -106,6 +120,9 @@ Item {
         moving: popup.moving
         theme: popup.theme
     }
+    // A Column, not a ColumnLayout: the layout snaps each child's position to
+    // whole pixels, which moves the rows below a fractional viewport height by
+    // a pixel. The heights come from the named properties above.
     Column {
         anchors.fill: parent
         spacing: 0
@@ -113,9 +130,9 @@ Item {
         Item {
             id: heading
 
-            height: Style.space(35)
-            objectName: "anton-heading"
+            height: popup.headingHeight
             width: parent.width
+            objectName: "anton-heading"
 
             AntonText {
                 font.bold: true
@@ -185,6 +202,7 @@ Item {
             theme: popup.theme
             title: "THREADS"
             tooltip: tip
+            height: popup.sectionHeight
             width: parent.width
 
             onToggled: popup.controller.toggleList("collapsedSections", "threads")
@@ -208,10 +226,10 @@ Item {
             contentHeight: threadContent.implicitHeight
             contentWidth: width
             flickableDirection: Flickable.VerticalFlick
-            height: popup.preferences.threadsCollapsed ? 0 : Math.max(0, Math.min(threadContent.implicitHeight, popup.availableBodyHeight - popup.allowanceHeight))
+            height: popup.threadViewportHeight
+            width: parent.width
             interactive: contentHeight > height
             objectName: "thread-viewport"
-            width: parent.width
 
             ScrollBar.vertical: ScrollBar {
                 policy: ScrollBar.AsNeeded
@@ -380,6 +398,7 @@ Item {
             theme: popup.theme
             title: "ALLOWANCES"
             tooltip: tip
+            height: popup.sectionHeight
             width: parent.width
 
             onToggled: popup.controller.toggleList("collapsedSections", "allowances")
@@ -393,9 +412,9 @@ Item {
             contentWidth: width
             flickableDirection: Flickable.VerticalFlick
             height: popup.allowanceHeight
+            width: parent.width
             interactive: contentHeight > height
             objectName: "allowance-viewport"
-            width: parent.width
 
             ScrollBar.vertical: ScrollBar {
                 policy: ScrollBar.AsNeeded
