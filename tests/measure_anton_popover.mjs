@@ -12,6 +12,8 @@
 //   storeStep(store, event, nowMs) full store emulation; event is
 //                                  {type: 'receipt', raw} or {type: 'tick'};
 //                                  returns true when the visible view was replaced
+// The architecture section (restructure-anton-popover) adds static QML counts,
+// clock-only view changes and optional Qt 6 qmllint warning counts.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -436,6 +438,79 @@ function providerCoupling() {
   return { scope: 'State.js and omarchy/herdr.observatory/*.qml, occurrences', ...totals, presentation_files_naming_a_provider: naming.length, files: naming };
 }
 
+// ---------------------------------------------------------------- architecture
+// Added for restructure-anton-popover. Additive only: every definition above is
+// unchanged. Static counts are occurrences in omarchy/herdr.observatory/*.qml.
+// qmllint is Qt 6 qmllint (QMLLINT, /usr/lib/qt6/bin/qmllint, qmllint6 or a Qt 6
+// qmllint on PATH) with <source-root>/tests/qml/anton as the only extra import
+// path, so qs.Ui stays unresolved for Panel.qml in every measured tree.
+function qt6Qmllint() {
+  const candidates = [process.env.QMLLINT, '/usr/lib/qt6/bin/qmllint', which('qmllint6'), which('qmllint')].filter(Boolean);
+  for (const candidate of candidates) {
+    try { if (/qmllint 6\./.test(execFileSync(candidate, ['--version'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }))) return candidate; } catch {}
+  }
+  return null;
+}
+function qmllintMetrics(dir) {
+  const tool = qt6Qmllint();
+  const files = fs.existsSync(dir) ? fs.readdirSync(dir).filter(f => f.endsWith('.qml')).sort() : [];
+  if (!tool || !files.length) return null;
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'anton-qmllint-')), out = path.join(scratch, 'lint.json');
+  try {
+    // qmllint exits non-zero when it warns; the JSON report is still written.
+    try { execFileSync(tool, ['-I', path.join(sourceRoot, 'tests/qml/anton'), '--json', out, ...files.map(f => path.join(dir, f))], { stdio: 'ignore' }); } catch {}
+    const report = JSON.parse(fs.readFileSync(out, 'utf8'));
+    const byCategory = {}, byFile = {}; let total = 0;
+    for (const file of report.files || []) {
+      const warnings = file.warnings || []; byFile[path.basename(file.filename)] = warnings.length; total += warnings.length;
+      for (const w of warnings) { const id = w.id || w.type || 'other'; byCategory[id] = (byCategory[id] || 0) + 1; }
+    }
+    return { tool: execFileSync(tool, ['--version'], { encoding: 'utf8' }).trim(), import_path: 'tests/qml/anton', total, by_category: byCategory, by_file: byFile };
+  } catch { return null; } finally { fs.rmSync(scratch, { recursive: true, force: true }); }
+}
+// Clock-only view changes: one constant snapshot projected at 1 s steps for 60 s,
+// counting steps whose replacement signature differs from the previous step.
+function clockOnlyChanges(State) {
+  if (!State || typeof State.project !== 'function') return null;
+  const signature = typeof State.viewSignature === 'function' ? State.viewSignature : JSON.stringify;
+  const raw = jsSnapshot(32, NOW, NOW / 1000);
+  let previous = signature(State.project(raw, NOW)), changes = 0;
+  for (let s = 1; s <= 60; s++) { const next = signature(State.project(raw, NOW + s * 1000)); if (next !== previous) changes++; previous = next; }
+  return changes;
+}
+function architectureMetrics(State) {
+  const dir = path.join(sourceRoot, 'omarchy/herdr.observatory');
+  const qml = fs.existsSync(dir) ? fs.readdirSync(dir).filter(f => f.endsWith('.qml')) : [];
+  const count = re => qml.reduce((s, f) => s + (readText(path.join(dir, f)).match(re) || []).length, 0);
+  return { scope: 'omarchy/herdr.observatory/*.qml occurrences; clock-only changes use State.project and viewSignature (default JSON.stringify)',
+           ui_member_references: count(/\bui\./g), preference_parse_calls: count(/\b(?:parseList|parseObject|JSON\.parse)\(/g),
+           tooltip_declarations: qml.reduce((s, f) => s + componentTypes(readText(path.join(dir, f))).filter(t => t === 'ToolTip').length, 0),
+           hardcoded_omarchy_state_paths: count(/\.local\/state\/omarchy/g), clock_only_view_changes_60s: clockOnlyChanges(State), qmllint: qmllintMetrics(dir) };
+}
+
+// Allowance readings (restructure-anton-popover, additive). The same three
+// neutral rows as allowance_contract, projected at NOW. When State.allowanceReading
+// exists (time-separated view) it is applied at NOW; otherwise the projected
+// fields are read directly, which at baseline equals allowance_contract.
+function allowanceReadingMetrics(State) {
+  if (!State || typeof State.project !== 'function') return null;
+  const hosts = jsSnapshot(0, NOW, NOW / 1000 - 1).hosts;
+  const reading = typeof State.allowanceReading === 'function' ? account => State.allowanceReading(account, NOW) : account => account;
+  const cases = {
+    codex_weekly: neutralRow('one', {}, {}),
+    synthetic_monthly: neutralRow('team', { provider: 'synthetic', provider_label: 'Synthetic' }, { kind: 'monthly', label: 'Monthly', used_percent: 25, resets_at: NOW / 1000 + 1296000, duration_s: 2592000 }),
+    auth_needed: neutralRow('auth', { provider: 'synthetic', provider_label: 'Synthetic', status: 'auth_needed', status_text: 'Sign in required', sampled_at: null, reset_count: null }, null)
+  };
+  const result = { source: typeof State.allowanceReading === 'function' ? 'State.allowanceReading' : 'projected fields' };
+  for (const [name, row] of Object.entries(cases)) {
+    const projected = State.project({ at: NOW / 1000, interval: 5, heartbeat_seconds: 4, hosts, allowances: [row], fleet_discovery: { state: 'disabled' } }, NOW).allowances[0];
+    const out = projected ? reading(projected) : null;
+    result[name] = out ? { remaining: out.remaining ?? null, time_remaining: out.timeRemaining === null || out.timeRemaining === undefined ? null : round(out.timeRemaining, 3),
+                           pace_difference: out.paceDifference === null || out.paceDifference === undefined ? null : round(out.paceDifference, 3), reset: out.reset ?? null, age: out.age ?? null } : null;
+  }
+  return result;
+}
+
 // ---------------------------------------------------------------- report
 const base = fs.mkdtempSync(path.join(os.tmpdir(), 'anton-measure-'));
 fs.chmodSync(base, 0o700);
@@ -443,7 +518,7 @@ try {
   const State = loadState();
   const report = { scope: 'Synthetic fixtures only. Runtime CPU is user+sys of the runtime and reaped descendants (fake-SSH peer probes) over the fixed window; RSS is sampled every 50 ms over the runtime family. colors.toml opens include local and peer samples sharing the fixture HOME. Remote hosts, Qt and GPU are not measured.',
     source_root: sourceRoot, git_head: (() => { try { return execFileSync('git', ['-C', sourceRoot, 'rev-parse', '--short', 'HEAD'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return null; } })(),
-    runtime: null, refresh: null, projection: projectionMetrics(State), replacements: replacementMetrics(State), static: staticMetrics(), allowance_contract: allowanceContractMetrics(State), provider_coupling: providerCoupling(), allowance_wire: null };
+    runtime: null, refresh: null, projection: projectionMetrics(State), replacements: replacementMetrics(State), static: staticMetrics(), allowance_contract: allowanceContractMetrics(State), provider_coupling: providerCoupling(), allowance_wire: null, architecture: architectureMetrics(State), allowance_readings: allowanceReadingMetrics(State) };
   if (!flag('--skip-runtime')) {
     if (!fs.existsSync(binary)) throw new Error(`Runtime binary not found: ${binary}`);
     const counter = colorsCounter();
@@ -474,7 +549,10 @@ try {
       ['allowance wire bytes per row', report.allowance_wire?.bytes_per_row], ['allowance wire keys per row', report.allowance_wire?.row_keys?.length],
       ['neutral-row allowance fields (keys/leaves)', report.allowance_contract?.view_fields && `${report.allowance_contract.view_fields.keys}/${report.allowance_contract.view_fields.leaves}`],
       ["'weekly_' / '604800' / 'provider ==' / 'codex' in presentation", report.provider_coupling && [report.provider_coupling.weekly_field, report.provider_coupling.codex_week_seconds, report.provider_coupling.provider_equality, report.provider_coupling.codex_literal].join(' / ')],
-      ['presentation files naming a provider', report.provider_coupling?.presentation_files_naming_a_provider]];
+      ['presentation files naming a provider', report.provider_coupling?.presentation_files_naming_a_provider],
+      ['ui. member references in QML', report.architecture?.ui_member_references], ['preference parse calls in QML', report.architecture?.preference_parse_calls],
+      ['ToolTip declarations in QML', report.architecture?.tooltip_declarations], ['hard-coded ~/.local/state/omarchy paths in QML', report.architecture?.hardcoded_omarchy_state_paths],
+      ['clock-only view changes in 60 s', report.architecture?.clock_only_view_changes_60s], ['qmllint warnings (Qt 6)', report.architecture?.qmllint?.total]];
     const width = Math.max(...rows.map(x => x[0].length));
     console.log(`Anton popover measurement (${report.git_head ?? 'unknown head'}, ${r.duration_seconds ?? 0}s x${r.repeats ?? 0}, ${count} agents/host)`);
     for (const [k, value] of rows) console.log(`${k.padEnd(width)}  ${value ?? 'null'}`);

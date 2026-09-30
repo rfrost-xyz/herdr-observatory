@@ -1,17 +1,12 @@
 import QtQuick
-import QtQuick.Controls
-import QtQuick.Layouts
 import qs.Commons
-import "State.js" as State
 
 Text {
-    id: textRoot
+    required property AntonTheme theme
 
-    required property var ui
-
-    color: ui.ink
+    color: theme.ink
     elide: Text.ElideRight
-    font.family: ui.face
+    font.family: theme.face
     font.pixelSize: Style.font.bodySmall
     textFormat: Text.PlainText
 }

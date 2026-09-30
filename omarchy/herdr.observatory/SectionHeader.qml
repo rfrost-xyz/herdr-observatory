@@ -1,44 +1,42 @@
 import QtQuick
-import QtQuick.Controls
-import QtQuick.Layouts
 import qs.Commons
-import "State.js" as State
 
 AntonSurface {
     id: section
 
-    readonly property bool collapsed: ui.parseList(ui.preferences.collapsedSections).indexOf(sectionKey) >= 0
-    property string sectionKey
+    property bool collapsed: false
     property string title
+
+    signal toggled
 
     Accessible.name: hint
     Accessible.role: Accessible.Button
     height: Style.space(30)
     hint: (collapsed ? "Expand " : "Collapse ") + title.toLowerCase()
-    tint: ui.ink
+    tint: theme.ink
 
-    Accessible.onPressAction: ui.toggleList("collapsedSections", section.sectionKey)
+    Accessible.onPressAction: section.toggled()
 
     AntonText {
         anchors.verticalCenter: parent.verticalCenter
-        color: ui.muted
+        color: section.theme.muted
         font.pixelSize: Style.space(13)
         text: section.collapsed ? "›" : "⌄"
-        ui: section.ui
+        theme: section.theme
         x: Style.space(4)
     }
     AntonText {
         anchors.verticalCenter: parent.verticalCenter
-        color: ui.muted
+        color: section.theme.muted
         font.bold: true
         font.letterSpacing: 1.2
         font.pixelSize: Style.font.caption
         text: section.title
-        ui: section.ui
+        theme: section.theme
         x: Style.space(22)
     }
     TapHandler {
-        onTapped: ui.toggleList("collapsedSections", section.sectionKey)
+        onTapped: section.toggled()
     }
     HoverHandler {
         cursorShape: Qt.PointingHandCursor

@@ -10,9 +10,13 @@ runner=${QMLTESTRUNNER:-/usr/lib/qt6/bin/qmltestrunner}
 [[ -n $runner && -x $runner ]] || { echo 'Qt 6 qmltestrunner is required for the QML checks' >&2; exit 1; }
 cd -- "$root"
 log=$(mktemp)
-trap 'rm -f -- "$log"' EXIT
+# Preference and palette tests write only inside this private directory; the
+# FileView stub and preference copies read and write it through XMLHttpRequest.
+scratch=$(mktemp -d)
+trap 'rm -f -- "$log"; rm -rf -- "$scratch"' EXIT
 status=0
-QT_QPA_PLATFORM=offscreen QT_QUICK_CONTROLS_STYLE=Basic "$runner" -import tests/qml/anton -input tests/qml/anton -o -,txt 2>&1 | tee "$log" || status=$?
+TMPDIR=$scratch QML_XHR_ALLOW_FILE_READ=1 QML_XHR_ALLOW_FILE_WRITE=1 \
+  QT_QPA_PLATFORM=offscreen QT_QUICK_CONTROLS_STYLE=Basic "$runner" -import tests/qml/anton -input tests/qml/anton -o -,txt 2>&1 | tee "$log" || status=$?
 errors=$(grep -cE 'TypeError|ReferenceError|Unable to assign' "$log" || true)
 if (( errors > 0 )); then
   echo "QML binding errors: $errors (see the log above)" >&2

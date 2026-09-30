@@ -1,6 +1,4 @@
 import QtQuick
-import QtQuick.Controls
-import QtQuick.Layouts
 import qs.Commons
 import "State.js" as State
 
@@ -8,14 +6,27 @@ AntonSurface {
     id: allowanceCard
 
     readonly property color balanceColour: Color.accent
-    readonly property var paceReading: State.allowancePaceReading(known ? entry.paceDifference : null)
+    readonly property var paceReading: State.allowancePaceReading(known ? reading.paceDifference : null)
+    // Expected balance, pace and reset countdown of the structural entry at `now`.
+    readonly property var reading: State.allowanceReading(entry, now)
     readonly property string paceBand: paceReading.band
     readonly property bool positivePace: known && paceReading.difference !== null && paceReading.difference > 0
+    // The concealed name shown when namesHidden is set.
+    property string aliasName: ""
     property bool colourReady: false
+    // The verified email for this account, or "" when none is mapped.
+    property string email: ""
     required property var entry
     readonly property bool known: entry.remaining !== null
+    property bool motionEnabled: true
+    property bool namesHidden: false
+    // Time-derived readings use this instant, never the view.
+    property double now: 0
+    property bool opened: false
     property color paceColour: targetPaceColour
-    readonly property color targetPaceColour: paceBand === "surplus" ? ui.green : paceBand === "caution" ? Qt.tint(ui.muted, ui.alpha(ui.yellow, 0.65)) : paceBand === "warning" ? ui.yellow : paceBand === "deficit" ? ui.red : ui.muted
+    readonly property color targetPaceColour: paceBand === "surplus" ? theme.green : paceBand === "caution" ? Qt.tint(theme.muted, theme.alpha(theme.yellow, 0.65)) : paceBand === "warning" ? theme.yellow : paceBand === "deficit" ? theme.red : theme.muted
+
+    signal identityToggled
 
     function updatePaceColour(animate) {
         var from = paceColour;
@@ -29,19 +40,20 @@ AntonSurface {
         }
     }
 
-    Accessible.name: (ui.preferences.namesHidden ? accountIdentity.aliasName : accountIdentity.email || "Unknown account") + ". " + hint
+    Accessible.name: (namesHidden ? aliasName : email || "Unknown account") + ". " + hint
     Accessible.role: Accessible.Button
     height: Style.space(59)
-    hint: known ? ui.paceText(entry) : (entry.statusText || "Allowance unavailable")
-    tint: known ? balanceColour : ui.muted
+    animate: opened && motionEnabled
+    hint: known ? State.paceText(reading) : (entry.statusText || "Allowance unavailable")
+    tint: known ? balanceColour : theme.muted
 
-    Accessible.onPressAction: ui.toggleIdentity()
+    Accessible.onPressAction: allowanceCard.identityToggled()
     Component.onCompleted: {
         colourReady = true;
         updatePaceColour(false);
     }
     onTargetPaceColourChanged: if (colourReady)
-        updatePaceColour(ui.opened && ui.motionEnabled)
+        updatePaceColour(opened && motionEnabled)
 
     ColorAnimation {
         id: paceTransition
@@ -53,24 +65,16 @@ AntonSurface {
 
     // Keep the target bound to current telemetry. Cancelling motion settles the
     // display immediately without replacing that binding with an old target.
-    Connections {
-        function onMotionEnabledChanged() {
-            if (!ui.motionEnabled)
-                allowanceCard.updatePaceColour(false);
-        }
-        function onOpenedChanged() {
-            if (!ui.opened)
-                allowanceCard.updatePaceColour(false);
-        }
-
-        target: ui
+    onMotionEnabledChanged: {
+        if (!motionEnabled)
+            updatePaceColour(false);
+    }
+    onOpenedChanged: {
+        if (!opened)
+            updatePaceColour(false);
     }
     Item {
         id: accountIdentity
-
-        readonly property string aliasName: ui.accountAlias(allowanceCard.entry)
-        readonly property bool concealed: ui.preferences.namesHidden
-        readonly property string email: ui.accountEmails[ui.accountKey(allowanceCard.entry)] || ui.accountEmails[allowanceCard.entry.id] || ui.accountEmails[allowanceCard.entry.label] || ""
 
         objectName: "allowance-identity"
         height: Style.space(20)
@@ -81,8 +85,8 @@ AntonSurface {
         AntonText {
             anchors.verticalCenter: parent.verticalCenter
             elide: Text.ElideMiddle
-            text: accountIdentity.concealed ? accountIdentity.aliasName : accountIdentity.email || allowanceCard.entry.label
-            ui: allowanceCard.ui
+            text: allowanceCard.namesHidden ? allowanceCard.aliasName : allowanceCard.email || allowanceCard.entry.label
+            theme: allowanceCard.theme
             width: parent.width
         }
     }
@@ -96,22 +100,22 @@ AntonSurface {
         y: Style.space(2)
 
         AntonText {
-            color: allowanceCard.paceReading.difference === 0 ? ui.muted : allowanceCard.paceColour
+            color: allowanceCard.paceReading.difference === 0 ? allowanceCard.theme.muted : allowanceCard.paceColour
             anchors.baseline: balanceReading.baseline
             font.pixelSize: Style.font.caption
             objectName: "allowance-pace-reading"
             text: allowanceCard.paceReading.text
-            ui: allowanceCard.ui
+            theme: allowanceCard.theme
             visible: allowanceCard.paceReading.difference !== null
         }
         AntonText {
             id: balanceReading
 
-            color: allowanceCard.known ? ui.ink : ui.muted
+            color: allowanceCard.known ? allowanceCard.theme.ink : allowanceCard.theme.muted
             font.bold: allowanceCard.known
             objectName: "allowance-balance"
             text: allowanceCard.known ? Math.round(allowanceCard.entry.remaining) + "%" : "—"
-            ui: allowanceCard.ui
+            theme: allowanceCard.theme
         }
     }
     Item {
@@ -126,7 +130,7 @@ AntonSurface {
         Rectangle {
             id: balanceTrack
 
-            color: ui.line
+            color: allowanceCard.theme.line
             height: Style.space(6)
             objectName: "allowance-track"
             width: parent.width
@@ -140,12 +144,12 @@ AntonSurface {
             Canvas {
                 id: deficitHatch
 
-                readonly property color ink: ui.alpha(allowanceCard.balanceColour, 0.62)
+                readonly property color ink: allowanceCard.theme.alpha(allowanceCard.balanceColour, 0.62)
                 clip: true
                 height: parent.height
                 objectName: "allowance-deficit-hatch"
-                visible: allowanceCard.known && allowanceCard.paceReading.difference !== null && allowanceCard.entry.paceDifference < 0
-                width: parent.width * Math.max(0, -(allowanceCard.entry.paceDifference || 0)) / 100
+                visible: allowanceCard.known && allowanceCard.paceReading.difference !== null && allowanceCard.reading.paceDifference < 0
+                width: parent.width * Math.max(0, -(allowanceCard.reading.paceDifference || 0)) / 100
                 x: parent.width * (allowanceCard.entry.remaining || 0) / 100
 
                 onPaint: {
@@ -174,62 +178,63 @@ AntonSurface {
             height: Style.space(6)
             objectName: "allowance-pace-region"
             visible: allowanceCard.positivePace
-            width: parent.width * Math.abs(allowanceCard.entry.paceDifference || 0) / 100
-            x: parent.width * Math.min(allowanceCard.entry.remaining || 0, allowanceCard.entry.timeRemaining || 0) / 100
+            width: parent.width * Math.abs(allowanceCard.reading.paceDifference || 0) / 100
+            x: parent.width * Math.min(allowanceCard.entry.remaining || 0, allowanceCard.reading.timeRemaining || 0) / 100
             y: balanceTrack.height + Style.space(2)
 
             // This clipped halo cannot recolour the remaining balance above it.
             Rectangle {
                 anchors.fill: parent
-                color: ui.green
+                color: allowanceCard.theme.green
                 objectName: "allowance-pace-halo"
-                opacity: allowanceCard.positivePace && allowanceCard.hovered && ui.opened ? 0.24 : 0
+                opacity: allowanceCard.positivePace && allowanceCard.hovered && allowanceCard.opened ? 0.24 : 0
             }
             Rectangle {
                 anchors.verticalCenter: parent.verticalCenter
-                color: ui.green
+                color: allowanceCard.theme.green
                 height: Style.space(2)
                 objectName: "allowance-pace-strip"
                 width: parent.width
             }
             BurnEffect {
                 active: allowanceCard.hovered && allowanceCard.positivePace
+                animate: allowanceCard.animate
                 // Keep the particles' original travel but clip it to this strip.
                 anchors.bottom: parent.bottom
                 deficit: false
                 height: Style.space(19)
                 objectName: "allowance-pace-sparks"
-                tint: ui.green
-                ui: allowanceCard.ui
+                theme: allowanceCard.theme
+                tint: allowanceCard.theme.green
                 width: parent.width
             }
         }
         Rectangle {
-            color: ui.ink
+            color: allowanceCard.theme.ink
             height: balanceTrack.height + Style.space(1)
             objectName: "allowance-expected-tick"
-            visible: allowanceCard.entry.timeRemaining !== null
+            visible: allowanceCard.reading.timeRemaining !== null
             width: 1
-            x: Math.max(0, Math.min(parent.width - width, parent.width * (allowanceCard.entry.timeRemaining || 0) / 100 - width / 2))
+            x: Math.max(0, Math.min(parent.width - width, parent.width * (allowanceCard.reading.timeRemaining || 0) / 100 - width / 2))
         }
     }
     AntonText {
-        color: ui.muted
+        color: allowanceCard.theme.muted
         font.pixelSize: Style.font.caption
-        text: "↻ " + (allowanceCard.entry.reset || "—d —h")
-        ui: allowanceCard.ui
+        text: "↻ " + (allowanceCard.reading.reset || "—d —h")
+        theme: allowanceCard.theme
         y: Style.space(38)
     }
     AntonText {
         anchors.right: parent.right
-        color: ui.muted
+        color: allowanceCard.theme.muted
         font.pixelSize: Style.font.caption
         text: (allowanceCard.entry.resetCount === null ? "—" : allowanceCard.entry.resetCount) + (allowanceCard.entry.resetCount === 1 ? " reset" : " resets")
-        ui: allowanceCard.ui
+        theme: allowanceCard.theme
         y: Style.space(38)
     }
     TapHandler {
-        onTapped: ui.toggleIdentity()
+        onTapped: allowanceCard.identityToggled()
     }
     HoverHandler {
         cursorShape: Qt.PointingHandCursor

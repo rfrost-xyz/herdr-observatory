@@ -7,8 +7,10 @@ const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '../omarchy/herdr.observatory/State.js'), 'utf8');
 const sandbox = { module: { exports: {} } };
 vm.runInNewContext(source, sandbox, { filename: 'State.js' });
-const { project } = sandbox.module.exports;
+const { project, readView, allowanceReading } = sandbox.module.exports;
 const now = 1_800_000_000_000;
+// The view is structural; time-derived presentation comes from the readings.
+const presented = (raw, t = now) => readView(project(raw, t), t);
 
 function host(overrides = {}) {
   return {
@@ -85,7 +87,7 @@ test('disconnection discards the last snapshot', () => {
 
 test('burn pace compares balance with time remaining and does not assume a reset', () => {
   const allowance = (balance = 70, reset = now / 1000 + 302400) => remainingRow(balance, reset);
-  const view = row => project({ hosts: [host()], allowances: [row] }, now).allowances[0];
+  const view = row => presented({ hosts: [host()], allowances: [row] }).allowances[0];
   assert.equal(view(allowance()).timeRemaining, 50);
   assert.equal(view(allowance()).paceDifference, 20);
   assert.ok(view(allowance()).paceDifference > 0);
@@ -107,9 +109,9 @@ test('thread instruments use session counters and the original usage timestamp',
   const telemetry = { seq: now * 1000, usage_seq: (now - 10000) * 1000,
     context: 60, window: 100, context_percent: 55,
     total_input: 1000, total_output: 0, total_cache_read: 800, total_uncached_input: 150, total_cache_write: 50 };
-  const view = overrides => project({ hosts: [host({ agents: [{ id: 't1', status: 'working',
+  const view = overrides => presented({ hosts: [host({ agents: [{ id: 't1', status: 'working',
     project: 'Example', branch: 'feat/example', checkout: 'unrelated-directory',
-    technical: { telemetry: { ...telemetry, ...overrides } } }] })], allowances: [] }, now).threads[0];
+    technical: { telemetry: { ...telemetry, ...overrides } } }] })], allowances: [] }).threads[0];
   const thread = view({});
   assert.equal(thread.branch, 'feat/example');
   assert.equal(thread.usage.contextPercent, 55);
@@ -151,8 +153,8 @@ test('menubar state uses blocked, working, done, idle precedence without counts'
 
 test('allowance reset metadata retains source validity', () => {
   const base = { sampled_at: now / 1000 - 10, reset_count: 0, reset_expires_at: null };
-  const view = (changes, window = {}) => project({ hosts: [host()],
-    allowances: [remainingRow(60, now / 1000 + 302400, { ...base, ...changes }, window)] }, now).allowances[0];
+  const view = (changes, window = {}) => presented({ hosts: [host()],
+    allowances: [remainingRow(60, now / 1000 + 302400, { ...base, ...changes }, window)] }).allowances[0];
   assert.equal(view({}).paceDifference, 10);
   assert.equal(view({}).reset, '3d 12h');
   assert.equal(view({}).resetCount, 0);
@@ -249,15 +251,15 @@ test('every measured deficit is visible and pacing never divides by a tiny time 
   const identity={provider:'claude',provider_label:'Claude',account_id:'office',label:'Office',sampled_at:now/1000};
   const window={kind:'session',label:'Session',duration_s:3600};
   const allowance=(balance,reset)=>remainingRow(balance,reset,identity,window);
-  const account = project({hosts:[host()],allowances:[allowance(49.99,now/1000+1800)]},now).allowances[0];
+  const account = presented({hosts:[host()],allowances:[allowance(49.99,now/1000+1800)]}).allowances[0];
   assert.ok(account.paceDifference<0);
   assert.equal(account.timeRemaining,50);
   assert.equal(account.provider,'claude');
   assert.equal(account.id,'office');
   assert.equal(account.pacePercent,undefined);
-  const nearReset=project({hosts:[host()],allowances:[allowance(20,now/1000+1)]},now).allowances[0];
+  const nearReset=presented({hosts:[host()],allowances:[allowance(20,now/1000+1)]}).allowances[0];
   assert.ok(nearReset.paceDifference>0);
-  const even=project({hosts:[host()],allowances:[allowance(50,now/1000+1800)]},now).allowances[0];
+  const even=presented({hosts:[host()],allowances:[allowance(50,now/1000+1800)]}).allowances[0];
   assert.equal(even.paceDifference,0);
 });
 
@@ -394,7 +396,7 @@ test('discovery health retains observed hosts and survives an empty accepted inv
   assert.equal(view.discoveryLabel,'Discovery unavailable');
   assert.equal(view.hosts[0].connectionLabel,'Connected');
   assert.equal(view.threads.length,1);
-  assert.equal(view.hosts[0].age,'5s ago');
+  assert.equal(view.hosts[0].reporting,true);
   const empty=project({fleet_discovery:{state:'unavailable'},hosts:[],allowances:[]},now);
   assert.equal(empty.connected,true);
   assert.equal(empty.discoveryLabel,'Discovery unavailable');
@@ -455,7 +457,7 @@ test('bounded allowance skew preserves usage rejection and expiry boundaries', (
     observed_at_s:now/1000+0.019,freshness_seconds:12,complete:false},
     telemetry:{seq:now*1000+19000,usage_seq:now*1000+19000,total_input:1000,total_output:10}}};
   const row=remainingRow(70,now/1000+100,{sampled_at:now/1000+0.019});
-  const view=project({hosts:[host({agents:[agent]})],allowances:[row]},now);
+  const view=presented({hosts:[host({agents:[agent]})],allowances:[row]});
   assert.equal(view.threads[0].timing.elapsed,10);
   assert.equal(view.threads[0].usage.inputTokens,null);
   assert.equal(view.allowances[0].remaining,70);
@@ -487,7 +489,7 @@ test('projection omits unused presentation fields', () => {
   for (const key of ['activeThreads', 'cpu', 'memory', 'gpu', 'vram']) assert.equal(key in view.hosts[0], false, key);
   for (const key of ['activity', 'paceStrength', 'pace']) assert.equal(key in view.allowances[0], false, key);
   for (const key of ['gpu', 'inference', 'discoveryState']) assert.equal(key in project(null, now), false, key);
-  assert.equal(view.allowances[0].paceDifference, 20);
+  assert.equal(allowanceReading(view.allowances[0], now).paceDifference, 20);
   assert.equal(view.discoveryLabel, '');
 });
 
@@ -555,7 +557,8 @@ test('focus helpers clear, move and activate by key in visual order', () => {
 });
 
 // Provider-neutral allowance windows (generalise-anton-allowance-windows D1, D5).
-const projectOne = row => project({ hosts: [host()], allowances: [row] }, now).allowances[0];
+const projectRaw = row => project({ hosts: [host()], allowances: [row] }, now).allowances[0];
+const projectOne = row => { const account = projectRaw(row); return account ? allowanceReading(account, now) : account; };
 const unknownBalance = account => {
   assert.equal(account.remaining, null);
   assert.equal(account.timeRemaining, null);
@@ -712,11 +715,12 @@ test('only providers present in the snapshot form groups', () => {
   assert.equal(project({ hosts: [host()], allowances: [] }, now).allowances.length, 0);
 });
 
-test('the projected allowance view has exactly the eleven contract keys', () => {
+test('the allowance reading has exactly the eleven contract keys', () => {
   const keys = ['id', 'provider', 'providerLabel', 'label', 'statusText', 'remaining', 'timeRemaining',
     'paceDifference', 'resetCount', 'reset', 'age'];
+  const { allowanceReading } = sandbox.module.exports;
   for (const row of [allowanceRow({ reset_count: 1 }), allowanceRow({ status: 'auth_needed', status_text: 'Sign in required', sampled_at: null, windows: [] })])
-    assert.deepEqual(Object.keys(projectOne(row)).sort(), keys.slice().sort());
+    assert.deepEqual(Object.keys(allowanceReading(projectRaw(row), now)), keys);
 });
 
 test('account aliases prefer saved names, then the legacy table, then a stable hash', () => {
@@ -736,4 +740,392 @@ test('account aliases prefer saved names, then the legacy table, then a stable h
   assert.equal(accountAlias({ provider: 'codex', id: 'custom', label: 'Personal' }, {}, legacy, pool), 'Richard Hendricks');
   assert.equal(accountAlias(personal, {}, { 'codex:Personal': '' }, pool), today('codex:Personal', pool));
   assert.equal(accountAlias({ provider: 'constructor', id: 'toString', label: 'toString' }, {}, {}, pool), today('constructor:toString', pool));
+});
+
+// ---------------------------------------------------------------- A1 helpers
+const plain = value => JSON.parse(JSON.stringify(value));
+function seeded(seed) {
+  let s = seed >>> 0;
+  return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; };
+}
+
+test('token formatter keeps the Panel boundaries', () => {
+  const { tokens } = sandbox.module.exports;
+  assert.equal(tokens(null), '—');
+  assert.equal(tokens(undefined), '—');
+  assert.equal(tokens(0), '0');
+  assert.equal(tokens(999), '999');
+  assert.equal(tokens(1000), '1K');
+  assert.equal(tokens(1500), '1.5K');
+  assert.equal(tokens(999999), '1000K');
+  assert.equal(tokens(1.5e6), '1.5M');
+  assert.equal(tokens(2e6), '2M');
+  assert.equal(tokens(1e9), '1B');
+  assert.equal(tokens(2.25e9), '2.3B');
+});
+
+test('percent reading and pace text keep the Panel boundaries', () => {
+  const { percentReading, paceText } = sandbox.module.exports;
+  assert.equal(percentReading(null), '—');
+  assert.equal(percentReading(undefined), '—');
+  assert.equal(percentReading(0), '0%');
+  assert.equal(percentReading(0.4), '<1%');
+  assert.equal(percentReading(1), '1%');
+  assert.equal(percentReading(42.5), '43%');
+  assert.equal(percentReading(99.5), '>99%');
+  assert.equal(percentReading(100), '100%');
+  assert.equal(paceText({ remaining: null, timeRemaining: 50 }), 'Pace unavailable');
+  assert.equal(paceText({ remaining: 50, timeRemaining: null }), 'Pace unavailable');
+  assert.equal(paceText({ remaining: 60, timeRemaining: 50 }), '60% left · 50% expected');
+  assert.equal(paceText({ remaining: 60.25, timeRemaining: 49.96 }), '60.3% left · 50% expected');
+});
+
+test('preference parsing rejects invalid JSON and wrong types', () => {
+  const { parseList, parseObject } = sandbox.module.exports;
+  assert.deepEqual(plain(parseList('["a","b"]')), ['a', 'b']);
+  for (const bad of ['', '{not json', '{}', '"a"', '1', 'null', undefined, null]) assert.deepEqual(plain(parseList(bad)), [], String(bad));
+  assert.deepEqual(plain(parseObject('{"a":1}')), { a: 1 });
+  for (const bad of ['', '{not json', '[]', '"a"', '1', 'null', undefined, null]) assert.deepEqual(plain(parseObject(bad)), {}, String(bad));
+});
+
+test('state colour names, account keys and list toggles', () => {
+  const { stateColourName, accountKey, toggleListValue } = sandbox.module.exports;
+  assert.deepEqual(['working', 'blocked', 'done', 'idle', 'unknown', undefined].map(stateColourName), ['yellow', 'red', 'green', 'muted', 'muted', 'muted']);
+  assert.equal(accountKey({ provider: 'codex', id: 'Personal' }), 'codex:Personal');
+  const list = ['a'];
+  assert.deepEqual(plain(toggleListValue(list, 'b')), ['a', 'b']);
+  assert.deepEqual(plain(toggleListValue(['a', 'b', 'c'], 'b')), ['a', 'c']);
+  assert.deepEqual(list, ['a'], 'input unchanged');
+});
+
+test('acknowledgements are bounded to 256 by dropping the earliest keys', () => {
+  const { boundAcknowledgements } = sandbox.module.exports;
+  const input = {};
+  for (let i = 0; i < 257; i++) input['h:t' + i] = '1:' + i;
+  const bounded = boundAcknowledgements(input);
+  assert.equal(Object.keys(bounded).length, 256);
+  assert.equal('h:t0' in bounded, false);
+  assert.equal(bounded['h:t1'], '1:1');
+  assert.equal(bounded['h:t256'], '1:256');
+  assert.equal(Object.keys(input).length, 257, 'input unchanged');
+  assert.equal(Object.keys(boundAcknowledgements(input, 2)).join(), 'h:t255,h:t256');
+});
+
+test('acknowledgement reconcile drops changed listed threads and keeps absent ones', () => {
+  const { reconcileAcknowledgements, completionEpisode } = sandbox.module.exports;
+  const done = { id: 'a', hostId: 'h', state: 'done', generation: 1, statusGeneration: 10 };
+  const acks = { 'h:a': completionEpisode(done), 'h:gone': '1:1' };
+  let result = reconcileAcknowledgements(acks, [done]);
+  assert.equal(result.changed, false);
+  assert.deepEqual(plain(result.value), acks);
+  result = reconcileAcknowledgements(acks, [{ ...done, state: 'working' }]);
+  assert.equal(result.changed, true);
+  assert.deepEqual(plain(result.value), { 'h:gone': '1:1' });
+  result = reconcileAcknowledgements(acks, [{ ...done, statusGeneration: 11 }]);
+  assert.equal(result.changed, true);
+  assert.deepEqual(plain(result.value), { 'h:gone': '1:1' });
+  assert.equal(Object.keys(acks).length, 2, 'input unchanged');
+});
+
+test('navigation acknowledges only a done target still in the same episode', () => {
+  const { acknowledgeNavigation, completionEpisode } = sandbox.module.exports;
+  const done = { id: 'a', hostId: 'h', state: 'done', generation: 1, statusGeneration: 10 };
+  const target = { key: 'h:a', episode: completionEpisode(done), state: 'done' };
+  const acks = { 'h:b': '1:1' };
+  assert.deepEqual(plain(acknowledgeNavigation(acks, target, [done])), { 'h:b': '1:1', 'h:a': target.episode });
+  assert.deepEqual(acks, { 'h:b': '1:1' }, 'input unchanged');
+  assert.equal(acknowledgeNavigation(acks, { ...target, state: 'working' }, [done]), acks);
+  assert.equal(acknowledgeNavigation(acks, target, [{ ...done, state: 'working' }]), acks, 'thread changed before exit');
+  assert.equal(acknowledgeNavigation(acks, target, [{ ...done, statusGeneration: 11 }]), acks, 'new episode before exit');
+  assert.equal(acknowledgeNavigation(acks, target, []), acks, 'thread gone before exit');
+  assert.equal(acknowledgeNavigation(acks, null, [done]), acks);
+});
+
+test('alias assignment is a deterministic Fisher-Yates shuffle of the pool', () => {
+  const { assignAliases } = sandbox.module.exports;
+  const pool = ['A', 'B', 'C'];
+  const accounts = ['one', 'two', 'three', 'four', 'five'].map(id => ({ provider: 'codex', id }));
+  const reference = random => {
+    const shuffled = pool.slice();
+    for (let i = shuffled.length - 1; i > 0; i--) { const j = Math.floor(random() * (i + 1)); [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]]; }
+    return Object.fromEntries(accounts.map((a, i) => ['codex:' + a.id, shuffled[i % shuffled.length]]));
+  };
+  for (const seed of [1, 2, 3, 99]) assert.deepEqual(plain(assignAliases(accounts, pool, seeded(seed))), reference(seeded(seed)));
+  // random() always 0 swaps each position with the first: [B, C, A].
+  assert.deepEqual(plain(assignAliases(accounts, pool, () => 0)),
+    { 'codex:one': 'B', 'codex:two': 'C', 'codex:three': 'A', 'codex:four': 'B', 'codex:five': 'C' });
+  assert.deepEqual(pool, ['A', 'B', 'C'], 'pool unchanged');
+});
+
+test('keyed edits turn any key list into any other without removing survivors', () => {
+  const { keyedEdits } = sandbox.module.exports;
+  const apply = (before, edits) => {
+    const list = before.slice();
+    for (const edit of edits) {
+      if (edit.op === 'remove') { assert.ok(edit.index >= 0 && edit.index < list.length); list.splice(edit.index, 1); }
+      else if (edit.op === 'insert') { assert.ok(edit.index >= 0 && edit.index <= list.length); list.splice(edit.index, 0, edit.key); }
+      else if (edit.op === 'move') { assert.ok(edit.from >= 0 && edit.from < list.length && edit.to >= 0 && edit.to < list.length); const [key] = list.splice(edit.from, 1); list.splice(edit.to, 0, key); }
+      else assert.fail('unknown op ' + edit.op);
+    }
+    return list;
+  };
+  const check = (before, after) => {
+    const edits = plain(keyedEdits(before, after));
+    assert.deepEqual(apply(before, edits), after, JSON.stringify({ before, after }));
+    const removed = [], list = before.slice();
+    for (const edit of edits) {
+      if (edit.op === 'remove') removed.push(list.splice(edit.index, 1)[0]);
+      else if (edit.op === 'insert') { assert.equal(before.includes(edit.key), false, 'survivor re-inserted'); list.splice(edit.index, 0, edit.key); }
+      else { const [key] = list.splice(edit.from, 1); list.splice(edit.to, 0, key); }
+    }
+    for (const key of removed) assert.equal(after.includes(key), false, 'survivor removed: ' + key);
+    return edits;
+  };
+  assert.deepEqual(check([], []), []);
+  assert.deepEqual(check(['a', 'b'], ['a', 'b']), []);
+  assert.deepEqual(check(['a', 'b', 'c'], ['b', 'c']), [{ op: 'remove', index: 0 }]);
+  assert.deepEqual(check(['a', 'b'], ['a', 'x', 'b']), [{ op: 'insert', index: 1, key: 'x' }]);
+  assert.deepEqual(check(['a', 'b'], ['b', 'a']), [{ op: 'move', from: 1, to: 0 }]);
+  const random = seeded(7);
+  const pick = n => Math.floor(random() * n);
+  for (let round = 0; round < 2000; round++) {
+    const universe = Array.from({ length: 12 }, (_, i) => 'k' + i);
+    const sample = () => {
+      const keys = universe.filter(() => random() < 0.6);
+      for (let i = keys.length - 1; i > 0; i--) { const j = pick(i + 1); [keys[i], keys[j]] = [keys[j], keys[i]]; }
+      return keys;
+    };
+    check(sample(), sample());
+  }
+});
+
+test('group keys follow thread keys', () => {
+  const { groupThreads, providerGroups } = sandbox.module.exports;
+  const view = project({ interval: 5, hosts: [host({ agents: [{ id: 'a', status: 'working', project: 'A' }, { id: 'b', status: 'idle', project: 'B' }] })],
+    allowances: [allowanceRow(), allowanceRow({ account_id: 'Work', label: 'Work' })] }, now);
+  assert.deepEqual(plain(groupThreads(view, [], []).map(g => g.keys)), [['laptop:a', 'laptop:b']]);
+  assert.deepEqual(plain(groupThreads(view, ['idle'], []).map(g => g.keys)), [['laptop:a']]);
+  assert.deepEqual(plain(groupThreads(view, [], ['laptop']).map(g => g.keys)), [[]]);
+  assert.deepEqual(plain(providerGroups(view.allowances).map(g => g.keys)), [['codex:Personal', 'codex:Work']]);
+});
+
+// ---------------------------------------------------------------- A2 readings
+const timeOracle = require('./fixtures/popover-time-oracle.json');
+const diagnosticsOracle = require('./fixtures/popover-diagnostics-oracle.json');
+function withoutAges(view) {
+  const copy = plain(view);
+  copy.hosts.forEach(h => delete h.age);
+  copy.threads.forEach(t => delete t.age);
+  return copy;
+}
+
+test('readView of every oracle projection equals the baseline view without host and thread ages', () => {
+  const { readView } = sandbox.module.exports;
+  let checked = 0;
+  for (const c of timeOracle.cases)
+    for (const { nowMs, view } of c.projections) {
+      assert.deepEqual(plain(readView(project(c.raw, nowMs), nowMs)), withoutAges(view), c.name + ' @ ' + nowMs);
+      checked++;
+    }
+  assert.equal(checked, 112);
+  assert.deepEqual(plain(readView(project(null, now), now)), withoutAges(project(null, now)));
+});
+
+test('diagnostics equal every recorded IPC string', () => {
+  const { diagnostics } = sandbox.module.exports;
+  assert.equal(diagnosticsOracle.cases.length, 13);
+  for (const c of diagnosticsOracle.cases) assert.equal(diagnostics(project(c.raw, c.nowMs), c.nowMs), c.diagnostics, c.name + ' @ ' + c.nowMs);
+});
+
+test('the structural view carries source times and no time-derived presentation', () => {
+  const agent = { id: 'a', status: 'working', technical: {
+    telemetry: { seq: (now - 1000) * 1000, total_input: 10, total_output: 1, subagent_total: 1, subagent_done: 0, subagent_status_seq: (now - 1000) * 1000,
+      subagent_running: 1, subagent_interrupted: 0, subagent_failed: 0, subagent_unknown: 0, subagent_starts: 1, subagent_stops: 0, subagent_seq: (now - 1000) * 1000 },
+    turn_timing: { observed_at_s: now / 1000, active: true, started_at_s: now / 1000 - 10, freshness_seconds: 12, complete: true, total_finished_duration_s: 5 } } };
+  const view = project({ interval: 5, hosts: [host({ agents: [agent] })], allowances: [allowanceRow()] }, now);
+  const keys = value => Object.keys(value);
+  assert.deepEqual(keys(view), ['connected', 'working', 'partial', 'threads', 'discoveryLabel', 'hosts', 'allowances', 'note']);
+  assert.deepEqual(keys(view.hosts[0]), ['connectionState', 'connectionLabel', 'id', 'name', 'navigation', 'reporting']);
+  const thread = view.threads[0];
+  assert.deepEqual(keys(thread), ['id', 'hostId', 'project', 'navigation', 'title', 'host', 'branch', 'checkout', 'generation', 'statusGeneration',
+    'state', 'harness', 'usage', 'children', 'completion', 'timing']);
+  assert.deepEqual(keys(thread.usage), ['contextPercent', 'inputTokens', 'outputTokens', 'uncachedTokens', 'cachePercent', 'compactions', 'stale', 'at']);
+  assert.deepEqual(keys(thread.children), ['starts', 'stops', 'stamp', 'stale', 'at']);
+  assert.deepEqual(keys(thread.completion), ['total', 'done', 'stamp', 'stale', 'at', 'outcomes']);
+  assert.deepEqual(keys(thread.timing), ['active', 'stale', 'complete', 'outcome', 'observedAt', 'startedAt', 'last', 'finishedTotal', 'settled']);
+  assert.deepEqual(keys(view.allowances[0]), ['id', 'provider', 'providerLabel', 'label', 'statusText', 'remaining', 'resetCount', 'resetAt', 'durationS', 'sampledAt']);
+  assert.equal(thread.usage.at, now - 1000);
+  assert.equal(thread.children.at, now - 1000);
+  assert.equal(thread.completion.at, now - 1000);
+  assert.equal(thread.timing.startedAt, now / 1000 - 10);
+  assert.equal(thread.timing.finishedTotal, 5);
+  assert.equal(view.allowances[0].resetAt, now / 1000 + 302400);
+  assert.equal(view.allowances[0].durationS, 604800);
+  assert.equal(view.allowances[0].sampledAt, now / 1000 - 5);
+});
+
+test('an unknown current turn reports no elapsed time even with a last duration', () => {
+  const { turnReading } = sandbox.module.exports;
+  const agent = { id: 'a', status: 'idle', technical: { turn_timing: { observed_at_s: now / 1000, active: null, started_at_s: now / 1000 - 10,
+    last_duration_s: 42, complete: true, total_finished_duration_s: 100, freshness_seconds: 12 } } };
+  const timing = project({ interval: 5, hosts: [host({ agents: [agent] })], allowances: [] }, now).threads[0].timing;
+  // Baseline (53f2407): active false, elapsed null, last 42, total 100.
+  assert.equal(timing.settled, false);
+  const reading = turnReading(timing, now + 5000);
+  assert.equal(reading.active, false);
+  assert.equal(reading.elapsed, null);
+  assert.equal(reading.last, 42);
+  assert.equal(reading.total, 100);
+  const settled = { ...agent, technical: { turn_timing: { ...agent.technical.turn_timing, active: false } } };
+  assert.equal(turnReading(project({ interval: 5, hosts: [host({ agents: [settled] })], allowances: [] }, now).threads[0].timing, now).elapsed, 42);
+});
+
+test('a pacing window without a used percentage keeps its reset countdown and expected balance', () => {
+  const { allowanceReading } = sandbox.module.exports;
+  const account = projectRaw(remainingRow(null, now / 1000 + 7200, {}, { duration_s: 10000 }));
+  // Baseline (53f2407): remaining null, timeRemaining 72, reset '0d 2h', no pace.
+  const reading = allowanceReading(account, now);
+  assert.equal(reading.remaining, null);
+  assert.equal(reading.timeRemaining, 72);
+  assert.equal(reading.paceDifference, null);
+  assert.equal(reading.reset, '0d 2h');
+  assert.equal(reading.age, 'source unavailable');
+  assert.equal(account.sampledAt, null);
+});
+
+test('readings advance with the display instant while the structure stays fixed', () => {
+  const { turnReading, allowanceReading, usageReading } = sandbox.module.exports;
+  const agent = { id: 'a', status: 'working', technical: {
+    telemetry: { seq: (now - 30000) * 1000, usage_seq: (now - 30000) * 1000, total_input: 10, total_output: 1 },
+    turn_timing: { observed_at_s: now / 1000, active: true, started_at_s: now / 1000 - 754, freshness_seconds: 12, complete: true, total_finished_duration_s: 100 } } };
+  const view = project({ interval: 5, hosts: [host({ agents: [agent] })], allowances: [allowanceRow()] }, now);
+  const thread = view.threads[0];
+  assert.equal(turnReading(thread.timing, now).elapsed, 754);
+  assert.equal(turnReading(thread.timing, now + 5000).elapsed, 759);
+  assert.equal(turnReading(thread.timing, now + 5000).total, 859);
+  assert.equal(usageReading(thread.usage, now).age, '30s ago');
+  assert.equal(usageReading(thread.usage, now + 31000).age, '1m ago');
+  const account = view.allowances[0];
+  assert.equal(allowanceReading(account, now).reset, '3d 12h');
+  assert.equal(allowanceReading(account, now + 1000).reset, '3d 11h');
+  assert.ok(allowanceReading(account, now + 60000).timeRemaining < allowanceReading(account, now).timeRemaining);
+  // A stale turn stays frozen at its observation.
+  const stale = { ...thread.timing, stale: true };
+  assert.equal(turnReading(stale, now + 60000).elapsed, 754);
+});
+
+// ---------------------------------------------------------------- A3 store
+test('the view signature is constant from any oracle instant until its deadline', () => {
+  const { viewSignature, nextDeadlineMs } = sandbox.module.exports;
+  const random = seeded(11);
+  for (const c of timeOracle.cases)
+    for (const { nowMs } of c.projections) {
+      const signature = viewSignature(project(c.raw, nowMs));
+      const deadline = nextDeadlineMs(c.raw, nowMs);
+      assert.ok(deadline === null || deadline > nowMs, c.name);
+      const end = deadline === null ? nowMs + 86400000 : deadline;
+      const points = [nowMs, end - 1];
+      for (let i = 0; i < 8; i++) points.push(nowMs + Math.floor(random() * (end - nowMs)));
+      for (const t of points) assert.equal(viewSignature(project(c.raw, t)), signature, `${c.name} @ ${nowMs}: changed at ${t} before ${deadline}`);
+    }
+  assert.equal(nextDeadlineMs(null, now), null);
+});
+
+test('the deadline is never later than the first structural change near every oracle threshold', () => {
+  const { viewSignature, nextDeadlineMs } = sandbox.module.exports;
+  let scanned = 0, changes = 0;
+  for (const c of timeOracle.cases) {
+    const centres = [...new Set(c.projections.map(p => p.nowMs))];
+    const windows = [];
+    for (const x of centres) {
+      const last = windows[windows.length - 1];
+      if (last && x - 2000 <= last[1]) last[1] = x + 2000; else windows.push([x - 2000, x + 2000]);
+    }
+    for (const [from, to] of windows) {
+      const signatures = [];
+      for (let t = from; t <= to; t++) signatures.push(viewSignature(project(c.raw, t)));
+      // nextChange[i]: the first ms after from + i whose signature differs from the one before it.
+      const nextChange = new Array(signatures.length).fill(Infinity);
+      for (let i = signatures.length - 2; i >= 0; i--) nextChange[i] = signatures[i + 1] !== signatures[i] ? from + i + 1 : nextChange[i + 1];
+      for (let i = 0; i < signatures.length; i++) {
+        if (nextChange[i] === Infinity) continue;
+        const deadline = nextDeadlineMs(c.raw, from + i);
+        assert.ok(deadline !== null && deadline <= nextChange[i], `${c.name}: deadline ${deadline} after change at ${nextChange[i]} (from ${from + i})`);
+        scanned++;
+      }
+      for (let i = 1; i < signatures.length; i++) if (signatures[i] !== signatures[i - 1]) changes++;
+    }
+  }
+  // 39 structural changes, checked from 85010 start instants.
+  assert.ok(changes >= 39, 'the scan crosses the oracle thresholds: ' + changes);
+  assert.ok(scanned >= 85000, 'start instants checked: ' + scanned);
+});
+
+test('storeStep replaces the view on structural change only, with the harness object shape', () => {
+  const { storeStep, viewSignature, receiptTimeoutMs } = sandbox.module.exports;
+  const raw = { interval: 5, heartbeat_seconds: 4, hosts: [host({ sampled_at: now / 1000 - 1,
+    agents: [{ id: 'a', status: 'working', technical: { turn_timing: { observed_at_s: now / 1000 - 1, active: true, started_at_s: now / 1000 - 60, freshness_seconds: 12 } } }] })],
+    allowances: [], fleet_discovery: { state: 'disabled' } };
+  const store = { raw: null, lastReceipt: 0, view: project(null, now), signature: '' };
+  // A receipt replaces the view and records the receipt time.
+  assert.equal(storeStep(store, { type: 'receipt', raw }, now), true);
+  assert.equal(store.lastReceipt, now);
+  assert.equal(store.signature, viewSignature(store.view));
+  assert.equal(store.deadline, now + 11000 - 1, 'turn staleness is the earliest boundary (one ms early)');
+  const view = store.view;
+  // A tick before the deadline does nothing; an unchanged re-sent snapshot keeps the view.
+  assert.equal(storeStep(store, { type: 'tick' }, now + 1000), false);
+  assert.equal(storeStep(store, { type: 'receipt', raw: JSON.parse(JSON.stringify(raw)) }, now + 4000), false);
+  assert.equal(store.view, view);
+  assert.equal(store.lastReceipt, now + 4000);
+  assert.equal(storeStep(store, { type: 'receipt', raw }, now + 8000), false);
+  // A tick at the (early) deadline that changes nothing keeps the view but moves the deadline on.
+  const early = store.deadline;
+  assert.equal(storeStep(store, { type: 'tick' }, early), false);
+  assert.equal(store.view, view);
+  assert.ok(store.deadline > early);
+  // The turn goes stale just after observed + 12 s: the next due tick replaces the view.
+  assert.equal(storeStep(store, { type: 'tick' }, now + 12000), true);
+  assert.equal(store.view.threads[0].timing.stale, true);
+  // Without a deadline a tick returns false.
+  const quiet = { raw: null, lastReceipt: 0, view: project(null, now), signature: '' };
+  assert.equal(storeStep(quiet, { type: 'tick' }, now), false);
+  assert.equal(storeStep(quiet, { type: 'update' }, now), true, 'the first update sets the empty view signature');
+  assert.equal(quiet.deadline, null);
+  assert.equal(storeStep(quiet, { type: 'tick' }, now + 1000), false);
+  // A receipt timeout drops raw.
+  const timeout = receiptTimeoutMs(raw);
+  assert.equal(storeStep(store, { type: 'tick' }, now + 8000 + timeout), false, 'not yet beyond the timeout');
+  assert.notEqual(store.raw, null);
+  assert.equal(storeStep(store, { type: 'tick' }, now + 8000 + timeout + 1), true);
+  assert.equal(store.raw, null);
+  assert.equal(store.view.connected, false);
+  // A malformed receipt nulls raw without touching lastReceipt.
+  storeStep(store, { type: 'receipt', raw }, now + 20000);
+  assert.equal(storeStep(store, { type: 'receipt', raw: null }, now + 21000), true);
+  assert.equal(store.raw, null);
+  assert.equal(store.lastReceipt, now + 20000);
+  assert.equal(store.view.connected, false);
+  // Update re-projects the raw the caller set (restart, refresh, collector exit).
+  store.raw = raw;
+  assert.equal(storeStep(store, { type: 'update' }, now + 22000), true);
+  assert.equal(store.view.connected, true);
+  // A collector exit: the caller nulls raw, then an update empties the view and clears the deadline.
+  const receipt = store.lastReceipt;
+  store.raw = null;
+  assert.equal(storeStep(store, { type: 'update' }, now + 23000), true);
+  assert.equal(store.view.connected, false);
+  assert.equal(store.view.threads.length, 0);
+  assert.equal(store.deadline, null);
+  assert.equal(store.lastReceipt, receipt);
+});
+
+test('stable row order survives store updates', () => {
+  const { storeStep } = sandbox.module.exports;
+  const agents = order => order.map(id => ({ id, status: id === 'b' ? 'working' : 'idle', project: id }));
+  const raw = order => ({ interval: 5, hosts: [host({ sampled_at: now / 1000, agents: agents(order) })], allowances: [] });
+  const store = { raw: null, lastReceipt: 0, view: project(null, now), signature: '' };
+  storeStep(store, { type: 'receipt', raw: raw(['a', 'c']) }, now);
+  storeStep(store, { type: 'receipt', raw: raw(['a', 'b', 'c']) }, now + 1000);
+  assert.deepEqual(Array.from(store.view.threads, t => t.id), ['a', 'c', 'b']);
 });

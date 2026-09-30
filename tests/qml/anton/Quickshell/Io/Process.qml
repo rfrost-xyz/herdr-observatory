@@ -7,6 +7,7 @@ QtObject {
     property var command: []
     property bool running: false
     property bool stdinEnabled: false
+    property QtObject stderr: null
     property QtObject stdout: null
     property var writes: []
 

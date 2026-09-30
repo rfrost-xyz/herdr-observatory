@@ -34,6 +34,40 @@ outcomes and turn time. Missing data stays unknown. Codex collection does not
 need Observatory hooks; Herdr's native integration supplies session identity.
 The optional Pi extension calls the native reporter for supported live metrics.
 
+## Popover structure
+
+The popover is plain QML and JavaScript in this directory:
+
+- `Panel.qml` is wiring only: the bar button, `KeyboardPanel`, the `.accounts.json`
+  identity file and the `herdr.observatory` IPC target (`open`, `close`, `toggle`,
+  `refresh`, `status`, `diagnostics`).
+- `SnapshotStore.qml` owns the collector process and the projected view.
+- `State.js` holds every pure rule: projection, staleness, readings, formatters,
+  focus, acknowledgements and keyed-list edits. `tests/test_omarchy_state.cjs`
+  covers it.
+- `AntonTheme.qml` reads the status palette from `colors.toml` in the theme
+  directory the shell reports as current (`Color.currentThemePath`) and derives the
+  ink, muted, line and state colours.
+- `AntonPreferences.qml` wraps the unchanged `privacy.ini` settings (same keys,
+  JSON-text encoding and one-time migration) and parses each value once.
+- `AntonController.qml` holds navigation, completion acknowledgements, keyboard
+  focus, filters and collapse, identity concealment and refresh requests.
+- `PopupContent.qml` and the card components receive only the typed values and
+  callbacks they use.
+
+The projected view is structural: it changes when a snapshot arrives, when the
+collector restarts or drops, or when a freshness boundary passes. Ages, the
+running turn stopwatch, the reset countdown and expected allowance are readings of
+that view at the store's `now`, which advances every second while the popover is
+open. Staleness rules are unchanged and also apply while the popover is closed.
+
+Machine groups, threads, providers and accounts are keyed Repeater rows
+(`AntonKeyedModel.qml`), so a row keeps its element and any running highlight when
+other rows appear, disappear or reorder. Only a thread that newly appears on a
+reporting machine plays the entrance; hydration, reconnect, filtering, collapse
+and sorting do not. One shared `AntonToolTip` shows every hover hint with the
+same delay, timeout, placement and suppression while scrolling.
+
 ## Build and local install
 
 Build inputs are Cargo plus dependencies pinned in `../anton-runtime/Cargo.lock`.
@@ -255,16 +289,43 @@ cargo clippy --manifest-path omarchy/anton-runtime/Cargo.toml --locked --offline
 cargo test --manifest-path omarchy/anton-runtime/Cargo.toml --locked --offline
 node --test tests/test_pi_hooks.mjs tests/test_omarchy_state.cjs tests/test_native_distribution.mjs
 bash tests/run-qml.sh
+bash tests/run-qmllint.sh
+bash tests/run-shell-harness.sh
 omarchy-plugin-validate omarchy/herdr.observatory
 openspec validate --all --strict
 ```
 
 `tests/run-qml.sh` fails on QML binding errors (`TypeError`, `ReferenceError`,
 `Unable to assign`) as well as on test failures. Set `QMLTESTRUNNER` to use a
-particular Qt 6 build; CI uses Qt 6.8.3.
+particular Qt 6 build; CI uses Qt 6.8.3. It runs with a private temporary
+directory for preference and palette files, never the user's configuration.
 
-Production QML fixtures exercise the actual `PopupContent.qml`; include their
-layout/keyboard/reduced-motion checks and `omarchy-plugin-validate` for UI changes.
+`bash tests/run-qmllint.sh` lints the plugin QML against the repository stubs
+(`tests/qml/anton`) and Qt's own modules only. Every file except `Panel.qml` must
+be free of warnings; `Panel.qml` may only report the missing `qs.Ui` module and
+its consequences. A member or property that Panel names on a plugin, stub or Qt
+type still fails the gate, as does a child object placed inside one. It supports
+Qt 6.8 (as in CI) and Qt 6.11 or later, and refuses Qt 6.9 and 6.10. Set
+`QMLLINT` to use a particular Qt 6 build.
+
+`bash tests/run-shell-harness.sh` loads `Panel.qml` in Quickshell, offscreen,
+against the installed Omarchy `qs.Commons` and `qs.Ui` modules, which the QML
+suite replaces with stubs. It hot-reloads the widget, opens, closes and reopens
+the popover and leaves it open unattended, then checks for a visible card with
+one row per thread and fails if the runtime was asked to open a thread. The
+runtime is a fake that serves a synthetic snapshot, HOME and the theme palette
+are synthetic, and `KeyboardPanel` runs as a floating window because offscreen
+has no layer-shell backend, so compositor focus and pointer input are not
+covered. It is a local-only gate that CI does not run, and it skips when
+Quickshell or the shell modules are not installed; set `OMARCHY_SHELL_DIR` to
+choose the shell directory.
+
+The QML tests exercise the real `PopupContent.qml`, theme, preferences (against
+captured `privacy.ini` files), controller, keyed rows and shared tooltip with
+synthetic data and fixed colours; include their layout/keyboard/reduced-motion
+checks and `omarchy-plugin-validate` for UI changes. The screenshot tests write
+`/tmp/anton-continuity-*.png`; their bytes also depend on the text that earlier
+test files rendered in the same process.
 Resource comparisons must include all local children, state their scope and avoid
 claims about unmeasured remote CPU or Qt/GPU work.
 
@@ -274,4 +335,6 @@ and static SSH routes are revalidated against current configuration; saved
 profiles are revalidated against the current Herdr inventory. A changed route or
 missing binding fails before focus. Local named sessions use that exact session
 and configured executable. Socket-only collection has no verified terminal route,
-so activation reports an error without attempting another session.
+so activation reports an error without attempting another session. Activation
+comes only from a key, tap or accessibility press while the popover is open; the
+controller ignores it once the popover has closed, including during the fade.

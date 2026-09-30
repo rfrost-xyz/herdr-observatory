@@ -1,5 +1,4 @@
 import QtQuick
-import QtQuick.Controls
 import QtQuick.Layouts
 import qs.Commons
 import "State.js" as State
@@ -8,13 +7,22 @@ AntonSurface {
     id: threadCard
 
     property real childFlash: 0
+    // The item the viewport scrolls; reveal() maps this card into it.
+    property Item contentItem: null
     property real contextFlash: 0
+    required property AntonController controller
     property real entrance: 1
-    readonly property var entry: ui.overview.threads[threadIndex] || {}
+    property var entry: ({})
     property real flash: 0
+    property bool focused: false
     property bool last: false
-    property int threadIndex: -1
-    readonly property var usage: entry.usage || {
+    // Time-derived labels read this instant, never the view.
+    property double now: 0
+    property Flickable viewport: null
+    // Time-derived readings of the structural entry at `now`.
+    readonly property var completion: State.completionReading(entry.completion, now)
+    readonly property var turn: State.turnReading(entry.timing, now)
+    readonly property var usageReading: entry.usage ? State.usageReading(entry.usage, now) : {
         "contextPercent": null,
         "inputTokens": null,
         "outputTokens": null,
@@ -28,8 +36,9 @@ AntonSurface {
         if (!keyed)
             return;
 
-        var top = mapToItem(ui.contentItem, 0, 0).y;
-        var viewport = ui.threadViewport || ui.tooltipHost;
+        if (!viewport || !contentItem)
+            return;
+        var top = mapToItem(contentItem, 0, 0).y;
         viewport.contentY = Math.max(0, Math.min(Math.max(0, viewport.contentHeight - viewport.height), top < viewport.contentY ? top : Math.max(viewport.contentY, top + height - viewport.height)));
     }
     function stopEffects() {
@@ -46,33 +55,34 @@ AntonSurface {
     Accessible.name: "Open in Herdr: " + hint
     Accessible.role: Accessible.Button
     height: threadMetrics.y + threadMetrics.implicitHeight + Style.space(8)
-    hint: entry.state + " · " + entry.host + " · " + entry.harness + "\n" + (usage.age ? (usage.stale ? "Last reported " : "Reported ") + usage.age : "Usage not reported")
-    keyed: ui.focusedKey !== "" && ui.focusedKey === State.threadKey(entry)
+    hint: entry.state + " · " + entry.host + " · " + entry.harness + "\n" + (usageReading.age ? (usageReading.stale ? "Last reported " : "Reported ") + usageReading.age : "Usage not reported")
+    animate: controller.opened && controller.motionEnabled
+    keyed: focused
     opacity: entrance
     restingOpacity: 0
-    tint: ui.stateColour(entry.state)
+    tint: theme.stateColour(entry.state)
     tooltipSuppressed: contextMetric.hovered || tokenMetric.hovered || cacheMetric.hovered || childMetric.hovered || turnClock.hovered
 
     transform: Translate {
         y: (1 - threadCard.entrance) * Style.space(5)
     }
 
-    Accessible.onPressAction: ui.openThread(State.threadKey(threadCard.entry))
+    Accessible.onPressAction: threadCard.controller.openThread(State.threadKey(threadCard.entry))
     onKeyedChanged: Qt.callLater(reveal)
 
     Connections {
         function onMotionEnabledChanged() {
-            if (!ui.motionEnabled)
+            if (!threadCard.controller.motionEnabled)
                 threadCard.stopEffects();
         }
         function onNewThreads(keys) {
-            if (!ui.opened || !ui.motionEnabled || !threadCard.visible)
+            if (!threadCard.controller.opened || !threadCard.controller.motionEnabled || !threadCard.visible)
                 return;
             if (keys[State.threadKey(threadCard.entry)])
                 arrival.restart();
         }
         function onObservedChange(changes) {
-            if (!ui.opened || !ui.motionEnabled || !threadCard.visible)
+            if (!threadCard.controller.opened || !threadCard.controller.motionEnabled || !threadCard.visible)
                 return;
             var change = changes[threadCard.entry.hostId + ":" + threadCard.entry.id];
             if (!change)
@@ -88,14 +98,14 @@ AntonSurface {
                 compactionFlash.restart();
         }
         function onOpenedChanged() {
-            if (!ui.opened)
+            if (!threadCard.controller.opened)
                 threadCard.stopEffects();
         }
         function onVisualEpochChanged() {
             threadCard.stopEffects();
         }
 
-        target: ui
+        target: threadCard.controller
     }
     NumberAnimation {
         id: arrival
@@ -144,7 +154,7 @@ AntonSurface {
     }
     Rectangle {
         anchors.bottom: parent.bottom
-        color: ui.alpha(ui.ink, 0.09)
+        color: threadCard.theme.alpha(threadCard.theme.ink, 0.09)
         height: 1
         visible: !threadCard.last
         width: parent.width - Style.space(10)
@@ -169,27 +179,29 @@ AntonSurface {
                 Layout.minimumWidth: Style.space(18)
                 Layout.preferredHeight: Style.space(18)
                 scale: 1 + threadCard.flash * 0.18
+                animate: threadCard.animate
+                theme: threadCard.theme
                 threadState: threadCard.entry.state || "unknown"
-                ui: threadCard.ui
             }
             SheenTitle {
                 Layout.fillWidth: !checkout.visible
                 Layout.maximumWidth: Math.max(0, parent.width - Style.space(26) - (turnClock.visible ? turnClock.width + Style.space(6) : 0)) * (checkout.visible ? 0.62 : 1)
                 Layout.preferredWidth: implicitWidth
                 active: threadCard.entry.state === "working"
+                animate: threadCard.animate
                 text: threadCard.entry.project || "Untitled"
+                theme: threadCard.theme
                 tint: threadCard.tint
-                ui: threadCard.ui
             }
             AntonText {
                 id: checkout
 
                 Layout.fillWidth: true
-                color: ui.muted
+                color: threadCard.theme.muted
                 font.pixelSize: Style.font.caption
                 objectName: "thread-checkout"
                 text: threadCard.entry.branch ? "⑂ " + threadCard.entry.branch : threadCard.entry.checkout && threadCard.entry.checkout !== ".bare" && threadCard.entry.checkout.toLowerCase() !== (threadCard.entry.project || "").toLowerCase() ? threadCard.entry.checkout : ""
-                ui: threadCard.ui
+                theme: threadCard.theme
                 visible: text.length > 0
             }
             AntonSurface {
@@ -199,12 +211,14 @@ AntonSurface {
                 Layout.minimumWidth: Layout.preferredWidth
                 Layout.preferredHeight: Style.space(21)
                 Layout.preferredWidth: clockReading.implicitWidth + Style.space(4)
-                hint: State.timingHint(threadCard.entry.timing)
+                hint: State.timingHint(threadCard.turn)
                 objectName: "thread-turn-clock"
-                opacity: threadCard.entry.timing && threadCard.entry.timing.stale ? 0.62 : 1
+                opacity: threadCard.turn && threadCard.turn.stale ? 0.62 : 1
                 tint: threadCard.tint
-                ui: threadCard.ui
-                visible: !!threadCard.entry.timing && threadCard.entry.timing.elapsed !== null
+                theme: threadCard.theme
+                tooltip: threadCard.tooltip
+                animate: threadCard.animate
+                visible: !!threadCard.turn && threadCard.turn.elapsed !== null
 
                 Row {
                     id: clockReading
@@ -242,8 +256,8 @@ AntonSurface {
                     AntonText {
                         color: threadCard.tint
                         font.pixelSize: Style.font.caption
-                        text: State.durationLabel(threadCard.entry.timing ? threadCard.entry.timing.elapsed : null)
-                        ui: threadCard.ui
+                        text: State.durationLabel(threadCard.turn ? threadCard.turn.elapsed : null)
+                        theme: threadCard.theme
                     }
                 }
             }
@@ -265,19 +279,21 @@ AntonSurface {
             Layout.fillWidth: true
             Layout.preferredHeight: Style.space(40)
             Layout.preferredWidth: Style.space(60)
-            hint: "Context used" + (threadCard.usage.compactions !== null ? " · " + threadCard.usage.compactions + " compactions" : "") + "\n" + (threadCard.usage.age || "Not reported")
-            opacity: threadCard.usage.stale ? 0.72 : 1
+            hint: "Context used" + (threadCard.usageReading.compactions !== null ? " · " + threadCard.usageReading.compactions + " compactions" : "") + "\n" + (threadCard.usageReading.age || "Not reported")
+            opacity: threadCard.usageReading.stale ? 0.72 : 1
             tint: threadCard.tint
-            ui: threadCard.ui
+            theme: threadCard.theme
+            tooltip: threadCard.tooltip
+            animate: threadCard.animate
 
             MetricDial {
                 anchors.centerIn: parent
                 pulse: threadCard.contextFlash
-                ratio: threadCard.usage.contextPercent === null ? -1 : threadCard.usage.contextPercent / 100
-                reading: ui.percentReading(threadCard.usage.contextPercent)
-                symbol: threadCard.usage.compactions === null ? "" : "↻ " + threadCard.usage.compactions
+                ratio: threadCard.usageReading.contextPercent === null ? -1 : threadCard.usageReading.contextPercent / 100
+                reading: State.percentReading(threadCard.usageReading.contextPercent)
+                symbol: threadCard.usageReading.compactions === null ? "" : "↻ " + threadCard.usageReading.compactions
                 tint: threadCard.tint
-                ui: threadCard.ui
+                theme: threadCard.theme
             }
         }
         AntonSurface {
@@ -286,10 +302,12 @@ AntonSurface {
             Layout.fillWidth: true
             Layout.preferredHeight: Style.space(40)
             Layout.preferredWidth: Style.space(60)
-            hint: "↓ Input · ↑ Output\n" + (threadCard.usage.age || "Not reported")
-            opacity: threadCard.usage.stale ? 0.72 : 1
+            hint: "↓ Input · ↑ Output\n" + (threadCard.usageReading.age || "Not reported")
+            opacity: threadCard.usageReading.stale ? 0.72 : 1
             tint: threadCard.tint
-            ui: threadCard.ui
+            theme: threadCard.theme
+            tooltip: threadCard.tooltip
+            animate: threadCard.animate
 
             Column {
                 anchors.centerIn: parent
@@ -299,30 +317,30 @@ AntonSurface {
                     spacing: Style.space(5)
 
                     AntonText {
-                        color: ui.ink
+                        color: threadCard.theme.ink
                         text: "↓"
-                        ui: threadCard.ui
+                        theme: threadCard.theme
                     }
                     AntonText {
                         color: threadCard.tint
                         font.bold: true
-                        text: ui.tokens(threadCard.usage.inputTokens)
-                        ui: threadCard.ui
+                        text: State.tokens(threadCard.usageReading.inputTokens)
+                        theme: threadCard.theme
                     }
                 }
                 Row {
                     spacing: Style.space(5)
 
                     AntonText {
-                        color: ui.ink
+                        color: threadCard.theme.ink
                         text: "↑"
-                        ui: threadCard.ui
+                        theme: threadCard.theme
                     }
                     AntonText {
                         color: threadCard.tint
                         font.bold: true
-                        text: ui.tokens(threadCard.usage.outputTokens)
-                        ui: threadCard.ui
+                        text: State.tokens(threadCard.usageReading.outputTokens)
+                        theme: threadCard.theme
                     }
                 }
             }
@@ -333,10 +351,12 @@ AntonSurface {
             Layout.fillWidth: true
             Layout.preferredHeight: Style.space(40)
             Layout.preferredWidth: Style.space(60)
-            hint: "◇ Uncached input · ↻ Cached input %\n" + (threadCard.usage.age || "Not reported")
-            opacity: threadCard.usage.stale ? 0.72 : 1
+            hint: "◇ Uncached input · ↻ Cached input %\n" + (threadCard.usageReading.age || "Not reported")
+            opacity: threadCard.usageReading.stale ? 0.72 : 1
             tint: threadCard.tint
-            ui: threadCard.ui
+            theme: threadCard.theme
+            tooltip: threadCard.tooltip
+            animate: threadCard.animate
 
             Column {
                 anchors.centerIn: parent
@@ -346,30 +366,30 @@ AntonSurface {
                     spacing: Style.space(5)
 
                     AntonText {
-                        color: ui.ink
+                        color: threadCard.theme.ink
                         text: "◇"
-                        ui: threadCard.ui
+                        theme: threadCard.theme
                     }
                     AntonText {
                         color: threadCard.tint
                         font.bold: true
-                        text: ui.tokens(threadCard.usage.uncachedTokens)
-                        ui: threadCard.ui
+                        text: State.tokens(threadCard.usageReading.uncachedTokens)
+                        theme: threadCard.theme
                     }
                 }
                 Row {
                     spacing: Style.space(5)
 
                     AntonText {
-                        color: ui.ink
+                        color: threadCard.theme.ink
                         text: "↻"
-                        ui: threadCard.ui
+                        theme: threadCard.theme
                     }
                     AntonText {
                         color: threadCard.tint
                         font.bold: true
-                        text: threadCard.usage.cachePercent === null ? "—" : threadCard.usage.cachePercent.toFixed(1) + "%"
-                        ui: threadCard.ui
+                        text: threadCard.usageReading.cachePercent === null ? "—" : threadCard.usageReading.cachePercent.toFixed(1) + "%"
+                        theme: threadCard.theme
                     }
                 }
             }
@@ -377,8 +397,7 @@ AntonSurface {
         AntonSurface {
             id: childMetric
 
-            readonly property var completion: threadCard.entry.completion
-            readonly property var observation: threadCard.entry.children
+            readonly property var completion: threadCard.completion
 
             Layout.fillWidth: true
             Layout.preferredHeight: Style.space(40)
@@ -386,7 +405,9 @@ AntonSurface {
             hint: State.childHint(completion)
             opacity: completion && completion.stale ? 0.62 : 1
             tint: threadCard.tint
-            ui: threadCard.ui
+            theme: threadCard.theme
+            tooltip: threadCard.tooltip
+            animate: threadCard.animate
 
             MetricDial {
                 anchors.centerIn: parent
@@ -396,14 +417,14 @@ AntonSurface {
                 ratio: childMetric.completion && childMetric.completion.total > 0 ? childMetric.completion.done / childMetric.completion.total : -1
                 reading: childMetric.completion ? childMetric.completion.total === 0 ? "0" : childMetric.completion.done + "/" + childMetric.completion.total : "—"
                 symbol: "⑂"
-                symbolTint: ui.muted
+                symbolTint: threadCard.theme.muted
                 tint: threadCard.tint
-                ui: threadCard.ui
+                theme: threadCard.theme
             }
         }
     }
     TapHandler {
-        onTapped: ui.openThread(State.threadKey(threadCard.entry))
+        onTapped: threadCard.controller.openThread(State.threadKey(threadCard.entry))
     }
     HoverHandler {
         cursorShape: Qt.PointingHandCursor

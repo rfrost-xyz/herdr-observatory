@@ -2,26 +2,43 @@ import QtQuick
 import Quickshell.Io
 import "State.js" as State
 
+// Owns the collector and the structural view. Every path (receipt, refresh,
+// restart, collector exit and the 1 s tick) goes through State.storeStep, so
+// the view is replaced only when its structure changes: on a receipt, or at a
+// freshness deadline, whether the popover is open or closed.
 Item {
     id: root
 
     property double lastReceipt: 0
-    property string projectedSignature: ""
+    // Display instant for relative-time readings. It advances only while the
+    // popover shows them (visualUpdates): on opening, each tick and each receipt.
+    property double now: Date.now()
     property var raw: null
+    // The storeStep state; callers read raw, lastReceipt and view instead.
+    readonly property var store: ({
+            raw: null,
+            lastReceipt: 0,
+            view: null,
+            signature: "",
+            deadline: null
+        })
     property var view: State.project(null, Date.now())
     property bool visualUpdates: true
 
     function accept(line) {
+        var parsed = null;
         try {
             if (line.length > 2097152)
                 throw new Error("Oversized snapshot");
 
-            raw = JSON.parse(line);
-            lastReceipt = Date.now();
+            parsed = JSON.parse(line);
         } catch (error) {
-            raw = null;
+            parsed = null;
         }
-        update();
+        step({
+            type: "receipt",
+            raw: parsed
+        });
     }
     // Explicit operator refresh (r, middle-click, IPC): ask a running collector
     // for a fresh local sample round, or start a collector that has exited.
@@ -31,7 +48,9 @@ Item {
         else
             collector.running = true;
 
-        update();
+        step({
+            type: "update"
+        });
     }
     // Opening the popover and the retry timer only restart a dead collector.
     // They never write to stdin, so opening adds no host sample round.
@@ -39,16 +58,30 @@ Item {
         if (!collector.running)
             collector.running = true;
 
-        update();
+        step({
+            type: "update"
+        });
     }
-    function update() {
-        var next = State.project(raw, Date.now());
-        next.threads = State.stableThreads(view.threads, next.threads);
-        var signature = JSON.stringify(next);
-        if (signature !== projectedSignature) {
-            projectedSignature = signature;
-            view = next;
-        }
+    function step(event) {
+        var at = Date.now();
+        var replaced = State.storeStep(store, event, at);
+        if (raw !== store.raw)
+            raw = store.raw;
+        lastReceipt = store.lastReceipt;
+        if (visualUpdates && event.type !== "update")
+            now = at;
+        // Assign only on replacement: reassigning the same object still notifies.
+        if (replaced)
+            view = store.view;
+    }
+
+    Component.onCompleted: {
+        store.view = view;
+        store.signature = State.viewSignature(view);
+    }
+    onVisualUpdatesChanged: {
+        if (visualUpdates)
+            now = Date.now();
     }
 
     Process {
@@ -63,12 +96,18 @@ Item {
                 root.accept(line);
             }
         }
-
-        onExited: {
-            root.raw = null;
-            root.update();
+    }
+    // A collector exit drops the snapshot and schedules a restart.
+    Connections {
+        function onExited() {
+            root.store.raw = null;
+            root.step({
+                type: "update"
+            });
             retry.restart();
         }
+
+        target: collector
     }
     Timer {
         id: retry
@@ -82,14 +121,9 @@ Item {
         repeat: true
         running: true
 
-        onTriggered: {
-            // The runtime states its heartbeat; see State.receiptTimeoutMs.
-            if (root.raw !== null && Date.now() - root.lastReceipt > State.receiptTimeoutMs(root.raw)) {
-                root.raw = null;
-                root.update();
-            } else if (root.visualUpdates) {
-                root.update();
-            }
-        }
+        // Receipt timeout (see State.receiptTimeoutMs), then any freshness deadline.
+        onTriggered: root.step({
+            type: "tick"
+        })
     }
 }

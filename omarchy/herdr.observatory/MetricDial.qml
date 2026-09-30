@@ -1,8 +1,5 @@
 import QtQuick
-import QtQuick.Controls
-import QtQuick.Layouts
 import qs.Commons
-import "State.js" as State
 
 Item {
     id: dial
@@ -12,9 +9,9 @@ Item {
     property real ratio: -1
     property string reading: "—"
     property string symbol: ""
-    property color symbolTint: ui.muted
-    property color tint: ui.muted
-    required property var ui
+    property color symbolTint: theme.muted
+    required property AntonTheme theme
+    property color tint: theme.muted
 
     implicitHeight: Style.space(40)
     implicitWidth: Style.space(52)
@@ -23,7 +20,7 @@ Item {
         id: arc
 
         property bool failure: dial.failureNotch
-        property color failureTone: ui.red
+        property color failureTone: dial.theme.red
         property color tone: dial.tint
         property real value: dial.ratio
 
@@ -36,7 +33,7 @@ Item {
             ctx.reset();
             ctx.lineWidth = 2;
             ctx.lineCap = "butt";
-            ctx.strokeStyle = ui.alpha(tone, 0.2).toString();
+            ctx.strokeStyle = dial.theme.alpha(tone, 0.2).toString();
             ctx.beginPath();
             ctx.arc(cx, cy, r, Math.PI * 0.75, Math.PI * 2.25);
             ctx.stroke();
@@ -70,7 +67,7 @@ Item {
         minimumPixelSize: Style.space(8)
         scale: 1 + dial.pulse * 0.12
         text: dial.reading
-        ui: dial.ui
+        theme: dial.theme
         verticalAlignment: Text.AlignVCenter
         width: parent.width - Style.space(14)
     }
@@ -80,6 +77,6 @@ Item {
         color: dial.symbolTint
         font.pixelSize: Style.space(9)
         text: dial.symbol
-        ui: dial.ui
+        theme: dial.theme
     }
 }

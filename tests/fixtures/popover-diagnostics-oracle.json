@@ -1,0 +1,2034 @@
+{
+ "source": "Panel.qml IpcHandler.diagnostics at 53f2407",
+ "generator": "tests/capture_popover_oracles.cjs",
+ "cases": [
+  {
+   "name": "disconnected",
+   "raw": null,
+   "nowMs": 1800000000000,
+   "diagnostics": "{\"connected\":false,\"hosts\":[],\"threads\":0,\"usageReported\":0,\"timingReported\":0,\"timingCurrent\":0,\"timingTotals\":0,\"timingStale\":0,\"allowances\":[]}"
+  },
+  {
+   "name": "turn-freshness-and-elapsed",
+   "raw": {
+    "at": 1800000000,
+    "interval": 60,
+    "heartbeat_seconds": 4,
+    "hosts": [
+     {
+      "id": "alpha",
+      "label": "Host alpha",
+      "online": true,
+      "connection_state": "connected",
+      "sampled_at": 1800000000,
+      "navigation": {
+       "profile_id": "alpha",
+       "route_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "agents": [
+       {
+        "id": "a",
+        "status": "working",
+        "project": "Project a",
+        "title": "Task a",
+        "branch": "feature/a",
+        "checkout": "branch-a",
+        "harness": "codex",
+        "technical": {
+         "turn_timing": {
+          "active": true,
+          "started_at_s": 1799999246,
+          "observed_at_s": 1800000000,
+          "last_duration_s": 420,
+          "last_outcome": "completed",
+          "total_finished_duration_s": 2100,
+          "complete": true,
+          "freshness_seconds": 12
+         }
+        }
+       },
+       {
+        "id": "b",
+        "status": "idle",
+        "project": "Project b",
+        "title": "Task b",
+        "branch": "feature/b",
+        "checkout": "branch-b",
+        "harness": "codex",
+        "technical": {
+         "turn_timing": {
+          "active": false,
+          "started_at_s": 1799999246,
+          "observed_at_s": 1800000000,
+          "last_duration_s": 420,
+          "last_outcome": "aborted",
+          "total_finished_duration_s": 2100,
+          "complete": true,
+          "freshness_seconds": 12
+         }
+        }
+       },
+       {
+        "id": "c",
+        "status": "working",
+        "project": "Project c",
+        "title": "Task c",
+        "branch": "feature/c",
+        "checkout": "branch-c",
+        "harness": "codex",
+        "technical": {
+         "turn_timing": {
+          "active": true,
+          "started_at_s": 1799999246,
+          "observed_at_s": 1800000000,
+          "last_duration_s": 420,
+          "last_outcome": "completed",
+          "total_finished_duration_s": 2100,
+          "complete": false,
+          "freshness_seconds": 3
+         }
+        }
+       }
+      ]
+     }
+    ],
+    "allowances": [],
+    "fleet_discovery": {
+     "state": "disabled"
+    }
+   },
+   "nowMs": 1800000000000,
+   "diagnostics": "{\"connected\":true,\"hosts\":[{\"id\":\"alpha\",\"connection\":\"connected\",\"reporting\":true}],\"threads\":3,\"usageReported\":0,\"timingReported\":3,\"timingCurrent\":2,\"timingTotals\":2,\"timingStale\":0,\"allowances\":[]}"
+  },
+  {
+   "name": "turn-freshness-and-elapsed",
+   "raw": {
+    "at": 1800000000,
+    "interval": 60,
+    "heartbeat_seconds": 4,
+    "hosts": [
+     {
+      "id": "alpha",
+      "label": "Host alpha",
+      "online": true,
+      "connection_state": "connected",
+      "sampled_at": 1800000000,
+      "navigation": {
+       "profile_id": "alpha",
+       "route_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "agents": [
+       {
+        "id": "a",
+        "status": "working",
+        "project": "Project a",
+        "title": "Task a",
+        "branch": "feature/a",
+        "checkout": "branch-a",
+        "harness": "codex",
+        "technical": {
+         "turn_timing": {
+          "active": true,
+          "started_at_s": 1799999246,
+          "observed_at_s": 1800000000,
+          "last_duration_s": 420,
+          "last_outcome": "completed",
+          "total_finished_duration_s": 2100,
+          "complete": true,
+          "freshness_seconds": 12
+         }
+        }
+       },
+       {
+        "id": "b",
+        "status": "idle",
+        "project": "Project b",
+        "title": "Task b",
+        "branch": "feature/b",
+        "checkout": "branch-b",
+        "harness": "codex",
+        "technical": {
+         "turn_timing": {
+          "active": false,
+          "started_at_s": 1799999246,
+          "observed_at_s": 1800000000,
+          "last_duration_s": 420,
+          "last_outcome": "aborted",
+          "total_finished_duration_s": 2100,
+          "complete": true,
+          "freshness_seconds": 12
+         }
+        }
+       },
+       {
+        "id": "c",
+        "status": "working",
+        "project": "Project c",
+        "title": "Task c",
+        "branch": "feature/c",
+        "checkout": "branch-c",
+        "harness": "codex",
+        "technical": {
+         "turn_timing": {
+          "active": true,
+          "started_at_s": 1799999246,
+          "observed_at_s": 1800000000,
+          "last_duration_s": 420,
+          "last_outcome": "completed",
+          "total_finished_duration_s": 2100,
+          "complete": false,
+          "freshness_seconds": 3
+         }
+        }
+       }
+      ]
+     }
+    ],
+    "allowances": [],
+    "fleet_discovery": {
+     "state": "disabled"
+    }
+   },
+   "nowMs": 1800000000500,
+   "diagnostics": "{\"connected\":true,\"hosts\":[{\"id\":\"alpha\",\"connection\":\"connected\",\"reporting\":true}],\"threads\":3,\"usageReported\":0,\"timingReported\":3,\"timingCurrent\":2,\"timingTotals\":2,\"timingStale\":0,\"allowances\":[]}"
+  },
+  {
+   "name": "turn-freshness-and-elapsed",
+   "raw": {
+    "at": 1800000000,
+    "interval": 60,
+    "heartbeat_seconds": 4,
+    "hosts": [
+     {
+      "id": "alpha",
+      "label": "Host alpha",
+      "online": true,
+      "connection_state": "connected",
+      "sampled_at": 1800000000,
+      "navigation": {
+       "profile_id": "alpha",
+       "route_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "agents": [
+       {
+        "id": "a",
+        "status": "working",
+        "project": "Project a",
+        "title": "Task a",
+        "branch": "feature/a",
+        "checkout": "branch-a",
+        "harness": "codex",
+        "technical": {
+         "turn_timing": {
+          "active": true,
+          "started_at_s": 1799999246,
+          "observed_at_s": 1800000000,
+          "last_duration_s": 420,
+          "last_outcome": "completed",
+          "total_finished_duration_s": 2100,
+          "complete": true,
+          "freshness_seconds": 12
+         }
+        }
+       },
+       {
+        "id": "b",
+        "status": "idle",
+        "project": "Project b",
+        "title": "Task b",
+        "branch": "feature/b",
+        "checkout": "branch-b",
+        "harness": "codex",
+        "technical": {
+         "turn_timing": {
+          "active": false,
+          "started_at_s": 1799999246,
+          "observed_at_s": 1800000000,
+          "last_duration_s": 420,
+          "last_outcome": "aborted",
+          "total_finished_duration_s": 2100,
+          "complete": true,
+          "freshness_seconds": 12
+         }
+        }
+       },
+       {
+        "id": "c",
+        "status": "working",
+        "project": "Project c",
+        "title": "Task c",
+        "branch": "feature/c",
+        "checkout": "branch-c",
+        "harness": "codex",
+        "technical": {
+         "turn_timing": {
+          "active": true,
+          "started_at_s": 1799999246,
+          "observed_at_s": 1800000000,
+          "last_duration_s": 420,
+          "last_outcome": "completed",
+          "total_finished_duration_s": 2100,
+          "complete": false,
+          "freshness_seconds": 3
+         }
+        }
+       }
+      ]
+     }
+    ],
+    "allowances": [],
+    "fleet_discovery": {
+     "state": "disabled"
+    }
+   },
+   "nowMs": 1800000001000,
+   "diagnostics": "{\"connected\":true,\"hosts\":[{\"id\":\"alpha\",\"connection\":\"connected\",\"reporting\":true}],\"threads\":3,\"usageReported\":0,\"timingReported\":3,\"timingCurrent\":2,\"timingTotals\":2,\"timingStale\":0,\"allowances\":[]}"
+  },
+  {
+   "name": "turn-freshness-and-elapsed",
+   "raw": {
+    "at": 1800000000,
+    "interval": 60,
+    "heartbeat_seconds": 4,
+    "hosts": [
+     {
+      "id": "alpha",
+      "label": "Host alpha",
+      "online": true,
+      "connection_state": "connected",
+      "sampled_at": 1800000000,
+      "navigation": {
+       "profile_id": "alpha",
+       "route_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "agents": [
+       {
+        "id": "a",
+        "status": "working",
+        "project": "Project a",
+        "title": "Task a",
+        "branch": "feature/a",
+        "checkout": "branch-a",
+        "harness": "codex",
+        "technical": {
+         "turn_timing": {
+          "active": true,
+          "started_at_s": 1799999246,
+          "observed_at_s": 1800000000,
+          "last_duration_s": 420,
+          "last_outcome": "completed",
+          "total_finished_duration_s": 2100,
+          "complete": true,
+          "freshness_seconds": 12
+         }
+        }
+       },
+       {
+        "id": "b",
+        "status": "idle",
+        "project": "Project b",
+        "title": "Task b",
+        "branch": "feature/b",
+        "checkout": "branch-b",
+        "harness": "codex",
+        "technical": {
+         "turn_timing": {
+          "active": false,
+          "started_at_s": 1799999246,
+          "observed_at_s": 1800000000,
+          "last_duration_s": 420,
+          "last_outcome": "aborted",
+          "total_finished_duration_s": 2100,
+          "complete": true,
+          "freshness_seconds": 12
+         }
+        }
+       },
+       {
+        "id": "c",
+        "status": "working",
+        "project": "Project c",
+        "title": "Task c",
+        "branch": "feature/c",
+        "checkout": "branch-c",
+        "harness": "codex",
+        "technical": {
+         "turn_timing": {
+          "active": true,
+          "started_at_s": 1799999246,
+          "observed_at_s": 1800000000,
+          "last_duration_s": 420,
+          "last_outcome": "completed",
+          "total_finished_duration_s": 2100,
+          "complete": false,
+          "freshness_seconds": 3
+         }
+        }
+       }
+      ]
+     }
+    ],
+    "allowances": [],
+    "fleet_discovery": {
+     "state": "disabled"
+    }
+   },
+   "nowMs": 1800000002999,
+   "diagnostics": "{\"connected\":true,\"hosts\":[{\"id\":\"alpha\",\"connection\":\"connected\",\"reporting\":true}],\"threads\":3,\"usageReported\":0,\"timingReported\":3,\"timingCurrent\":2,\"timingTotals\":2,\"timingStale\":0,\"allowances\":[]}"
+  },
+  {
+   "name": "turn-freshness-and-elapsed",
+   "raw": {
+    "at": 1800000000,
+    "interval": 60,
+    "heartbeat_seconds": 4,
+    "hosts": [
+     {
+      "id": "alpha",
+      "label": "Host alpha",
+      "online": true,
+      "connection_state": "connected",
+      "sampled_at": 1800000000,
+      "navigation": {
+       "profile_id": "alpha",
+       "route_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "agents": [
+       {
+        "id": "a",
+        "status": "working",
+        "project": "Project a",
+        "title": "Task a",
+        "branch": "feature/a",
+        "checkout": "branch-a",
+        "harness": "codex",
+        "technical": {
+         "turn_timing": {
+          "active": true,
+          "started_at_s": 1799999246,
+          "observed_at_s": 1800000000,
+          "last_duration_s": 420,
+          "last_outcome": "completed",
+          "total_finished_duration_s": 2100,
+          "complete": true,
+          "freshness_seconds": 12
+         }
+        }
+       },
+       {
+        "id": "b",
+        "status": "idle",
+        "project": "Project b",
+        "title": "Task b",
+        "branch": "feature/b",
+        "checkout": "branch-b",
+        "harness": "codex",
+        "technical": {
+         "turn_timing": {
+          "active": false,
+          "started_at_s": 1799999246,
+          "observed_at_s": 1800000000,
+          "last_duration_s": 420,
+          "last_outcome": "aborted",
+          "total_finished_duration_s": 2100,
+          "complete": true,
+          "freshness_seconds": 12
+         }
+        }
+       },
+       {
+        "id": "c",
+        "status": "working",
+        "project": "Project c",
+        "title": "Task c",
+        "branch": "feature/c",
+        "checkout": "branch-c",
+        "harness": "codex",
+        "technical": {
+         "turn_timing": {
+          "active": true,
+          "started_at_s": 1799999246,
+          "observed_at_s": 1800000000,
+          "last_duration_s": 420,
+          "last_outcome": "completed",
+          "total_finished_duration_s": 2100,
+          "complete": false,
+          "freshness_seconds": 3
+         }
+        }
+       }
+      ]
+     }
+    ],
+    "allowances": [],
+    "fleet_discovery": {
+     "state": "disabled"
+    }
+   },
+   "nowMs": 1800000003000,
+   "diagnostics": "{\"connected\":true,\"hosts\":[{\"id\":\"alpha\",\"connection\":\"connected\",\"reporting\":true}],\"threads\":3,\"usageReported\":0,\"timingReported\":3,\"timingCurrent\":2,\"timingTotals\":2,\"timingStale\":0,\"allowances\":[]}"
+  },
+  {
+   "name": "turn-freshness-and-elapsed",
+   "raw": {
+    "at": 1800000000,
+    "interval": 60,
+    "heartbeat_seconds": 4,
+    "hosts": [
+     {
+      "id": "alpha",
+      "label": "Host alpha",
+      "online": true,
+      "connection_state": "connected",
+      "sampled_at": 1800000000,
+      "navigation": {
+       "profile_id": "alpha",
+       "route_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "agents": [
+       {
+        "id": "a",
+        "status": "working",
+        "project": "Project a",
+        "title": "Task a",
+        "branch": "feature/a",
+        "checkout": "branch-a",
+        "harness": "codex",
+        "technical": {
+         "turn_timing": {
+          "active": true,
+          "started_at_s": 1799999246,
+          "observed_at_s": 1800000000,
+          "last_duration_s": 420,
+          "last_outcome": "completed",
+          "total_finished_duration_s": 2100,
+          "complete": true,
+          "freshness_seconds": 12
+         }
+        }
+       },
+       {
+        "id": "b",
+        "status": "idle",
+        "project": "Project b",
+        "title": "Task b",
+        "branch": "feature/b",
+        "checkout": "branch-b",
+        "harness": "codex",
+        "technical": {
+         "turn_timing": {
+          "active": false,
+          "started_at_s": 1799999246,
+          "observed_at_s": 1800000000,
+          "last_duration_s": 420,
+          "last_outcome": "aborted",
+          "total_finished_duration_s": 2100,
+          "complete": true,
+          "freshness_seconds": 12
+         }
+        }
+       },
+       {
+        "id": "c",
+        "status": "working",
+        "project": "Project c",
+        "title": "Task c",
+        "branch": "feature/c",
+        "checkout": "branch-c",
+        "harness": "codex",
+        "technical": {
+         "turn_timing": {
+          "active": true,
+          "started_at_s": 1799999246,
+          "observed_at_s": 1800000000,
+          "last_duration_s": 420,
+          "last_outcome": "completed",
+          "total_finished_duration_s": 2100,
+          "complete": false,
+          "freshness_seconds": 3
+         }
+        }
+       }
+      ]
+     }
+    ],
+    "allowances": [],
+    "fleet_discovery": {
+     "state": "disabled"
+    }
+   },
+   "nowMs": 1800000003500,
+   "diagnostics": "{\"connected\":true,\"hosts\":[{\"id\":\"alpha\",\"connection\":\"connected\",\"reporting\":true}],\"threads\":3,\"usageReported\":0,\"timingReported\":3,\"timingCurrent\":1,\"timingTotals\":2,\"timingStale\":1,\"allowances\":[]}"
+  },
+  {
+   "name": "mixed-fleet",
+   "raw": {
+    "at": 1800000000,
+    "interval": 5,
+    "heartbeat_seconds": 4,
+    "hosts": [
+     {
+      "id": "alpha",
+      "label": "Host alpha",
+      "online": true,
+      "connection_state": "connected",
+      "sampled_at": 1800000000,
+      "navigation": {
+       "profile_id": "alpha",
+       "route_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "agents": [
+       {
+        "id": "a",
+        "status": "working",
+        "project": "Project a",
+        "title": "Task a",
+        "branch": "feature/a",
+        "checkout": "branch-a",
+        "harness": "codex",
+        "technical": {
+         "telemetry": {
+          "seq": 1799999900000000,
+          "usage_seq": 1799999900000000,
+          "context": 42000,
+          "window": 128000,
+          "total_input": 2100000,
+          "total_output": 34000,
+          "total_cache_read": 1950000,
+          "total_uncached_input": 150000,
+          "total_cache_write": 0,
+          "compactions": 2,
+          "subagent_total": 4,
+          "subagent_done": 2,
+          "subagent_running": 1,
+          "subagent_interrupted": 0,
+          "subagent_failed": 1,
+          "subagent_unknown": 0,
+          "subagent_status_seq": 1799999900000000,
+          "subagent_starts": 3,
+          "subagent_stops": 2,
+          "subagent_seq": 1799999900000000
+         },
+         "turn_timing": {
+          "active": true,
+          "started_at_s": 1799999241,
+          "observed_at_s": 1799999995,
+          "last_duration_s": 420,
+          "last_outcome": "completed",
+          "total_finished_duration_s": 2100,
+          "complete": true,
+          "freshness_seconds": 12
+         }
+        }
+       },
+       {
+        "id": "b",
+        "status": "done",
+        "project": "Project b",
+        "title": "Task b",
+        "branch": "feature/b",
+        "checkout": "branch-b",
+        "harness": "codex",
+        "technical": {
+         "session_generation": 2,
+         "state_change_seq": 9,
+         "telemetry": {
+          "seq": 1800000000000000,
+          "usage_seq": 1800000000000000,
+          "context": 42000,
+          "window": 128000,
+          "total_input": 2100000,
+          "total_output": 34000,
+          "total_cache_read": 1950000,
+          "total_uncached_input": 150000,
+          "total_cache_write": 0,
+          "compactions": 2,
+          "subagent_total": 4,
+          "subagent_done": 2,
+          "subagent_running": 1,
+          "subagent_interrupted": 0,
+          "subagent_failed": 1,
+          "subagent_unknown": 0,
+          "subagent_status_seq": 1800000000000000,
+          "subagent_starts": 3,
+          "subagent_stops": 2,
+          "subagent_seq": 1800000000000000
+         }
+        }
+       }
+      ]
+     },
+     {
+      "id": "beta",
+      "label": "Host beta",
+      "online": true,
+      "connection_state": "connected",
+      "sampled_at": 1799999980,
+      "navigation": {
+       "profile_id": "beta",
+       "route_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "agents": [
+       {
+        "id": "c",
+        "status": "blocked",
+        "project": "Project c",
+        "title": "Task c",
+        "branch": "feature/c",
+        "checkout": "branch-c",
+        "harness": "codex",
+        "technical": {
+         "telemetry": {
+          "seq": 1799999970000000,
+          "usage_seq": 1799999970000000,
+          "context": 42000,
+          "window": 128000,
+          "total_input": 2100000,
+          "total_output": 34000,
+          "total_cache_read": 1950000,
+          "total_uncached_input": 150000,
+          "total_cache_write": 0,
+          "compactions": 2,
+          "subagent_total": 4,
+          "subagent_done": 2,
+          "subagent_running": 1,
+          "subagent_interrupted": 0,
+          "subagent_failed": 1,
+          "subagent_unknown": 0,
+          "subagent_status_seq": 1799999970000000,
+          "subagent_starts": 3,
+          "subagent_stops": 2,
+          "subagent_seq": 1799999970000000
+         },
+         "turn_timing": {
+          "active": false,
+          "started_at_s": 1799999245,
+          "observed_at_s": 1799999999,
+          "last_duration_s": 420,
+          "last_outcome": "completed",
+          "total_finished_duration_s": 2100,
+          "complete": true,
+          "freshness_seconds": 12
+         }
+        }
+       }
+      ]
+     },
+     {
+      "id": "gamma",
+      "label": "Host gamma",
+      "online": false,
+      "connection_state": "unreachable",
+      "sampled_at": 1800000000,
+      "navigation": {
+       "profile_id": "gamma",
+       "route_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "agents": []
+     },
+     {
+      "id": "delta",
+      "label": "Host delta",
+      "online": true,
+      "connection_state": "setup_needed",
+      "sampled_at": 1800000000,
+      "navigation": {
+       "profile_id": "delta",
+       "route_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "agents": []
+     }
+    ],
+    "allowances": [
+     {
+      "provider": "codex",
+      "provider_label": "Codex",
+      "account_id": "one",
+      "label": "one",
+      "status": "available",
+      "status_text": null,
+      "plan": "pro",
+      "sampled_at": 1799999970,
+      "reset_count": 1,
+      "reset_expires_at": null,
+      "windows": [
+       {
+        "kind": "weekly",
+        "label": "Weekly",
+        "used_percent": 40,
+        "resets_at": 1800302400,
+        "duration_s": 604800,
+        "pacing": true
+       }
+      ]
+     },
+     {
+      "provider": "codex",
+      "provider_label": "Codex",
+      "account_id": "two",
+      "label": "two",
+      "status": "available",
+      "status_text": null,
+      "plan": "pro",
+      "sampled_at": 1799999410,
+      "reset_count": 1,
+      "reset_expires_at": null,
+      "windows": [
+       {
+        "kind": "weekly",
+        "label": "Weekly",
+        "used_percent": 100,
+        "resets_at": 1800302400,
+        "duration_s": 604800,
+        "pacing": true
+       }
+      ]
+     },
+     {
+      "provider": "codex",
+      "provider_label": "Codex",
+      "account_id": "auth",
+      "label": "auth",
+      "status": "auth_needed",
+      "status_text": "Sign in required",
+      "plan": "pro",
+      "sampled_at": null,
+      "reset_count": 1,
+      "reset_expires_at": null,
+      "windows": []
+     }
+    ],
+    "fleet_discovery": {
+     "state": "discovering"
+    }
+   },
+   "nowMs": 1800000000000,
+   "diagnostics": "{\"connected\":true,\"hosts\":[{\"id\":\"alpha\",\"connection\":\"connected\",\"reporting\":true},{\"id\":\"beta\",\"connection\":\"connected\",\"reporting\":true},{\"id\":\"gamma\",\"connection\":\"unreachable\",\"reporting\":false},{\"id\":\"delta\",\"connection\":\"setup_needed\",\"reporting\":false}],\"threads\":3,\"usageReported\":3,\"timingReported\":2,\"timingCurrent\":1,\"timingTotals\":2,\"timingStale\":0,\"allowances\":[{\"label\":\"one\",\"available\":true},{\"label\":\"two\",\"available\":true},{\"label\":\"auth\",\"available\":false}]}"
+  },
+  {
+   "name": "mixed-fleet",
+   "raw": {
+    "at": 1800000000,
+    "interval": 5,
+    "heartbeat_seconds": 4,
+    "hosts": [
+     {
+      "id": "alpha",
+      "label": "Host alpha",
+      "online": true,
+      "connection_state": "connected",
+      "sampled_at": 1800000000,
+      "navigation": {
+       "profile_id": "alpha",
+       "route_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "agents": [
+       {
+        "id": "a",
+        "status": "working",
+        "project": "Project a",
+        "title": "Task a",
+        "branch": "feature/a",
+        "checkout": "branch-a",
+        "harness": "codex",
+        "technical": {
+         "telemetry": {
+          "seq": 1799999900000000,
+          "usage_seq": 1799999900000000,
+          "context": 42000,
+          "window": 128000,
+          "total_input": 2100000,
+          "total_output": 34000,
+          "total_cache_read": 1950000,
+          "total_uncached_input": 150000,
+          "total_cache_write": 0,
+          "compactions": 2,
+          "subagent_total": 4,
+          "subagent_done": 2,
+          "subagent_running": 1,
+          "subagent_interrupted": 0,
+          "subagent_failed": 1,
+          "subagent_unknown": 0,
+          "subagent_status_seq": 1799999900000000,
+          "subagent_starts": 3,
+          "subagent_stops": 2,
+          "subagent_seq": 1799999900000000
+         },
+         "turn_timing": {
+          "active": true,
+          "started_at_s": 1799999241,
+          "observed_at_s": 1799999995,
+          "last_duration_s": 420,
+          "last_outcome": "completed",
+          "total_finished_duration_s": 2100,
+          "complete": true,
+          "freshness_seconds": 12
+         }
+        }
+       },
+       {
+        "id": "b",
+        "status": "done",
+        "project": "Project b",
+        "title": "Task b",
+        "branch": "feature/b",
+        "checkout": "branch-b",
+        "harness": "codex",
+        "technical": {
+         "session_generation": 2,
+         "state_change_seq": 9,
+         "telemetry": {
+          "seq": 1800000000000000,
+          "usage_seq": 1800000000000000,
+          "context": 42000,
+          "window": 128000,
+          "total_input": 2100000,
+          "total_output": 34000,
+          "total_cache_read": 1950000,
+          "total_uncached_input": 150000,
+          "total_cache_write": 0,
+          "compactions": 2,
+          "subagent_total": 4,
+          "subagent_done": 2,
+          "subagent_running": 1,
+          "subagent_interrupted": 0,
+          "subagent_failed": 1,
+          "subagent_unknown": 0,
+          "subagent_status_seq": 1800000000000000,
+          "subagent_starts": 3,
+          "subagent_stops": 2,
+          "subagent_seq": 1800000000000000
+         }
+        }
+       }
+      ]
+     },
+     {
+      "id": "beta",
+      "label": "Host beta",
+      "online": true,
+      "connection_state": "connected",
+      "sampled_at": 1799999980,
+      "navigation": {
+       "profile_id": "beta",
+       "route_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "agents": [
+       {
+        "id": "c",
+        "status": "blocked",
+        "project": "Project c",
+        "title": "Task c",
+        "branch": "feature/c",
+        "checkout": "branch-c",
+        "harness": "codex",
+        "technical": {
+         "telemetry": {
+          "seq": 1799999970000000,
+          "usage_seq": 1799999970000000,
+          "context": 42000,
+          "window": 128000,
+          "total_input": 2100000,
+          "total_output": 34000,
+          "total_cache_read": 1950000,
+          "total_uncached_input": 150000,
+          "total_cache_write": 0,
+          "compactions": 2,
+          "subagent_total": 4,
+          "subagent_done": 2,
+          "subagent_running": 1,
+          "subagent_interrupted": 0,
+          "subagent_failed": 1,
+          "subagent_unknown": 0,
+          "subagent_status_seq": 1799999970000000,
+          "subagent_starts": 3,
+          "subagent_stops": 2,
+          "subagent_seq": 1799999970000000
+         },
+         "turn_timing": {
+          "active": false,
+          "started_at_s": 1799999245,
+          "observed_at_s": 1799999999,
+          "last_duration_s": 420,
+          "last_outcome": "completed",
+          "total_finished_duration_s": 2100,
+          "complete": true,
+          "freshness_seconds": 12
+         }
+        }
+       }
+      ]
+     },
+     {
+      "id": "gamma",
+      "label": "Host gamma",
+      "online": false,
+      "connection_state": "unreachable",
+      "sampled_at": 1800000000,
+      "navigation": {
+       "profile_id": "gamma",
+       "route_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "agents": []
+     },
+     {
+      "id": "delta",
+      "label": "Host delta",
+      "online": true,
+      "connection_state": "setup_needed",
+      "sampled_at": 1800000000,
+      "navigation": {
+       "profile_id": "delta",
+       "route_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "agents": []
+     }
+    ],
+    "allowances": [
+     {
+      "provider": "codex",
+      "provider_label": "Codex",
+      "account_id": "one",
+      "label": "one",
+      "status": "available",
+      "status_text": null,
+      "plan": "pro",
+      "sampled_at": 1799999970,
+      "reset_count": 1,
+      "reset_expires_at": null,
+      "windows": [
+       {
+        "kind": "weekly",
+        "label": "Weekly",
+        "used_percent": 40,
+        "resets_at": 1800302400,
+        "duration_s": 604800,
+        "pacing": true
+       }
+      ]
+     },
+     {
+      "provider": "codex",
+      "provider_label": "Codex",
+      "account_id": "two",
+      "label": "two",
+      "status": "available",
+      "status_text": null,
+      "plan": "pro",
+      "sampled_at": 1799999410,
+      "reset_count": 1,
+      "reset_expires_at": null,
+      "windows": [
+       {
+        "kind": "weekly",
+        "label": "Weekly",
+        "used_percent": 100,
+        "resets_at": 1800302400,
+        "duration_s": 604800,
+        "pacing": true
+       }
+      ]
+     },
+     {
+      "provider": "codex",
+      "provider_label": "Codex",
+      "account_id": "auth",
+      "label": "auth",
+      "status": "auth_needed",
+      "status_text": "Sign in required",
+      "plan": "pro",
+      "sampled_at": null,
+      "reset_count": 1,
+      "reset_expires_at": null,
+      "windows": []
+     }
+    ],
+    "fleet_discovery": {
+     "state": "discovering"
+    }
+   },
+   "nowMs": 1800000001000,
+   "diagnostics": "{\"connected\":true,\"hosts\":[{\"id\":\"alpha\",\"connection\":\"connected\",\"reporting\":true},{\"id\":\"beta\",\"connection\":\"connected\",\"reporting\":true},{\"id\":\"gamma\",\"connection\":\"unreachable\",\"reporting\":false},{\"id\":\"delta\",\"connection\":\"setup_needed\",\"reporting\":false}],\"threads\":3,\"usageReported\":3,\"timingReported\":2,\"timingCurrent\":1,\"timingTotals\":2,\"timingStale\":0,\"allowances\":[{\"label\":\"one\",\"available\":true},{\"label\":\"two\",\"available\":true},{\"label\":\"auth\",\"available\":false}]}"
+  },
+  {
+   "name": "mixed-fleet",
+   "raw": {
+    "at": 1800000000,
+    "interval": 5,
+    "heartbeat_seconds": 4,
+    "hosts": [
+     {
+      "id": "alpha",
+      "label": "Host alpha",
+      "online": true,
+      "connection_state": "connected",
+      "sampled_at": 1800000000,
+      "navigation": {
+       "profile_id": "alpha",
+       "route_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "agents": [
+       {
+        "id": "a",
+        "status": "working",
+        "project": "Project a",
+        "title": "Task a",
+        "branch": "feature/a",
+        "checkout": "branch-a",
+        "harness": "codex",
+        "technical": {
+         "telemetry": {
+          "seq": 1799999900000000,
+          "usage_seq": 1799999900000000,
+          "context": 42000,
+          "window": 128000,
+          "total_input": 2100000,
+          "total_output": 34000,
+          "total_cache_read": 1950000,
+          "total_uncached_input": 150000,
+          "total_cache_write": 0,
+          "compactions": 2,
+          "subagent_total": 4,
+          "subagent_done": 2,
+          "subagent_running": 1,
+          "subagent_interrupted": 0,
+          "subagent_failed": 1,
+          "subagent_unknown": 0,
+          "subagent_status_seq": 1799999900000000,
+          "subagent_starts": 3,
+          "subagent_stops": 2,
+          "subagent_seq": 1799999900000000
+         },
+         "turn_timing": {
+          "active": true,
+          "started_at_s": 1799999241,
+          "observed_at_s": 1799999995,
+          "last_duration_s": 420,
+          "last_outcome": "completed",
+          "total_finished_duration_s": 2100,
+          "complete": true,
+          "freshness_seconds": 12
+         }
+        }
+       },
+       {
+        "id": "b",
+        "status": "done",
+        "project": "Project b",
+        "title": "Task b",
+        "branch": "feature/b",
+        "checkout": "branch-b",
+        "harness": "codex",
+        "technical": {
+         "session_generation": 2,
+         "state_change_seq": 9,
+         "telemetry": {
+          "seq": 1800000000000000,
+          "usage_seq": 1800000000000000,
+          "context": 42000,
+          "window": 128000,
+          "total_input": 2100000,
+          "total_output": 34000,
+          "total_cache_read": 1950000,
+          "total_uncached_input": 150000,
+          "total_cache_write": 0,
+          "compactions": 2,
+          "subagent_total": 4,
+          "subagent_done": 2,
+          "subagent_running": 1,
+          "subagent_interrupted": 0,
+          "subagent_failed": 1,
+          "subagent_unknown": 0,
+          "subagent_status_seq": 1800000000000000,
+          "subagent_starts": 3,
+          "subagent_stops": 2,
+          "subagent_seq": 1800000000000000
+         }
+        }
+       }
+      ]
+     },
+     {
+      "id": "beta",
+      "label": "Host beta",
+      "online": true,
+      "connection_state": "connected",
+      "sampled_at": 1799999980,
+      "navigation": {
+       "profile_id": "beta",
+       "route_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "agents": [
+       {
+        "id": "c",
+        "status": "blocked",
+        "project": "Project c",
+        "title": "Task c",
+        "branch": "feature/c",
+        "checkout": "branch-c",
+        "harness": "codex",
+        "technical": {
+         "telemetry": {
+          "seq": 1799999970000000,
+          "usage_seq": 1799999970000000,
+          "context": 42000,
+          "window": 128000,
+          "total_input": 2100000,
+          "total_output": 34000,
+          "total_cache_read": 1950000,
+          "total_uncached_input": 150000,
+          "total_cache_write": 0,
+          "compactions": 2,
+          "subagent_total": 4,
+          "subagent_done": 2,
+          "subagent_running": 1,
+          "subagent_interrupted": 0,
+          "subagent_failed": 1,
+          "subagent_unknown": 0,
+          "subagent_status_seq": 1799999970000000,
+          "subagent_starts": 3,
+          "subagent_stops": 2,
+          "subagent_seq": 1799999970000000
+         },
+         "turn_timing": {
+          "active": false,
+          "started_at_s": 1799999245,
+          "observed_at_s": 1799999999,
+          "last_duration_s": 420,
+          "last_outcome": "completed",
+          "total_finished_duration_s": 2100,
+          "complete": true,
+          "freshness_seconds": 12
+         }
+        }
+       }
+      ]
+     },
+     {
+      "id": "gamma",
+      "label": "Host gamma",
+      "online": false,
+      "connection_state": "unreachable",
+      "sampled_at": 1800000000,
+      "navigation": {
+       "profile_id": "gamma",
+       "route_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "agents": []
+     },
+     {
+      "id": "delta",
+      "label": "Host delta",
+      "online": true,
+      "connection_state": "setup_needed",
+      "sampled_at": 1800000000,
+      "navigation": {
+       "profile_id": "delta",
+       "route_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "agents": []
+     }
+    ],
+    "allowances": [
+     {
+      "provider": "codex",
+      "provider_label": "Codex",
+      "account_id": "one",
+      "label": "one",
+      "status": "available",
+      "status_text": null,
+      "plan": "pro",
+      "sampled_at": 1799999970,
+      "reset_count": 1,
+      "reset_expires_at": null,
+      "windows": [
+       {
+        "kind": "weekly",
+        "label": "Weekly",
+        "used_percent": 40,
+        "resets_at": 1800302400,
+        "duration_s": 604800,
+        "pacing": true
+       }
+      ]
+     },
+     {
+      "provider": "codex",
+      "provider_label": "Codex",
+      "account_id": "two",
+      "label": "two",
+      "status": "available",
+      "status_text": null,
+      "plan": "pro",
+      "sampled_at": 1799999410,
+      "reset_count": 1,
+      "reset_expires_at": null,
+      "windows": [
+       {
+        "kind": "weekly",
+        "label": "Weekly",
+        "used_percent": 100,
+        "resets_at": 1800302400,
+        "duration_s": 604800,
+        "pacing": true
+       }
+      ]
+     },
+     {
+      "provider": "codex",
+      "provider_label": "Codex",
+      "account_id": "auth",
+      "label": "auth",
+      "status": "auth_needed",
+      "status_text": "Sign in required",
+      "plan": "pro",
+      "sampled_at": null,
+      "reset_count": 1,
+      "reset_expires_at": null,
+      "windows": []
+     }
+    ],
+    "fleet_discovery": {
+     "state": "discovering"
+    }
+   },
+   "nowMs": 1800000005000,
+   "diagnostics": "{\"connected\":true,\"hosts\":[{\"id\":\"alpha\",\"connection\":\"connected\",\"reporting\":true},{\"id\":\"beta\",\"connection\":\"unreachable\",\"reporting\":false},{\"id\":\"gamma\",\"connection\":\"unreachable\",\"reporting\":false},{\"id\":\"delta\",\"connection\":\"setup_needed\",\"reporting\":false}],\"threads\":2,\"usageReported\":2,\"timingReported\":1,\"timingCurrent\":1,\"timingTotals\":1,\"timingStale\":0,\"allowances\":[{\"label\":\"one\",\"available\":true},{\"label\":\"two\",\"available\":true},{\"label\":\"auth\",\"available\":false}]}"
+  },
+  {
+   "name": "mixed-fleet",
+   "raw": {
+    "at": 1800000000,
+    "interval": 5,
+    "heartbeat_seconds": 4,
+    "hosts": [
+     {
+      "id": "alpha",
+      "label": "Host alpha",
+      "online": true,
+      "connection_state": "connected",
+      "sampled_at": 1800000000,
+      "navigation": {
+       "profile_id": "alpha",
+       "route_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "agents": [
+       {
+        "id": "a",
+        "status": "working",
+        "project": "Project a",
+        "title": "Task a",
+        "branch": "feature/a",
+        "checkout": "branch-a",
+        "harness": "codex",
+        "technical": {
+         "telemetry": {
+          "seq": 1799999900000000,
+          "usage_seq": 1799999900000000,
+          "context": 42000,
+          "window": 128000,
+          "total_input": 2100000,
+          "total_output": 34000,
+          "total_cache_read": 1950000,
+          "total_uncached_input": 150000,
+          "total_cache_write": 0,
+          "compactions": 2,
+          "subagent_total": 4,
+          "subagent_done": 2,
+          "subagent_running": 1,
+          "subagent_interrupted": 0,
+          "subagent_failed": 1,
+          "subagent_unknown": 0,
+          "subagent_status_seq": 1799999900000000,
+          "subagent_starts": 3,
+          "subagent_stops": 2,
+          "subagent_seq": 1799999900000000
+         },
+         "turn_timing": {
+          "active": true,
+          "started_at_s": 1799999241,
+          "observed_at_s": 1799999995,
+          "last_duration_s": 420,
+          "last_outcome": "completed",
+          "total_finished_duration_s": 2100,
+          "complete": true,
+          "freshness_seconds": 12
+         }
+        }
+       },
+       {
+        "id": "b",
+        "status": "done",
+        "project": "Project b",
+        "title": "Task b",
+        "branch": "feature/b",
+        "checkout": "branch-b",
+        "harness": "codex",
+        "technical": {
+         "session_generation": 2,
+         "state_change_seq": 9,
+         "telemetry": {
+          "seq": 1800000000000000,
+          "usage_seq": 1800000000000000,
+          "context": 42000,
+          "window": 128000,
+          "total_input": 2100000,
+          "total_output": 34000,
+          "total_cache_read": 1950000,
+          "total_uncached_input": 150000,
+          "total_cache_write": 0,
+          "compactions": 2,
+          "subagent_total": 4,
+          "subagent_done": 2,
+          "subagent_running": 1,
+          "subagent_interrupted": 0,
+          "subagent_failed": 1,
+          "subagent_unknown": 0,
+          "subagent_status_seq": 1800000000000000,
+          "subagent_starts": 3,
+          "subagent_stops": 2,
+          "subagent_seq": 1800000000000000
+         }
+        }
+       }
+      ]
+     },
+     {
+      "id": "beta",
+      "label": "Host beta",
+      "online": true,
+      "connection_state": "connected",
+      "sampled_at": 1799999980,
+      "navigation": {
+       "profile_id": "beta",
+       "route_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "agents": [
+       {
+        "id": "c",
+        "status": "blocked",
+        "project": "Project c",
+        "title": "Task c",
+        "branch": "feature/c",
+        "checkout": "branch-c",
+        "harness": "codex",
+        "technical": {
+         "telemetry": {
+          "seq": 1799999970000000,
+          "usage_seq": 1799999970000000,
+          "context": 42000,
+          "window": 128000,
+          "total_input": 2100000,
+          "total_output": 34000,
+          "total_cache_read": 1950000,
+          "total_uncached_input": 150000,
+          "total_cache_write": 0,
+          "compactions": 2,
+          "subagent_total": 4,
+          "subagent_done": 2,
+          "subagent_running": 1,
+          "subagent_interrupted": 0,
+          "subagent_failed": 1,
+          "subagent_unknown": 0,
+          "subagent_status_seq": 1799999970000000,
+          "subagent_starts": 3,
+          "subagent_stops": 2,
+          "subagent_seq": 1799999970000000
+         },
+         "turn_timing": {
+          "active": false,
+          "started_at_s": 1799999245,
+          "observed_at_s": 1799999999,
+          "last_duration_s": 420,
+          "last_outcome": "completed",
+          "total_finished_duration_s": 2100,
+          "complete": true,
+          "freshness_seconds": 12
+         }
+        }
+       }
+      ]
+     },
+     {
+      "id": "gamma",
+      "label": "Host gamma",
+      "online": false,
+      "connection_state": "unreachable",
+      "sampled_at": 1800000000,
+      "navigation": {
+       "profile_id": "gamma",
+       "route_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "agents": []
+     },
+     {
+      "id": "delta",
+      "label": "Host delta",
+      "online": true,
+      "connection_state": "setup_needed",
+      "sampled_at": 1800000000,
+      "navigation": {
+       "profile_id": "delta",
+       "route_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "agents": []
+     }
+    ],
+    "allowances": [
+     {
+      "provider": "codex",
+      "provider_label": "Codex",
+      "account_id": "one",
+      "label": "one",
+      "status": "available",
+      "status_text": null,
+      "plan": "pro",
+      "sampled_at": 1799999970,
+      "reset_count": 1,
+      "reset_expires_at": null,
+      "windows": [
+       {
+        "kind": "weekly",
+        "label": "Weekly",
+        "used_percent": 40,
+        "resets_at": 1800302400,
+        "duration_s": 604800,
+        "pacing": true
+       }
+      ]
+     },
+     {
+      "provider": "codex",
+      "provider_label": "Codex",
+      "account_id": "two",
+      "label": "two",
+      "status": "available",
+      "status_text": null,
+      "plan": "pro",
+      "sampled_at": 1799999410,
+      "reset_count": 1,
+      "reset_expires_at": null,
+      "windows": [
+       {
+        "kind": "weekly",
+        "label": "Weekly",
+        "used_percent": 100,
+        "resets_at": 1800302400,
+        "duration_s": 604800,
+        "pacing": true
+       }
+      ]
+     },
+     {
+      "provider": "codex",
+      "provider_label": "Codex",
+      "account_id": "auth",
+      "label": "auth",
+      "status": "auth_needed",
+      "status_text": "Sign in required",
+      "plan": "pro",
+      "sampled_at": null,
+      "reset_count": 1,
+      "reset_expires_at": null,
+      "windows": []
+     }
+    ],
+    "fleet_discovery": {
+     "state": "discovering"
+    }
+   },
+   "nowMs": 1800000006000,
+   "diagnostics": "{\"connected\":true,\"hosts\":[{\"id\":\"alpha\",\"connection\":\"connected\",\"reporting\":true},{\"id\":\"beta\",\"connection\":\"unreachable\",\"reporting\":false},{\"id\":\"gamma\",\"connection\":\"unreachable\",\"reporting\":false},{\"id\":\"delta\",\"connection\":\"setup_needed\",\"reporting\":false}],\"threads\":2,\"usageReported\":2,\"timingReported\":1,\"timingCurrent\":1,\"timingTotals\":1,\"timingStale\":0,\"allowances\":[{\"label\":\"one\",\"available\":true},{\"label\":\"two\",\"available\":true},{\"label\":\"auth\",\"available\":false}]}"
+  },
+  {
+   "name": "mixed-fleet",
+   "raw": {
+    "at": 1800000000,
+    "interval": 5,
+    "heartbeat_seconds": 4,
+    "hosts": [
+     {
+      "id": "alpha",
+      "label": "Host alpha",
+      "online": true,
+      "connection_state": "connected",
+      "sampled_at": 1800000000,
+      "navigation": {
+       "profile_id": "alpha",
+       "route_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "agents": [
+       {
+        "id": "a",
+        "status": "working",
+        "project": "Project a",
+        "title": "Task a",
+        "branch": "feature/a",
+        "checkout": "branch-a",
+        "harness": "codex",
+        "technical": {
+         "telemetry": {
+          "seq": 1799999900000000,
+          "usage_seq": 1799999900000000,
+          "context": 42000,
+          "window": 128000,
+          "total_input": 2100000,
+          "total_output": 34000,
+          "total_cache_read": 1950000,
+          "total_uncached_input": 150000,
+          "total_cache_write": 0,
+          "compactions": 2,
+          "subagent_total": 4,
+          "subagent_done": 2,
+          "subagent_running": 1,
+          "subagent_interrupted": 0,
+          "subagent_failed": 1,
+          "subagent_unknown": 0,
+          "subagent_status_seq": 1799999900000000,
+          "subagent_starts": 3,
+          "subagent_stops": 2,
+          "subagent_seq": 1799999900000000
+         },
+         "turn_timing": {
+          "active": true,
+          "started_at_s": 1799999241,
+          "observed_at_s": 1799999995,
+          "last_duration_s": 420,
+          "last_outcome": "completed",
+          "total_finished_duration_s": 2100,
+          "complete": true,
+          "freshness_seconds": 12
+         }
+        }
+       },
+       {
+        "id": "b",
+        "status": "done",
+        "project": "Project b",
+        "title": "Task b",
+        "branch": "feature/b",
+        "checkout": "branch-b",
+        "harness": "codex",
+        "technical": {
+         "session_generation": 2,
+         "state_change_seq": 9,
+         "telemetry": {
+          "seq": 1800000000000000,
+          "usage_seq": 1800000000000000,
+          "context": 42000,
+          "window": 128000,
+          "total_input": 2100000,
+          "total_output": 34000,
+          "total_cache_read": 1950000,
+          "total_uncached_input": 150000,
+          "total_cache_write": 0,
+          "compactions": 2,
+          "subagent_total": 4,
+          "subagent_done": 2,
+          "subagent_running": 1,
+          "subagent_interrupted": 0,
+          "subagent_failed": 1,
+          "subagent_unknown": 0,
+          "subagent_status_seq": 1800000000000000,
+          "subagent_starts": 3,
+          "subagent_stops": 2,
+          "subagent_seq": 1800000000000000
+         }
+        }
+       }
+      ]
+     },
+     {
+      "id": "beta",
+      "label": "Host beta",
+      "online": true,
+      "connection_state": "connected",
+      "sampled_at": 1799999980,
+      "navigation": {
+       "profile_id": "beta",
+       "route_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "agents": [
+       {
+        "id": "c",
+        "status": "blocked",
+        "project": "Project c",
+        "title": "Task c",
+        "branch": "feature/c",
+        "checkout": "branch-c",
+        "harness": "codex",
+        "technical": {
+         "telemetry": {
+          "seq": 1799999970000000,
+          "usage_seq": 1799999970000000,
+          "context": 42000,
+          "window": 128000,
+          "total_input": 2100000,
+          "total_output": 34000,
+          "total_cache_read": 1950000,
+          "total_uncached_input": 150000,
+          "total_cache_write": 0,
+          "compactions": 2,
+          "subagent_total": 4,
+          "subagent_done": 2,
+          "subagent_running": 1,
+          "subagent_interrupted": 0,
+          "subagent_failed": 1,
+          "subagent_unknown": 0,
+          "subagent_status_seq": 1799999970000000,
+          "subagent_starts": 3,
+          "subagent_stops": 2,
+          "subagent_seq": 1799999970000000
+         },
+         "turn_timing": {
+          "active": false,
+          "started_at_s": 1799999245,
+          "observed_at_s": 1799999999,
+          "last_duration_s": 420,
+          "last_outcome": "completed",
+          "total_finished_duration_s": 2100,
+          "complete": true,
+          "freshness_seconds": 12
+         }
+        }
+       }
+      ]
+     },
+     {
+      "id": "gamma",
+      "label": "Host gamma",
+      "online": false,
+      "connection_state": "unreachable",
+      "sampled_at": 1800000000,
+      "navigation": {
+       "profile_id": "gamma",
+       "route_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "agents": []
+     },
+     {
+      "id": "delta",
+      "label": "Host delta",
+      "online": true,
+      "connection_state": "setup_needed",
+      "sampled_at": 1800000000,
+      "navigation": {
+       "profile_id": "delta",
+       "route_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "agents": []
+     }
+    ],
+    "allowances": [
+     {
+      "provider": "codex",
+      "provider_label": "Codex",
+      "account_id": "one",
+      "label": "one",
+      "status": "available",
+      "status_text": null,
+      "plan": "pro",
+      "sampled_at": 1799999970,
+      "reset_count": 1,
+      "reset_expires_at": null,
+      "windows": [
+       {
+        "kind": "weekly",
+        "label": "Weekly",
+        "used_percent": 40,
+        "resets_at": 1800302400,
+        "duration_s": 604800,
+        "pacing": true
+       }
+      ]
+     },
+     {
+      "provider": "codex",
+      "provider_label": "Codex",
+      "account_id": "two",
+      "label": "two",
+      "status": "available",
+      "status_text": null,
+      "plan": "pro",
+      "sampled_at": 1799999410,
+      "reset_count": 1,
+      "reset_expires_at": null,
+      "windows": [
+       {
+        "kind": "weekly",
+        "label": "Weekly",
+        "used_percent": 100,
+        "resets_at": 1800302400,
+        "duration_s": 604800,
+        "pacing": true
+       }
+      ]
+     },
+     {
+      "provider": "codex",
+      "provider_label": "Codex",
+      "account_id": "auth",
+      "label": "auth",
+      "status": "auth_needed",
+      "status_text": "Sign in required",
+      "plan": "pro",
+      "sampled_at": null,
+      "reset_count": 1,
+      "reset_expires_at": null,
+      "windows": []
+     }
+    ],
+    "fleet_discovery": {
+     "state": "discovering"
+    }
+   },
+   "nowMs": 1800000007000,
+   "diagnostics": "{\"connected\":true,\"hosts\":[{\"id\":\"alpha\",\"connection\":\"connected\",\"reporting\":true},{\"id\":\"beta\",\"connection\":\"unreachable\",\"reporting\":false},{\"id\":\"gamma\",\"connection\":\"unreachable\",\"reporting\":false},{\"id\":\"delta\",\"connection\":\"setup_needed\",\"reporting\":false}],\"threads\":2,\"usageReported\":2,\"timingReported\":1,\"timingCurrent\":1,\"timingTotals\":1,\"timingStale\":0,\"allowances\":[{\"label\":\"one\",\"available\":true},{\"label\":\"two\",\"available\":true},{\"label\":\"auth\",\"available\":false}]}"
+  },
+  {
+   "name": "mixed-fleet",
+   "raw": {
+    "at": 1800000000,
+    "interval": 5,
+    "heartbeat_seconds": 4,
+    "hosts": [
+     {
+      "id": "alpha",
+      "label": "Host alpha",
+      "online": true,
+      "connection_state": "connected",
+      "sampled_at": 1800000000,
+      "navigation": {
+       "profile_id": "alpha",
+       "route_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "agents": [
+       {
+        "id": "a",
+        "status": "working",
+        "project": "Project a",
+        "title": "Task a",
+        "branch": "feature/a",
+        "checkout": "branch-a",
+        "harness": "codex",
+        "technical": {
+         "telemetry": {
+          "seq": 1799999900000000,
+          "usage_seq": 1799999900000000,
+          "context": 42000,
+          "window": 128000,
+          "total_input": 2100000,
+          "total_output": 34000,
+          "total_cache_read": 1950000,
+          "total_uncached_input": 150000,
+          "total_cache_write": 0,
+          "compactions": 2,
+          "subagent_total": 4,
+          "subagent_done": 2,
+          "subagent_running": 1,
+          "subagent_interrupted": 0,
+          "subagent_failed": 1,
+          "subagent_unknown": 0,
+          "subagent_status_seq": 1799999900000000,
+          "subagent_starts": 3,
+          "subagent_stops": 2,
+          "subagent_seq": 1799999900000000
+         },
+         "turn_timing": {
+          "active": true,
+          "started_at_s": 1799999241,
+          "observed_at_s": 1799999995,
+          "last_duration_s": 420,
+          "last_outcome": "completed",
+          "total_finished_duration_s": 2100,
+          "complete": true,
+          "freshness_seconds": 12
+         }
+        }
+       },
+       {
+        "id": "b",
+        "status": "done",
+        "project": "Project b",
+        "title": "Task b",
+        "branch": "feature/b",
+        "checkout": "branch-b",
+        "harness": "codex",
+        "technical": {
+         "session_generation": 2,
+         "state_change_seq": 9,
+         "telemetry": {
+          "seq": 1800000000000000,
+          "usage_seq": 1800000000000000,
+          "context": 42000,
+          "window": 128000,
+          "total_input": 2100000,
+          "total_output": 34000,
+          "total_cache_read": 1950000,
+          "total_uncached_input": 150000,
+          "total_cache_write": 0,
+          "compactions": 2,
+          "subagent_total": 4,
+          "subagent_done": 2,
+          "subagent_running": 1,
+          "subagent_interrupted": 0,
+          "subagent_failed": 1,
+          "subagent_unknown": 0,
+          "subagent_status_seq": 1800000000000000,
+          "subagent_starts": 3,
+          "subagent_stops": 2,
+          "subagent_seq": 1800000000000000
+         }
+        }
+       }
+      ]
+     },
+     {
+      "id": "beta",
+      "label": "Host beta",
+      "online": true,
+      "connection_state": "connected",
+      "sampled_at": 1799999980,
+      "navigation": {
+       "profile_id": "beta",
+       "route_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "agents": [
+       {
+        "id": "c",
+        "status": "blocked",
+        "project": "Project c",
+        "title": "Task c",
+        "branch": "feature/c",
+        "checkout": "branch-c",
+        "harness": "codex",
+        "technical": {
+         "telemetry": {
+          "seq": 1799999970000000,
+          "usage_seq": 1799999970000000,
+          "context": 42000,
+          "window": 128000,
+          "total_input": 2100000,
+          "total_output": 34000,
+          "total_cache_read": 1950000,
+          "total_uncached_input": 150000,
+          "total_cache_write": 0,
+          "compactions": 2,
+          "subagent_total": 4,
+          "subagent_done": 2,
+          "subagent_running": 1,
+          "subagent_interrupted": 0,
+          "subagent_failed": 1,
+          "subagent_unknown": 0,
+          "subagent_status_seq": 1799999970000000,
+          "subagent_starts": 3,
+          "subagent_stops": 2,
+          "subagent_seq": 1799999970000000
+         },
+         "turn_timing": {
+          "active": false,
+          "started_at_s": 1799999245,
+          "observed_at_s": 1799999999,
+          "last_duration_s": 420,
+          "last_outcome": "completed",
+          "total_finished_duration_s": 2100,
+          "complete": true,
+          "freshness_seconds": 12
+         }
+        }
+       }
+      ]
+     },
+     {
+      "id": "gamma",
+      "label": "Host gamma",
+      "online": false,
+      "connection_state": "unreachable",
+      "sampled_at": 1800000000,
+      "navigation": {
+       "profile_id": "gamma",
+       "route_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "agents": []
+     },
+     {
+      "id": "delta",
+      "label": "Host delta",
+      "online": true,
+      "connection_state": "setup_needed",
+      "sampled_at": 1800000000,
+      "navigation": {
+       "profile_id": "delta",
+       "route_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "agents": []
+     }
+    ],
+    "allowances": [
+     {
+      "provider": "codex",
+      "provider_label": "Codex",
+      "account_id": "one",
+      "label": "one",
+      "status": "available",
+      "status_text": null,
+      "plan": "pro",
+      "sampled_at": 1799999970,
+      "reset_count": 1,
+      "reset_expires_at": null,
+      "windows": [
+       {
+        "kind": "weekly",
+        "label": "Weekly",
+        "used_percent": 40,
+        "resets_at": 1800302400,
+        "duration_s": 604800,
+        "pacing": true
+       }
+      ]
+     },
+     {
+      "provider": "codex",
+      "provider_label": "Codex",
+      "account_id": "two",
+      "label": "two",
+      "status": "available",
+      "status_text": null,
+      "plan": "pro",
+      "sampled_at": 1799999410,
+      "reset_count": 1,
+      "reset_expires_at": null,
+      "windows": [
+       {
+        "kind": "weekly",
+        "label": "Weekly",
+        "used_percent": 100,
+        "resets_at": 1800302400,
+        "duration_s": 604800,
+        "pacing": true
+       }
+      ]
+     },
+     {
+      "provider": "codex",
+      "provider_label": "Codex",
+      "account_id": "auth",
+      "label": "auth",
+      "status": "auth_needed",
+      "status_text": "Sign in required",
+      "plan": "pro",
+      "sampled_at": null,
+      "reset_count": 1,
+      "reset_expires_at": null,
+      "windows": []
+     }
+    ],
+    "fleet_discovery": {
+     "state": "discovering"
+    }
+   },
+   "nowMs": 1800000010000,
+   "diagnostics": "{\"connected\":true,\"hosts\":[{\"id\":\"alpha\",\"connection\":\"connected\",\"reporting\":true},{\"id\":\"beta\",\"connection\":\"unreachable\",\"reporting\":false},{\"id\":\"gamma\",\"connection\":\"unreachable\",\"reporting\":false},{\"id\":\"delta\",\"connection\":\"setup_needed\",\"reporting\":false}],\"threads\":2,\"usageReported\":2,\"timingReported\":1,\"timingCurrent\":0,\"timingTotals\":1,\"timingStale\":1,\"allowances\":[{\"label\":\"one\",\"available\":true},{\"label\":\"two\",\"available\":true},{\"label\":\"auth\",\"available\":false}]}"
+  }
+ ]
+}

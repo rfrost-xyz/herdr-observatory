@@ -1,17 +1,15 @@
 import QtQuick
-import QtQuick.Controls
-import QtQuick.Layouts
-import qs.Commons
-import "State.js" as State
 
 Canvas {
     id: burn
 
     property bool active: false
+    // Particles run only while the popover is open with motion enabled.
+    property bool animate: false
     property bool deficit: false
     property real phase: 0
+    required property AntonTheme theme
     property color tint
-    required property var ui
 
     // Independent clocks avoid the diagonal bands of the old shared phase.
     function random(seed) {
@@ -20,7 +18,7 @@ Canvas {
     }
 
     clip: true
-    visible: active && width > 0 && ui.opened && ui.motionEnabled
+    visible: active && width > 0 && animate
 
     onPaint: {
         var ctx = getContext("2d");
@@ -41,7 +39,7 @@ Canvas {
             ctx.fillStyle = bright.toString();
             ctx.fillRect(x - 2, y - 2, 5, 5);
             ctx.globalAlpha = strength;
-            ctx.fillStyle = Qt.tint(bright, ui.alpha(ui.ink, 0.3)).toString();
+            ctx.fillStyle = Qt.tint(bright, theme.alpha(theme.ink, 0.3)).toString();
             ctx.fillRect(x, y, random(seed + 203) > 0.7 ? 2 : 1.3, 1.5);
         }
     }
