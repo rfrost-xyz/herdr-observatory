@@ -20,6 +20,7 @@ Item {
             return null;
         }
         function init() {
+            store.visualUpdates = true;
             var process = collector();
             process.running = true;
             process.writes = [];
@@ -87,6 +88,22 @@ Item {
             collector().stdout.read('{not json');
             compare(store.raw, null);
             verify(!store.view.connected);
+        }
+        function test_07_now_advances_only_while_visual_updates() {
+            store.visualUpdates = true;
+            var start = store.now;
+            verify(start > 0);
+            tryVerify(function () {
+                return store.now > start;
+            }, 2500, 'now advances on the tick while visual updates run');
+            store.visualUpdates = false;
+            var frozen = store.now;
+            wait(1300);
+            collector().stdout.read(snapshot(4));
+            compare(store.now, frozen, 'now is unchanged by ticks and receipts while closed');
+            wait(5);
+            store.visualUpdates = true;
+            verify(store.now > frozen, 'opening sets now at once');
         }
 
         name: 'AntonStore'

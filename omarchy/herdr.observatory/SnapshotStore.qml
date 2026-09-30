@@ -6,10 +6,18 @@ Item {
     id: root
 
     property double lastReceipt: 0
+    // Display instant for relative-time readings. It advances only while the
+    // popover shows them (visualUpdates): on opening, each tick and each receipt.
+    property double now: Date.now()
     property string projectedSignature: ""
     property var raw: null
     property var view: State.project(null, Date.now())
     property bool visualUpdates: true
+
+    onVisualUpdatesChanged: {
+        if (visualUpdates)
+            now = Date.now();
+    }
 
     function accept(line) {
         try {
@@ -21,6 +29,8 @@ Item {
         } catch (error) {
             raw = null;
         }
+        if (visualUpdates)
+            now = Date.now();
         update();
     }
     // Explicit operator refresh (r, middle-click, IPC): ask a running collector
@@ -83,6 +93,8 @@ Item {
         running: true
 
         onTriggered: {
+            if (root.visualUpdates)
+                root.now = Date.now();
             // The runtime states its heartbeat; see State.receiptTimeoutMs.
             if (root.raw !== null && Date.now() - root.lastReceipt > State.receiptTimeoutMs(root.raw)) {
                 root.raw = null;
