@@ -16,23 +16,16 @@ Item {
         x: 20
         y: 20
 
-        QtObject {
-            id: surfaceUi
+        Anton.AntonTheme {
+            id: fixtureTheme
 
-            property color blue: '#739fae'
-            property string face: 'monospace'
-            property bool motionEnabled: false
-            property bool opened: true
-            property Item tooltipHost: scene
-
-            function alpha(c, a) {
-                return Qt.rgba(c.r, c.g, c.b, a);
-            }
+            face: 'monospace'
         }
         Anton.AntonToolTip {
             id: tip
 
             host: scene
+            theme: fixtureTheme
         }
         Anton.AntonSurface {
             id: first
@@ -40,7 +33,7 @@ Item {
             height: 40
             hint: 'First hint'
             tooltip: tip
-            ui: surfaceUi
+            theme: fixtureTheme
             width: 100
         }
         Anton.AntonSurface {
@@ -49,7 +42,7 @@ Item {
             height: 40
             hint: 'Second hint with enough words to wrap across more than one line of the shared tooltip'
             tooltip: tip
-            ui: surfaceUi
+            theme: fixtureTheme
             width: 100
             x: 100
         }
@@ -59,7 +52,7 @@ Item {
             height: 40
             hint: 'Corner'
             tooltip: tip
-            ui: surfaceUi
+            theme: fixtureTheme
             width: 60
             x: 240
             y: 160

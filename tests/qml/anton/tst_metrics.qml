@@ -1,6 +1,7 @@
 import QtQuick
 import QtTest
 import "../../../omarchy/herdr.observatory" as Anton
+import "../../../omarchy/herdr.observatory/State.js" as State
 
 // Measurement only (restructure-anton-popover): counts the ToolTip instances in
 // a rendered popover with the standard synthetic fixture (two machines, three
@@ -9,19 +10,45 @@ import "../../../omarchy/herdr.observatory" as Anton
 Item {
     id: scene
 
+    readonly property double now: 1800000000000
+    property var raw: ({
+            hosts: [],
+            allowances: []
+        })
+
     height: 600
     width: 388
 
-    FixtureUi {
-        id: fixtureUi
+    TestFiles {
+        id: files
+    }
+    Anton.AntonTheme {
+        id: fixtureTheme
 
-        popup: popup
+        face: 'monospace'
+    }
+    Anton.AntonPreferences {
+        id: fixturePreferences
+
+        location: "file://" + files.directory + "/metrics-privacy.ini"
+    }
+    Anton.AntonController {
+        id: fixtureController
+
+        motionEnabled: false
+        opened: true
+        preferences: fixturePreferences
+        view: State.project(scene.raw, scene.now)
     }
     Anton.PopupContent {
         id: popup
 
+        controller: fixtureController
         height: Math.min(540, implicitHeight)
-        ui: fixtureUi
+        now: scene.now
+        preferences: fixturePreferences
+        theme: fixtureTheme
+        view: fixtureController.view
         width: 360
     }
     TestCase {
@@ -44,17 +71,19 @@ Item {
                 status: 'available',
                 status_text: null,
                 plan: null,
-                sampled_at: fixtureUi.now / 1000,
+                sampled_at: scene.now / 1000,
                 reset_count: 1,
                 reset_expires_at: null,
-                windows: [{
+                windows: [
+                    {
                         kind: 'weekly',
                         label: 'Weekly',
                         used_percent: 30,
-                        resets_at: fixtureUi.now / 1000 + 302400,
+                        resets_at: scene.now / 1000 + 302400,
                         duration_s: 604800,
                         pacing: true
-                    }]
+                    }
+                ]
             };
         }
         function host(id, agents) {
@@ -63,7 +92,7 @@ Item {
                 label: id,
                 online: true,
                 connection_state: 'connected',
-                sampled_at: fixtureUi.now / 1000,
+                sampled_at: scene.now / 1000,
                 agents: agents
             };
         }
@@ -81,7 +110,7 @@ Item {
             return total;
         }
         function test_rendered_tooltip_instances() {
-            fixtureUi.raw = {
+            scene.raw = {
                 hosts: [host('laptop', [agent('a', 'working'), agent('b', 'done')]), host('workstation', [agent('c', 'idle')])],
                 allowances: [account('one'), account('two')]
             };

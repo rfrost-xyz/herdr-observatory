@@ -4,25 +4,63 @@ import qs.Commons
 import "../../../omarchy/herdr.observatory" as Anton
 import "../../../omarchy/herdr.observatory/State.js" as State
 
+// The real popover parts with the former fixture colours: a fixed theme, a
+// controller whose launcher is the Process stub and preferences in the run's
+// private temporary directory.
 Rectangle {
     id: scene
 
+    property bool light: false
+    readonly property double now: 1800000000000
+    property var raw: ({
+            hosts: [],
+            allowances: []
+        })
+
     border.color: Color.accent
     border.width: 1
-    color: fixtureUi.light ? '#f0f3ed' : '#101c22'
+    color: light ? '#f0f3ed' : '#101c22'
     height: popup.height + 28
     width: 388
 
-    FixtureUi {
-        id: fixtureUi
+    TestFiles {
+        id: files
+    }
+    Anton.AntonTheme {
+        id: fixtureTheme
 
-        popup: popup
+        blue: '#739fae'
+        face: 'monospace'
+        green: scene.light ? '#397332' : '#9dc473'
+        ink: scene.light ? '#243030' : '#d7d6cd'
+        line: scene.light ? '#d1d9d7' : '#28383c'
+        muted: scene.light ? '#637173' : '#8d9497'
+        red: scene.light ? '#aa3e34' : '#ed7968'
+        yellow: scene.light ? '#856117' : '#d7af68'
+    }
+    Anton.AntonPreferences {
+        id: fixturePreferences
+
+        location: "file://" + files.directory + "/popup-privacy.ini"
+    }
+    Anton.AntonController {
+        id: fixtureController
+
+        motionEnabled: false
+        opened: true
+        preferences: fixturePreferences
+        runtimePath: '/synthetic/anton-runtime'
+        view: State.project(scene.raw, scene.now)
     }
     Anton.PopupContent {
         id: popup
 
+        controller: fixtureController
         height: Math.min(540, implicitHeight)
-        ui: fixtureUi
+        now: scene.now
+        preferences: fixturePreferences
+        theme: fixtureTheme
+        view: fixtureController.view
         width: 360
         x: 14
         y: 14
@@ -38,7 +76,7 @@ Rectangle {
                 status: 'available',
                 status_text: null,
                 plan: null,
-                sampled_at: fixtureUi.now / 1000,
+                sampled_at: scene.now / 1000,
                 reset_count: 1,
                 reset_expires_at: null,
                 windows: [
@@ -46,7 +84,7 @@ Rectangle {
                         kind: 'weekly',
                         label: 'Weekly',
                         used_percent: 100 - balance,
-                        resets_at: fixtureUi.now / 1000 + 604800 * expected / 100,
+                        resets_at: scene.now / 1000 + 604800 * expected / 100,
                         duration_s: 604800,
                         pacing: true
                     }
@@ -62,8 +100,8 @@ Rectangle {
                 harness: 'codex',
                 technical: missing ? {} : {
                     telemetry: {
-                        seq: fixtureUi.now * 1000,
-                        usage_seq: fixtureUi.now * 1000,
+                        seq: scene.now * 1000,
+                        usage_seq: scene.now * 1000,
                         context: 42,
                         window: 100,
                         context_percent: 42,
@@ -78,12 +116,12 @@ Rectangle {
                         subagent_interrupted: 0,
                         subagent_failed: 1,
                         subagent_unknown: 0,
-                        subagent_status_seq: fixtureUi.now * 1000
+                        subagent_status_seq: scene.now * 1000
                     },
                     turn_timing: {
                         active: state === 'working',
-                        started_at_s: fixtureUi.now / 1000 - 754,
-                        observed_at_s: fixtureUi.now / 1000,
+                        started_at_s: scene.now / 1000 - 754,
+                        observed_at_s: scene.now / 1000,
                         last_duration_s: 420,
                         last_outcome: 'completed',
                         total_finished_duration_s: 2100,
@@ -94,6 +132,10 @@ Rectangle {
             };
         }
         function capture(name) {
+            // Settle pending layout first: positioners lay out on the next
+            // frame, and the popover height follows their implicit heights.
+            waitForRendering(scene, 100);
+            waitForRendering(scene, 100);
             var saved = false;
             scene.grabToImage(function (result) {
                 saved = result.saveToFile('/tmp/anton-continuity-' + name + '.png');
@@ -108,23 +150,35 @@ Rectangle {
                 label: id,
                 online: state === 'connected',
                 connection_state: state,
-                sampled_at: fixtureUi.now / 1000,
+                sampled_at: scene.now / 1000,
                 agents: agents
             };
         }
         function init() {
-            fixtureUi.light = false;
-            fixtureUi.raw = standard();
-            fixtureUi.preferences = {
-                namesHidden: true,
-                collapsedSections: '[]',
-                collapsedProviders: '[]'
-            };
-            fixtureUi.collapsedHosts = [];
-            fixtureUi.hiddenStates = [];
-            fixtureUi.focusedKey = '';
-            fixtureUi.openedKeys = [];
-            fixtureUi.navigationError = "";
+            scene.light = false;
+            scene.raw = standard();
+            var settings = fixturePreferences.settings;
+            settings.namesHidden = true;
+            settings.collapsedSections = '[]';
+            settings.collapsedProviders = '[]';
+            settings.collapsedHosts = '[]';
+            settings.hiddenStates = '[]';
+            // The former fixture's aliases: Gilfoyle for "one", Jared Dunn otherwise.
+            settings.accountAliases = JSON.stringify({
+                'codex:one': 'Gilfoyle',
+                'codex:two': 'Jared Dunn',
+                'codex:three': 'Jared Dunn',
+                'codex:four': 'Jared Dunn',
+                'synthetic:team': 'Jared Dunn',
+                'synthetic:office': 'Jared Dunn'
+            });
+            fixtureController.focusedKey = '';
+            fixtureController.launcher.running = false;
+            fixtureController.launcher.command = [];
+            fixtureController.navigationError = "";
+            popup.view = Qt.binding(function () {
+                return fixtureController.view;
+            });
             popup.height = Qt.binding(function () {
                 return Math.min(540, popup.implicitHeight);
             });
@@ -142,7 +196,7 @@ Rectangle {
             capture('dark');
         }
         function test_02_light_and_missing() {
-            fixtureUi.light = true;
+            scene.light = true;
             Color.accent = '#527e77';
             wait(40);
             capture('light');
@@ -158,7 +212,7 @@ Rectangle {
             }
             hosts.push(host('sleeping', [], 'connecting'));
             hosts.push(host('offline', [], 'unreachable'));
-            fixtureUi.raw = {
+            scene.raw = {
                 hosts: hosts,
                 allowances: [account('one', 1, 30), account('two', 75, 62)]
             };
@@ -167,7 +221,7 @@ Rectangle {
             var heading = findChild(popup, 'anton-heading'), allowances = findChild(popup, 'allowances-section');
             var headerY = heading.mapToItem(scene, 0, 0).y, allowanceY = allowances.mapToItem(scene, 0, 0).y;
             verify(popup.threadViewport.interactive);
-            fixtureUi.focusedKey = fixtureUi.threadKeys[fixtureUi.threadKeys.length - 1];
+            fixtureController.focusedKey = fixtureController.threadKeys[fixtureController.threadKeys.length - 1];
             wait(40);
             verify(popup.threadViewport.contentY > 0);
             compare(heading.mapToItem(scene, 0, 0).y, headerY);
@@ -177,16 +231,16 @@ Rectangle {
         }
         function test_04_instant_collapse() {
             var expanded = popup.implicitHeight;
-            fixtureUi.toggleList('collapsedSections', 'threads');
+            fixtureController.toggleList('collapsedSections', 'threads');
             wait(0);
             compare(popup.threadViewport.height, 0);
             verify(popup.implicitHeight < expanded);
-            fixtureUi.toggleList('collapsedSections', 'allowances');
+            fixtureController.toggleList('collapsedSections', 'allowances');
             wait(0);
             compare(popup.allowanceViewport.height, 0);
         }
         function test_05_connection_states() {
-            fixtureUi.raw = {
+            scene.raw = {
                 hosts: [host('connecting', [], 'connecting'), host('unreachable', [], 'unreachable'), host('connected', [agent('a', 'idle', true)], 'connected')],
                 allowances: [account('one', 0.2, 50)]
             };
@@ -196,7 +250,7 @@ Rectangle {
         function test_06_short_popup_reserves_both_scroll_regions() {
             var data = standard();
             data.allowances = [account('one', 30, 40), account('two', 40, 60), account('three', 75, 62), account('four', 20, 25)];
-            fixtureUi.raw = data;
+            scene.raw = data;
             popup.height = 240;
             wait(40);
             verify(popup.threadViewport.height >= 70);
@@ -205,7 +259,7 @@ Rectangle {
             verify(popup.allowanceViewport.interactive);
             var bottom = popup.allowanceViewport.mapToItem(popup, 0, popup.allowanceViewport.height).y;
             verify(bottom <= popup.height + 1);
-            fixtureUi.navigationError = 'Synthetic navigation error that wraps to another line in this constrained popover.';
+            fixtureController.navigationError = 'Synthetic navigation error that wraps to another line in this constrained popover.';
             wait(40);
             verify(popup.threadViewport.height > 0);
             verify(popup.allowanceViewport.height > 0);
@@ -215,32 +269,36 @@ Rectangle {
         }
         function test_07_discovery_and_setup_are_compact_machine_states() {
             var data = standard();
-            data.fleet_discovery = {state: 'unavailable'};
+            data.fleet_discovery = {
+                state: 'unavailable'
+            };
             data.hosts.push(host('new-profile', [], 'setup_needed'));
-            fixtureUi.raw = data;
+            scene.raw = data;
             wait(0);
             var discovery = findChild(popup, 'fleet-discovery-note');
             var setup = findChild(popup, 'machine-note-new-profile');
             verify(discovery.visible);
             compare(discovery.text, 'Discovery unavailable');
             compare(setup.text, 'Setup needed');
-            compare(fixtureUi.overview.threads.length, 3);
+            compare(fixtureController.view.threads.length, 3);
             verify(discovery.x >= 100);
             verify(discovery.x + discovery.width <= popup.width + 1);
             capture('discovery-unavailable');
             var initial = popup.implicitHeight;
-            fixtureUi.toggleList('collapsedHosts', 'laptop');
+            fixtureController.toggleList('collapsedHosts', 'laptop');
             wait(0);
-            compare(fixtureUi.threadGroups[0].indices.length, 0);
-            tryVerify(function () { return popup.implicitHeight < initial; }, 100);
+            compare(fixtureController.threadGroups[0].indices.length, 0);
+            tryVerify(function () {
+                return popup.implicitHeight < initial;
+            }, 100);
             data = JSON.parse(JSON.stringify(data));
             data.hosts[0].label = 'Renamed laptop';
             data.fleet_discovery.state = 'available';
-            fixtureUi.raw = data;
+            scene.raw = data;
             wait(0);
             verify(!discovery.visible);
-            verify(fixtureUi.threadGroups[0].collapsed);
-            compare(fixtureUi.threadGroups[0].indices.length, 0);
+            verify(fixtureController.threadGroups[0].collapsed);
+            compare(fixtureController.threadGroups[0].indices.length, 0);
             compare(popup.implicitHeight < initial, true);
             capture('discovery-setup');
         }
@@ -249,13 +307,14 @@ Rectangle {
             found = found || [];
             if (!item)
                 return found;
-            if (item.threadIndex !== undefined && item.keyed !== undefined && item.visible)
+            if (item.focused !== undefined && item.keyed !== undefined && item.entry !== undefined && item.visible)
                 found.push(item);
             for (var i = 0; i < item.children.length; i++)
                 threadCards(item.children[i], found);
             return found;
         }
         function keyedThreads() {
+            verify(threadCards(popup).length > 0, 'Thread cards found');
             return threadCards(popup).filter(function (card) {
                 return card.keyed;
             }).map(function (card) {
@@ -278,83 +337,79 @@ Rectangle {
             })[0] || null;
         }
         function focusB() {
-            fixtureUi.raw = focusData(['a', 'b', 'c']);
+            scene.raw = focusData(['a', 'b', 'c']);
             wait(0);
-            fixtureUi.focusedKey = 'laptop:b';
+            fixtureController.focusedKey = 'laptop:b';
             wait(0);
             compare(keyedThreads(), ['laptop:b']);
         }
         function test_08_focus_survives_earlier_thread_disappearing() {
             focusB();
-            fixtureUi.raw = focusData(['b', 'c']);
+            scene.raw = focusData(['b', 'c']);
             wait(0);
-            compare(fixtureUi.focusedKey, 'laptop:b');
+            compare(fixtureController.focusedKey, 'laptop:b');
             compare(keyedThreads(), ['laptop:b']);
-            compare(State.activationKey(fixtureUi.threadKeys, fixtureUi.focusedKey), 'laptop:b');
+            compare(State.activationKey(fixtureController.threadKeys, fixtureController.focusedKey), 'laptop:b');
             var card = cardFor('laptop:b');
             verify(card !== null);
             mouseClick(card, 8, 8);
-            compare(fixtureUi.openedKeys, ['laptop:b']);
+            compare(fixtureController.launcher.command, ['/synthetic/anton-runtime', '--open-thread', 'laptop', 'b']);
         }
         function test_09_focus_clears_when_its_thread_disappears() {
             focusB();
-            fixtureUi.raw = focusData(['a', 'c']);
+            scene.raw = focusData(['a', 'c']);
             wait(0);
-            compare(fixtureUi.focusedKey, '');
+            compare(fixtureController.focusedKey, '');
             compare(keyedThreads(), []);
-            compare(State.activationKey(fixtureUi.threadKeys, fixtureUi.focusedKey), fixtureUi.threadKeys[0]);
-            fixtureUi.raw = focusData(['a', 'b', 'c']);
+            compare(State.activationKey(fixtureController.threadKeys, fixtureController.focusedKey), fixtureController.threadKeys[0]);
+            scene.raw = focusData(['a', 'b', 'c']);
             wait(0);
-            compare(fixtureUi.focusedKey, '');
+            compare(fixtureController.focusedKey, '');
             compare(keyedThreads(), []);
         }
         function test_10_focus_clears_when_filtered() {
             focusB();
             // A later snapshot moves the focused thread into a hidden status.
-            fixtureUi.hiddenStates = ['done'];
+            fixturePreferences.settings.hiddenStates = '["done"]';
             var data = focusData(['a', 'b', 'c']);
             data.hosts[0].agents[1].status = 'done';
-            fixtureUi.raw = data;
+            scene.raw = data;
             wait(0);
-            compare(fixtureUi.focusedKey, '');
+            compare(fixtureController.focusedKey, '');
             compare(keyedThreads(), []);
-            fixtureUi.hiddenStates = [];
-            fixtureUi.raw = focusData(['a', 'b', 'c']);
+            fixturePreferences.settings.hiddenStates = '[]';
+            scene.raw = focusData(['a', 'b', 'c']);
             focusB();
-            fixtureUi.toggleList('hiddenStates', 'working');
+            fixtureController.toggleList('hiddenStates', 'working');
             wait(0);
-            compare(fixtureUi.focusedKey, '');
-            fixtureUi.toggleList('hiddenStates', 'working');
+            compare(fixtureController.focusedKey, '');
+            fixtureController.toggleList('hiddenStates', 'working');
             wait(0);
             compare(keyedThreads(), []);
         }
         function test_11_focus_clears_on_machine_and_section_collapse() {
             focusB();
             // Reconciliation alone clears focus, without the toggle reset.
-            fixtureUi.collapsedHosts = ['laptop'];
+            fixturePreferences.settings.collapsedHosts = '["laptop"]';
             wait(0);
-            compare(fixtureUi.focusedKey, '');
-            fixtureUi.collapsedHosts = [];
+            compare(fixtureController.focusedKey, '');
+            fixturePreferences.settings.collapsedHosts = '[]';
             wait(0);
             verify(cardFor('laptop:b') !== null);
             compare(keyedThreads(), []);
             focusB();
-            fixtureUi.toggleList('collapsedHosts', 'laptop');
+            fixtureController.toggleList('collapsedHosts', 'laptop');
             wait(0);
-            compare(fixtureUi.focusedKey, '');
-            fixtureUi.toggleList('collapsedHosts', 'laptop');
+            compare(fixtureController.focusedKey, '');
+            fixtureController.toggleList('collapsedHosts', 'laptop');
             wait(0);
             compare(keyedThreads(), []);
             focusB();
-            fixtureUi.preferences = Object.assign({}, fixtureUi.preferences, {
-                collapsedSections: '["threads"]'
-            });
+            fixturePreferences.settings.collapsedSections = '["threads"]';
             wait(0);
-            compare(fixtureUi.threadKeys.length, 0);
-            compare(fixtureUi.focusedKey, '');
-            fixtureUi.preferences = Object.assign({}, fixtureUi.preferences, {
-                collapsedSections: '[]'
-            });
+            compare(fixtureController.threadKeys.length, 0);
+            compare(fixtureController.focusedKey, '');
+            fixturePreferences.settings.collapsedSections = '[]';
             wait(0);
             verify(cardFor('laptop:b') !== null);
             compare(keyedThreads(), []);
@@ -392,7 +447,7 @@ Rectangle {
                     kind: 'monthly',
                     label: 'Monthly',
                     used_percent: 25,
-                    resets_at: fixtureUi.now / 1000 + 15 * 86400,
+                    resets_at: scene.now / 1000 + 15 * 86400,
                     duration_s: 30 * 86400,
                     pacing: true
                 }
@@ -405,12 +460,12 @@ Rectangle {
             locked.sampled_at = null;
             locked.reset_count = null;
             locked.windows = [];
-            fixtureUi.raw = {
+            scene.raw = {
                 hosts: [host('laptop', [agent('a', 'working', false)], 'connected')],
                 allowances: [account('one', 73, 74), synthetic, locked]
             };
             wait(40);
-            compare(fixtureUi.providers.map(function (group) {
+            compare(fixtureController.providers.map(function (group) {
                 return group.label;
             }), ['Codex', 'Synthetic']);
             verify(findChild(popup, 'provider-codex') !== null);

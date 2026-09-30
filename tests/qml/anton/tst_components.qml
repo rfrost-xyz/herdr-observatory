@@ -1,9 +1,44 @@
 import QtQuick
 import QtTest
 import "../../../omarchy/herdr.observatory" as Anton
+import "../../../omarchy/herdr.observatory/State.js" as State
 
 Item {
     id: scene
+
+    property var overview: ({
+            threads: [
+                {
+                    id: 'a',
+                    hostId: 'h',
+                    project: 'Example',
+                    state: 'working',
+                    harness: 'codex',
+                    host: 'h',
+                    usage: {
+                        contextPercent: 40,
+                        inputTokens: 10000,
+                        outputTokens: 100,
+                        uncachedTokens: 500,
+                        cachePercent: 95,
+                        compactions: 1,
+                        age: '1s ago'
+                    },
+                    completion: {
+                        done: 1,
+                        total: 3,
+                        outcomes: {
+                            running: 1,
+                            failed: 1,
+                            interrupted: 0,
+                            unknown: 0
+                        },
+                        stale: false,
+                        age: '1s ago'
+                    }
+                }
+            ]
+        })
 
     height: 220
     width: 360
@@ -14,97 +49,56 @@ Item {
         anchors.fill: parent
         contentHeight: 220
     }
-    QtObject {
-        id: fakeUi
+    TestFiles {
+        id: files
+    }
+    Anton.AntonTheme {
+        id: fakeTheme
 
-        property var accountEmails: ({})
-        property color blue: '#abcdef'
-        property var contentItem: scene
-        property string face: 'monospace'
-        property string focusedKey: ''
-        property color green: '#90ad65'
-        property color ink: '#d7d6cd'
-        property color line: '#333333'
-        property bool motionEnabled: true
-        property color muted: '#777777'
-        property bool opened: true
-        property var openedKeys: []
-        property var overview: ({
-                threads: [
-                    {
-                        id: 'a',
-                        hostId: 'h',
-                        project: 'Example',
-                        state: 'working',
-                        harness: 'codex',
-                        host: 'h',
-                        usage: {
-                            contextPercent: 40,
-                            inputTokens: 10000,
-                            outputTokens: 100,
-                            uncachedTokens: 500,
-                            cachePercent: 95,
-                            compactions: 1,
-                            age: '1s ago'
-                        },
-                        completion: {
-                            done: 1,
-                            total: 3,
-                            outcomes: {
-                                running: 1,
-                                failed: 1,
-                                interrupted: 0,
-                                unknown: 0
-                            },
-                            stale: false,
-                            age: '1s ago'
-                        }
-                    }
-                ]
+        blue: '#abcdef'
+        face: 'monospace'
+        green: '#90ad65'
+        ink: '#d7d6cd'
+        line: '#333333'
+        muted: '#777777'
+        red: '#ed6050'
+        yellow: '#e9b95c'
+    }
+    Anton.AntonPreferences {
+        id: fakePreferences
+
+        location: "file://" + files.directory + "/components-privacy.ini"
+    }
+    Anton.AntonController {
+        id: fakeController
+
+        motionEnabled: true
+        opened: true
+        preferences: fakePreferences
+        runtimePath: '/synthetic/anton-runtime'
+        view: ({
+                threads: scene.overview.threads,
+                hosts: [],
+                allowances: []
             })
-        property var preferences: ({
-                namesHidden: false
-            })
-        property color red: '#ed6050'
-        property var tooltipHost: flick
-        property int visualEpoch: 0
-        property color yellow: '#e9b95c'
+    }
+    Anton.AntonToolTip {
+        id: sharedTip
 
-        signal newThreads(var keys)
-        signal observedChange(var changes)
-
-        function accountAlias(a) {
-            return 'Gilfoyle';
-        }
-        function accountKey(a) {
-            return a.provider + ':' + a.id;
-        }
-        function alpha(c, a) {
-            return Qt.rgba(c.r, c.g, c.b, a);
-        }
-        function openThread(key) {
-            openedKeys = openedKeys.concat([key]);
-        }
-        function paceText(a) {
-            return '40% left · 50% expected';
-        }
-        function percentReading(n) {
-            return n + '%';
-        }
-        function stateColour(s) {
-            return s === 'working' ? '#cca555' : '#888888';
-        }
-        function toggleIdentity() {
-        }
-        function tokens(n) {
-            return String(n);
-        }
+        host: flick
+        moving: flick.moving
+        theme: fakeTheme
     }
     Anton.ThreadCard {
         id: thread
 
-        threadIndex: 0
-        ui: fakeUi
+        contentItem: scene
+        controller: fakeController
+        entry: scene.overview.threads[0] || {}
+        focused: fakeController.focusedKey !== '' && fakeController.focusedKey === State.threadKey(entry)
+        theme: fakeTheme
+        tooltip: sharedTip
+        viewport: flick
         width: 360
     }
     Anton.AllowanceCard {
@@ -120,7 +114,12 @@ Item {
                 reset: '2d 1h',
                 resetCount: 1
             })
-        ui: fakeUi
+        aliasName: 'Gilfoyle'
+        motionEnabled: fakeController.motionEnabled
+        namesHidden: false
+        opened: fakeController.opened
+        theme: fakeTheme
+        tooltip: sharedTip
         width: 360
         y: 100
     }
@@ -133,7 +132,7 @@ Item {
             compare(allowance.hint, '40% left · 50% expected');
         }
         function test_02_arrival_duration() {
-            fakeUi.newThreads({
+            fakeController.newThreads({
                 'h:a': true
             });
             verify(thread.entrance < 0.2);
@@ -141,14 +140,14 @@ Item {
             compare(thread.entrance, 1);
         }
         function test_03_collapse_is_instant() {
-            fakeUi.newThreads({
+            fakeController.newThreads({
                 'h:a': true
             });
-            fakeUi.visualEpoch++;
+            fakeController.visualEpoch++;
             compare(thread.entrance, 1);
         }
         function test_04_compaction_event() {
-            fakeUi.observedChange({
+            fakeController.observedChange({
                 'h:a': {
                     compaction: true
                 }
@@ -158,31 +157,31 @@ Item {
             compare(thread.contextFlash, 0);
         }
         function test_05_closed_cancels() {
-            fakeUi.newThreads({
+            fakeController.newThreads({
                 'h:a': true
             });
-            fakeUi.opened = false;
+            fakeController.opened = false;
             compare(thread.entrance, 1);
             compare(thread.flash, 0);
-            fakeUi.opened = true;
+            fakeController.opened = true;
             compare(thread.entrance, 1);
         }
         function test_06_reduced_motion_cancels() {
-            fakeUi.newThreads({
+            fakeController.newThreads({
                 'h:a': true
             });
-            fakeUi.motionEnabled = false;
+            fakeController.motionEnabled = false;
             compare(thread.entrance, 1);
-            fakeUi.newThreads({
+            fakeController.newThreads({
                 "h:a": true
             });
             compare(thread.entrance, 1);
-            fakeUi.motionEnabled = true;
+            fakeController.motionEnabled = true;
         }
         function test_07_balance_stays_independent_of_pace() {
             var balance = findChild(allowance, "allowance-balance");
             verify(balance !== null);
-            compare(balance.color.toString(), fakeUi.ink.toString());
+            compare(balance.color.toString(), fakeTheme.ink.toString());
             var initial = allowance.paceColour.toString();
             allowance.entry = Object.assign({}, allowance.entry, {
                 paceDifference: 10
@@ -191,55 +190,55 @@ Item {
             compare(allowance.entry.remaining, 40);
             wait(220);
             verify(allowance.paceColour.toString() !== initial);
-            compare(balance.color.toString(), fakeUi.ink.toString());
+            compare(balance.color.toString(), fakeTheme.ink.toString());
         }
         function test_08_closed_colour_changes_are_immediate() {
-            fakeUi.opened = false;
+            fakeController.opened = false;
             allowance.entry = Object.assign({}, allowance.entry, {
                 paceDifference: -10
             });
-            compare(allowance.paceColour, fakeUi.red);
-            fakeUi.opened = true;
-            fakeUi.motionEnabled = false;
+            compare(allowance.paceColour, fakeTheme.red);
+            fakeController.opened = true;
+            fakeController.motionEnabled = false;
             allowance.entry = Object.assign({}, allowance.entry, {
                 paceDifference: 10
             });
-            compare(allowance.paceColour, fakeUi.green);
-            fakeUi.motionEnabled = true;
+            compare(allowance.paceColour, fakeTheme.green);
+            fakeController.motionEnabled = true;
         }
         function test_09_reduced_motion_finishes_active_colour_change() {
-            fakeUi.opened = true;
-            fakeUi.motionEnabled = true;
+            fakeController.opened = true;
+            fakeController.motionEnabled = true;
             allowance.entry = Object.assign({}, allowance.entry, {
                 paceDifference: -10
             });
             wait(40);
-            var target = fakeUi.red;
+            var target = fakeTheme.red;
             verify(allowance.paceColour.toString() !== target.toString());
-            fakeUi.motionEnabled = false;
+            fakeController.motionEnabled = false;
             compare(allowance.paceColour.toString(), target.toString());
             // The binding still follows later telemetry without motion.
             allowance.entry = Object.assign({}, allowance.entry, {
                 paceDifference: 10
             });
-            target = fakeUi.green;
+            target = fakeTheme.green;
             compare(allowance.paceColour.toString(), target.toString());
-            fakeUi.motionEnabled = true;
+            fakeController.motionEnabled = true;
         }
         function test_10_closing_finishes_active_colour_change() {
             allowance.entry = Object.assign({}, allowance.entry, {
                 paceDifference: -10
             });
             wait(40);
-            var target = fakeUi.red;
+            var target = fakeTheme.red;
             verify(allowance.paceColour.toString() !== target.toString());
-            fakeUi.opened = false;
+            fakeController.opened = false;
             compare(allowance.paceColour.toString(), target.toString());
-            fakeUi.opened = true;
+            fakeController.opened = true;
             compare(allowance.paceColour.toString(), target.toString());
         }
         function test_11_separate_strip_geometry_and_thresholds() {
-            fakeUi.motionEnabled = false;
+            fakeController.motionEnabled = false;
             var fill = findChild(allowance, "allowance-fill");
             var region = findChild(allowance, "allowance-pace-region");
             var strip = findChild(allowance, "allowance-pace-strip");
@@ -251,47 +250,47 @@ Item {
                 {
                     remaining: 70,
                     difference: 20,
-                    colour: fakeUi.green
+                    colour: fakeTheme.green
                 },
                 {
                     remaining: 50,
                     difference: 0,
-                    colour: fakeUi.green
+                    colour: fakeTheme.green
                 },
                 {
                     remaining: 49.9,
                     difference: -0.1,
-                    colour: Qt.tint(fakeUi.muted, fakeUi.alpha(fakeUi.yellow, 0.65))
+                    colour: Qt.tint(fakeTheme.muted, fakeTheme.alpha(fakeTheme.yellow, 0.65))
                 },
                 {
                     remaining: 45,
                     difference: -5,
-                    colour: Qt.tint(fakeUi.muted, fakeUi.alpha(fakeUi.yellow, 0.65))
+                    colour: Qt.tint(fakeTheme.muted, fakeTheme.alpha(fakeTheme.yellow, 0.65))
                 },
                 {
                     remaining: 44.9,
                     difference: -5.1,
-                    colour: fakeUi.yellow
+                    colour: fakeTheme.yellow
                 },
                 {
                     remaining: 40.1,
                     difference: -9.9,
-                    colour: fakeUi.yellow
+                    colour: fakeTheme.yellow
                 },
                 {
                     remaining: 40,
                     difference: -10,
-                    colour: fakeUi.red
+                    colour: fakeTheme.red
                 },
                 {
                     remaining: 0,
                     difference: -50,
-                    colour: fakeUi.red
+                    colour: fakeTheme.red
                 },
                 {
                     remaining: 100,
                     difference: 50,
-                    colour: fakeUi.green
+                    colour: fakeTheme.green
                 }
             ];
             for (var i = 0; i < cases.length; i++) {
@@ -302,7 +301,7 @@ Item {
                     paceDifference: c.difference
                 });
                 compare(allowance.paceColour.toString(), c.colour.toString());
-                compare(strip.color.toString(), fakeUi.green.toString());
+                compare(strip.color.toString(), fakeTheme.green.toString());
                 compare(region.visible, c.difference > 0);
                 compare(hatch.visible, c.difference < 0);
                 fuzzyCompare(hatch.width, allowance.width * Math.max(0, -c.difference) / 100, 0.001);
@@ -333,11 +332,11 @@ Item {
             });
             verify(!fill.visible);
             compare(findChild(allowance, "allowance-balance").text, "—");
-            fakeUi.motionEnabled = true;
+            fakeController.motionEnabled = true;
         }
         function test_12_positive_only_hover_and_signed_reading() {
-            fakeUi.opened = true;
-            fakeUi.motionEnabled = false;
+            fakeController.opened = true;
+            fakeController.motionEnabled = false;
             allowance.entry = Object.assign({}, allowance.entry, {
                 remaining: 60,
                 timeRemaining: 50,
@@ -351,9 +350,9 @@ Item {
             compare(reading.text, "+10.0%");
             verify(halo.opacity > 0);
             verify(!sparks.visible);
-            fakeUi.motionEnabled = true;
+            fakeController.motionEnabled = true;
             tryCompare(sparks, "visible", true);
-            compare(sparks.tint.toString(), fakeUi.green.toString());
+            compare(sparks.tint.toString(), fakeTheme.green.toString());
             allowance.entry = Object.assign({}, allowance.entry, {
                 remaining: 40,
                 paceDifference: -10
@@ -368,7 +367,7 @@ Item {
                 paceDifference: -0.01
             });
             compare(reading.text, "0.0%");
-            compare(reading.color.toString(), fakeUi.muted.toString());
+            compare(reading.color.toString(), fakeTheme.muted.toString());
             verify(!sparks.visible);
             compare(halo.opacity, 0);
             allowance.entry = Object.assign({}, allowance.entry, {
@@ -376,10 +375,10 @@ Item {
                 paceDifference: 10
             });
             tryCompare(sparks, "visible", true);
-            fakeUi.opened = false;
+            fakeController.opened = false;
             verify(!sparks.visible);
             compare(halo.opacity, 0);
-            fakeUi.opened = true;
+            fakeController.opened = true;
             allowance.width = 220;
             var identity = findChild(allowance, "allowance-identity");
             var numbers = findChild(allowance, "allowance-numbers");
@@ -400,8 +399,8 @@ Item {
             var dial = findChild(thread, "subagent-dial");
             verify(dial !== null);
             compare(dial.failureNotch, true);
-            var entry = fakeUi.overview.threads[0];
-            fakeUi.overview = {
+            var entry = scene.overview.threads[0];
+            scene.overview = {
                 threads: [Object.assign({}, entry, {
                         completion: {
                             done: 1,
@@ -418,7 +417,7 @@ Item {
                     })]
             };
             compare(dial.failureNotch, false);
-            fakeUi.overview = {
+            scene.overview = {
                 threads: [Object.assign({}, entry, {
                         completion: {
                             done: 1,
@@ -432,8 +431,8 @@ Item {
             compare(dial.failureNotch, false);
         }
         function test_14_turn_timer_receives_real_hover() {
-            var entry = fakeUi.overview.threads[0];
-            fakeUi.overview = {
+            var entry = scene.overview.threads[0];
+            scene.overview = {
                 threads: [Object.assign({}, entry, {
                         timing: {
                             active: true,
@@ -455,29 +454,27 @@ Item {
             tryVerify(function () {
                 return clock.color.a > 0;
             }, 500);
-            var tooltip = null;
-            for (var i = 0; i < clock.data.length; i++) {
-                var candidate = clock.data[i];
-                if (candidate && candidate.text === clock.hint && candidate.delay === 450)
-                    tooltip = candidate;
-            }
-            verify(tooltip !== null, 'Production timer tooltip found');
+            // The popover's single shared tooltip shows the hovered clock's hint.
+            var tooltip = sharedTip;
+            compare(tooltip.source, clock, 'Production timer tooltip found');
+            compare(tooltip.delay, 450);
             compare(tooltip.text, 'Wall-clock turn 1m 15s\nTotal turn time 6m 40s');
             tryCompare(tooltip, 'opened', true, 1200);
             verify(thread.tooltipSuppressed);
             mouseMove(scene, 2, scene.height - 2);
         }
         function test_15_thread_card_focus_and_activation_use_its_key() {
-            fakeUi.focusedKey = '';
+            fakeController.focusedKey = '';
             verify(!thread.keyed);
-            fakeUi.focusedKey = 'h:b';
+            fakeController.focusedKey = 'h:b';
             verify(!thread.keyed);
-            fakeUi.focusedKey = 'h:a';
+            fakeController.focusedKey = 'h:a';
             verify(thread.keyed);
-            fakeUi.focusedKey = '';
-            fakeUi.openedKeys = [];
+            fakeController.focusedKey = '';
+            fakeController.launcher.running = false;
+            fakeController.launcher.command = [];
             mouseClick(thread, 8, 8);
-            compare(fakeUi.openedKeys, ['h:a']);
+            compare(fakeController.launcher.command, ['/synthetic/anton-runtime', '--open-thread', 'h', 'a']);
         }
         // Source status text reaches the hint and accessible name; the card
         // itself gains no visible text and invents no balance or pace.

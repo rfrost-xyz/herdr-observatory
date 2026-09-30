@@ -1,17 +1,15 @@
 import QtQuick
-import QtQuick.Controls
-import QtQuick.Layouts
-import qs.Commons
-import "State.js" as State
 
 Item {
     id: sheen
 
     property bool active: false
+    // The sweep runs only while the popover is open with motion enabled.
+    property bool animate: false
     property real phase: -1
     property string text
+    required property AntonTheme theme
     property color tint
-    required property var ui
 
     clip: true
     implicitHeight: titleText.implicitHeight
@@ -19,7 +17,7 @@ Item {
 
     SequentialAnimation on phase {
         loops: Animation.Infinite
-        running: sheen.active && ui.opened && ui.motionEnabled && sheen.visible
+        running: sheen.active && sheen.animate && sheen.visible
 
         NumberAnimation {
             duration: 1500
@@ -39,7 +37,7 @@ Item {
         color: sheen.tint
         font.bold: true
         text: sheen.text
-        ui: sheen.ui
+        theme: sheen.theme
     }
     Repeater {
         model: 9
@@ -50,16 +48,16 @@ Item {
             clip: true
             height: sheen.height
             opacity: [0.08, 0.18, 0.38, 0.7, 1, 0.7, 0.38, 0.18, 0.08][index]
-            visible: sheen.active && ui.opened && ui.motionEnabled && sheen.visible
+            visible: sheen.active && sheen.animate && sheen.visible
             width: 8
             x: sheen.phase * (sheen.width + 100) - 72 + index * 8
 
             AntonText {
-                color: Qt.lighter(ui.ink, 1.45)
+                color: Qt.lighter(sheen.theme.ink, 1.45)
                 font.bold: true
                 height: sheen.height
                 text: sheen.text
-                ui: sheen.ui
+                theme: sheen.theme
                 width: sheen.width
                 x: -parent.x
             }

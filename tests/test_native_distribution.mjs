@@ -7,12 +7,13 @@ test('distribution uses native commands without retired runtime assets',()=>{
   const uninstaller=fs.readFileSync(`${root}/uninstall.sh`,'utf8');
   const panel=fs.readFileSync(`${root}/Panel.qml`,'utf8');
   const store=fs.readFileSync(`${root}/SnapshotStore.qml`,'utf8');
-  for(const source of [installer,uninstaller,panel,store,fs.readFileSync('hooks/observatory.ts','utf8')]){
+  const controller=fs.readFileSync(`${root}/AntonController.qml`,'utf8');
+  for(const source of [installer,uninstaller,panel,controller,store,fs.readFileSync('hooks/observatory.ts','utf8')]){
     assert.doesNotMatch(source,/python3|runtime\.zip|native-adapter\.py|docker exec/);
   }
-  assert.match(panel,/State\.navigationArgs\(entry\)/);
+  assert.match(controller,/State\.navigationArgs\(entry\)/);
   assert.match(fs.readFileSync(`${root}/State.js`,'utf8'),/"--open-thread"/);
-  assert.doesNotMatch(panel,/--refresh-allowances|id: allowanceRefresh/);
+  for(const source of [panel,controller])assert.doesNotMatch(source,/--refresh-allowances|id: allowanceRefresh/);
   assert.match(store,/anton-runtime/);
   assert.ok(uninstaller.indexOf('--remove-peers')<uninstaller.indexOf('setPluginEnabled'));
 });

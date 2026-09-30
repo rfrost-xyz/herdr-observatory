@@ -1,15 +1,13 @@
 import QtQuick
-import QtQuick.Controls
-import QtQuick.Layouts
-import qs.Commons
-import "State.js" as State
 
 Item {
     id: signal
 
+    // The spinner turns only while the popover is open with motion enabled.
+    property bool animate: false
+    required property AntonTheme theme
     property string threadState: "unknown"
-    property color tint: ui.stateColour(threadState)
-    required property var ui
+    property color tint: theme.stateColour(threadState)
 
     Canvas {
         id: spinner
@@ -25,7 +23,7 @@ Item {
             duration: 1100
             from: 0
             loops: Animation.Infinite
-            running: ui.opened && ui.motionEnabled && signal.visible && spinner.visible
+            running: signal.animate && signal.visible && spinner.visible
             to: 360
         }
 
@@ -33,7 +31,7 @@ Item {
             var ctx = getContext("2d"), r = width / 2 - 2;
             ctx.reset();
             ctx.lineWidth = 2;
-            ctx.strokeStyle = ui.alpha(tone, 0.18).toString();
+            ctx.strokeStyle = signal.theme.alpha(tone, 0.18).toString();
             ctx.beginPath();
             ctx.arc(width / 2, height / 2, r, 0, Math.PI * 2);
             ctx.stroke();
@@ -51,7 +49,7 @@ Item {
         font.bold: true
         font.pixelSize: signal.height * 0.72
         text: signal.threadState === "blocked" ? "!" : signal.threadState === "done" ? "✓" : signal.threadState === "idle" ? "Ⅱ" : "?"
-        ui: signal.ui
+        theme: signal.theme
         visible: signal.threadState !== "working"
     }
 }
