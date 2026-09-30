@@ -160,7 +160,7 @@ Scope and limits:
 
 - These are controlled synthetic fixtures, not a live fleet. Remote hosts, Qt rendering and GPU are not measured.
 - The JS projection is timed in Node, not the QML engine.
-- The installed popover, both live hosts and live account refresh are not verified here. The parent does that after review.
+- The installed popover, live hosts and live account refresh are not verified here. They were checked after review; see "Live installed check".
 
 ## Gates on the integrated head
 
@@ -240,7 +240,7 @@ Rust tests are in `allowances.rs` (`A`), `model.rs` (`M`), `main.rs` (`B`) and `
 
 ## Independent review
 
-Pending (task 4.4).
+Rounds 1 and 2 found the issues below, all fixed. Round 3, on the frozen head `6efc6bb`, was clean with no findings (task 4.4).
 
 ## Review round 1
 
@@ -260,3 +260,31 @@ Gates after the round, on `a776756`: cargo fmt and clippy exit 0; cargo test lib
 | The view accepts any non-empty `provider_label` or `label`, though the delta spec and D1 bound them to 1 to 40 characters; D5 step 4 claims non-pacing windows are validated | Fixed in `b1834e1`: `allowanceView` uses `boundedLabel(…, 40)`, which now also rejects control characters, and falls back to the provider id or the account id. N `an invalid provider or row label falls back to the provider or account id` covers empty, 41-character, BEL, newline, numeric and null labels, and the 40-character limit. D1 now states the control-character rule for both labels and window labels, the omarchy-companion delta lists what makes a provider label invalid, and D5 step 4 says the view neither validates nor projects non-pacing windows. The runtime already restricts configured labels to 40 ASCII characters, so current output is unchanged. |
 
 Gates after the round, on `b1834e1`: cargo fmt and clippy exit 0; cargo test lib 65, bin 8, nav 6, process 26, all passing; JS 66 passed; QML 41 passed, 0 binding errors; the seven screenshot hashes are identical to the visual reference; `openspec validate --strict` valid. A rerun of the measurement (`--repeat 1 --seconds 5`) gave the same `allowance_wire`, `allowance_contract` and `provider_coupling` values as the after table.
+
+## Review round 3
+
+Clean at `6efc6bb`: no findings. CI (native and QML jobs) passed on that head.
+
+## Live installed check
+
+Recorded by the parent on 2026-09-30, after review round 3, against the reviewed head `6efc6bb`.
+
+**Update.**
+- The local plugin payload was replaced from `6efc6bb`: every file that `install.sh` installs plus the release binary, each byte-compared with the source, with `SnapshotStore.qml` written last.
+- The existing private configuration was validated with the new binary's `--migrate-config`.
+- Omarchy was warm-restarted.
+
+**Preservation.**
+- The owner marker inode was preserved.
+- The private `.accounts.json`, `.config.json` and `.peers.json` were byte-identical before and after.
+- Exactly one collector process was running.
+
+**Behaviour.**
+- Diagnostics were identical to those before the update: 3 configured hosts connected and reporting, 3 threads, and the same allowance account available and the same one unavailable as before.
+- A screenshot of the open popover showed the Codex provider group and both allowance cards rendered as before. The available card showed its balance, pace reading, expected tick, deficit hatch, reset label and reset count. The unavailable card showed placeholders.
+- The unavailable account is served through the allowance path of an SSH peer that was not updated. It stayed in the same state as before the update, so rows from an unchanged peer are still accepted without regression (spec scenario "Unchanged peer row").
+
+**Not measured live.**
+- CPU and RSS of the installed process.
+- Qt rendering and GPU.
+- Thread navigation was not exercised in this check. Its source is unchanged: `git diff --stat cc5f982 6efc6bb` touches no navigation module, and `Panel.qml` changes only in `accountAlias`.
