@@ -290,6 +290,7 @@ cargo test --manifest-path omarchy/anton-runtime/Cargo.toml --locked --offline
 node --test tests/test_pi_hooks.mjs tests/test_omarchy_state.cjs tests/test_native_distribution.mjs
 bash tests/run-qml.sh
 bash tests/run-qmllint.sh
+bash tests/run-shell-harness.sh
 omarchy-plugin-validate omarchy/herdr.observatory
 openspec validate --all --strict
 ```
@@ -306,6 +307,17 @@ its consequences. A member or property that Panel names on a plugin, stub or Qt
 type still fails the gate, as does a child object placed inside one. It supports
 Qt 6.8 (as in CI) and Qt 6.11 or later, and refuses Qt 6.9 and 6.10. Set
 `QMLLINT` to use a particular Qt 6 build.
+
+`bash tests/run-shell-harness.sh` loads `Panel.qml` in Quickshell, offscreen,
+against the installed Omarchy `qs.Commons` and `qs.Ui` modules, which the QML
+suite replaces with stubs. It hot-reloads the widget, opens, closes and reopens
+the popover and leaves it open unattended, then checks for a visible card with
+one row per thread and fails if the runtime was asked to open a thread. The
+runtime is a fake that serves a synthetic snapshot, HOME and the theme palette
+are synthetic, and `KeyboardPanel` runs as a floating window because offscreen
+has no layer-shell backend, so compositor focus and pointer input are not
+covered. It skips when Quickshell or the shell modules are not installed (as in
+CI); set `OMARCHY_SHELL_DIR` to choose the shell directory.
 
 The QML tests exercise the real `PopupContent.qml`, theme, preferences (against
 captured `privacy.ini` files), controller, keyed rows and shared tooltip with
