@@ -6,7 +6,9 @@ AntonSurface {
     id: allowanceCard
 
     readonly property color balanceColour: Color.accent
-    readonly property var paceReading: State.allowancePaceReading(known ? entry.paceDifference : null)
+    readonly property var paceReading: State.allowancePaceReading(known ? reading.paceDifference : null)
+    // Expected balance, pace and reset countdown of the structural entry at `now`.
+    readonly property var reading: State.allowanceReading(entry, now)
     readonly property string paceBand: paceReading.band
     readonly property bool positivePace: known && paceReading.difference !== null && paceReading.difference > 0
     // The concealed name shown when namesHidden is set.
@@ -42,7 +44,7 @@ AntonSurface {
     Accessible.role: Accessible.Button
     height: Style.space(59)
     animate: opened && motionEnabled
-    hint: known ? State.paceText(entry) : (entry.statusText || "Allowance unavailable")
+    hint: known ? State.paceText(reading) : (entry.statusText || "Allowance unavailable")
     tint: known ? balanceColour : theme.muted
 
     Accessible.onPressAction: allowanceCard.identityToggled()
@@ -146,8 +148,8 @@ AntonSurface {
                 clip: true
                 height: parent.height
                 objectName: "allowance-deficit-hatch"
-                visible: allowanceCard.known && allowanceCard.paceReading.difference !== null && allowanceCard.entry.paceDifference < 0
-                width: parent.width * Math.max(0, -(allowanceCard.entry.paceDifference || 0)) / 100
+                visible: allowanceCard.known && allowanceCard.paceReading.difference !== null && allowanceCard.reading.paceDifference < 0
+                width: parent.width * Math.max(0, -(allowanceCard.reading.paceDifference || 0)) / 100
                 x: parent.width * (allowanceCard.entry.remaining || 0) / 100
 
                 onPaint: {
@@ -176,8 +178,8 @@ AntonSurface {
             height: Style.space(6)
             objectName: "allowance-pace-region"
             visible: allowanceCard.positivePace
-            width: parent.width * Math.abs(allowanceCard.entry.paceDifference || 0) / 100
-            x: parent.width * Math.min(allowanceCard.entry.remaining || 0, allowanceCard.entry.timeRemaining || 0) / 100
+            width: parent.width * Math.abs(allowanceCard.reading.paceDifference || 0) / 100
+            x: parent.width * Math.min(allowanceCard.entry.remaining || 0, allowanceCard.reading.timeRemaining || 0) / 100
             y: balanceTrack.height + Style.space(2)
 
             // This clipped halo cannot recolour the remaining balance above it.
@@ -211,15 +213,15 @@ AntonSurface {
             color: allowanceCard.theme.ink
             height: balanceTrack.height + Style.space(1)
             objectName: "allowance-expected-tick"
-            visible: allowanceCard.entry.timeRemaining !== null
+            visible: allowanceCard.reading.timeRemaining !== null
             width: 1
-            x: Math.max(0, Math.min(parent.width - width, parent.width * (allowanceCard.entry.timeRemaining || 0) / 100 - width / 2))
+            x: Math.max(0, Math.min(parent.width - width, parent.width * (allowanceCard.reading.timeRemaining || 0) / 100 - width / 2))
         }
     }
     AntonText {
         color: allowanceCard.theme.muted
         font.pixelSize: Style.font.caption
-        text: "↻ " + (allowanceCard.entry.reset || "—d —h")
+        text: "↻ " + (allowanceCard.reading.reset || "—d —h")
         theme: allowanceCard.theme
         y: Style.space(38)
     }

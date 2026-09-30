@@ -19,7 +19,10 @@ AntonSurface {
     // Time-derived labels read this instant, never the view.
     property double now: 0
     property Flickable viewport: null
-    readonly property var usage: entry.usage || {
+    // Time-derived readings of the structural entry at `now`.
+    readonly property var completion: State.completionReading(entry.completion, now)
+    readonly property var turn: State.turnReading(entry.timing, now)
+    readonly property var usageReading: entry.usage ? State.usageReading(entry.usage, now) : {
         "contextPercent": null,
         "inputTokens": null,
         "outputTokens": null,
@@ -52,7 +55,7 @@ AntonSurface {
     Accessible.name: "Open in Herdr: " + hint
     Accessible.role: Accessible.Button
     height: threadMetrics.y + threadMetrics.implicitHeight + Style.space(8)
-    hint: entry.state + " · " + entry.host + " · " + entry.harness + "\n" + (usage.age ? (usage.stale ? "Last reported " : "Reported ") + usage.age : "Usage not reported")
+    hint: entry.state + " · " + entry.host + " · " + entry.harness + "\n" + (usageReading.age ? (usageReading.stale ? "Last reported " : "Reported ") + usageReading.age : "Usage not reported")
     animate: controller.opened && controller.motionEnabled
     keyed: focused
     opacity: entrance
@@ -208,14 +211,14 @@ AntonSurface {
                 Layout.minimumWidth: Layout.preferredWidth
                 Layout.preferredHeight: Style.space(21)
                 Layout.preferredWidth: clockReading.implicitWidth + Style.space(4)
-                hint: State.timingHint(threadCard.entry.timing)
+                hint: State.timingHint(threadCard.turn)
                 objectName: "thread-turn-clock"
-                opacity: threadCard.entry.timing && threadCard.entry.timing.stale ? 0.62 : 1
+                opacity: threadCard.turn && threadCard.turn.stale ? 0.62 : 1
                 tint: threadCard.tint
                 theme: threadCard.theme
                 tooltip: threadCard.tooltip
                 animate: threadCard.animate
-                visible: !!threadCard.entry.timing && threadCard.entry.timing.elapsed !== null
+                visible: !!threadCard.turn && threadCard.turn.elapsed !== null
 
                 Row {
                     id: clockReading
@@ -253,7 +256,7 @@ AntonSurface {
                     AntonText {
                         color: threadCard.tint
                         font.pixelSize: Style.font.caption
-                        text: State.durationLabel(threadCard.entry.timing ? threadCard.entry.timing.elapsed : null)
+                        text: State.durationLabel(threadCard.turn ? threadCard.turn.elapsed : null)
                         theme: threadCard.theme
                     }
                 }
@@ -276,8 +279,8 @@ AntonSurface {
             Layout.fillWidth: true
             Layout.preferredHeight: Style.space(40)
             Layout.preferredWidth: Style.space(60)
-            hint: "Context used" + (threadCard.usage.compactions !== null ? " · " + threadCard.usage.compactions + " compactions" : "") + "\n" + (threadCard.usage.age || "Not reported")
-            opacity: threadCard.usage.stale ? 0.72 : 1
+            hint: "Context used" + (threadCard.usageReading.compactions !== null ? " · " + threadCard.usageReading.compactions + " compactions" : "") + "\n" + (threadCard.usageReading.age || "Not reported")
+            opacity: threadCard.usageReading.stale ? 0.72 : 1
             tint: threadCard.tint
             theme: threadCard.theme
             tooltip: threadCard.tooltip
@@ -286,9 +289,9 @@ AntonSurface {
             MetricDial {
                 anchors.centerIn: parent
                 pulse: threadCard.contextFlash
-                ratio: threadCard.usage.contextPercent === null ? -1 : threadCard.usage.contextPercent / 100
-                reading: State.percentReading(threadCard.usage.contextPercent)
-                symbol: threadCard.usage.compactions === null ? "" : "↻ " + threadCard.usage.compactions
+                ratio: threadCard.usageReading.contextPercent === null ? -1 : threadCard.usageReading.contextPercent / 100
+                reading: State.percentReading(threadCard.usageReading.contextPercent)
+                symbol: threadCard.usageReading.compactions === null ? "" : "↻ " + threadCard.usageReading.compactions
                 tint: threadCard.tint
                 theme: threadCard.theme
             }
@@ -299,8 +302,8 @@ AntonSurface {
             Layout.fillWidth: true
             Layout.preferredHeight: Style.space(40)
             Layout.preferredWidth: Style.space(60)
-            hint: "↓ Input · ↑ Output\n" + (threadCard.usage.age || "Not reported")
-            opacity: threadCard.usage.stale ? 0.72 : 1
+            hint: "↓ Input · ↑ Output\n" + (threadCard.usageReading.age || "Not reported")
+            opacity: threadCard.usageReading.stale ? 0.72 : 1
             tint: threadCard.tint
             theme: threadCard.theme
             tooltip: threadCard.tooltip
@@ -321,7 +324,7 @@ AntonSurface {
                     AntonText {
                         color: threadCard.tint
                         font.bold: true
-                        text: State.tokens(threadCard.usage.inputTokens)
+                        text: State.tokens(threadCard.usageReading.inputTokens)
                         theme: threadCard.theme
                     }
                 }
@@ -336,7 +339,7 @@ AntonSurface {
                     AntonText {
                         color: threadCard.tint
                         font.bold: true
-                        text: State.tokens(threadCard.usage.outputTokens)
+                        text: State.tokens(threadCard.usageReading.outputTokens)
                         theme: threadCard.theme
                     }
                 }
@@ -348,8 +351,8 @@ AntonSurface {
             Layout.fillWidth: true
             Layout.preferredHeight: Style.space(40)
             Layout.preferredWidth: Style.space(60)
-            hint: "◇ Uncached input · ↻ Cached input %\n" + (threadCard.usage.age || "Not reported")
-            opacity: threadCard.usage.stale ? 0.72 : 1
+            hint: "◇ Uncached input · ↻ Cached input %\n" + (threadCard.usageReading.age || "Not reported")
+            opacity: threadCard.usageReading.stale ? 0.72 : 1
             tint: threadCard.tint
             theme: threadCard.theme
             tooltip: threadCard.tooltip
@@ -370,7 +373,7 @@ AntonSurface {
                     AntonText {
                         color: threadCard.tint
                         font.bold: true
-                        text: State.tokens(threadCard.usage.uncachedTokens)
+                        text: State.tokens(threadCard.usageReading.uncachedTokens)
                         theme: threadCard.theme
                     }
                 }
@@ -385,7 +388,7 @@ AntonSurface {
                     AntonText {
                         color: threadCard.tint
                         font.bold: true
-                        text: threadCard.usage.cachePercent === null ? "—" : threadCard.usage.cachePercent.toFixed(1) + "%"
+                        text: threadCard.usageReading.cachePercent === null ? "—" : threadCard.usageReading.cachePercent.toFixed(1) + "%"
                         theme: threadCard.theme
                     }
                 }
@@ -394,7 +397,7 @@ AntonSurface {
         AntonSurface {
             id: childMetric
 
-            readonly property var completion: threadCard.entry.completion
+            readonly property var completion: threadCard.completion
 
             Layout.fillWidth: true
             Layout.preferredHeight: Style.space(40)

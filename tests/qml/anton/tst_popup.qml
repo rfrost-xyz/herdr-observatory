@@ -10,6 +10,8 @@ import "../../../omarchy/herdr.observatory/State.js" as State
 Rectangle {
     id: scene
 
+    // The display instant; tests advance it without touching the view.
+    property double displayNow: now
     property bool light: false
     readonly property double now: 1800000000000
     property var raw: ({
@@ -57,7 +59,7 @@ Rectangle {
 
         controller: fixtureController
         height: Math.min(540, implicitHeight)
-        now: scene.now
+        now: scene.displayNow
         preferences: fixturePreferences
         theme: fixtureTheme
         view: fixtureController.view
@@ -156,6 +158,7 @@ Rectangle {
         }
         function init() {
             scene.light = false;
+            scene.displayNow = scene.now;
             scene.raw = standard();
             var settings = fixturePreferences.settings;
             settings.namesHidden = true;
@@ -475,7 +478,7 @@ Rectangle {
             compare(cards[1].entry.id, 'team');
             compare(findChild(cards[1], 'allowance-balance').text, '75%');
             compare(caption(cards[1]), '↻ 15d 0h');
-            compare(cards[1].entry.paceDifference, 25);
+            compare(cards[1].reading.paceDifference, 25);
             compare(cards[2].entry.id, 'office');
             compare(findChild(cards[2], 'allowance-balance').text, '—');
             verify(!findChild(cards[2], 'allowance-fill').visible);
@@ -650,6 +653,59 @@ Rectangle {
                 return card.entry.hostId + ':' + card.entry.id;
             }), ['laptop:b', 'laptop:d', 'workstation:c']);
         }
+        // Time separation (3.7): readings follow the display instant only.
+        function clockText(key) {
+            var clock = findChild(cardFor(key), 'thread-turn-clock');
+            verify(clock !== null);
+            return durationText(clock);
+        }
+        function durationText(item) {
+            if (typeof item.text === 'string' && /^[0-9]/.test(item.text))
+                return item.text;
+            for (var i = 0; i < item.children.length; i++) {
+                var text = durationText(item.children[i]);
+                if (text)
+                    return text;
+            }
+            return '';
+        }
+        function test_16_fresh_stopwatch_advances_without_a_view_change() {
+            var view = fixtureController.view;
+            compare(clockText('laptop:a'), '12m 34s');
+            scene.displayNow = scene.now + 5000;
+            compare(fixtureController.view, view, 'The view is not rebuilt');
+            compare(clockText('laptop:a'), '12m 39s');
+            var card = cardFor('laptop:a');
+            verify(card.hint.indexOf('Reported 5s ago') >= 0, card.hint);
+        }
+        function test_17_stale_stopwatch_is_frozen() {
+            var data = standard();
+            // Observed 30 s ago with 12 s freshness: stale and frozen at 12m 04s.
+            data.hosts[0].agents[0].technical.turn_timing.observed_at_s = scene.now / 1000 - 30;
+            scene.raw = data;
+            wait(0);
+            compare(clockText('laptop:a'), '12m 04s');
+            scene.displayNow = scene.now + 5000;
+            compare(clockText('laptop:a'), '12m 04s');
+        }
+        function test_18_reset_caption_changes_at_the_hour_boundary() {
+            var row = account('one', 73, 74);
+            row.windows[0].resets_at = scene.now / 1000 + 3602;
+            scene.raw = {
+                hosts: [],
+                allowances: [row]
+            };
+            wait(0);
+            var card = allowanceCards(popup)[0];
+            compare(caption(card), '↻ 0d 1h');
+            var view = fixtureController.view;
+            scene.displayNow = scene.now + 2000;
+            compare(caption(card), '↻ 0d 1h');
+            scene.displayNow = scene.now + 3000;
+            compare(caption(card), '↻ 0d <1h');
+            compare(fixtureController.view, view);
+        }
+
         name: 'AntonPopup'
         when: windowShown
     }

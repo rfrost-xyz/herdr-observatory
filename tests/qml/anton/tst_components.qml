@@ -22,7 +22,8 @@ Item {
                         uncachedTokens: 500,
                         cachePercent: 95,
                         compactions: 1,
-                        age: '1s ago'
+                        stale: false,
+                        at: scene.now - 1000
                     },
                     completion: {
                         done: 1,
@@ -34,11 +35,13 @@ Item {
                             unknown: 0
                         },
                         stale: false,
-                        age: '1s ago'
+                        stamp: (scene.now - 1000) * 1000
                     }
                 }
             ]
         })
+
+    readonly property double now: 1800000000000
 
     height: 220
     width: 360
@@ -96,6 +99,7 @@ Item {
         controller: fakeController
         entry: scene.overview.threads[0] || {}
         focused: fakeController.focusedKey !== '' && fakeController.focusedKey === State.threadKey(entry)
+        now: scene.now
         theme: fakeTheme
         tooltip: sharedTip
         viewport: flick
@@ -109,14 +113,17 @@ Item {
                 provider: 'codex',
                 label: 'Example',
                 remaining: 40,
-                timeRemaining: 50,
-                paceDifference: -10,
-                reset: '2d 1h',
+                // Structural: 50 s of a 100 s window left at scene.now, so the
+                // expected balance is 50% and the pace -10.
+                resetAt: scene.now / 1000 + 50,
+                durationS: 100,
+                sampledAt: scene.now / 1000,
                 resetCount: 1
             })
         aliasName: 'Gilfoyle'
         motionEnabled: fakeController.motionEnabled
         namesHidden: false
+        now: scene.now
         opened: fakeController.opened
         theme: fakeTheme
         tooltip: sharedTip
@@ -124,6 +131,22 @@ Item {
         y: 100
     }
     TestCase {
+        // Applies changes to the allowance entry. Expected-balance and pace
+        // changes (the former presentation fields) become the structural reset
+        // time of a 100 s window at scene.now, so the reading has them.
+        function paced(changes) {
+            var entry = Object.assign({}, allowance.entry, changes), expected = allowance.reading.timeRemaining;
+            if (changes.timeRemaining !== undefined)
+                expected = changes.timeRemaining;
+            else if (changes.paceDifference !== undefined)
+                expected = changes.paceDifference === null || entry.remaining === null ? null : entry.remaining - changes.paceDifference;
+            delete entry.timeRemaining;
+            delete entry.paceDifference;
+            entry.resetAt = expected === null ? null : scene.now / 1000 + expected;
+            entry.durationS = expected === null ? null : 100;
+            entry.sampledAt = scene.now / 1000;
+            return entry;
+        }
         function test_01_initial_static() {
             compare(thread.entrance, 1);
             compare(thread.flash, 0);
@@ -183,10 +206,10 @@ Item {
             verify(balance !== null);
             compare(balance.color.toString(), fakeTheme.ink.toString());
             var initial = allowance.paceColour.toString();
-            allowance.entry = Object.assign({}, allowance.entry, {
+            allowance.entry = paced({
                 paceDifference: 10
             });
-            compare(allowance.entry.paceDifference, 10);
+            compare(allowance.reading.paceDifference, 10);
             compare(allowance.entry.remaining, 40);
             wait(220);
             verify(allowance.paceColour.toString() !== initial);
@@ -194,13 +217,13 @@ Item {
         }
         function test_08_closed_colour_changes_are_immediate() {
             fakeController.opened = false;
-            allowance.entry = Object.assign({}, allowance.entry, {
+            allowance.entry = paced({
                 paceDifference: -10
             });
             compare(allowance.paceColour, fakeTheme.red);
             fakeController.opened = true;
             fakeController.motionEnabled = false;
-            allowance.entry = Object.assign({}, allowance.entry, {
+            allowance.entry = paced({
                 paceDifference: 10
             });
             compare(allowance.paceColour, fakeTheme.green);
@@ -209,7 +232,7 @@ Item {
         function test_09_reduced_motion_finishes_active_colour_change() {
             fakeController.opened = true;
             fakeController.motionEnabled = true;
-            allowance.entry = Object.assign({}, allowance.entry, {
+            allowance.entry = paced({
                 paceDifference: -10
             });
             wait(40);
@@ -218,7 +241,7 @@ Item {
             fakeController.motionEnabled = false;
             compare(allowance.paceColour.toString(), target.toString());
             // The binding still follows later telemetry without motion.
-            allowance.entry = Object.assign({}, allowance.entry, {
+            allowance.entry = paced({
                 paceDifference: 10
             });
             target = fakeTheme.green;
@@ -226,7 +249,7 @@ Item {
             fakeController.motionEnabled = true;
         }
         function test_10_closing_finishes_active_colour_change() {
-            allowance.entry = Object.assign({}, allowance.entry, {
+            allowance.entry = paced({
                 paceDifference: -10
             });
             wait(40);
@@ -295,7 +318,7 @@ Item {
             ];
             for (var i = 0; i < cases.length; i++) {
                 var c = cases[i];
-                allowance.entry = Object.assign({}, allowance.entry, {
+                allowance.entry = paced({
                     remaining: c.remaining,
                     timeRemaining: 50,
                     paceDifference: c.difference
@@ -319,7 +342,7 @@ Item {
             compare(halo.parent, region);
             compare(sparks.parent, region);
             compare(sparks.tint.toString(), strip.color.toString());
-            allowance.entry = Object.assign({}, allowance.entry, {
+            allowance.entry = paced({
                 paceDifference: null,
                 timeRemaining: null
             });
@@ -327,7 +350,7 @@ Item {
             verify(!hatch.visible);
             verify(!findChild(allowance, "allowance-expected-tick").visible);
             compare(fill.color.toString(), balanceColour);
-            allowance.entry = Object.assign({}, allowance.entry, {
+            allowance.entry = paced({
                 remaining: null
             });
             verify(!fill.visible);
@@ -337,7 +360,7 @@ Item {
         function test_12_positive_only_hover_and_signed_reading() {
             fakeController.opened = true;
             fakeController.motionEnabled = false;
-            allowance.entry = Object.assign({}, allowance.entry, {
+            allowance.entry = paced({
                 remaining: 60,
                 timeRemaining: 50,
                 paceDifference: 10
@@ -353,7 +376,7 @@ Item {
             fakeController.motionEnabled = true;
             tryCompare(sparks, "visible", true);
             compare(sparks.tint.toString(), fakeTheme.green.toString());
-            allowance.entry = Object.assign({}, allowance.entry, {
+            allowance.entry = paced({
                 remaining: 40,
                 paceDifference: -10
             });
@@ -362,7 +385,7 @@ Item {
             verify(!sparks.visible);
             compare(halo.opacity, 0);
             verify(findChild(allowance, "allowance-deficit-hatch").visible);
-            allowance.entry = Object.assign({}, allowance.entry, {
+            allowance.entry = paced({
                 remaining: 49.99,
                 paceDifference: -0.01
             });
@@ -370,7 +393,7 @@ Item {
             compare(reading.color.toString(), fakeTheme.muted.toString());
             verify(!sparks.visible);
             compare(halo.opacity, 0);
-            allowance.entry = Object.assign({}, allowance.entry, {
+            allowance.entry = paced({
                 remaining: 60,
                 paceDifference: 10
             });
@@ -384,7 +407,7 @@ Item {
             var numbers = findChild(allowance, "allowance-numbers");
             verify(identity.width >= 0);
             verify(identity.x + identity.width < numbers.x);
-            allowance.entry = Object.assign({}, allowance.entry, {
+            allowance.entry = paced({
                 remaining: null,
                 timeRemaining: null,
                 paceDifference: null
@@ -412,7 +435,7 @@ Item {
                                 unknown: 0
                             },
                             stale: false,
-                            age: '1s ago'
+                            stamp: (scene.now - 1000) * 1000
                         }
                     })]
             };
@@ -424,7 +447,7 @@ Item {
                             total: 3,
                             outcomes: null,
                             stale: false,
-                            age: '1s ago'
+                            stamp: (scene.now - 1000) * 1000
                         }
                     })]
             };
@@ -434,12 +457,17 @@ Item {
             var entry = scene.overview.threads[0];
             scene.overview = {
                 threads: [Object.assign({}, entry, {
+                        // Started 75 s before scene.now; 325 s of finished turns.
                         timing: {
                             active: true,
-                            elapsed: 75,
-                            total: 400,
-                            stale: false,
-                            age: '1s ago'
+                            settled: false,
+                            startedAt: scene.now / 1000 - 75,
+                            observedAt: scene.now / 1000 - 1,
+                            last: null,
+                            complete: true,
+                            finishedTotal: 325,
+                            outcome: null,
+                            stale: false
                         }
                     })]
             };
@@ -487,11 +515,10 @@ Item {
                 status: 'auth_needed',
                 statusText: 'Sign in required',
                 remaining: null,
-                timeRemaining: null,
-                paceDifference: null,
                 resetCount: null,
-                reset: null,
-                age: 'source unavailable'
+                resetAt: null,
+                durationS: null,
+                sampledAt: null
             };
             compare(allowance.hint, 'Sign in required');
             compare(allowance.Accessible.name, 'Unknown account. Sign in required');
@@ -502,7 +529,7 @@ Item {
             verify(!findChild(allowance, 'allowance-deficit-hatch').visible);
         }
         function test_17_unavailable_without_text_keeps_existing_hint() {
-            allowance.entry = Object.assign({}, allowance.entry, {
+            allowance.entry = paced({
                 status: 'unavailable',
                 statusText: null
             });
