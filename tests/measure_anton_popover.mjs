@@ -488,6 +488,29 @@ function architectureMetrics(State) {
            hardcoded_omarchy_state_paths: count(/\.local\/state\/omarchy/g), clock_only_view_changes_60s: clockOnlyChanges(State), qmllint: qmllintMetrics(dir) };
 }
 
+// Allowance readings (restructure-anton-popover, additive). The same three
+// neutral rows as allowance_contract, projected at NOW. When State.allowanceReading
+// exists (time-separated view) it is applied at NOW; otherwise the projected
+// fields are read directly, which at baseline equals allowance_contract.
+function allowanceReadingMetrics(State) {
+  if (!State || typeof State.project !== 'function') return null;
+  const hosts = jsSnapshot(0, NOW, NOW / 1000 - 1).hosts;
+  const reading = typeof State.allowanceReading === 'function' ? account => State.allowanceReading(account, NOW) : account => account;
+  const cases = {
+    codex_weekly: neutralRow('one', {}, {}),
+    synthetic_monthly: neutralRow('team', { provider: 'synthetic', provider_label: 'Synthetic' }, { kind: 'monthly', label: 'Monthly', used_percent: 25, resets_at: NOW / 1000 + 1296000, duration_s: 2592000 }),
+    auth_needed: neutralRow('auth', { provider: 'synthetic', provider_label: 'Synthetic', status: 'auth_needed', status_text: 'Sign in required', sampled_at: null, reset_count: null }, null)
+  };
+  const result = { source: typeof State.allowanceReading === 'function' ? 'State.allowanceReading' : 'projected fields' };
+  for (const [name, row] of Object.entries(cases)) {
+    const projected = State.project({ at: NOW / 1000, interval: 5, heartbeat_seconds: 4, hosts, allowances: [row], fleet_discovery: { state: 'disabled' } }, NOW).allowances[0];
+    const out = projected ? reading(projected) : null;
+    result[name] = out ? { remaining: out.remaining ?? null, time_remaining: out.timeRemaining === null || out.timeRemaining === undefined ? null : round(out.timeRemaining, 3),
+                           pace_difference: out.paceDifference === null || out.paceDifference === undefined ? null : round(out.paceDifference, 3), reset: out.reset ?? null, age: out.age ?? null } : null;
+  }
+  return result;
+}
+
 // ---------------------------------------------------------------- report
 const base = fs.mkdtempSync(path.join(os.tmpdir(), 'anton-measure-'));
 fs.chmodSync(base, 0o700);
@@ -495,7 +518,7 @@ try {
   const State = loadState();
   const report = { scope: 'Synthetic fixtures only. Runtime CPU is user+sys of the runtime and reaped descendants (fake-SSH peer probes) over the fixed window; RSS is sampled every 50 ms over the runtime family. colors.toml opens include local and peer samples sharing the fixture HOME. Remote hosts, Qt and GPU are not measured.',
     source_root: sourceRoot, git_head: (() => { try { return execFileSync('git', ['-C', sourceRoot, 'rev-parse', '--short', 'HEAD'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return null; } })(),
-    runtime: null, refresh: null, projection: projectionMetrics(State), replacements: replacementMetrics(State), static: staticMetrics(), allowance_contract: allowanceContractMetrics(State), provider_coupling: providerCoupling(), allowance_wire: null, architecture: architectureMetrics(State) };
+    runtime: null, refresh: null, projection: projectionMetrics(State), replacements: replacementMetrics(State), static: staticMetrics(), allowance_contract: allowanceContractMetrics(State), provider_coupling: providerCoupling(), allowance_wire: null, architecture: architectureMetrics(State), allowance_readings: allowanceReadingMetrics(State) };
   if (!flag('--skip-runtime')) {
     if (!fs.existsSync(binary)) throw new Error(`Runtime binary not found: ${binary}`);
     const counter = colorsCounter();
