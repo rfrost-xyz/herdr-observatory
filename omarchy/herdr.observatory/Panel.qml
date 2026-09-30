@@ -3,6 +3,7 @@ import Quickshell
 import Quickshell.Io
 import qs.Commons
 import qs.Ui
+import "State.js" as State
 
 Panel {
     id: root
@@ -77,38 +78,7 @@ Panel {
             root.close();
         }
         function diagnostics(): string {
-            return JSON.stringify({
-                connected: snapshot.view.connected,
-                hosts: snapshot.view.hosts.map(function (h) {
-                    return {
-                        id: h.id,
-                        connection: h.connectionState,
-                        reporting: h.reporting
-                    };
-                }),
-                threads: snapshot.view.threads.length,
-                usageReported: snapshot.view.threads.filter(function (t) {
-                    return t.usage && t.usage.inputTokens !== null;
-                }).length,
-                timingReported: snapshot.view.threads.filter(function (t) {
-                    return t.timing && t.timing.elapsed !== null;
-                }).length,
-                timingCurrent: snapshot.view.threads.filter(function (t) {
-                    return t.timing && t.timing.active && !t.timing.stale && t.timing.elapsed !== null;
-                }).length,
-                timingTotals: snapshot.view.threads.filter(function (t) {
-                    return t.timing && t.timing.total !== null;
-                }).length,
-                timingStale: snapshot.view.threads.filter(function (t) {
-                    return t.timing && t.timing.stale;
-                }).length,
-                allowances: snapshot.view.allowances.map(function (a) {
-                    return {
-                        label: a.label,
-                        available: a.remaining !== null
-                    };
-                })
-            });
+            return State.diagnostics(snapshot.view, Date.now());
         }
         function open(): void {
             root.open();
