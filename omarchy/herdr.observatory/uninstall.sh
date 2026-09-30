@@ -18,7 +18,7 @@ for entry in "$target"/* "$target"/.[!.]* "$target"/..?*; do
   [[ -e $entry || -L $entry ]] || continue
   [[ -f $entry && ! -L $entry && -O $entry ]] || { echo 'Unsafe plugin payload; preserving installation' >&2; exit 1; }
   case ${entry##*/} in
-    .hooks-receipt.json|.hooks-before-native.json|.peers.json|anton-runtime|.config.json|manifest.json|Panel.qml|PopupContent.qml|SectionHeader.qml|AntonText.qml|AntonSurface.qml|ThreadSignal.qml|SheenTitle.qml|BurnEffect.qml|MetricDial.qml|ThreadCard.qml|AllowanceCard.qml|AntonTheme.qml|AntonToolTip.qml|.accounts.json|SnapshotStore.qml|State.js|README.md|uninstall.sh|.herdr-observatory-install) ;;
+    .hooks-receipt.json|.hooks-before-native.json|.peers.json|anton-runtime|.config.json|manifest.json|Panel.qml|PopupContent.qml|SectionHeader.qml|AntonText.qml|AntonSurface.qml|ThreadSignal.qml|SheenTitle.qml|BurnEffect.qml|MetricDial.qml|ThreadCard.qml|AllowanceCard.qml|AntonTheme.qml|AntonToolTip.qml|AntonPreferences.qml|.accounts.json|SnapshotStore.qml|State.js|README.md|uninstall.sh|.herdr-observatory-install) ;;
     *) echo "Unknown plugin file remains: $entry" >&2; exit 1 ;;
   esac
 done
@@ -68,7 +68,7 @@ if [[ -e $state_dir ]]; then
   ((${#owned[@]} == 0)) || rm -f -- "${owned[@]}"
   rmdir --ignore-fail-on-non-empty -- "$state_dir"
 fi
-for file in Panel.qml PopupContent.qml SectionHeader.qml AntonText.qml AntonSurface.qml ThreadSignal.qml SheenTitle.qml BurnEffect.qml MetricDial.qml ThreadCard.qml AllowanceCard.qml AntonTheme.qml AntonToolTip.qml SnapshotStore.qml State.js README.md; do
+for file in Panel.qml PopupContent.qml SectionHeader.qml AntonText.qml AntonSurface.qml ThreadSignal.qml SheenTitle.qml BurnEffect.qml MetricDial.qml ThreadCard.qml AllowanceCard.qml AntonTheme.qml AntonToolTip.qml AntonPreferences.qml SnapshotStore.qml State.js README.md; do
   rm -f -- "$target/$file"
 done
 rm -f -- "$target/.accounts.json" "$target/.config.json" "$target/anton-runtime" "$target/.hooks-receipt.json" "$target/.hooks-before-native.json" "$target/.peers.json" "$target/manifest.json"
