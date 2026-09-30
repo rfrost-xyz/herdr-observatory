@@ -1,3 +1,5 @@
 module Quickshell.Io
+FileView 0.0 FileView.qml
 Process 0.0 Process.qml
 SplitParser 0.0 SplitParser.qml
+StdioCollector 0.0 StdioCollector.qml

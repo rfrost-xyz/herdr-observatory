@@ -7,7 +7,7 @@ source_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 plugins_dir=${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins
 target=$plugins_dir/$id
 stage=$plugins_dir/.$id.install.$$
-files=(manifest.json Panel.qml PopupContent.qml SectionHeader.qml AntonText.qml AntonSurface.qml ThreadSignal.qml SheenTitle.qml BurnEffect.qml MetricDial.qml ThreadCard.qml AllowanceCard.qml SnapshotStore.qml State.js README.md uninstall.sh)
+files=(manifest.json Panel.qml PopupContent.qml SectionHeader.qml AntonText.qml AntonSurface.qml ThreadSignal.qml SheenTitle.qml BurnEffect.qml MetricDial.qml ThreadCard.qml AllowanceCard.qml AntonTheme.qml AntonToolTip.qml SnapshotStore.qml State.js README.md uninstall.sh)
 
 [[ -n ${ANTON_CONFIG:-} && -f $ANTON_CONFIG && ! -L $ANTON_CONFIG ]] || { echo "Set ANTON_CONFIG to a regular private config file" >&2; exit 1; }
 [[ ! -e $target && ! -L $target ]] || { echo "Plugin already installed: $target" >&2; exit 1; }

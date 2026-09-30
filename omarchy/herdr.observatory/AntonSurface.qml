@@ -9,17 +9,34 @@ Rectangle {
 
     property string hint: ""
     readonly property bool hovered: hover.containsMouse
+    readonly property real hoverX: hover.mouseX
+    readonly property real hoverY: hover.mouseY
     property bool keyed: false
     property real restingOpacity: 0
     property bool selected: false
     property color tint: ui.blue
+    // Typed as the base ToolTip: AntonToolTip already names AntonSurface, and
+    // Qt 6.8 cannot resolve two files that name each other.
+    property ToolTip tooltip: null
     property bool tooltipSuppressed: false
     required property var ui
+    readonly property bool wantsTooltip: hovered && hint.length > 0 && !tooltipSuppressed
 
     border.color: ui.alpha(tint, 0.5)
     border.width: keyed ? 1 : 0
     color: ui.alpha(tint, hovered || selected || keyed ? Math.max(0.12, restingOpacity) : restingOpacity)
     radius: 0
+
+    Component.onDestruction: if (tooltip)
+        tooltip.hide(surface)
+    onWantsTooltipChanged: {
+        if (!tooltip)
+            return;
+        if (wantsTooltip)
+            tooltip.show(surface);
+        else
+            tooltip.hide(surface);
+    }
 
     Behavior on border.color {
         enabled: ui.opened && ui.motionEnabled
@@ -52,7 +69,7 @@ Rectangle {
         parent: ui.tooltipHost
         text: surface.hint
         timeout: 6000
-        visible: !surface.tooltipSuppressed && !ui.tooltipHost.moving && hover.containsMouse && surface.hint.length > 0
+        visible: !surface.tooltip && !surface.tooltipSuppressed && !ui.tooltipHost.moving && hover.containsMouse && surface.hint.length > 0
         width: Math.min(ui.tooltipHost.width, Style.space(280), tipText.implicitWidth + padding * 2)
         x: Math.max(0, Math.min(cursor.x + Style.space(12), ui.tooltipHost.width - width))
         y: cursor.y + Style.space(18) + height <= ui.tooltipHost.height ? cursor.y + Style.space(18) : Math.max(0, cursor.y - height - Style.space(12))
