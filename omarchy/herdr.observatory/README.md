@@ -316,8 +316,9 @@ one row per thread and fails if the runtime was asked to open a thread. The
 runtime is a fake that serves a synthetic snapshot, HOME and the theme palette
 are synthetic, and `KeyboardPanel` runs as a floating window because offscreen
 has no layer-shell backend, so compositor focus and pointer input are not
-covered. It skips when Quickshell or the shell modules are not installed (as in
-CI); set `OMARCHY_SHELL_DIR` to choose the shell directory.
+covered. It is a local-only gate that CI does not run, and it skips when
+Quickshell or the shell modules are not installed; set `OMARCHY_SHELL_DIR` to
+choose the shell directory.
 
 The QML tests exercise the real `PopupContent.qml`, theme, preferences (against
 captured `privacy.ini` files), controller, keyed rows and shared tooltip with

@@ -99,4 +99,4 @@ The popover SHALL start thread navigation only in response to an explicit operat
 
 #### Scenario: Reload and reopen without input
 - **WHEN** the plugin is reloaded several times, including while open, and the popover is then opened, closed and reopened without operator input
-- **THEN** it stays open with its thread rows visible, and no navigation starts.
+- **THEN** no navigation starts, and while it is open its thread rows are visible.

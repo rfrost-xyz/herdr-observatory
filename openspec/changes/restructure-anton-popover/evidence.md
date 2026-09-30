@@ -304,10 +304,14 @@ Gates on this round's head:
 
 ## Live install findings
 
-The parent installed `8a3fe0e` into the live Omarchy shell (Qt 6.11.2, installed `qs.Ui` and `qs.Commons`) and reported two problems, then rolled the plugin back to `53f2407` with a clean restart, after which the popover rendered and no launch happened:
+The parent installed `8a3fe0e` into the live Omarchy shell (Qt 6.11.2, installed `qs.Ui` and `qs.Commons`), then rolled the plugin back to `53f2407` with a clean restart, and later installed `fa5e4a5`. Observed facts only:
 
-1. `omarchy-shell herdr.observatory open` set status `open` and the panel appeared to take keyboard focus, but a screenshot 2 s later showed no popover. The bar icon rendered.
-2. About 10 s after an `omarchy restart shell` that followed replacing the plugin files (five hot reloads were logged while files were copied), a thread navigation fired with no known input: the session manager logged a terminal launch for a remote thread. After the change-2 install a similar activation appears to have happened (the first open showed the socket-only route error).
+1. **`8a3fe0e`.** `omarchy-shell herdr.observatory open` set status `open`, but screenshots taken about 2 s after the open showed no popover (the bar icon rendered). The shell logs show the popover had closed before each such screenshot.
+2. **`53f2407` after the rollback.** The popover rendered in a screenshot taken 2 s after an IPC open. The logs show it then closed, with no close request, about 3 s after the open.
+3. **`fa5e4a5` (parent's live re-test).** After an IPC open the popover rendered fully in a screenshot at 0.5 s. By 2 s its status was `closed`, and the parent had sent no close request. No terminal launch occurred after the install.
+4. **Terminal launch on `8a3fe0e`.** The session manager logged one terminal launch (a remote herdr session) about 10 s after an earlier `omarchy restart shell`. Its origin could not be attributed from the logs.
+5. **Unprompted close.** The close without a request is unexplained. It occurs on both the change-2 build (`53f2407`) and this change's build (`fa5e4a5`), so it is recorded as a pre-existing issue outside this change; see "Follow-up" below.
+6. **Navigation guard.** The guard in `ae5859f` is verified by the QML suites (`tst_controller` test_13, `tst_popup` test_08b) and the installed-shell harness only. Live navigation was not deliberately exercised on `fa5e4a5`.
 
 ### Installed-shell reproduction
 
@@ -321,7 +325,9 @@ The parent installed `8a3fe0e` into the live Omarchy shell (Qt 6.11.2, installed
 | `493ab55` with `popoverController.activate()` queued on open | fail: the popover closes after the fake navigation exits 0, 30 `--open-thread` calls |
 | `493ab55` with `PopupContent` hidden | fail: content has no size, 0 of 3 rows |
 
-An earlier scratch run of the same setup also saved the card image for both trees: with the synthetic snapshot and the workstation's theme palette the two 360x540 images are identical pixel for pixel (their PNG bytes differ). The invisible popover therefore does not reproduce against the real modules on either tree, and the harness does detect both an unrequested navigation and missing content.
+One-off observation, not committed and not repeatable from the committed harness: an earlier scratch run of the same setup saved the card image for both trees, and with the synthetic snapshot and the workstation's theme palette the two 360x540 images were identical pixel for pixel (their PNG bytes differed). The invisible popover does not reproduce against the real modules on either tree offscreen, and the harness does detect both an unrequested navigation and missing content.
+
+**What the harness does not cover.** The installed `KeyboardPanel` closes only on a pointer press on its dismiss area or on its other-monitor dismissal windows, plus its explicit close paths. The harness patches the layer-shell window, mask and dismissal windows out, so its "stays open" check does not explain the live close.
 
 **Why the stub suite could not show it.** `tests/qml/anton` replaces `qs.Commons` with stubs and has no `qs.Ui`, so it never instantiates `Panel.qml`, `KeyboardPanel`, `PanelKeyCatcher`, `BarIconButton` or the real `Color`. A defect in how `Panel.qml` sits inside those types, or in real theme values, is outside its reach. The new harness covers that, but not layer-shell mapping, compositor keyboard focus or pointer delivery.
 
@@ -329,13 +335,17 @@ An earlier scratch run of the same setup also saved the card image for both tree
 
 Read-only; only event types and times relative to each open are recorded here.
 
-- `8a3fe0e` session, open A: the popover opened 4 s after the restart with no IPC or `omarchy-shell` socket request (consistent with a bar click or shortcut). At +5.1 s the preferences file was written (acknowledgements are written after a successful navigation or by reconciliation), at +5.9 s the session manager logged the only terminal launch of the session, and the panel layer closed at +6 s.
+- `8a3fe0e` session, open A: the popover opened 4 s after the restart with no IPC or `omarchy-shell` socket request; what opened it is not recorded. At +5.1 s the preferences file was written (acknowledgements are written after a successful navigation or by reconciliation), at +5.9 s the session manager logged the only terminal launch of the session, and the panel layer closed at +6 s.
 - Open B (IPC): the layer closed about 1 s later with no close request and no launch. The screenshot came about 2 s after the open, after the close.
 - Open C (IPC): a status query at +2 s returned `open`, the layer closed at +4 s with no close request and no launch, and the screenshot came at +5 s.
 - `53f2407` session after the rollback: the popover opened by IPC, the screenshot at +2 s showed it, and the layer closed at +3 s, before the next IPC request. Later the popover was opened without any IPC request and closed 10 s later as focus moved to a terminal window.
-- Every close in both sessions has the same focus sequence: the panel layer takes keyboard focus, focus returns to an application window, and the layer closes. That matches a pointer press on the full-screen panel surface: outside the card it dismisses the panel, and on a thread row it navigates and then closes. The active application window also changed several times during the test, so the desktop was in use.
+- In every close in both sessions the panel layer took keyboard focus, focus then returned to an application window, and the layer closed. The logs do not record pointer or keyboard events, so they cannot show what closed the layer.
 
-Conclusion: the popover was not drawn invisibly; it had closed before each screenshot that missed it. The same unrequested close happened on `53f2407`, where the screenshot fell before it. The logs do not show what closed it, and nothing in them points to `8a3fe0e`. Confirming this needs a controlled re-test on an idle desktop: open with `omarchy-shell herdr.observatory open`, take a screenshot at 0.5 s and 2 s with no pointer or keyboard input, then check the journal for launches.
+Conclusion: on `8a3fe0e` the popover was not drawn invisibly; it had closed before each screenshot that missed it. The same close without a request happened on `53f2407` and, in the parent's re-test, on `fa5e4a5`. The logs do not show what closed it, and nothing in them points to this change. A pointer press or other operator input is one possible cause, but it is a hypothesis the logs neither confirm nor rule out.
+
+### Follow-up
+
+The unprompted close is a pre-existing issue outside this change and is left open for a follow-up change: find what closes the layer-shell panel within about 1 to 3 s of an IPC open on a live desktop, starting from the `KeyboardPanel` dismissal surfaces that the harness patches out.
 
 ### Activation paths
 
@@ -345,7 +355,7 @@ Every route to `--open-thread` goes through `AntonController.openThread`, the on
 - the thread row `TapHandler.onTapped`;
 - the thread row `Accessible.onPressAction` (an AT-SPI client's press).
 
-No `Component.onCompleted`, `Connections`, `Qt.callLater`, timer, binding, view change, focus change or open/close handler calls `openThread` or `activate`. `53f2407` has the same three entry points (`root.openThread` from the key catcher, the row `TapHandler` and the row press action). A load, hot reload, focus change or snapshot update therefore cannot start navigation on either tree without one of those input events, and the harness shows 0 launches through reloads, open/close cycles and focus moves. The terminal launch in the `8a3fe0e` session followed an open that had no IPC request, which suggests the desktop was in use; the logs cannot tell a tap or key from any other input.
+No `Component.onCompleted`, `Connections`, `Qt.callLater`, timer, binding, view change, focus change or open/close handler calls `openThread` or `activate`. `53f2407` has the same three entry points (`root.openThread` from the key catcher, the row `TapHandler` and the row press action). By code inspection, a load, hot reload, focus change or snapshot update therefore cannot start navigation on either tree without one of those input events, and the harness shows 0 launches through reloads, open/close cycles and focus moves. The terminal launch in the `8a3fe0e` session followed an open that had no IPC request; its origin could not be attributed.
 
 Two points for the parent:
 
@@ -358,7 +368,7 @@ Two points for the parent:
 - `node --test tests/test_pi_hooks.mjs tests/test_omarchy_state.cjs tests/test_native_distribution.mjs`: 87 passed.
 - `bash tests/run-qml.sh`: 95 passed, 0 failed, 0 binding errors on Qt 6.11.2; the seven screenshots match the corrected reference.
 - `bash tests/run-qmllint.sh`: exit 0, no warnings outside `Panel.qml`.
-- `bash tests/run-shell-harness.sh`: pass (see above).
+- `bash tests/run-shell-harness.sh` (local only; CI does not run it): pass (see above).
 - `openspec validate restructure-anton-popover --strict` and `openspec validate --all --strict`: valid.
 - Harness `--skip-runtime` against `8a3fe0e`: every metric identical except timing noise and `total_qml_lines` 2312 to 2316 (the guard).
 
@@ -384,6 +394,9 @@ Two points for the parent:
 | Scenario: diagnostics command | `State.diagnostics(store.view, Date.now())` | node diagnostics oracle | `aadd09b`, `dea2925` |
 | Shell theme palette source | `AntonTheme.paletteUrl = Color.currentThemePath + '/colors.toml'`; reload on accent/background, file change, popover open and IPC `refresh` | `tst_theme` test_01 to test_04; open and refresh reloads by code inspection of `Panel.qml` (not instantiable under `qmltestrunner`); `hardcoded_omarchy_state_paths` 0 | `f5d6d75`, `b152fa3` |
 | Scenario: theme switch | `watchChanges` and accent/background reload | `tst_theme` test_03 | `f5d6d75` |
+| Navigation only from an open popover | `AntonController.openThread` does nothing unless `opened` | `tst_controller` test_13; `tst_popup` test_08b; installed-shell harness (0 `--open-thread` calls) | `ae5859f`, `493ab55` |
+| Scenario: tap during the closing fade | as above | `tst_popup` test_08b (tap after closing launches nothing; same tap after reopening builds the exact arguments); `tst_controller` test_13 | `ae5859f` |
+| Scenario: reload and reopen without input | no load, reload, open/close, focus or snapshot path calls `openThread` | installed-shell harness (hot-reload storm, reopen during the fade, focus moves, 3 s unattended: rows visible, 0 `--open-thread` calls); `tst_controller` test_13 | `ae5859f`, `493ab55` |
 
 Programme brief acceptance items:
 

@@ -198,7 +198,8 @@ Stage explicit paths only. Use atomic Conventional Commits with no attribution t
 
 - [x] 4.5 Live install findings (parent's installed check of `8a3fe0e`, evidence.md "Live install findings"):
   - Reproduce the reported invisible popover against the installed Omarchy shell modules with an offscreen harness, on `8a3fe0e` and `53f2407`, and record the result and why the stub-only suite could not show it.
-  - Commit the harness as `tests/run-shell-harness.sh` (skips without Quickshell or the shell modules) and document it in the plugin README.
+  - Commit the harness as `tests/run-shell-harness.sh` (a local-only gate that CI does not run; skips without Quickshell or the shell modules) and document it in the plugin README.
   - Trace every path to `--open-thread` and establish whether load, hot reload, focus or snapshot updates can start navigation without input, on both trees.
   - Guard `AntonController.openThread` on `opened`, with regression tests (`tst_controller` test_13, `tst_popup` test_08b) that fail without the guard; add the "Navigation only from an open popover" requirement.
   - Rerun all gates and the measurement harness with `--skip-runtime`.
+  - Record the parent's live re-test of `fa5e4a5` as observed facts only, narrow the "Reload and reopen without input" scenario to navigation and row visibility while open, and record the unprompted close (also on `53f2407`) as a pre-existing follow-up outside this change.
