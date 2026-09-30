@@ -345,7 +345,7 @@ Conclusion: on `8a3fe0e` the popover was not drawn invisibly; it had closed befo
 
 ### Follow-up
 
-The unprompted close is a pre-existing issue outside this change and is left open for a follow-up change: find what closes the layer-shell panel within about 1 to 3 s of an IPC open on a live desktop, starting from the `KeyboardPanel` dismissal surfaces that the harness patches out, `Bar.requestPopout` popout switching (`Bar.qml` lines 542 to 546), Escape and the bar button toggle. None of these would appear as an IPC close request in the logs.
+The unprompted close is a pre-existing issue outside this change and is left open for a follow-up change: find what closes the layer-shell panel within about 1 to 4 s of an IPC open on a live desktop, starting from the `KeyboardPanel` dismissal surfaces that the harness patches out, `Bar.requestPopout` popout switching (`Bar.qml` lines 542 to 546), Escape and the bar button toggle. None of these would appear as an IPC close request in the logs.
 
 ### Activation paths
 

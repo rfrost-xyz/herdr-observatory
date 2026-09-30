@@ -180,7 +180,7 @@ Stage explicit paths only. Use atomic Conventional Commits with no attribution t
   Confirm that `git diff origin/main -- omarchy/anton-runtime` is empty and that the seven screenshot hashes on the integrated head are byte-identical to evidence.md.
 - [x] 4.2 Build the integrated release binary and confirm its SHA-256 equals the baseline `74f50d69…`. Run the same harness command with `--repeat 3 --json` on the final head. Record the comparison in evidence.md with the D13 expectations: existing metrics with identical definitions, the architecture metrics, and `rendered_tooltip_instances`. Explain any deviation.
 - [x] 4.3 Complete evidence.md traceability, mapping each requirement and scenario in the delta spec, and each acceptance item (a) to (i) of the programme brief, to its implementation path, verification, result and commit.
-- [ ] 4.4 Obtain an independent adversarial review of the frozen source against the proposal, spec, design, tasks and AGENTS.md. It must cover:
+- [x] 4.4 Obtain an independent adversarial review of the frozen source against the proposal, spec, design, tasks and AGENTS.md. It must cover:
   - time-rule equivalence (open and closed);
   - preference compatibility;
   - IPC shape;
@@ -195,6 +195,7 @@ Stage explicit paths only. Use atomic Conventional Commits with no attribution t
 
   - [x] Round 1 remediation: restrict the `Panel.qml` `missing-property` allowance to the `qs.Ui` forms with a recorded negative check; remove the unused `AntonController.now` and `State.threadIndex` and amend D7 and D9; add collector-exit coverage (`tst_store` test_10 and a node `storeStep` case). See evidence.md "Review round 1".
   - [x] Round 2 remediation: tie accepted `Panel.qml` `missing-property` warnings to `qs.Ui` objects by location and per-type property lists, reject them all on Qt 6.11 or later, refuse Qt 6.9 and 6.10, and record the negative checks; amend D12. See evidence.md "Review round 2".
+  - [x] Final review: the independent review of `09d9705` is clean, with every finding resolved and CI green on push and pull_request.
 
 - [x] 4.5 Live install findings (parent's installed check of `8a3fe0e`, evidence.md "Live install findings"):
   - Reproduce the reported invisible popover against the installed Omarchy shell modules with an offscreen harness, on `8a3fe0e` and `53f2407`, and record the result and why the stub-only suite could not show it.
