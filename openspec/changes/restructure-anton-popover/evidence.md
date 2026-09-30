@@ -306,9 +306,9 @@ Gates on this round's head:
 
 The parent installed `8a3fe0e` into the live Omarchy shell (Qt 6.11.2, installed `qs.Ui` and `qs.Commons`), then rolled the plugin back to `53f2407` with a clean restart, and later installed `fa5e4a5`. Observed facts only:
 
-1. **`8a3fe0e`.** `omarchy-shell herdr.observatory open` set status `open`, but screenshots taken about 2 s after the open showed no popover (the bar icon rendered). The shell logs show the popover had closed before each such screenshot.
+1. **`8a3fe0e`.** `omarchy-shell herdr.observatory open` set status `open`, but screenshots taken 2 to 5 s after each open (about 2 s for open B and 5 s for open C in "Shell and session logs") showed no popover (the bar icon rendered). The shell logs show the popover had closed before each such screenshot.
 2. **`53f2407` after the rollback.** The popover rendered in a screenshot taken 2 s after an IPC open. The logs show it then closed, with no close request, about 3 s after the open.
-3. **`fa5e4a5` (parent's live re-test).** After an IPC open the popover rendered fully in a screenshot at 0.5 s. By 2 s its status was `closed`, and the parent had sent no close request. No terminal launch occurred after the install.
+3. **`fa5e4a5` (parent's live re-test).** After an IPC open the popover rendered fully in a screenshot at 0.5 s. By 2 s its status was `closed`, and the parent had sent no close request. The parent checked the user journal for the 60 s after the install and found 0 terminal launches.
 4. **Terminal launch on `8a3fe0e`.** The session manager logged one terminal launch (a remote herdr session) about 10 s after an earlier `omarchy restart shell`. Its origin could not be attributed from the logs.
 5. **Unprompted close.** The close without a request is unexplained. It occurs on both the change-2 build (`53f2407`) and this change's build (`fa5e4a5`), so it is recorded as a pre-existing issue outside this change; see "Follow-up" below.
 6. **Navigation guard.** The guard in `ae5859f` is verified by the QML suites (`tst_controller` test_13, `tst_popup` test_08b) and the installed-shell harness only. Live navigation was not deliberately exercised on `fa5e4a5`.
@@ -327,7 +327,7 @@ The parent installed `8a3fe0e` into the live Omarchy shell (Qt 6.11.2, installed
 
 One-off observation, not committed and not repeatable from the committed harness: an earlier scratch run of the same setup saved the card image for both trees, and with the synthetic snapshot and the workstation's theme palette the two 360x540 images were identical pixel for pixel (their PNG bytes differed). The invisible popover does not reproduce against the real modules on either tree offscreen, and the harness does detect both an unrequested navigation and missing content.
 
-**What the harness does not cover.** The installed `KeyboardPanel` closes only on a pointer press on its dismiss area or on its other-monitor dismissal windows, plus its explicit close paths. The harness patches the layer-shell window, mask and dismissal windows out, so its "stays open" check does not explain the live close.
+**What the harness does not cover.** The installed `KeyboardPanel` closes only on a pointer press on its dismiss area or on its other-monitor dismissal windows, plus its explicit close paths. The harness patches the layer-shell window, mask and dismissal windows out, so its "stays open" check does not explain the live close. Other candidate causes outside the harness are bar popout switching (`Bar.requestPopout` in `/usr/share/omarchy/shell/plugins/bar/Bar.qml`, lines 542 to 546, calls the current owner's `closeForPopoutSwitch()` or `close()` when another bar popout opens), Escape, and the bar button toggle. None of these would appear as an IPC close request in the logs.
 
 **Why the stub suite could not show it.** `tests/qml/anton` replaces `qs.Commons` with stubs and has no `qs.Ui`, so it never instantiates `Panel.qml`, `KeyboardPanel`, `PanelKeyCatcher`, `BarIconButton` or the real `Color`. A defect in how `Panel.qml` sits inside those types, or in real theme values, is outside its reach. The new harness covers that, but not layer-shell mapping, compositor keyboard focus or pointer delivery.
 
@@ -345,7 +345,7 @@ Conclusion: on `8a3fe0e` the popover was not drawn invisibly; it had closed befo
 
 ### Follow-up
 
-The unprompted close is a pre-existing issue outside this change and is left open for a follow-up change: find what closes the layer-shell panel within about 1 to 3 s of an IPC open on a live desktop, starting from the `KeyboardPanel` dismissal surfaces that the harness patches out.
+The unprompted close is a pre-existing issue outside this change and is left open for a follow-up change: find what closes the layer-shell panel within about 1 to 3 s of an IPC open on a live desktop, starting from the `KeyboardPanel` dismissal surfaces that the harness patches out, `Bar.requestPopout` popout switching (`Bar.qml` lines 542 to 546), Escape and the bar button toggle. None of these would appear as an IPC close request in the logs.
 
 ### Activation paths
 
