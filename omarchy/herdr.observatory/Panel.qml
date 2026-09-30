@@ -57,17 +57,11 @@ Panel {
     signal observedChange(var changes)
 
     function accountAlias(account) {
-        var saved = parseObject(identitySettings.accountAliases)[accountKey(account)];
-        if (saved)
-            return saved;
-        if (account.provider === "codex" && account.label === "Personal")
-            return identitySettings.personalAlias;
-        if (account.provider === "codex" && account.label === "Work")
-            return identitySettings.workAlias;
-        var key = accountKey(account), hash = 0;
-        for (var i = 0; i < key.length; i++)
-            hash = ((hash * 31) + key.charCodeAt(i)) >>> 0;
-        return aliases[hash % aliases.length];
+        // The legacy table migrates the original Personal/Work alias settings.
+        return State.accountAlias(account, parseObject(identitySettings.accountAliases), {
+            "codex:Personal": identitySettings.personalAlias,
+            "codex:Work": identitySettings.workAlias
+        }, aliases);
     }
     function accountKey(account) {
         return account.provider + ":" + account.id;

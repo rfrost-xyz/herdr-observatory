@@ -32,7 +32,7 @@ AntonSurface {
     Accessible.name: (ui.preferences.namesHidden ? accountIdentity.aliasName : accountIdentity.email || "Unknown account") + ". " + hint
     Accessible.role: Accessible.Button
     height: Style.space(59)
-    hint: known ? ui.paceText(entry) : "Allowance unavailable"
+    hint: known ? ui.paceText(entry) : (entry.statusText || "Allowance unavailable")
     tint: known ? balanceColour : ui.muted
 
     Accessible.onPressAction: ui.toggleIdentity()

@@ -1,0 +1,121 @@
+{
+  "_comment": "Synthetic cc5f982-shape allowance source rows. Times are relative to now; tests rebase them when they use the real clock.",
+  "now": 1700000000.0,
+  "legacy_keys": [
+    "account_key",
+    "daily_usage",
+    "lifetime_tokens",
+    "peak_daily_tokens",
+    "plan",
+    "reset_count",
+    "reset_expires_at",
+    "sampled_at",
+    "weekly_remaining",
+    "weekly_resets_at"
+  ],
+  "accounts": {
+    "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc": {
+      "id": "synthetic-a",
+      "label": "Synthetic A",
+      "category": "Personal"
+    },
+    "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd": {
+      "id": "synthetic-b",
+      "label": "Synthetic B",
+      "category": "Work"
+    },
+    "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee": "Personal"
+  },
+  "cache": [
+    {
+      "account_key": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "sampled_at": 1699999899.5,
+      "plan": "pro",
+      "daily_usage": [
+        {
+          "date": "2023-11-01",
+          "tokens": 1200
+        }
+      ],
+      "weekly_remaining": 60,
+      "weekly_resets_at": 1700086400,
+      "reset_count": 1,
+      "reset_expires_at": 1700172800,
+      "lifetime_tokens": 98765,
+      "peak_daily_tokens": 1200
+    },
+    {
+      "account_key": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "sampled_at": 1699999100.0,
+      "plan": "plus",
+      "daily_usage": null,
+      "weekly_remaining": 30,
+      "weekly_resets_at": 1700086400,
+      "reset_count": null,
+      "reset_expires_at": null,
+      "lifetime_tokens": null,
+      "peak_daily_tokens": null
+    },
+    {
+      "account_key": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "sampled_at": 1699999950.0,
+      "plan": null,
+      "daily_usage": null,
+      "weekly_remaining": 0,
+      "weekly_resets_at": 1699999990,
+      "reset_count": 0,
+      "reset_expires_at": null,
+      "lifetime_tokens": 0,
+      "peak_daily_tokens": 0
+    }
+  ],
+  "peer_outputs": [
+    [
+      {
+        "account_key": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "sampled_at": 1699999994.75,
+        "plan": "plus",
+        "weekly_remaining": 75,
+        "weekly_resets_at": 1700003600,
+        "reset_count": 2,
+        "reset_expires_at": null,
+        "lifetime_tokens": 123456,
+        "peak_daily_tokens": 4567,
+        "daily_usage": [
+          {
+            "date": "2023-11-01",
+            "tokens": 4567
+          }
+        ],
+        "theme": {
+          "name": "Synthetic",
+          "colours": {
+            "accent": "#123456",
+            "background": "#000000"
+          }
+        },
+        "email": "fixture@example.invalid",
+        "future_field": "ignored"
+      }
+    ],
+    [
+      {
+        "account_key": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "sampled_at": 1699999998.0,
+        "plan": "team",
+        "weekly_remaining": 40,
+        "weekly_resets_at": 1700007200,
+        "reset_count": 0,
+        "reset_expires_at": 1700000600,
+        "lifetime_tokens": 0,
+        "peak_daily_tokens": null,
+        "daily_usage": [],
+        "theme": null,
+        "email": "fixture-b@example.invalid",
+        "future_field": {
+          "nested": true
+        }
+      }
+    ]
+  ]
+}

@@ -366,7 +366,8 @@ fn standalone_peer_allowance_does_not_require_threads_and_projects_to_stream() {
         0o600,
     );
     let mut stream = Stream::new(&f);
-    let snapshot = stream.until(|v| v["allowances"][0]["weekly_remaining"] == 75);
+    let snapshot = stream.until(|v| used(v, 0) == Some(25.0));
+    assert_eq!(snapshot["allowances"][0]["status"], "available");
     assert_eq!(snapshot["allowances"][0]["account_id"], "synthetic");
     assert!(!snapshot.to_string().contains("synthetic-account"));
     assert!(
@@ -705,6 +706,15 @@ fn peer_uninstaller_refuses_unknown_payload_and_finishes_retired_retry() {
     assert_eq!(fs::read(state.join("unrelated")).unwrap(), b"retain");
 }
 
+/// Used percentage of the single pacing window of one popover allowance row.
+fn used(snapshot: &Value, index: usize) -> Option<f64> {
+    let row = &snapshot["allowances"][index];
+    let windows = row["windows"].as_array()?;
+    let pacing: Vec<_> = windows.iter().filter(|w| w["pacing"] == true).collect();
+    (row["status"] == "available" && pacing.len() == 1)
+        .then(|| pacing[0]["used_percent"].as_f64())
+        .flatten()
+}
 fn keys(value: &Value) -> Vec<&str> {
     value
         .as_object()
@@ -903,11 +913,11 @@ fn owner_refresh_recomputes_allowances_from_local_cache_at_once() {
     let mut stream = Stream::new(&f);
     // Seeing a changed row means a periodic recompute has only just run, so
     // the next periodic one is about two seconds away.
-    stream.until(|v| v["allowances"][0]["weekly_remaining"] == 50);
+    stream.until(|v| used(v, 0) == Some(50.0));
     cache(75);
     let began = Instant::now();
     stream.write(b"refresh\n");
-    stream.until(|v| v["allowances"][0]["weekly_remaining"] == 75);
+    stream.until(|v| used(v, 0) == Some(25.0));
     assert!(
         began.elapsed() < Duration::from_millis(600),
         "allowance recompute took {:?}",
@@ -938,7 +948,7 @@ fn owner_refresh_burst_is_coalesced_and_never_wakes_ssh_or_codex() {
             .unwrap()
             .iter()
             .all(|h| h["online"] == true)
-            && v["allowances"][0]["weekly_remaining"] == 75
+            && used(v, 0) == Some(25.0)
     });
     let end = Instant::now() + Duration::from_secs(6);
     while lines(&f.dir.join("ssh-calls")) < 2 {
@@ -1105,8 +1115,9 @@ fn fleet_rename_preserves_account_worker_then_removal_retires_sources_and_restar
                 .unwrap()
                 .iter()
                 .any(|h| h["id"] == "legacy" && h["online"] == true)
-            && v["allowances"][0]["weekly_remaining"] == 75
+            && used(v, 0) == Some(25.0)
     });
+    assert_eq!(first["allowances"][0]["status"], "available");
     let binding = first["hosts"][1]["navigation"].clone();
     let request: Value =
         serde_json::from_slice(&fs::read(f.dir.join("last-probe")).unwrap()).unwrap();
@@ -1129,9 +1140,9 @@ fn fleet_rename_preserves_account_worker_then_removal_retires_sources_and_restar
     );
     write(&f.dir.join("inventory.json"), b"[]", 0o600);
     let removed = stream.until(|v| {
-        v["hosts"].as_array().unwrap().len() == 1
-            && v["allowances"][0]["weekly_remaining"].is_null()
+        v["hosts"].as_array().unwrap().len() == 1 && v["allowances"][0]["status"] == "unavailable"
     });
+    assert_eq!(removed["allowances"][0]["windows"], json!([]));
     assert_eq!(removed["fleet_discovery"]["state"], "available");
     stream.close();
     let mut restarted = Stream::new(&f);
@@ -1287,7 +1298,8 @@ fn profile_removal_cancels_inflight_host_and_allowance_process_groups() {
         .collect();
     write(&f.dir.join("inventory.json"), b"[]", 0o600);
     let removed = stream.until(|v| v["hosts"].as_array().unwrap().len() == 1);
-    assert!(removed["allowances"][0]["weekly_remaining"].is_null());
+    assert_eq!(removed["allowances"][0]["status"], "unavailable");
+    assert_eq!(removed["allowances"][0]["windows"], json!([]));
     for pid in pids {
         let path = Path::new("/proc").join(pid);
         assert!(
@@ -1439,4 +1451,143 @@ fn retired_hook_repair_cli_and_local_peer_uninstall_preserve_conflicts() {
         assert!(!extension.exists());
         assert_eq!(fs::read(unrelated).unwrap(), b"keep");
     }
+}
+
+/// The synthetic cc5f982-shape allowance fixture with every source time moved
+/// from its recorded `now` to the real clock.
+fn legacy_allowances() -> Value {
+    let mut fixture: Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/native-allowances-legacy.json"
+    ))
+    .unwrap();
+    let shift = common::now() - fixture["now"].as_f64().unwrap();
+    let rebase = |row: &mut Value| {
+        row["sampled_at"] = json!(row["sampled_at"].as_f64().unwrap() + shift);
+        for field in ["weekly_resets_at", "reset_expires_at"] {
+            if let Some(at) = row[field].as_u64() {
+                row[field] = json!((at as f64 + shift) as u64);
+            }
+        }
+    };
+    for row in fixture["cache"].as_array_mut().unwrap() {
+        rebase(row);
+    }
+    for output in fixture["peer_outputs"].as_array_mut().unwrap() {
+        for row in output.as_array_mut().unwrap() {
+            rebase(row);
+        }
+    }
+    fixture
+}
+const ALLOWANCE_KEYS: [&str; 11] = [
+    "account_id",
+    "label",
+    "plan",
+    "provider",
+    "provider_label",
+    "reset_count",
+    "reset_expires_at",
+    "sampled_at",
+    "status",
+    "status_text",
+    "windows",
+];
+/// Codex that counts each start and then fails, so no row can come from it.
+fn failing_codex(f: &Fixture) {
+    write(
+        &f.dir.join("bin/codex"),
+        b"#!/bin/sh\nprintf '%s\\n' codex >> \"$ANTON_TEST_PEER/../codex-calls\"\nexit 1\n",
+        0o755,
+    );
+}
+
+#[test]
+fn unchanged_peer_allowance_row_streams_as_weekly_pacing_window() {
+    let f = Fixture::new();
+    failing_codex(&f);
+    let legacy = legacy_allowances();
+    // An installed peer is not updated: it keeps answering with the legacy
+    // row, token activity and extra fields.
+    write(
+        &f.dir.join("remote-allowances.json"),
+        legacy["peer_outputs"][0].to_string(),
+        0o600,
+    );
+    write(&f.dir.join("bin/ssh"),b"#!/bin/sh\nfor arg do last=$arg; done\nbase=\"$ANTON_TEST_PEER/..\"\ncase $last in\n *--allowances-probe*) cat > /dev/null; cat \"$base/remote-allowances.json\";;\n *) exit 91;;\nesac\n",0o755);
+    write(&f.root.join(".config.json"),json!({"hosts":[{"id":"local","socket_path":f.dir.join("herdr.sock")}],"allowances":{"accounts":legacy["accounts"],"sources":[{"target":"fixture"}]}}).to_string(),0o600);
+    let mut stream = Stream::new(&f);
+    let snapshot = stream.until(|v| used(v, 0) == Some(25.0));
+    stream.close();
+    let peer = &legacy["peer_outputs"][0][0];
+    let row = &snapshot["allowances"][0];
+    assert_eq!(keys(row), ALLOWANCE_KEYS);
+    assert_eq!(row["provider"], "codex");
+    assert_eq!(row["provider_label"], "Codex");
+    assert_eq!(row["account_id"], "synthetic-a");
+    assert_eq!(row["status"], "available");
+    assert_eq!(row["status_text"], Value::Null);
+    assert_eq!(row["plan"], "plus");
+    assert_eq!(row["sampled_at"], peer["sampled_at"]);
+    assert_eq!(row["reset_count"], 2);
+    assert_eq!(
+        row["windows"],
+        json!([{"kind":"weekly","label":"Weekly","used_percent":25.0,
+            "resets_at":peer["weekly_resets_at"],"duration_s":604800,"pacing":true}])
+    );
+    let text = snapshot["allowances"].to_string();
+    for private in [
+        "example.invalid",
+        "theme",
+        "future_field",
+        "lifetime_tokens",
+        "peak_daily_tokens",
+        "daily_usage",
+        "weekly_remaining",
+        "123456",
+    ] {
+        assert!(!text.contains(private), "{private}");
+    }
+}
+
+#[test]
+fn legacy_allowance_cache_is_available_at_startup_when_codex_fails() {
+    let f = Fixture::new();
+    failing_codex(&f);
+    let legacy = legacy_allowances();
+    write(
+        &f.state.join("allowances.json"),
+        legacy["cache"].to_string(),
+        0o600,
+    );
+    write(&f.root.join(".config.json"),json!({"hosts":[{"id":"local","socket_path":f.dir.join("herdr.sock")}],"allowances":{"accounts":legacy["accounts"]}}).to_string(),0o600);
+    let mut stream = Stream::new(&f);
+    let snapshot = stream.until(|v| v["allowances"].as_array().is_some_and(|a| a.len() == 3));
+    stream.close();
+    let cache = &legacy["cache"][0];
+    let rows = snapshot["allowances"].as_array().unwrap();
+    for row in rows {
+        assert_eq!(keys(row), ALLOWANCE_KEYS);
+    }
+    assert_eq!(rows[0]["status"], "available");
+    assert_eq!(rows[0]["sampled_at"], cache["sampled_at"]);
+    assert_eq!(rows[0]["reset_count"], 1);
+    assert_eq!(rows[0]["reset_expires_at"], cache["reset_expires_at"]);
+    assert_eq!(
+        rows[0]["windows"],
+        json!([{"kind":"weekly","label":"Weekly","used_percent":40.0,
+            "resets_at":cache["weekly_resets_at"],"duration_s":604800,"pacing":true}])
+    );
+    // The stale cached row is unavailable; the past reset keeps its count.
+    assert_eq!(rows[1]["status"], "unavailable");
+    assert_eq!(rows[1]["windows"], json!([]));
+    assert_eq!(rows[2]["status"], "available");
+    assert_eq!(rows[2]["reset_count"], 0);
+    assert_eq!(rows[2]["windows"][0]["used_percent"], Value::Null);
+    // The startup account refresh may start Codex, but every start fails and
+    // cannot write the cache, so the first row came from the legacy cache.
+    let cached: Value =
+        serde_json::from_slice(&fs::read(f.state.join("allowances.json")).unwrap()).unwrap();
+    assert_eq!(cached, legacy["cache"]);
+    assert!(lines(&f.dir.join("codex-calls")) <= 1);
+    assert!(!snapshot["allowances"].to_string().contains("daily_usage"));
 }

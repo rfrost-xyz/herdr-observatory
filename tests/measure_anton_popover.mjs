@@ -34,6 +34,7 @@ if (flag('--help')) {
   --iterations N       JS projection iterations per size (default 400)
   --skip-runtime       JS and static metrics only
   --no-refresh-probe   skip the separate refresh latency and burst probe
+  --no-allowance-probe skip the separate allowance wire probe
   --colors-method M    colors.toml open counting: auto, inotify, strace or none (default auto)
   --json               print JSON only
 
@@ -355,6 +356,86 @@ function staticMetrics() {
            ci_runs_qml_tests: ciText === null ? null : /run-qml\.sh/.test(ciText) };
 }
 
+// ---------------------------------------------------------------- allowance contract
+// Added for generalise-anton-allowance-windows. These metrics are additive: the
+// definitions above are unchanged. Wire bytes come from a separate short run with
+// a fake read-only Codex app-server and a fake-SSH peer, so the fixed runtime
+// windows above keep their original configuration and stay comparable.
+const ALLOWANCE_ACCOUNTS = { local: 'synthetic-local-account', peer: 'synthetic-peer-account' };
+const accountHash = id => execFileSync('sha256sum', { input: `observatory-codex-account-v1:${id}`, encoding: 'utf8' }).split(' ')[0];
+async function allowanceProbe(base) {
+  const f = fixture(base, 'allowances');
+  const keys = Object.fromEntries(Object.entries(ALLOWANCE_ACCOUNTS).map(([k, id]) => [k, accountHash(id)]));
+  const accounts = { [keys.local]: 'Personal', [keys.peer]: 'Work' };
+  const peer = f.env.ANTON_TEST_PEER;
+  const local = JSON.parse(fs.readFileSync(path.join(f.root, '.config.json'), 'utf8'));
+  local.allowances = { accounts, sources: [{ target: 'fixture' }] };
+  fs.writeFileSync(path.join(f.root, '.config.json'), JSON.stringify(local), { mode: 0o600 });
+  fs.writeFileSync(path.join(peer, '.config.json'), JSON.stringify({ hosts: [{ id: 'remote', socket_path: f.remoteSocket }], allowances: { accounts } }), { mode: 0o600 });
+  // The peer answers as a different synthetic account so two rows reach the wire.
+  fs.writeFileSync(path.join(f.dir, 'bin/ssh'), '#!/bin/sh\nfor arg do last=$arg; done\ncase $last in\n *--allowances-probe*) ANTON_TEST_ACCOUNT=peer exec "$ANTON_TEST_PEER/anton-runtime" --root "$ANTON_TEST_PEER" --state "$ANTON_TEST_PEER_STATE" --allowances-probe;;\n *--probe*) exec "$ANTON_TEST_PEER/anton-runtime" --root "$ANTON_TEST_PEER" --state "$ANTON_TEST_PEER_STATE" --probe;;\n *) exit 99;;\nesac\n', { mode: 0o755 });
+  const reset = Math.floor(Date.now() / 1000) + 302400;
+  const reply = id => JSON.stringify({ id: 2, result: { accountId: id, rateLimits: { planType: 'pro', primary: { windowDurationMins: 300, usedPercent: 10, resetsAt: reset - 290000 }, secondary: { windowDurationMins: 10080, usedPercent: 40, resetsAt: reset } }, rateLimitResetCredits: { availableCount: 1, credits: [{ id: 'synthetic-pass', status: 'available', resetType: 'codexRateLimits', expiresAt: reset + 86400 }] } } });
+  const usage = JSON.stringify({ id: 3, result: { summary: { lifetimeTokens: 1000000, peakDailyTokens: 50000 }, dailyUsageBuckets: [{ startDate: '2026-01-10', tokens: 40000 }, { startDate: '2026-01-11', tokens: 50000 }] } });
+  fs.writeFileSync(path.join(f.dir, 'bin/codex'), `#!/bin/sh\ncase "\${ANTON_TEST_ACCOUNT:-local}" in peer) R='${reply(ALLOWANCE_ACCOUNTS.peer)}';; *) R='${reply(ALLOWANCE_ACCOUNTS.local)}';; esac\nwhile IFS= read -r line; do\n case "$line" in\n *'"method":"initialize"'*) printf '%s\\n' '{"id":1,"result":{}}';;\n *'"method":"account/rateLimits/read"'*) printf '%s\\n' "$R";;\n *'"method":"account/usage/read"'*) printf '%s\\n' '${usage}';;\n esac\ndone\n`, { mode: 0o755 });
+  const servers = [await herdrServer(f.localSocket, herdrSnapshot('l')), await herdrServer(f.remoteSocket, herdrSnapshot('r'))];
+  const run = launch(f); const start = performance.now();
+  const present = row => row && typeof row === 'object' && (row.available === true || row.status === 'available');
+  try {
+    const frame = await run.until(fr => Array.isArray(fr.value?.allowances) && fr.value.allowances.length === 2 && fr.value.allowances.every(present), 30000);
+    await run.close();
+    if (!frame) return { rows: null, error: 'allowance rows never became available' };
+    const rows = frame.value.allowances, bytes = rows.map(r => Buffer.byteLength(JSON.stringify(r)));
+    const windows = rows.flatMap(r => Array.isArray(r.windows) ? r.windows : []);
+    return { rows: rows.length, bytes_per_row: round(bytes.reduce((a, b) => a + b, 0) / rows.length, 1), allowances_bytes: Buffer.byteLength(JSON.stringify(rows)),
+             row_keys: Object.keys(rows[0]).sort(), window_keys: windows.length ? Object.keys(windows[0]).sort() : null, windows_per_row: windows.length / rows.length,
+             time_to_rows_ms: round(frame.at - start, 0) };
+  } finally {
+    if (!run.exit) { run.child.kill('SIGKILL'); await run.done; }
+    for (const s of servers) { for (const socket of s.sockets) socket.destroy(); s.close(); }
+  }
+}
+// Provider-neutral rows as specified by generalise-anton-allowance-windows. Older
+// State.js versions receive the same rows; whatever they project is reported.
+function neutralRow(id, overrides, window) {
+  return { provider: 'codex', provider_label: 'Codex', account_id: id, label: id, status: 'available', status_text: null, plan: 'pro', sampled_at: NOW / 1000 - 30,
+           reset_count: 1, reset_expires_at: null, windows: window === null ? [] : [{ kind: 'weekly', label: 'Weekly', used_percent: 40, resets_at: NOW / 1000 + 302400, duration_s: 604800, pacing: true, ...window }], ...overrides };
+}
+function allowanceContractMetrics(State) {
+  if (!State || typeof State.project !== 'function') return null;
+  const hosts = jsSnapshot(0, NOW, NOW / 1000 - 1).hosts;
+  const view = rows => State.project({ at: NOW / 1000, interval: 5, heartbeat_seconds: 4, hosts, allowances: rows, fleet_discovery: { state: 'disabled' } }, NOW).allowances;
+  const cases = {
+    codex_weekly: neutralRow('one', {}, {}),
+    synthetic_monthly: neutralRow('team', { provider: 'synthetic', provider_label: 'Synthetic' }, { kind: 'monthly', label: 'Monthly', used_percent: 25, resets_at: NOW / 1000 + 1296000, duration_s: 2592000 }),
+    auth_needed: neutralRow('auth', { provider: 'synthetic', provider_label: 'Synthetic', status: 'auth_needed', status_text: 'Sign in required', sampled_at: null, reset_count: null }, null)
+  };
+  const result = {};
+  for (const [name, row] of Object.entries(cases)) {
+    const out = view([row])[0];
+    result[name] = out ? { projected: true, remaining: out.remaining ?? null, time_remaining: out.timeRemaining === null || out.timeRemaining === undefined ? null : round(out.timeRemaining, 3), reset: out.reset ?? null, provider_label: out.providerLabel ?? null } : { projected: false };
+  }
+  const first = view([cases.codex_weekly])[0];
+  result.view_fields = first ? { keys: Object.keys(first).length, leaves: leaves(first), names: Object.keys(first).sort() } : null;
+  result.wire_row_bytes = Buffer.byteLength(JSON.stringify(cases.codex_weekly));
+  return result;
+}
+// Presentation coupling to one provider: occurrences (not lines) in State.js and
+// omarchy/herdr.observatory/*.qml. 'files naming a provider' is a proxy for the
+// presentation files that would need to change to add a provider.
+function providerCoupling() {
+  const dir = path.join(sourceRoot, 'omarchy/herdr.observatory');
+  const files = fs.existsSync(dir) ? fs.readdirSync(dir).filter(f => f === 'State.js' || f.endsWith('.qml')).sort() : [];
+  const patterns = { weekly_field: /weekly_/g, codex_week_seconds: /604800/g, provider_equality: /provider\s*===?/g, codex_literal: /["']codex["']/gi };
+  const totals = Object.fromEntries(Object.keys(patterns).map(k => [k, 0])), naming = [];
+  for (const file of files) {
+    const text = readText(path.join(dir, file)); let any = false;
+    for (const [k, re] of Object.entries(patterns)) { const n = (text.match(re) || []).length; totals[k] += n; if (n) any = true; }
+    if (any) naming.push(file);
+  }
+  return { scope: 'State.js and omarchy/herdr.observatory/*.qml, occurrences', ...totals, presentation_files_naming_a_provider: naming.length, files: naming };
+}
+
 // ---------------------------------------------------------------- report
 const base = fs.mkdtempSync(path.join(os.tmpdir(), 'anton-measure-'));
 fs.chmodSync(base, 0o700);
@@ -362,7 +443,7 @@ try {
   const State = loadState();
   const report = { scope: 'Synthetic fixtures only. Runtime CPU is user+sys of the runtime and reaped descendants (fake-SSH peer probes) over the fixed window; RSS is sampled every 50 ms over the runtime family. colors.toml opens include local and peer samples sharing the fixture HOME. Remote hosts, Qt and GPU are not measured.',
     source_root: sourceRoot, git_head: (() => { try { return execFileSync('git', ['-C', sourceRoot, 'rev-parse', '--short', 'HEAD'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return null; } })(),
-    runtime: null, refresh: null, projection: projectionMetrics(State), replacements: replacementMetrics(State), static: staticMetrics() };
+    runtime: null, refresh: null, projection: projectionMetrics(State), replacements: replacementMetrics(State), static: staticMetrics(), allowance_contract: allowanceContractMetrics(State), provider_coupling: providerCoupling(), allowance_wire: null };
   if (!flag('--skip-runtime')) {
     if (!fs.existsSync(binary)) throw new Error(`Runtime binary not found: ${binary}`);
     const counter = colorsCounter();
@@ -376,6 +457,7 @@ try {
       heartbeat_seconds: windows[0].heartbeat_seconds, snapshot_keys: windows[0].snapshot_keys, host_keys: windows[0].host_keys,
       windows: repeat === 1 ? undefined : windows.map(w => ({ snapshots: w.snapshots, runtime_cpu_seconds: round(w.runtime_cpu_seconds, 3), peak_rss_kib: w.peak_rss_kib, colors_toml_opens: w.colors_toml_opens, mean_snapshot_bytes: round(w.mean_snapshot_bytes, 1) })) };
     if (!flag('--no-refresh-probe')) report.refresh = await refreshProbe(base);
+    if (!flag('--no-allowance-probe')) report.allowance_wire = await allowanceProbe(base);
   }
   if (flag('--json')) console.log(JSON.stringify(report, null, 2));
   else {
@@ -388,7 +470,11 @@ try {
       ['fields per thread (keys/leaves)', p.thread_fields && `${p.thread_fields.keys}/${p.thread_fields.leaves}`], ['fields per host (keys/leaves)', p.host_fields && `${p.host_fields.keys}/${p.host_fields.leaves}`],
       ['fields per allowance (keys/leaves)', p.allowance_fields && `${p.allowance_fields.keys}/${p.allowance_fields.leaves}`], ['view replacements in 60 s open', v.view_replacements], ['snapshot drops in 60 s', v.snapshot_drops], ['receipt timeout ms', v.receipt_timeout_ms],
       ['Panel.qml lines', s.panel_qml_lines], ['State.js lines', s.state_js_lines], ['PopupContent.qml lines', s.popup_content_qml_lines], ["'required property var ui'", s.required_property_var_ui],
-      ['ToolTips per ThreadCard', s.tooltips_per_thread_card], ['AntonSurfaces per ThreadCard', s.anton_surfaces_per_thread_card], ['CI runs QML tests', s.ci_runs_qml_tests]];
+      ['ToolTips per ThreadCard', s.tooltips_per_thread_card], ['AntonSurfaces per ThreadCard', s.anton_surfaces_per_thread_card], ['CI runs QML tests', s.ci_runs_qml_tests],
+      ['allowance wire bytes per row', report.allowance_wire?.bytes_per_row], ['allowance wire keys per row', report.allowance_wire?.row_keys?.length],
+      ['neutral-row allowance fields (keys/leaves)', report.allowance_contract?.view_fields && `${report.allowance_contract.view_fields.keys}/${report.allowance_contract.view_fields.leaves}`],
+      ["'weekly_' / '604800' / 'provider ==' / 'codex' in presentation", report.provider_coupling && [report.provider_coupling.weekly_field, report.provider_coupling.codex_week_seconds, report.provider_coupling.provider_equality, report.provider_coupling.codex_literal].join(' / ')],
+      ['presentation files naming a provider', report.provider_coupling?.presentation_files_naming_a_provider]];
     const width = Math.max(...rows.map(x => x[0].length));
     console.log(`Anton popover measurement (${report.git_head ?? 'unknown head'}, ${r.duration_seconds ?? 0}s x${r.repeats ?? 0}, ${count} agents/host)`);
     for (const [k, value] of rows) console.log(`${k.padEnd(width)}  ${value ?? 'null'}`);

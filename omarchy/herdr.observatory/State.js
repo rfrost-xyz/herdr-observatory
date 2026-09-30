@@ -243,6 +243,77 @@ function groupThreads(view, hiddenStates, collapsedHosts) {
   })
 }
 
+// Source-supplied text: 1 to 80 characters without control characters, else null.
+function statusText(value) {
+  if (typeof value !== "string" || value === "" || /[\u0000-\u001f\u007f-\u009f]/.test(value)) return null
+  var length = Array.from(value).length
+  return length >= 1 && length <= 80 ? value : null
+}
+
+function boundedLabel(value, limit) {
+  if (typeof value !== "string" || value === "" || /[\u0000-\u001f\u007f-\u009f]/.test(value)) return null
+  var length = Array.from(value).length
+  return length <= limit ? value : null
+}
+
+// The single window the source flags for pacing. Zero or several flagged
+// windows leave balance and pace unknown; list order never decides.
+function pacingWindow(windows) {
+  if (!Array.isArray(windows) || windows.length > 8) return null
+  var flagged = windows.filter(function(window) { return window !== null && typeof window === "object" && window.pacing === true })
+  if (flagged.length !== 1) return null
+  var window = flagged[0], duration = number(window.duration_s)
+  if (duration === null || Math.floor(duration) !== duration || duration < 1 || duration > 31622400) return null
+  if (typeof window.kind !== "string" || !/^[a-z0-9_]{1,24}$/.test(window.kind) || boundedLabel(window.label, 40) === null) return null
+  return window
+}
+
+// One provider-neutral snapshot row to its view. The view knows no provider,
+// window kind or default duration; missing data stays unknown.
+function allowanceView(row, nowMs) {
+  if (!row || typeof row !== "object") return null
+  var accountId = label(row.account_id, label(row.label, ""))
+  var provider = label(row.provider, "")
+  if (!/^[a-z0-9][a-z0-9_.-]{0,31}$/.test(provider) || !accountId || accountId.length > 128 || !/^[A-Za-z0-9_.-]+$/.test(accountId)) return null
+  var status = ["available", "unavailable", "auth_needed"].indexOf(row.status) >= 0 ? row.status : "unavailable"
+  var age = ageSeconds(row.sampled_at, nowMs, 1)
+  // Measurement freshness: an allowance observation is current for 600 s.
+  var fresh = status === "available" && age !== null && age <= 600
+  var pacing = fresh ? pacingWindow(row.windows) : null
+  var nowS = nowMs / 1000
+  var used = pacing ? percent(pacing.used_percent) : null
+  var reset = pacing ? number(pacing.resets_at) : null
+  if (reset !== null && reset <= nowS) reset = null
+  var current = used !== null && reset !== null
+  var remaining = current ? 100 - used : null
+  var untilReset = reset !== null ? reset - nowS : null
+  var timeRemaining = untilReset !== null && untilReset <= pacing.duration_s ? untilReset / pacing.duration_s * 100 : null
+  var resetCount = fresh && counter(row.reset_count) !== null && row.reset_count <= 10000
+    && (row.reset_expires_at === null || row.reset_expires_at === undefined
+        || (number(row.reset_expires_at) !== null && row.reset_expires_at > nowS)) ? row.reset_count : null
+  return { id: accountId, provider: provider, providerLabel: boundedLabel(row.provider_label, 40) || provider, label: boundedLabel(row.label, 40) || accountId,
+           statusText: statusText(row.status_text),
+           remaining: remaining, timeRemaining: timeRemaining,
+           paceDifference: current && timeRemaining !== null ? remaining - timeRemaining : null,
+           resetCount: resetCount, reset: untilReset !== null ? resetLabel(untilReset) : null,
+           age: current ? ageLabel(age) : "source unavailable" }
+}
+
+// Saved aliases (keyed provider:id) win, then the legacy preference table
+// (keyed provider:label, supplied by Panel as data), then a stable hash.
+function accountAlias(account, saved, legacy, pool) {
+  var key = account.provider + ":" + account.id
+  var named = function(table, name) {
+    var value = table && typeof table === "object" && Object.prototype.hasOwnProperty.call(table, name) ? table[name] : null
+    return typeof value === "string" && value !== "" ? value : null
+  }
+  var chosen = named(saved, key) || named(legacy, account.provider + ":" + account.label)
+  if (chosen !== null) return chosen
+  var hash = 0
+  for (var i = 0; i < key.length; i++) hash = ((hash * 31) + key.charCodeAt(i)) >>> 0
+  return pool[hash % pool.length]
+}
+
 function project(raw, nowMs) {
   var empty = { connected: false, working: null, partial: false, threads: [], hosts: [],
                 allowances: [], discoveryLabel: "", note: "Observatory unavailable" }
@@ -286,33 +357,8 @@ function project(raw, nowMs) {
   })
   var allowances = []
   for (var k = 0; k < raw.allowances.length; k++) {
-    var row = raw.allowances[k]
-    if (!row || typeof row !== "object") continue
-    var accountId = label(row.account_id, label(row.label, "")), provider = label(row.provider, "codex")
-    if (!accountId || accountId.length > 128 || !/^[A-Za-z0-9_.-]+$/.test(provider)) continue
-    var duration = number(row.window_seconds)
-    if (duration === null) duration = 604800
-    if (duration <= 0 || duration > 31536000) continue
-    var balance = number(row.weekly_remaining)
-    var reset = number(row.weekly_resets_at)
-    var age = ageSeconds(row.sampled_at, nowMs, 1)
-    // Measurement freshness: an allowance observation is current for 600 s.
-    var current = row.available === true && age !== null && age <= 600
-                  && balance !== null && balance >= 0 && balance <= 100
-                  && reset !== null && reset > nowMs / 1000
-    var fresh = row.available === true && age !== null && age <= 600
-    var untilReset = fresh && reset !== null && reset > nowMs / 1000 ? reset - nowMs / 1000 : null
-    var resetCount = fresh && counter(row.reset_count) !== null && row.reset_count <= 10000
-      && (row.reset_expires_at === null || row.reset_expires_at === undefined
-          || (number(row.reset_expires_at) !== null && row.reset_expires_at > nowMs / 1000)) ? row.reset_count : null
-    var timeRemaining = untilReset !== null && untilReset <= duration ? untilReset / duration * 100 : null
-    var paceDifference = current && timeRemaining !== null ? balance - timeRemaining : null
-    allowances.push({ id: accountId, provider: provider, providerLabel: label(row.provider_label, provider === "codex" ? "Codex" : provider), label: label(row.label, accountId), remaining: current ? balance : null,
-                      timeRemaining: timeRemaining,
-                      paceDifference: paceDifference,
-                      resetCount: resetCount,
-                      reset: untilReset !== null ? resetLabel(untilReset) : null,
-                      age: current ? ageLabel(age) : "source unavailable" })
+    var account = allowanceView(raw.allowances[k], nowMs)
+    if (account !== null) allowances.push(account)
   }
   // Account and provider order follows the configured collection order.
   return { connected: true, working: reportingCount > 0 ? working : null, partial: missing > 0, threads: threads,
@@ -373,4 +419,4 @@ function threadForKey(view, key) {
   return null
 }
 
-if (typeof module !== "undefined") module.exports = { navigationArgs: navigationArgs, turnTiming: turnTiming, durationLabel: durationLabel, timingHint: timingHint, allowancePaceReading: allowancePaceReading, allowancePaceBand: allowancePaceBand, threadKey: threadKey, completionEpisode: completionEpisode, stableThreads: stableThreads, arrivals: arrivals, providerGroups: providerGroups, childHint: childHint, groupThreads: groupThreads, transitions: transitions, dominantState: dominantState, project: project, ageSeconds: ageSeconds, ageLabel: ageLabel, receiptTimeoutMs: receiptTimeoutMs, focusKeys: focusKeys, reconcileFocus: reconcileFocus, moveFocus: moveFocus, activationKey: activationKey, threadForKey: threadForKey }
+if (typeof module !== "undefined") module.exports = { accountAlias: accountAlias, navigationArgs: navigationArgs, turnTiming: turnTiming, durationLabel: durationLabel, timingHint: timingHint, allowancePaceReading: allowancePaceReading, allowancePaceBand: allowancePaceBand, threadKey: threadKey, completionEpisode: completionEpisode, stableThreads: stableThreads, arrivals: arrivals, providerGroups: providerGroups, childHint: childHint, groupThreads: groupThreads, transitions: transitions, dominantState: dominantState, project: project, ageSeconds: ageSeconds, ageLabel: ageLabel, receiptTimeoutMs: receiptTimeoutMs, focusKeys: focusKeys, reconcileFocus: reconcileFocus, moveFocus: moveFocus, activationKey: activationKey, threadForKey: threadForKey }

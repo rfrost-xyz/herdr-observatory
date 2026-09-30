@@ -479,6 +479,39 @@ Item {
             mouseClick(thread, 8, 8);
             compare(fakeUi.openedKeys, ['h:a']);
         }
+        // Source status text reaches the hint and accessible name; the card
+        // itself gains no visible text and invents no balance or pace.
+        function test_16_auth_needed_uses_source_status_text() {
+            allowance.entry = {
+                id: 'team',
+                provider: 'synthetic',
+                providerLabel: 'Synthetic',
+                label: 'Team',
+                status: 'auth_needed',
+                statusText: 'Sign in required',
+                remaining: null,
+                timeRemaining: null,
+                paceDifference: null,
+                resetCount: null,
+                reset: null,
+                age: 'source unavailable'
+            };
+            compare(allowance.hint, 'Sign in required');
+            compare(allowance.Accessible.name, 'Unknown account. Sign in required');
+            compare(findChild(allowance, 'allowance-balance').text, '—');
+            verify(!findChild(allowance, 'allowance-fill').visible);
+            verify(!findChild(allowance, 'allowance-pace-reading').visible);
+            verify(!findChild(allowance, 'allowance-expected-tick').visible);
+            verify(!findChild(allowance, 'allowance-deficit-hatch').visible);
+        }
+        function test_17_unavailable_without_text_keeps_existing_hint() {
+            allowance.entry = Object.assign({}, allowance.entry, {
+                status: 'unavailable',
+                statusText: null
+            });
+            compare(allowance.hint, 'Allowance unavailable');
+            compare(allowance.Accessible.name, 'Unknown account. Allowance unavailable');
+        }
 
         name: 'AntonComponents'
         when: windowShown

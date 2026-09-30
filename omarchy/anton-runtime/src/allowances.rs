@@ -1,4 +1,9 @@
 //! Account-bound read-only Codex quotas. Account identifiers never enter display rows.
+//!
+//! Source rows (`summarise`, `sanitise`, the private cache and the peer probe)
+//! keep their original Codex shape so older peers and caches stay readable.
+//! `snapshot` is the only conversion to the provider-neutral popover row.
+use crate::model::{AllowanceRow, AllowanceStatus, AllowanceWindow};
 use crate::{Result, common};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -395,14 +400,68 @@ pub fn receive(config: &Value, state: &Path, row: &Value, owner: Option<&Path>) 
     Ok(true)
 }
 
-pub fn snapshot(config: &Value, state: &Path, remote: &[Value]) -> Vec<Value> {
+/// Codex weekly window length. `summarise` selects the window by this
+/// duration (10080 minutes), never by field or list order.
+const CODEX_WEEK: u64 = 604800;
+
+/// Bounded source-supplied status text: 1 to 80 characters with no control
+/// characters, otherwise unknown. Codex supplies none.
+pub fn status_text(value: &str) -> Option<String> {
+    let count = value.chars().count();
+    ((1..=80).contains(&count) && !value.chars().any(char::is_control)).then(|| value.to_owned())
+}
+
+/// The one conversion from a sanitised Codex source row to the popover row.
+/// Without a current observation the account is unavailable and carries no
+/// window, sample time, plan or reset metadata.
+fn public_row(account: &Value, source: Option<&Value>) -> Option<AllowanceRow> {
+    let unavailable = AllowanceRow {
+        provider: "codex".into(),
+        provider_label: "Codex".into(),
+        account_id: account["id"].as_str()?.to_owned(),
+        label: account["label"].as_str()?.to_owned(),
+        status: AllowanceStatus::Unavailable,
+        status_text: None,
+        plan: None,
+        sampled_at: None,
+        reset_count: None,
+        reset_expires_at: None,
+        windows: vec![],
+    };
+    let Some(source) = source else {
+        return Some(unavailable);
+    };
+    Some(AllowanceRow {
+        status: AllowanceStatus::Available,
+        plan: source["plan"].as_str().map(str::to_owned),
+        sampled_at: source["sampled_at"].as_f64(),
+        reset_count: source["reset_count"].as_u64(),
+        reset_expires_at: source["reset_expires_at"].as_u64(),
+        windows: vec![AllowanceWindow {
+            kind: "weekly".into(),
+            label: "Weekly".into(),
+            used_percent: source["weekly_remaining"]
+                .as_u64()
+                .map(|remaining| 100u64.saturating_sub(remaining) as f64),
+            resets_at: source["weekly_resets_at"].as_u64(),
+            duration_s: CODEX_WEEK,
+            pacing: true,
+        }],
+        ..unavailable
+    })
+}
+
+pub fn snapshot(config: &Value, state: &Path, remote: &[Value]) -> Vec<AllowanceRow> {
+    snapshot_at(config, state, remote, common::now())
+}
+
+fn snapshot_at(config: &Value, state: &Path, remote: &[Value], now: f64) -> Vec<AllowanceRow> {
     let Some(cfg) = configuration(config) else {
         return vec![];
     };
     let Some(accounts) = cfg["accounts"].as_object() else {
         return vec![];
     };
-    let now = common::now();
     let mut rows = BTreeMap::<String, Value>::new();
     for raw in read_cache(state, now).iter().chain(remote) {
         if let Some(row) = sanitise(raw, now) {
@@ -416,7 +475,10 @@ pub fn snapshot(config: &Value, state: &Path, remote: &[Value]) -> Vec<Value> {
             }
         }
     }
-    accounts.iter().filter_map(|(key,value)|{let account=mapping(value).ok()?;let row=rows.get(key);let mut public=json!({"label":account["label"],"account_id":account["id"],"provider":"codex","provider_label":"Codex","window_seconds":604800,"available":row.is_some()});for field in ["plan","weekly_remaining","weekly_resets_at","reset_count","reset_expires_at","sampled_at","lifetime_tokens","peak_daily_tokens","daily_usage"]{public[field]=row.map(|r|r[field].clone()).unwrap_or(Value::Null);}Some(public)}).collect()
+    accounts
+        .iter()
+        .filter_map(|(key, value)| public_row(&mapping(value).ok()?, rows.get(key)))
+        .collect()
 }
 
 pub fn executable(name: &str) -> PathBuf {
@@ -594,14 +656,20 @@ pub fn remote(config: &Value, cancel: Option<&AtomicBool>) -> Vec<Value> {
         ];
         if let Ok(data) = common::run_bounded(&args, b"{}", Duration::from_secs(12), LIMIT, cancel)
         {
-            if let Ok(Value::Array(values)) = serde_json::from_slice::<Value>(&data) {
-                if values.len() <= 4 {
-                    rows.extend(values.iter().filter_map(|v| sanitise(v, common::now())));
-                }
-            }
+            rows.extend(peer_rows(&data, common::now()));
         }
     }
     rows
+}
+/// Accept one peer `--allowances-probe` reply: at most four rows, each
+/// sanitised, so extra peer fields never pass.
+fn peer_rows(data: &[u8], now: f64) -> Vec<Value> {
+    match serde_json::from_slice::<Value>(data) {
+        Ok(Value::Array(values)) if values.len() <= 4 => {
+            values.iter().filter_map(|v| sanitise(v, now)).collect()
+        }
+        _ => vec![],
+    }
 }
 pub fn refresh(
     config: &Value,
@@ -708,8 +776,8 @@ mod tests {
             0o600
         );
         let view = snapshot(&cfg, &fixture.0, &[]);
-        assert_eq!(view[0]["weekly_remaining"], 0);
-        assert_eq!(view[0]["reset_count"], 0);
+        assert_eq!(view[0].windows[0].used_percent, Some(100.0));
+        assert_eq!(view[0].reset_count, Some(0));
         assert!(
             !serde_json::to_string(&view)
                 .unwrap()
@@ -921,5 +989,414 @@ done
                 .is_err()
             );
         }
+    }
+    const NOW: f64 = 1800000000.0;
+    const WEEKLY_KEYS: [&str; 6] = [
+        "duration_s",
+        "kind",
+        "label",
+        "pacing",
+        "resets_at",
+        "used_percent",
+    ];
+    const ROW_KEYS: [&str; 11] = [
+        "account_id",
+        "label",
+        "plan",
+        "provider",
+        "provider_label",
+        "reset_count",
+        "reset_expires_at",
+        "sampled_at",
+        "status",
+        "status_text",
+        "windows",
+    ];
+
+    fn one(key: &str) -> Value {
+        json!({"accounts":{key:{"id":"synthetic","label":"Synthetic","category":"Personal"}}})
+    }
+    fn source(key: &str, at: f64, remaining: Value, reset: Value) -> Value {
+        json!({"account_key":key,"sampled_at":at,"plan":"pro","weekly_remaining":remaining,
+            "weekly_resets_at":reset,"reset_count":1,"reset_expires_at":null})
+    }
+    /// Converted rows with no private cache, at a fixed clock.
+    fn convert(cfg: &Value, remote: &[Value], now: f64) -> Vec<AllowanceRow> {
+        let fixture = Fixture::new();
+        snapshot_at(cfg, &fixture.0, remote, now)
+    }
+    fn keys(value: &Value) -> Vec<String> {
+        value.as_object().unwrap().keys().cloned().collect()
+    }
+    fn assert_contract(rows: &[AllowanceRow]) {
+        for row in rows {
+            let value = serde_json::to_value(row).unwrap();
+            assert_eq!(keys(&value), ROW_KEYS);
+            for window in value["windows"].as_array().unwrap() {
+                assert_eq!(keys(window), WEEKLY_KEYS);
+            }
+            if row.status != AllowanceStatus::Available {
+                assert!(row.windows.is_empty() && row.sampled_at.is_none());
+                assert!(row.plan.is_none() && row.reset_count.is_none());
+                assert!(row.reset_expires_at.is_none());
+            }
+        }
+    }
+    fn weekly(used: Option<f64>, reset: Option<u64>) -> Vec<AllowanceWindow> {
+        vec![AllowanceWindow {
+            kind: "weekly".into(),
+            label: "Weekly".into(),
+            used_percent: used,
+            resets_at: reset,
+            duration_s: 604800,
+            pacing: true,
+        }]
+    }
+
+    #[test]
+    fn codex_weekly_allowance_becomes_one_pacing_window() {
+        let raw = json!({"accountId":"fixture","rateLimits":{"planType":"pro","primary":
+            {"windowDurationMins":10080,"usedPercent":40,"resetsAt":NOW as u64+302400}},
+            "rateLimitResetCredits":{"availableCount":1,"credits":[{"id":"one",
+            "status":"available","resetType":"codexRateLimits","expiresAt":null}]}});
+        let row = summarise(&raw, NOW - 10.25).unwrap();
+        let key = row["account_key"].as_str().unwrap().to_owned();
+        let rows = convert(&one(&key), &[row], NOW);
+        assert_contract(&rows);
+        assert_eq!(
+            serde_json::to_value(&rows).unwrap(),
+            json!([{"provider":"codex","provider_label":"Codex","account_id":"synthetic",
+                "label":"Synthetic","status":"available","status_text":null,"plan":"pro",
+                "sampled_at":NOW - 10.25,"reset_count":1,"reset_expires_at":null,
+                "windows":[{"kind":"weekly","label":"Weekly","used_percent":40.0,
+                "resets_at":NOW as u64+302400,"duration_s":604800,"pacing":true}]}])
+        );
+    }
+
+    #[test]
+    fn window_order_does_not_select_the_pacing_window() {
+        let raw = json!({"accountId":"fixture","rateLimits":{
+            "primary":{"windowDurationMins":300,"usedPercent":90,"resetsAt":NOW as u64+600},
+            "secondary":{"windowDurationMins":10080,"usedPercent":35,"resetsAt":NOW as u64+9000}}});
+        let row = summarise(&raw, NOW).unwrap();
+        let key = row["account_key"].as_str().unwrap().to_owned();
+        let rows = convert(&one(&key), &[row], NOW);
+        assert_eq!(rows[0].windows, weekly(Some(35.0), Some(NOW as u64 + 9000)));
+    }
+
+    #[test]
+    fn past_reset_and_pass_expiry_invalidate_only_their_own_fields() {
+        // Cases carried over from the deleted `AllowanceRow::expire`.
+        let key = "a".repeat(64);
+        let cfg = one(&key);
+        let raw = json!({"account_key":key,"sampled_at":1000.0,"weekly_remaining":70,
+            "weekly_resets_at":1010,"reset_count":2,"reset_expires_at":1020});
+        let rows = convert(&cfg, std::slice::from_ref(&raw), 1005.0);
+        assert_eq!(rows[0].windows, weekly(Some(30.0), Some(1010)));
+        assert_eq!(rows[0].reset_count, Some(2));
+        // The reset at the current second invalidates the balance and time.
+        let rows = convert(&cfg, std::slice::from_ref(&raw), 1010.0);
+        assert_eq!(rows[0].status, AllowanceStatus::Available);
+        assert_eq!(rows[0].windows, weekly(None, None));
+        assert_eq!(rows[0].reset_count, Some(2));
+        assert_eq!(rows[0].reset_expires_at, Some(1020));
+        assert_eq!(rows[0].sampled_at, Some(1000.0));
+        // Pass expiry nulls the count without a refill or balance change.
+        let mut later = raw.clone();
+        later["weekly_resets_at"] = json!(5000);
+        let rows = convert(&cfg, &[later], 1020.0);
+        assert_eq!(rows[0].windows, weekly(Some(30.0), Some(5000)));
+        assert_eq!(rows[0].reset_count, None);
+        assert_eq!(rows[0].reset_expires_at, None);
+        // Source expiry makes the account unavailable.
+        let rows = convert(&cfg, &[raw], 1601.0);
+        assert_eq!(rows[0].status, AllowanceStatus::Unavailable);
+        assert_contract(&rows);
+    }
+
+    #[test]
+    fn mapped_account_without_current_observation_is_unavailable() {
+        let rows = convert(&one(&"a".repeat(64)), &[], NOW);
+        assert_contract(&rows);
+        assert_eq!(
+            serde_json::to_value(&rows).unwrap(),
+            json!([{"provider":"codex","provider_label":"Codex","account_id":"synthetic",
+                "label":"Synthetic","status":"unavailable","status_text":null,"plan":null,
+                "sampled_at":null,"reset_count":null,"reset_expires_at":null,"windows":[]}])
+        );
+        // An observation for an unmapped account never produces a row.
+        let rows = convert(
+            &one(&"a".repeat(64)),
+            &[source(
+                &"b".repeat(64),
+                NOW,
+                json!(50),
+                json!(NOW as u64 + 100),
+            )],
+            NOW,
+        );
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].status, AllowanceStatus::Unavailable);
+    }
+
+    #[test]
+    fn malformed_or_oversized_values_stay_unknown_and_private_fields_never_pass() {
+        let key = "a".repeat(64);
+        let reset = NOW as u64 + 1000;
+        for used in [json!(101), json!(true), json!(-1), json!(40.5)] {
+            let raw = json!({"accountId":"fixture","rateLimits":{"primary":
+                {"windowDurationMins":10080,"usedPercent":used,"resetsAt":reset}}});
+            assert!(summarise(&raw, NOW).unwrap()["weekly_remaining"].is_null());
+        }
+        for remaining in [json!(101), json!(true), json!("50")] {
+            let mut raw = source(&key, NOW, remaining, json!(reset));
+            raw["reset_count"] = json!(-1);
+            raw["email"] = json!("PRIVATE");
+            raw["theme"] = json!({"name":"PRIVATE"});
+            let rows = convert(&one(&key), &[raw], NOW);
+            assert_contract(&rows);
+            // An unknown balance keeps its valid reset time.
+            assert_eq!(rows[0].windows, weekly(None, Some(reset)));
+            assert_eq!(rows[0].reset_count, None);
+            assert!(!serde_json::to_string(&rows).unwrap().contains("PRIVATE"));
+        }
+        let mut raw = source(&key, NOW, json!(50), json!(reset));
+        raw["reset_count"] = json!(10001);
+        assert_eq!(convert(&one(&key), &[raw], NOW)[0].reset_count, None);
+        // A cache of more than four rows is rejected whole.
+        let fixture = Fixture::new();
+        let rows: Vec<_> = (0..5)
+            .map(|n| source(&format!("{n}").repeat(64), NOW, json!(50), json!(reset)))
+            .collect();
+        let cache = fixture.0.join("allowances.json");
+        fs::write(&cache, serde_json::to_vec(&rows).unwrap()).unwrap();
+        fs::set_permissions(&cache, fs::Permissions::from_mode(0o600)).unwrap();
+        let cfg = json!({"accounts":{"0".repeat(64):"Personal"}});
+        assert!(read_cache(&fixture.0, NOW).is_empty());
+        let view = snapshot_at(&cfg, &fixture.0, &[], NOW);
+        assert_eq!(view[0].status, AllowanceStatus::Unavailable);
+        fs::write(&cache, serde_json::to_vec(&rows[..4]).unwrap()).unwrap();
+        let view = snapshot_at(&cfg, &fixture.0, &[], NOW);
+        assert_eq!(view[0].status, AllowanceStatus::Available);
+    }
+
+    #[test]
+    fn several_accounts_keep_newest_observation_one_row_each_in_account_key_order() {
+        let (a, b, c) = ("a".repeat(64), "b".repeat(64), "c".repeat(64));
+        let cfg = json!({"accounts":{
+            c.clone():{"id":"third","label":"Third","category":"Work"},
+            a.clone():"Personal",
+            b.clone():"Work"}});
+        let reset = json!(NOW as u64 + 1000);
+        let fixture = Fixture::new();
+        let cache = fixture.0.join("allowances.json");
+        fs::write(
+            &cache,
+            serde_json::to_vec(&json!([
+                source(&a, NOW - 100.0, json!(10), reset.clone()),
+                source(&b, NOW - 1.0, json!(20), reset.clone())
+            ]))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::set_permissions(&cache, fs::Permissions::from_mode(0o600)).unwrap();
+        let remote = [
+            source(&a, NOW - 5.0, json!(30), reset.clone()),
+            source(&a, NOW - 50.0, json!(40), reset.clone()),
+            source(&b, NOW - 10.0, json!(50), reset.clone()),
+        ];
+        let rows = snapshot_at(&cfg, &fixture.0, &remote, NOW);
+        assert_contract(&rows);
+        // The configuration map is ordered by account key.
+        let ids: Vec<_> = rows.iter().map(|r| r.account_id.as_str()).collect();
+        assert_eq!(ids, ["Personal", "Work", "third"]);
+        assert_eq!(rows[0].windows[0].used_percent, Some(70.0));
+        assert_eq!(rows[0].sampled_at, Some(NOW - 5.0));
+        assert_eq!(rows[1].windows[0].used_percent, Some(80.0));
+        assert_eq!(rows[1].sampled_at, Some(NOW - 1.0));
+        assert_eq!(rows[2].status, AllowanceStatus::Unavailable);
+        assert_eq!(rows[2].label, "Third");
+    }
+
+    #[test]
+    fn token_activity_stays_off_the_popover_wire() {
+        let key = "a".repeat(64);
+        let mut raw = source(&key, NOW, json!(50), json!(NOW as u64 + 1000));
+        raw["lifetime_tokens"] = json!(123456);
+        raw["peak_daily_tokens"] = json!(4567);
+        raw["daily_usage"] = json!([{"date":"2020-01-01","tokens":4567}]);
+        assert_eq!(sanitise(&raw, NOW).unwrap()["lifetime_tokens"], 123456);
+        let rows = convert(&one(&key), &[raw], NOW);
+        assert_contract(&rows);
+        let text = serde_json::to_string(&rows).unwrap();
+        for field in [
+            "lifetime_tokens",
+            "peak_daily_tokens",
+            "daily_usage",
+            "4567",
+        ] {
+            assert!(!text.contains(field), "{field}");
+        }
+    }
+
+    #[test]
+    fn zero_values_stay_distinct_from_unknown() {
+        let key = "a".repeat(64);
+        let mut raw = source(&key, NOW, json!(0), json!(NOW as u64 + 1000));
+        raw["reset_count"] = json!(0);
+        let rows = convert(&one(&key), std::slice::from_ref(&raw), NOW);
+        assert_eq!(rows[0].windows[0].used_percent, Some(100.0));
+        assert_eq!(rows[0].reset_count, Some(0));
+        let text = serde_json::to_string(&rows).unwrap();
+        assert!(text.contains("\"used_percent\":100.0") && text.contains("\"reset_count\":0"));
+        raw["weekly_remaining"] = json!(100);
+        let rows = convert(&one(&key), &[raw], NOW);
+        assert_eq!(rows[0].windows[0].used_percent, Some(0.0));
+    }
+
+    #[test]
+    fn stale_or_future_observations_are_unavailable() {
+        let key = "a".repeat(64);
+        let reset = json!(NOW as u64 + 1000);
+        for (offset, status) in [
+            (-600.0, AllowanceStatus::Available),
+            (1.0, AllowanceStatus::Available),
+            (-600.001, AllowanceStatus::Unavailable),
+            (1.001, AllowanceStatus::Unavailable),
+        ] {
+            let raw = source(&key, NOW + offset, json!(50), reset.clone());
+            let rows = convert(&one(&key), &[raw], NOW);
+            assert_eq!(rows[0].status, status, "{offset}");
+            assert_contract(&rows);
+        }
+    }
+
+    #[test]
+    fn status_text_is_bounded_and_printable() {
+        assert_eq!(status_text(&"a".repeat(80)), Some("a".repeat(80)));
+        assert_eq!(status_text(&"é".repeat(80)), Some("é".repeat(80)));
+        assert_eq!(status_text(&"a".repeat(81)), None);
+        assert_eq!(status_text(""), None);
+        assert_eq!(status_text("Sign in\nagain"), None);
+        assert_eq!(status_text("Sign in\u{7f}"), None);
+        assert_eq!(status_text("Sign in again"), Some("Sign in again".into()));
+    }
+
+    fn legacy() -> Value {
+        serde_json::from_str(include_str!(
+            "../../../tests/fixtures/native-allowances-legacy.json"
+        ))
+        .unwrap()
+    }
+    fn legacy_keys(fixture: &Value) -> Vec<String> {
+        fixture["legacy_keys"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn cache_written_before_the_update_converts_fresh_and_stale_rows() {
+        let legacy = legacy();
+        let now = legacy["now"].as_f64().unwrap();
+        let keys = legacy_keys(&legacy);
+        for row in legacy["cache"].as_array().unwrap() {
+            assert_eq!(super::tests::keys(row), keys);
+        }
+        let fixture = Fixture::new();
+        let cache = fixture.0.join("allowances.json");
+        fs::write(&cache, serde_json::to_vec(&legacy["cache"]).unwrap()).unwrap();
+        fs::set_permissions(&cache, fs::Permissions::from_mode(0o600)).unwrap();
+        let cfg = json!({"accounts":legacy["accounts"]});
+        let rows = snapshot_at(&cfg, &fixture.0, &[], now);
+        assert_contract(&rows);
+        let reset = now as u64;
+        assert_eq!(
+            serde_json::to_value(&rows).unwrap(),
+            json!([
+                {"provider":"codex","provider_label":"Codex","account_id":"synthetic-a",
+                 "label":"Synthetic A","status":"available","status_text":null,"plan":"pro",
+                 "sampled_at":now - 100.5,"reset_count":1,"reset_expires_at":reset + 172800,
+                 "windows":[{"kind":"weekly","label":"Weekly","used_percent":40.0,
+                 "resets_at":reset + 86400,"duration_s":604800,"pacing":true}]},
+                {"provider":"codex","provider_label":"Codex","account_id":"synthetic-b",
+                 "label":"Synthetic B","status":"unavailable","status_text":null,"plan":null,
+                 "sampled_at":null,"reset_count":null,"reset_expires_at":null,"windows":[]},
+                {"provider":"codex","provider_label":"Codex","account_id":"Personal",
+                 "label":"Personal","status":"available","status_text":null,"plan":null,
+                 "sampled_at":now - 50.0,"reset_count":0,"reset_expires_at":null,
+                 "windows":[{"kind":"weekly","label":"Weekly","used_percent":null,
+                 "resets_at":null,"duration_s":604800,"pacing":true}]}
+            ])
+        );
+    }
+
+    #[test]
+    fn unchanged_peer_row_converts_through_remote_sanitising() {
+        let legacy = legacy();
+        let now = legacy["now"].as_f64().unwrap();
+        let cfg = json!({"accounts":legacy["accounts"]});
+        let mut remote = vec![];
+        for output in legacy["peer_outputs"].as_array().unwrap() {
+            let data = serde_json::to_vec(output).unwrap();
+            let rows = peer_rows(&data, now);
+            for row in &rows {
+                assert_eq!(keys(row), legacy_keys(&legacy));
+            }
+            remote.extend(rows);
+        }
+        let rows = convert(&cfg, &remote, now);
+        assert_contract(&rows);
+        let reset = now as u64;
+        assert_eq!(rows[0].status, AllowanceStatus::Available);
+        assert_eq!(rows[0].plan.as_deref(), Some("plus"));
+        assert_eq!(rows[0].sampled_at, Some(now - 5.25));
+        assert_eq!(rows[0].reset_count, Some(2));
+        assert_eq!(rows[0].windows, weekly(Some(25.0), Some(reset + 3600)));
+        assert_eq!(rows[1].windows, weekly(Some(60.0), Some(reset + 7200)));
+        assert_eq!(rows[1].reset_count, Some(0));
+        assert_eq!(rows[1].reset_expires_at, Some(reset + 600));
+        assert_eq!(rows[2].status, AllowanceStatus::Unavailable);
+        let text = serde_json::to_string(&rows).unwrap();
+        for private in [
+            "example.invalid",
+            "theme",
+            "future_field",
+            "Synthetic\"",
+            "123456",
+        ] {
+            assert!(!text.contains(private), "{private}");
+        }
+        // Oversized or non-array peer replies are rejected whole.
+        let five = Value::Array(vec![legacy["peer_outputs"][0][0].clone(); 5]);
+        assert!(peer_rows(&serde_json::to_vec(&five).unwrap(), now).is_empty());
+        assert!(peer_rows(b"{}", now).is_empty());
+    }
+
+    #[test]
+    fn older_local_runtime_reads_probe_and_cache_rows_unchanged() {
+        let legacy = legacy();
+        let expected = legacy_keys(&legacy);
+        let now = common::now();
+        let raw = json!({"accountId":"fixture","rateLimits":{"primary":
+            {"windowDurationMins":10080,"usedPercent":40,"resetsAt":now as u64+1000}}});
+        let mut row = summarise(&raw, now).unwrap();
+        row.as_object_mut().unwrap().extend(
+            summarise_usage(&json!({"summary":{"lifetimeTokens":10}}), now)
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+        assert_eq!(keys(&row), expected);
+        let fixture = Fixture::new();
+        let key = row["account_key"].as_str().unwrap().to_owned();
+        assert!(receive(&one(&key), &fixture.0, &row, None).unwrap());
+        let cache: Value =
+            serde_json::from_slice(&fs::read(fixture.0.join("allowances.json")).unwrap()).unwrap();
+        assert_eq!(cache.as_array().unwrap().len(), 1);
+        assert_eq!(keys(&cache[0]), expected);
+        assert_eq!(cache[0]["weekly_remaining"], 60);
     }
 }
