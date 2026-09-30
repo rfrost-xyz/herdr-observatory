@@ -163,6 +163,24 @@ Item {
             verify(store.raw !== null, 'The 60 s heartbeat keeps the snapshot');
             store.visualUpdates = true;
         }
+        function test_10_collector_exit_drops_the_snapshot_and_restarts() {
+            var process = collector();
+            collector().stdout.read(hostSnapshot(Date.now() / 1000, 4));
+            verify(store.view.connected);
+            var receipt = store.lastReceipt;
+            process.running = false;
+            process.exited(1, 0);
+            compare(store.raw, null);
+            verify(!store.view.connected);
+            compare(store.lastReceipt, receipt, 'An exit is not a receipt');
+            compare(process.running, false);
+            tryVerify(function () {
+                return process.running;
+            }, 7000, 'The retry restarts the collector');
+            compare(process.writes, [], 'The restart never writes');
+            collector().stdout.read(hostSnapshot(Date.now() / 1000, 4));
+            verify(store.view.connected, 'The next line reconnects');
+        }
 
         name: 'AntonStore'
         when: windowShown

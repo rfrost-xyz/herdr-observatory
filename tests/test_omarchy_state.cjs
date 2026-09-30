@@ -1110,6 +1110,14 @@ test('storeStep replaces the view on structural change only, with the harness ob
   store.raw = raw;
   assert.equal(storeStep(store, { type: 'update' }, now + 22000), true);
   assert.equal(store.view.connected, true);
+  // A collector exit: the caller nulls raw, then an update empties the view and clears the deadline.
+  const receipt = store.lastReceipt;
+  store.raw = null;
+  assert.equal(storeStep(store, { type: 'update' }, now + 23000), true);
+  assert.equal(store.view.connected, false);
+  assert.equal(store.view.threads.length, 0);
+  assert.equal(store.deadline, null);
+  assert.equal(store.lastReceipt, receipt);
 });
 
 test('stable row order survives store updates', () => {
