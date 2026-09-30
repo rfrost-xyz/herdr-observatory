@@ -3,7 +3,7 @@
 ## ADDED Requirements
 
 ### Requirement: Clock-separated view updates
-The popover SHALL rebuild its projected view only when a snapshot arrives, when the collector is restarted or drops, or when a measurement-freshness boundary of the current snapshot passes. The passage of time alone SHALL NOT rebuild or replace the view.
+The popover SHALL rebuild its projected view only when a snapshot arrives, when the collector is restarted or drops, or when a measurement-freshness boundary of the current snapshot passes. Except at such a boundary, the passage of time SHALL NOT rebuild or replace the view.
 
 While the popover is open, relative-time labels and time-derived readings SHALL follow a separate clock that advances at least once per second. These are sample ages, the active-turn stopwatch, the reset countdown, and expected allowance and pace. Every existing measurement and transport freshness rule SHALL keep its threshold and its effect:
 
@@ -14,7 +14,7 @@ While the popover is open, relative-time labels and time-derived readings SHALL 
 - a passed reset invalidates the balance, and an expired reset pass invalidates the pass count;
 - the collector is treated as disconnected after the receipt timeout derived from its heartbeat.
 
-These rules SHALL apply whether the popover is open or closed, so the bar aggregate and its tooltip go stale no later than they do today. The projected view and its readings at any instant SHALL equal the pre-change projection at that instant, except for the unused host and thread age labels.
+These rules SHALL apply whether the popover is open or closed, so the bar aggregate and its tooltip go stale no later than they do today. For the same snapshot and instant, the projected view combined with its time-derived readings SHALL equal the pre-change projection, except for the unused host and thread age labels. The displayed values SHALL lag the clock by no more than one tick, as before.
 
 #### Scenario: Open popover with an unchanged snapshot
 - **WHEN** the popover stays open for a minute while the collector re-sends an unchanged snapshot at each heartbeat

@@ -2,7 +2,7 @@
 
 ## Baseline (`53f2407`, origin/main)
 
-**Harness.** `tests/measure_anton_popover.mjs` at `a7ff5c0`. That commit adds the `architecture` metrics and the `tst_metrics.qml` rendered-tooltip count, and changes no existing metric definition. The source measured is the unchanged `53f2407` tree plus that harness commit. `git_head` is `a7ff5c0`.
+**Harness.** `tests/measure_anton_popover.mjs` at `a7ff5c0` (the `allowance_readings` metric was added later in `618d383`; its baseline row comes from a `--skip-runtime` run on the same unchanged source). That commit adds the `architecture` metrics and the `tst_metrics.qml` rendered-tooltip count, and changes no existing metric definition. The source measured is the unchanged `53f2407` tree plus that harness commit. `git_head` is `a7ff5c0`.
 
 **Binary.** Built from the unchanged tree with `omarchy/herdr.observatory/build-native.sh` into a scratch directory. SHA-256 `74f50d695c89e4cc01198c77df9d31ab9b1230e8e5948a6a73dceb569d76931d`, which is identical to change 2's after-measurement binary, so the build is reproducible.
 
@@ -65,6 +65,7 @@ Added architecture metrics (`a7ff5c0`):
 | Qt 6 qmllint warnings, `-I tests/qml/anton` | 149: unqualified 104, unused-imports 30, import 5, unresolved-type 3, missing-property 4, signal-handler-parameters 2, inheritance-cycle 1 |
 | qmllint warnings per file | AllowanceCard 18, AntonSurface 14, AntonText 3, BurnEffect 4, MetricDial 5, Panel 27, PopupContent 38, SectionHeader 4, SheenTitle 17, SnapshotStore 1, ThreadCard 11, ThreadSignal 7 |
 | Rendered ToolTip instances, standard fixture (`tst_metrics.qml`) | 29 |
+| `allowance_readings` (`618d383`, `--skip-runtime` on unchanged source; source `projected fields`) | Codex weekly: remaining 60, time remaining 50, pace +10, reset `3d 12h`, age `30s ago`. Synthetic monthly: 75, 50, +25, `15d 0h`, `30s ago`. `auth_needed`: all null, age `source unavailable` |
 
 A local qmllint run with a scratch `qs` symlink to the installed Omarchy shell resolves `qs.Ui` (evidence only, not reproducible in CI). It reported 148 warnings: unqualified 93, unused-imports 30, missing-property 22, signal-handler-parameters 2, property-override 1. By file: Panel.qml 9, PopupContent 44, AllowanceCard 21, AntonSurface 17, SheenTitle 17, ThreadCard 13, ThreadSignal 7, MetricDial 6, SectionHeader 5, AntonText 4, BurnEffect 4, SnapshotStore 1.
 

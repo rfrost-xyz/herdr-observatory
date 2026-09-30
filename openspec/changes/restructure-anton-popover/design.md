@@ -51,7 +51,7 @@ Two implementation lanes with disjoint files. The coordinator owns the planning 
 | Lane | Files |
 | --- | --- |
 | A (state and store) | `omarchy/herdr.observatory/State.js`, `omarchy/herdr.observatory/SnapshotStore.qml`, `tests/test_omarchy_state.cjs`, `tests/qml/anton/tst_store.qml` |
-| B (popover structure) | `omarchy/herdr.observatory/{Panel,PopupContent,AntonSurface,AntonText,SectionHeader,ThreadCard,AllowanceCard,MetricDial,SheenTitle,ThreadSignal,BurnEffect}.qml`; new `AntonTheme.qml`, `AntonPreferences.qml`, `AntonController.qml`, `AntonToolTip.qml`, `AntonKeyedModel.qml`; `omarchy/herdr.observatory/{install.sh,uninstall.sh,README.md}`; `tests/qml/anton/**` except `tst_store.qml`; `tests/test_native_distribution.mjs`; new `tests/run-qmllint.sh`; `.github/workflows/checks.yml` |
+| B (popover structure) | `omarchy/herdr.observatory/{Panel,PopupContent,AntonSurface,AntonText,SectionHeader,ThreadCard,AllowanceCard,MetricDial,SheenTitle,ThreadSignal,BurnEffect}.qml`; new `AntonTheme.qml`, `AntonPreferences.qml`, `AntonController.qml`, `AntonToolTip.qml`, `AntonKeyedModel.qml`; `omarchy/herdr.observatory/{install.sh,uninstall.sh,README.md}`; `tests/qml/anton/**` except `tst_store.qml`; `tests/run-qml.sh`; `tests/test_native_distribution.mjs`; new `tests/run-qmllint.sh`; `.github/workflows/checks.yml` |
 
 Why two lanes: the pure JS contract (D2 to D4) can be built and node-tested independently of the QML restructure (D5 to D11).
 
@@ -146,7 +146,11 @@ It keeps the structural fields: `connected, working, partial, threads, hosts, al
   - An update projects, applies `stableThreads` against the previous view, recomputes `store.deadline` from the new raw (even when the signature is unchanged), and replaces `view` and `signature` only when the signature differs.
   - It returns true when the view was replaced.
 
-`SnapshotStore.qml` calls `State.storeStep` for every path, so the harness's `view_replacements` measures production logic. The 1 s timer runs whether the popover is open or closed. While closed it therefore both drops a silent collector (as today) and applies freshness deadlines. Thresholds are unchanged; closed-state staleness can only become more prompt (within one tick instead of at the next receipt). The `now` update from A2 is unchanged.
+`SnapshotStore.qml` calls `State.storeStep` for every path, so the harness's `view_replacements` measures production logic.
+
+A QML object cannot gain properties at run time, so `SnapshotStore` keeps an internal plain object `{raw, lastReceipt, view, signature, deadline}` as the `store` argument. After each step it mirrors `raw`, `lastReceipt` and `view` into its existing public properties of the same names, which `tst_store`, `Panel` and `PopupContent` read. `projectedSignature` is removed. Callers only read those properties; every write goes through `storeStep`. On a receipt, `accept(line)` passes `raw: null` for an oversized or malformed line.
+
+ The 1 s timer runs whether the popover is open or closed. While closed it therefore both drops a silent collector (as today) and applies freshness deadlines. Thresholds are unchanged; closed-state staleness can only become more prompt (within one tick instead of at the next receipt). The `now` update from A2 is unchanged.
 
 Alternatives considered:
 
@@ -175,7 +179,7 @@ All colour properties are plain `property color` with default bindings, so tests
 
 ### D6. `AntonPreferences.qml` (lane B)
 
-- **Settings.** It wraps a `Core.Settings` with a `location` input. Panel passes the baseline expression `"file://" + (XDG_STATE_HOME || HOME + "/.local/state") + "/herdr.observatory/privacy.ini"`.
+- **Settings.** It wraps a `Core.Settings` whose `location` comes from `required property string location`. The value must be supplied when the object is created, never assigned afterwards. Otherwise the inner Settings could load, and migrate, at Qt's default location, which is the real user configuration. Tests create preferences with `createObject(parent, {location: ...})` or a declaration that sets it inline. Panel passes the baseline expression `"file://" + (XDG_STATE_HOME || HOME + "/.local/state") + "/herdr.observatory/privacy.ini"`.
 - **Stored properties.** The same stored property names, types and defaults: strings containing JSON, `namesHidden` as bool, and `personalAlias` and `workAlias`. Changing their type would change how QSettings encodes the file.
 - **Migration.** `privacyVersion < 2` behaves identically.
 - **Typed read-only views,** each parsed once per stored string change:
@@ -309,15 +313,24 @@ The seven `capture()` calls, their names and their scenes are unchanged.
 
 The stubs change: `qs.Commons` `Color` gains `currentThemePath`, `foreground`, `urgent` and `popups`, and `Quickshell.Io` gains `FileView` and `StdioCollector`. The stubs only grow, but the harness qmllint delta between baseline and after is not strictly like-for-like; evidence says so.
 
+Qmllint may resolve a system module instead of a stub. On the planning workstation, the baseline `SnapshotStore` warning names `QProcess::ExitStatus`, a type that only the installed Quickshell qmltypes define, so `-I tests/qml/anton` locally still resolved the installed Quickshell. CI has no Quickshell and runs Qt 6.8.3; local runs used 6.11.2. Lane B therefore:
+
+- confirms which module qmllint resolves for each import (for example with `--verbose` or by temporarily hiding the system module path);
+- keeps the non-Panel files importing only modules the repository stubs provide, plus Qt modules;
+- treats the CI qmllint run as the authoritative verification, fixing or documenting any Qt 6.8-only warning.
+
 ### D13. Measurement (coordinator)
 
 The coordinator reruns `tests/measure_anton_popover.mjs` (existing definitions unchanged; architecture metrics added in `a7ff5c0`) on the final head, with the same command and `--repeat 3`.
 
 Expected results:
 
-- `view_replacements` drops from 60 to the number of receipts or boundaries that change structure. With the harness fixture this is at most one, from a turn freshness boundary.
-- `clock_only_view_changes_60s` drops from 25 to at most one.
-- `required_property_var_ui`, `ui_member_references` and `preference_parse_calls` fall to 0.
+- `view_replacements` drops from 60 to the number of receipts or boundaries that change structure. With the harness fixture this is 1: the turn in `jsSnapshot` is observed 1 s before `NOW` with 12 s freshness, so it goes stale at 12 s, which coincides with a receipt. Receipts refresh the host sample time, so the host never goes stale.
+- `clock_only_view_changes_60s` drops from 25 to 2: the turn goes stale at step 12 and the host stops reporting at step 25, because a single unchanged snapshot does not refresh `sampled_at`.
+- `required_property_var_ui` and `ui_member_references` fall to 0.
+- `preference_parse_calls` falls to the number of parse-once sites. The metric's regular expression also matches `State.parseList(`, so the target is one site per stored JSON string plus the `.accounts.json` parse, all outside bindings that re-evaluate per delegate.
+- `allowance_contract` reads `timeRemaining` and `reset` directly from `project(...).allowances`. After A3 those fields are no longer in the view, so its three cases report null for them. This is expected and not a regression. The additive `allowance_readings` metric (commit `618d383`) applies `State.allowanceReading` when it exists, and the projected fields otherwise, to the same rows at the same instant. It carries the comparable values: at baseline it equals `allowance_contract`, and after A3 it must be unchanged.
+- `projection.thread_fields` and `projection.allowance_fields` key and leaf counts change with the A3 shape.
 - `tooltips_per_thread_card` falls to 0, and `rendered_tooltip_instances` (QML suite) to 1.
 - `hardcoded_omarchy_state_paths` falls to 0.
 - Runtime figures stay within noise, with an identical binary hash.

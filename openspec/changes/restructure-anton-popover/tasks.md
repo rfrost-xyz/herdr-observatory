@@ -3,7 +3,7 @@
 This is programme change 3 of 3 (popover architecture, review findings 6 and 7). Ownership follows design D1:
 
 - **Lane A (state and store):** group 2.
-- **Lane B (popover structure):** group 3.
+- **Lane B (popover structure):** group 3, including `tests/run-qml.sh`.
 - **Coordinator:** groups 1 and 4, `tasks.md` checkboxes, `evidence.md`, `design.md` and the specs, `tests/measure_anton_popover.mjs`, `tests/capture_popover_oracles.cjs` and `tests/fixtures/popover-*`.
 
 Both lanes implement against design D2 to D12. Neither edits the other lane's files, the coordinator's files or any Rust source. Lanes report their verification output and commit SHAs to the coordinator, who records them in evidence.md.
@@ -26,6 +26,7 @@ Stage explicit paths only. Use atomic Conventional Commits with no attribution t
 - [x] 1.1 Add the additive architecture metrics to `tests/measure_anton_popover.mjs` and the rendered-tooltip QML metric `tests/qml/anton/tst_metrics.qml` in their own `test(bench)` commit, without changing existing definitions (commit `a7ff5c0`). Verified: harness `--skip-runtime` and `tst_metrics` run on the unchanged tree.
 - [x] 1.2 Build the unchanged `53f2407` release binary. Run `node tests/measure_anton_popover.mjs --binary <bin> --source-root <worktree> --repeat 3 --json` at `a7ff5c0` and run the QML, JS and Rust suites. Record the results, binary hash, command and seven screenshot hashes in evidence.md "Baseline".
 - [x] 1.3 Capture the baseline oracles in commit `947ecc6`: `tests/fixtures/popover-time-oracle.json`, `popover-diagnostics-oracle.json`, `popover-privacy-v2.ini` and `popover-privacy-v1.ini`, from `53f2407` code, with the generator `tests/capture_popover_oracles.cjs`. The fixtures contain only synthetic data.
+- [x] 1.4 Add the additive `allowance_readings` metric in its own `test(bench)` commit (`618d383`), so that the allowance values stay comparable after the view loses its time-derived fields. Record its baseline from a `--skip-runtime` run on the unchanged source.
 
 ## 2. State and store (lane A)
 
@@ -98,14 +99,14 @@ Stage explicit paths only. Use atomic Conventional Commits with no attribution t
   - tooltip delay 450, timeout 6000, show/hide by source, delay restart on a source switch, hidden while `host.moving`, and geometry clamped inside the host.
 
   Verify with `bash tests/run-qml.sh`.
-- [ ] 3.2 Add `AntonPreferences.qml` (D6) with the baseline stored properties, migration and mutators. QML tests, in which `run-qml.sh` or the tests copy `tests/fixtures/popover-privacy-*.ini` byte-for-byte into a unique temporary location first:
+- [ ] 3.2 Add `AntonPreferences.qml` (D6) with the baseline stored properties, migration and mutators. `location` is a required creation-time property. QML tests, in which `run-qml.sh` or the tests copy `tests/fixtures/popover-privacy-*.ini` byte-for-byte into a unique temporary location first:
   - the v2 file loads the expected typed values;
   - a toggle round trip rewrites only the changed key in the same encoding, compared against expected file text;
   - `setAcknowledgements` bounds to 256;
   - `setIdentity` writes aliases only when concealing;
   - the v1 file migrates to `namesHidden` true and `privacyVersion` 2 once, and a second load does not rewrite it.
 
-  Verify with `bash tests/run-qml.sh`.
+  Verify with `bash tests/run-qml.sh`. Confirm that no settings file for `qmltestrunner` appears in `~/.config` after the run (list before and after, and report).
 - [ ] 3.3 **(commit needs 2.1)** Add `AntonController.qml` (D7) using the A1 helpers. QML tests, using the `Process` stub and a temporary preferences file:
   - `openThread` builds `[runtimePath, "--open-thread", host, id]`, with the binding JSON appended when present;
   - an invalid route sets `Invalid thread route. Try again shortly.` and launches nothing;
@@ -154,6 +155,8 @@ Stage explicit paths only. Use atomic Conventional Commits with no attribution t
 
   Verify with `node --test tests/test_native_distribution.mjs` and `bash -n` on both scripts.
 - [ ] 3.9 Add `tests/run-qmllint.sh` (D12) and a `qml` job step in `.github/workflows/checks.yml` that runs it with the installed Qt's qmllint. Remove unused imports and fix every warning so that the plugin files other than `Panel.qml` report 0 warnings with `-I tests/qml/anton`, and `Panel.qml` reports only `qs.Ui` import and unresolved-type warnings.
+
+  Confirm which module qmllint resolves for each import and that the non-Panel files import only stubbed or Qt modules. The CI run with Qt 6.8.3 is authoritative; fix or document any warning that appears only there.
 
   Also run qmllint locally with a scratch `-I` directory whose `qs` symlink points at `~/.local/share/omarchy/shell`. Report `Panel.qml` warnings by category (target 0 `unqualified` and 0 `unused-imports`). Record the output for the coordinator; do not commit any path from the home directory.
 
