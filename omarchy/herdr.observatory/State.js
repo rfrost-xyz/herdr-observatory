@@ -211,8 +211,9 @@ function arrivals(before, after) {
 function providerGroups(allowances) {
   var groups = [], indices = Object.create(null)
   allowances.forEach(function(account) {
-    if (indices[account.provider] === undefined) { indices[account.provider] = groups.length; groups.push({ id: account.provider, label: account.providerLabel, accounts: [] }) }
+    if (indices[account.provider] === undefined) { indices[account.provider] = groups.length; groups.push({ id: account.provider, label: account.providerLabel, accounts: [], keys: [] }) }
     groups[indices[account.provider]].accounts.push(account)
+    groups[indices[account.provider]].keys.push(accountKey(account))
   })
   return groups
 }
@@ -239,7 +240,9 @@ function groupThreads(view, hiddenStates, collapsedHosts) {
     })
     var filtered = indices.filter(function(index) { return hiddenStates.indexOf(view.threads[index].state) < 0 })
     var collapsed = collapsedHosts.indexOf(host.id) >= 0
-    return { host: host, total: indices.length, matching: filtered.length, collapsed: collapsed, indices: collapsed ? [] : filtered }
+    var shown = collapsed ? [] : filtered
+    return { host: host, total: indices.length, matching: filtered.length, collapsed: collapsed, indices: shown,
+             keys: shown.map(function(index) { return threadKey(view.threads[index]) }) }
   })
 }
 
@@ -419,4 +422,112 @@ function threadForKey(view, key) {
   return null
 }
 
-if (typeof module !== "undefined") module.exports = { accountAlias: accountAlias, navigationArgs: navigationArgs, turnTiming: turnTiming, durationLabel: durationLabel, timingHint: timingHint, allowancePaceReading: allowancePaceReading, allowancePaceBand: allowancePaceBand, threadKey: threadKey, completionEpisode: completionEpisode, stableThreads: stableThreads, arrivals: arrivals, providerGroups: providerGroups, childHint: childHint, groupThreads: groupThreads, transitions: transitions, dominantState: dominantState, project: project, ageSeconds: ageSeconds, ageLabel: ageLabel, receiptTimeoutMs: receiptTimeoutMs, focusKeys: focusKeys, reconcileFocus: reconcileFocus, moveFocus: moveFocus, activationKey: activationKey, threadForKey: threadForKey }
+// Display formatters and preference helpers (formerly in Panel.qml).
+function tokens(value) {
+  if (value === null || value === undefined) return "—"
+  var scale = value >= 1e9 ? 1e9 : value >= 1e6 ? 1e6 : value >= 1e3 ? 1e3 : 1
+  return (value / scale).toFixed(scale === 1 ? 0 : 1).replace(/\.0$/, "") + (scale === 1e9 ? "B" : scale === 1e6 ? "M" : scale === 1e3 ? "K" : "")
+}
+function percentReading(value) {
+  if (value === null || value === undefined) return "—"
+  if (value > 99 && value < 100) return ">99%"
+  if (value > 0 && value < 1) return "<1%"
+  return Math.round(value) + "%"
+}
+// Any object with remaining and timeRemaining percentages (an allowance reading).
+function paceText(reading) {
+  if (reading.remaining === null || reading.timeRemaining === null) return "Pace unavailable"
+  return reading.remaining.toFixed(1).replace(/\.0$/, "") + "% left · " + reading.timeRemaining.toFixed(1).replace(/\.0$/, "") + "% expected"
+}
+function parseList(text) {
+  try { var list = JSON.parse(text); return Array.isArray(list) ? list : [] } catch (error) { return [] }
+}
+function parseObject(text) {
+  try {
+    var object = JSON.parse(text)
+    return object && typeof object === "object" && !Array.isArray(object) ? object : {}
+  } catch (error) { return {} }
+}
+// Theme colour name for a thread state; the theme resolves the colour.
+function stateColourName(state) {
+  return state === "working" ? "yellow" : state === "blocked" ? "red" : state === "done" ? "green" : "muted"
+}
+function accountKey(account) { return account.provider + ":" + account.id }
+function toggleListValue(list, value) {
+  var next = (Array.isArray(list) ? list : []).slice(), at = next.indexOf(value)
+  if (at < 0) next.push(value); else next.splice(at, 1)
+  return next
+}
+// Local acknowledgement storage stays bounded: the earliest keys go first.
+function boundAcknowledgements(object, limit) {
+  if (limit === undefined) limit = 256
+  var copy = {}, keys = Object.keys(object || {})
+  keys.forEach(function(key) { copy[key] = object[key] })
+  while (keys.length > limit) delete copy[keys.shift()]
+  return copy
+}
+// An acknowledgement lasts only while its listed thread stays done in the same
+// completion episode. Threads absent from the list are left untouched.
+function reconcileAcknowledgements(acknowledged, threads) {
+  var value = {}, changed = false
+  Object.keys(acknowledged || {}).forEach(function(key) { value[key] = acknowledged[key] })
+  ;(threads || []).forEach(function(thread) {
+    var key = threadKey(thread)
+    if (value[key] !== undefined && (thread.state !== "done" || value[key] !== completionEpisode(thread))) {
+      delete value[key]
+      changed = true
+    }
+  })
+  return { value: value, changed: changed }
+}
+// After a successful launch: acknowledge a done target only if its thread is
+// still done in the same episode. Otherwise the input is returned unchanged.
+function acknowledgeNavigation(acknowledged, target, threads) {
+  if (!target || target.state !== "done") return acknowledged
+  var current = null
+  ;(threads || []).forEach(function(thread) { if (current === null && threadKey(thread) === target.key) current = thread })
+  if (!current || current.state !== "done" || completionEpisode(current) !== target.episode) return acknowledged
+  var value = {}
+  Object.keys(acknowledged || {}).forEach(function(key) { value[key] = acknowledged[key] })
+  value[target.key] = target.episode
+  return value
+}
+// Fisher-Yates shuffle of the alias pool with an injected random source.
+function assignAliases(accounts, pool, random) {
+  var shuffled = pool.slice(), assigned = {}
+  for (var i = shuffled.length - 1; i > 0; i--) {
+    var j = Math.floor(random() * (i + 1)), swap = shuffled[i]
+    shuffled[i] = shuffled[j]
+    shuffled[j] = swap
+  }
+  accounts.forEach(function(account, index) { assigned[accountKey(account)] = shuffled[index % shuffled.length] })
+  return assigned
+}
+// Ordered ListModel edits turning `before` into `after` (arrays of unique keys).
+// Indices refer to the list as left by the preceding edits; move(from, to)
+// leaves the item at index `to`. A key in both lists is only ever moved.
+function keyedEdits(before, after) {
+  var edits = [], current = before.slice(), wanted = {}
+  after.forEach(function(key) { wanted[key] = true })
+  for (var i = current.length - 1; i >= 0; i--) {
+    if (wanted[current[i]] !== true) { edits.push({ op: "remove", index: i }); current.splice(i, 1) }
+  }
+  for (var j = 0; j < after.length; j++) {
+    if (current[j] === after[j]) continue
+    var from = current.indexOf(after[j])
+    if (from >= 0) { edits.push({ op: "move", from: from, to: j }); current.splice(from, 1) }
+    else edits.push({ op: "insert", index: j, key: after[j] })
+    current.splice(j, 0, after[j])
+  }
+  return edits
+}
+function threadIndex(threads) {
+  var index = Object.create(null)
+  ;(threads || []).forEach(function(thread) { index[threadKey(thread)] = thread })
+  return index
+}
+
+if (typeof module !== "undefined") module.exports = { accountAlias: accountAlias, navigationArgs: navigationArgs, turnTiming: turnTiming, durationLabel: durationLabel, timingHint: timingHint, allowancePaceReading: allowancePaceReading, allowancePaceBand: allowancePaceBand, threadKey: threadKey, completionEpisode: completionEpisode, stableThreads: stableThreads, arrivals: arrivals, providerGroups: providerGroups, childHint: childHint, groupThreads: groupThreads, transitions: transitions, dominantState: dominantState, project: project, ageSeconds: ageSeconds, ageLabel: ageLabel, receiptTimeoutMs: receiptTimeoutMs, focusKeys: focusKeys, reconcileFocus: reconcileFocus, moveFocus: moveFocus, activationKey: activationKey, threadForKey: threadForKey,
+  tokens: tokens, percentReading: percentReading, paceText: paceText, parseList: parseList, parseObject: parseObject, stateColourName: stateColourName, accountKey: accountKey,
+  toggleListValue: toggleListValue, boundAcknowledgements: boundAcknowledgements, reconcileAcknowledgements: reconcileAcknowledgements, acknowledgeNavigation: acknowledgeNavigation, assignAliases: assignAliases,
+  keyedEdits: keyedEdits, threadIndex: threadIndex }

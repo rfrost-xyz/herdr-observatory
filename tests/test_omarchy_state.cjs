@@ -737,3 +737,173 @@ test('account aliases prefer saved names, then the legacy table, then a stable h
   assert.equal(accountAlias(personal, {}, { 'codex:Personal': '' }, pool), today('codex:Personal', pool));
   assert.equal(accountAlias({ provider: 'constructor', id: 'toString', label: 'toString' }, {}, {}, pool), today('constructor:toString', pool));
 });
+
+// ---------------------------------------------------------------- A1 helpers
+const plain = value => JSON.parse(JSON.stringify(value));
+function seeded(seed) {
+  let s = seed >>> 0;
+  return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; };
+}
+
+test('token formatter keeps the Panel boundaries', () => {
+  const { tokens } = sandbox.module.exports;
+  assert.equal(tokens(null), '—');
+  assert.equal(tokens(undefined), '—');
+  assert.equal(tokens(0), '0');
+  assert.equal(tokens(999), '999');
+  assert.equal(tokens(1000), '1K');
+  assert.equal(tokens(1500), '1.5K');
+  assert.equal(tokens(999999), '1000K');
+  assert.equal(tokens(1.5e6), '1.5M');
+  assert.equal(tokens(2e6), '2M');
+  assert.equal(tokens(1e9), '1B');
+  assert.equal(tokens(2.25e9), '2.3B');
+});
+
+test('percent reading and pace text keep the Panel boundaries', () => {
+  const { percentReading, paceText } = sandbox.module.exports;
+  assert.equal(percentReading(null), '—');
+  assert.equal(percentReading(undefined), '—');
+  assert.equal(percentReading(0), '0%');
+  assert.equal(percentReading(0.4), '<1%');
+  assert.equal(percentReading(1), '1%');
+  assert.equal(percentReading(42.5), '43%');
+  assert.equal(percentReading(99.5), '>99%');
+  assert.equal(percentReading(100), '100%');
+  assert.equal(paceText({ remaining: null, timeRemaining: 50 }), 'Pace unavailable');
+  assert.equal(paceText({ remaining: 50, timeRemaining: null }), 'Pace unavailable');
+  assert.equal(paceText({ remaining: 60, timeRemaining: 50 }), '60% left · 50% expected');
+  assert.equal(paceText({ remaining: 60.25, timeRemaining: 49.96 }), '60.3% left · 50% expected');
+});
+
+test('preference parsing rejects invalid JSON and wrong types', () => {
+  const { parseList, parseObject } = sandbox.module.exports;
+  assert.deepEqual(plain(parseList('["a","b"]')), ['a', 'b']);
+  for (const bad of ['', '{not json', '{}', '"a"', '1', 'null', undefined, null]) assert.deepEqual(plain(parseList(bad)), [], String(bad));
+  assert.deepEqual(plain(parseObject('{"a":1}')), { a: 1 });
+  for (const bad of ['', '{not json', '[]', '"a"', '1', 'null', undefined, null]) assert.deepEqual(plain(parseObject(bad)), {}, String(bad));
+});
+
+test('state colour names, account keys and list toggles', () => {
+  const { stateColourName, accountKey, toggleListValue } = sandbox.module.exports;
+  assert.deepEqual(['working', 'blocked', 'done', 'idle', 'unknown', undefined].map(stateColourName), ['yellow', 'red', 'green', 'muted', 'muted', 'muted']);
+  assert.equal(accountKey({ provider: 'codex', id: 'Personal' }), 'codex:Personal');
+  const list = ['a'];
+  assert.deepEqual(plain(toggleListValue(list, 'b')), ['a', 'b']);
+  assert.deepEqual(plain(toggleListValue(['a', 'b', 'c'], 'b')), ['a', 'c']);
+  assert.deepEqual(list, ['a'], 'input unchanged');
+});
+
+test('acknowledgements are bounded to 256 by dropping the earliest keys', () => {
+  const { boundAcknowledgements } = sandbox.module.exports;
+  const input = {};
+  for (let i = 0; i < 257; i++) input['h:t' + i] = '1:' + i;
+  const bounded = boundAcknowledgements(input);
+  assert.equal(Object.keys(bounded).length, 256);
+  assert.equal('h:t0' in bounded, false);
+  assert.equal(bounded['h:t1'], '1:1');
+  assert.equal(bounded['h:t256'], '1:256');
+  assert.equal(Object.keys(input).length, 257, 'input unchanged');
+  assert.equal(Object.keys(boundAcknowledgements(input, 2)).join(), 'h:t255,h:t256');
+});
+
+test('acknowledgement reconcile drops changed listed threads and keeps absent ones', () => {
+  const { reconcileAcknowledgements, completionEpisode } = sandbox.module.exports;
+  const done = { id: 'a', hostId: 'h', state: 'done', generation: 1, statusGeneration: 10 };
+  const acks = { 'h:a': completionEpisode(done), 'h:gone': '1:1' };
+  let result = reconcileAcknowledgements(acks, [done]);
+  assert.equal(result.changed, false);
+  assert.deepEqual(plain(result.value), acks);
+  result = reconcileAcknowledgements(acks, [{ ...done, state: 'working' }]);
+  assert.equal(result.changed, true);
+  assert.deepEqual(plain(result.value), { 'h:gone': '1:1' });
+  result = reconcileAcknowledgements(acks, [{ ...done, statusGeneration: 11 }]);
+  assert.equal(result.changed, true);
+  assert.deepEqual(plain(result.value), { 'h:gone': '1:1' });
+  assert.equal(Object.keys(acks).length, 2, 'input unchanged');
+});
+
+test('navigation acknowledges only a done target still in the same episode', () => {
+  const { acknowledgeNavigation, completionEpisode } = sandbox.module.exports;
+  const done = { id: 'a', hostId: 'h', state: 'done', generation: 1, statusGeneration: 10 };
+  const target = { key: 'h:a', episode: completionEpisode(done), state: 'done' };
+  const acks = { 'h:b': '1:1' };
+  assert.deepEqual(plain(acknowledgeNavigation(acks, target, [done])), { 'h:b': '1:1', 'h:a': target.episode });
+  assert.deepEqual(acks, { 'h:b': '1:1' }, 'input unchanged');
+  assert.equal(acknowledgeNavigation(acks, { ...target, state: 'working' }, [done]), acks);
+  assert.equal(acknowledgeNavigation(acks, target, [{ ...done, state: 'working' }]), acks, 'thread changed before exit');
+  assert.equal(acknowledgeNavigation(acks, target, [{ ...done, statusGeneration: 11 }]), acks, 'new episode before exit');
+  assert.equal(acknowledgeNavigation(acks, target, []), acks, 'thread gone before exit');
+  assert.equal(acknowledgeNavigation(acks, null, [done]), acks);
+});
+
+test('alias assignment is a deterministic Fisher-Yates shuffle of the pool', () => {
+  const { assignAliases } = sandbox.module.exports;
+  const pool = ['A', 'B', 'C'];
+  const accounts = ['one', 'two', 'three', 'four', 'five'].map(id => ({ provider: 'codex', id }));
+  const reference = random => {
+    const shuffled = pool.slice();
+    for (let i = shuffled.length - 1; i > 0; i--) { const j = Math.floor(random() * (i + 1)); [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]]; }
+    return Object.fromEntries(accounts.map((a, i) => ['codex:' + a.id, shuffled[i % shuffled.length]]));
+  };
+  for (const seed of [1, 2, 3, 99]) assert.deepEqual(plain(assignAliases(accounts, pool, seeded(seed))), reference(seeded(seed)));
+  // random() always 0 swaps each position with the first: [B, C, A].
+  assert.deepEqual(plain(assignAliases(accounts, pool, () => 0)),
+    { 'codex:one': 'B', 'codex:two': 'C', 'codex:three': 'A', 'codex:four': 'B', 'codex:five': 'C' });
+  assert.deepEqual(pool, ['A', 'B', 'C'], 'pool unchanged');
+});
+
+test('keyed edits turn any key list into any other without removing survivors', () => {
+  const { keyedEdits } = sandbox.module.exports;
+  const apply = (before, edits) => {
+    const list = before.slice();
+    for (const edit of edits) {
+      if (edit.op === 'remove') { assert.ok(edit.index >= 0 && edit.index < list.length); list.splice(edit.index, 1); }
+      else if (edit.op === 'insert') { assert.ok(edit.index >= 0 && edit.index <= list.length); list.splice(edit.index, 0, edit.key); }
+      else if (edit.op === 'move') { assert.ok(edit.from >= 0 && edit.from < list.length && edit.to >= 0 && edit.to < list.length); const [key] = list.splice(edit.from, 1); list.splice(edit.to, 0, key); }
+      else assert.fail('unknown op ' + edit.op);
+    }
+    return list;
+  };
+  const check = (before, after) => {
+    const edits = plain(keyedEdits(before, after));
+    assert.deepEqual(apply(before, edits), after, JSON.stringify({ before, after }));
+    const removed = [], list = before.slice();
+    for (const edit of edits) {
+      if (edit.op === 'remove') removed.push(list.splice(edit.index, 1)[0]);
+      else if (edit.op === 'insert') { assert.equal(before.includes(edit.key), false, 'survivor re-inserted'); list.splice(edit.index, 0, edit.key); }
+      else { const [key] = list.splice(edit.from, 1); list.splice(edit.to, 0, key); }
+    }
+    for (const key of removed) assert.equal(after.includes(key), false, 'survivor removed: ' + key);
+    return edits;
+  };
+  assert.deepEqual(check([], []), []);
+  assert.deepEqual(check(['a', 'b'], ['a', 'b']), []);
+  assert.deepEqual(check(['a', 'b', 'c'], ['b', 'c']), [{ op: 'remove', index: 0 }]);
+  assert.deepEqual(check(['a', 'b'], ['a', 'x', 'b']), [{ op: 'insert', index: 1, key: 'x' }]);
+  assert.deepEqual(check(['a', 'b'], ['b', 'a']), [{ op: 'move', from: 1, to: 0 }]);
+  const random = seeded(7);
+  const pick = n => Math.floor(random() * n);
+  for (let round = 0; round < 2000; round++) {
+    const universe = Array.from({ length: 12 }, (_, i) => 'k' + i);
+    const sample = () => {
+      const keys = universe.filter(() => random() < 0.6);
+      for (let i = keys.length - 1; i > 0; i--) { const j = pick(i + 1); [keys[i], keys[j]] = [keys[j], keys[i]]; }
+      return keys;
+    };
+    check(sample(), sample());
+  }
+});
+
+test('thread index and group keys follow thread keys', () => {
+  const { threadIndex, groupThreads, providerGroups } = sandbox.module.exports;
+  const view = project({ interval: 5, hosts: [host({ agents: [{ id: 'a', status: 'working', project: 'A' }, { id: 'b', status: 'idle', project: 'B' }] })],
+    allowances: [allowanceRow(), allowanceRow({ account_id: 'Work', label: 'Work' })] }, now);
+  const index = threadIndex(view.threads);
+  assert.deepEqual(Object.keys(index), ['laptop:a', 'laptop:b']);
+  assert.equal(index['laptop:b'], view.threads[1]);
+  assert.deepEqual(plain(groupThreads(view, [], []).map(g => g.keys)), [['laptop:a', 'laptop:b']]);
+  assert.deepEqual(plain(groupThreads(view, ['idle'], []).map(g => g.keys)), [['laptop:a']]);
+  assert.deepEqual(plain(groupThreads(view, [], ['laptop']).map(g => g.keys)), [[]]);
+  assert.deepEqual(plain(providerGroups(view.allowances).map(g => g.keys)), [['codex:Personal', 'codex:Work']]);
+});
