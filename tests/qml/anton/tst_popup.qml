@@ -483,6 +483,173 @@ Rectangle {
             compare(cards[2].hint, 'Sign in required');
         }
 
+        // Keyed delegates (D9). Motion is enabled for these scenarios only.
+        function motionData(states) {
+            var laptop = [];
+            Object.keys(states).forEach(function (id) {
+                laptop.push(agent(id, states[id], true));
+            });
+            return {
+                hosts: [host('laptop', laptop, 'connected'), host('workstation', [agent('c', 'idle', true)], 'connected')],
+                allowances: []
+            };
+        }
+        function withMotion(body) {
+            fixtureController.motionEnabled = true;
+            try {
+                body();
+            } finally {
+                fixtureController.motionEnabled = false;
+            }
+        }
+        function entrances() {
+            return threadCards(popup).map(function (card) {
+                return card.entrance;
+            });
+        }
+        function test_13_earlier_thread_disappears_during_a_highlight() {
+            withMotion(function () {
+                scene.raw = motionData({
+                    a: 'working',
+                    b: 'working'
+                });
+                wait(0);
+                var card = cardFor('laptop:b');
+                verify(card !== null);
+                scene.raw = motionData({
+                    a: 'working',
+                    b: 'blocked'
+                });
+                tryVerify(function () {
+                    return card.flash > 0;
+                }, 500, 'The state highlight starts');
+                compare(cardFor('laptop:b'), card);
+                // The earlier thread disappears while the highlight runs.
+                scene.raw = motionData({
+                    b: 'blocked'
+                });
+                wait(0);
+                verify(cardFor('laptop:a') === null);
+                compare(cardFor('laptop:b'), card, 'The same delegate keeps the thread');
+                var level = card.flash;
+                verify(level > 0, 'The highlight is still running');
+                tryVerify(function () {
+                    return card.flash < level;
+                }, 500, 'and still animating');
+                threadCards(popup).forEach(function (other) {
+                    if (other !== card)
+                        compare(other.flash, 0, 'No other card starts or inherits the highlight');
+                });
+                tryCompare(card, 'flash', 0, 1500);
+            });
+        }
+        function test_14_reorder_keeps_delegates() {
+            scene.raw = motionData({
+                a: 'working',
+                b: 'idle',
+                d: 'done'
+            });
+            wait(0);
+            var a = cardFor('laptop:a'), b = cardFor('laptop:b'), d = cardFor('laptop:d');
+            // A new status order sorts d first and a last.
+            scene.raw = motionData({
+                a: 'done',
+                b: 'blocked',
+                d: 'working'
+            });
+            wait(0);
+            compare(fixtureController.threadGroups[0].keys, ['laptop:d', 'laptop:b', 'laptop:a']);
+            compare(cardFor('laptop:a'), a);
+            compare(cardFor('laptop:b'), b);
+            compare(cardFor('laptop:d'), d);
+        }
+        function test_15_new_thread_enters_but_hydration_filter_and_collapse_do_not() {
+            withMotion(function () {
+                // Hydration: the first snapshot after none is not an arrival.
+                scene.raw = {
+                    hosts: [],
+                    allowances: []
+                };
+                wait(0);
+                scene.raw = motionData({
+                    a: 'working'
+                });
+                wait(20);
+                compare(entrances(), [1, 1]);
+                // A genuine arrival on a reporting host enters (positive control).
+                scene.raw = motionData({
+                    a: 'working',
+                    e: 'working'
+                });
+                tryVerify(function () {
+                    var card = cardFor('laptop:e');
+                    return card !== null && card.entrance < 1;
+                }, 500);
+                tryCompare(cardFor('laptop:e'), 'entrance', 1, 1000);
+                // Row reappears after filtering: full opacity, no entrance.
+                fixtureController.toggleList('hiddenStates', 'working');
+                wait(0);
+                verify(cardFor('laptop:e') === null);
+                fixtureController.toggleList('hiddenStates', 'working');
+                wait(20);
+                compare(cardFor('laptop:e').entrance, 1);
+                compare(entrances(), [1, 1, 1]);
+                // Machine collapse and expand.
+                fixtureController.toggleList('collapsedHosts', 'laptop');
+                wait(0);
+                fixtureController.toggleList('collapsedHosts', 'laptop');
+                wait(20);
+                compare(entrances(), [1, 1, 1]);
+                // Section collapse and expand.
+                fixtureController.toggleList('collapsedSections', 'threads');
+                wait(0);
+                compare(threadCards(popup).length, 0);
+                fixtureController.toggleList('collapsedSections', 'threads');
+                wait(20);
+                compare(entrances(), [1, 1, 1]);
+                // Reconnect: a host that stopped reporting and returns is hydration.
+                var offline = motionData({
+                    a: 'working',
+                    e: 'working'
+                });
+                offline.hosts[0].online = false;
+                offline.hosts[0].connection_state = 'unreachable';
+                scene.raw = offline;
+                wait(0);
+                scene.raw = motionData({
+                    a: 'working',
+                    e: 'working'
+                });
+                wait(20);
+                compare(entrances(), [1, 1, 1]);
+                // Sorting: a state change reorders rows without an entrance.
+                scene.raw = motionData({
+                    a: 'idle',
+                    e: 'working'
+                });
+                wait(20);
+                compare(entrances(), [1, 1, 1]);
+            });
+        }
+
+        // Rows come from the view the groups were computed from, whatever order
+        // the two view bindings are notified in.
+        function test_15b_cards_follow_the_controller_view() {
+            scene.raw = motionData({
+                a: 'working',
+                b: 'idle'
+            });
+            wait(0);
+            popup.view = fixtureController.view;
+            scene.raw = motionData({
+                b: 'working',
+                d: 'blocked'
+            });
+            wait(0);
+            compare(threadCards(popup).map(function (card) {
+                return card.entry.hostId + ':' + card.entry.id;
+            }), ['laptop:b', 'laptop:d', 'workstation:c']);
+        }
         name: 'AntonPopup'
         when: windowShown
     }

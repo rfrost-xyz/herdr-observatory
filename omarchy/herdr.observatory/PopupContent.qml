@@ -27,12 +27,78 @@ Item {
     readonly property alias tooltip: tip
     required property var view
 
+    // Host and provider groups by their model key.
+    property var groupsByKey: ({})
+    property var providersByKey: ({})
+
     function email(account) {
         return accountEmails[State.accountKey(account)] || accountEmails[account.id] || accountEmails[account.label] || "";
+    }
+    // Keyed delegates: each Repeater level follows a model of stable keys
+    // (host id, thread key, provider id, account key), so a delegate and its
+    // running effects stay with its row. The lookup tables are assigned before
+    // the models change, and this runs synchronously in the change handler,
+    // before the controller's deferred newThreads and observedChange signals.
+    function syncHosts() {
+        var groups = preferences.threadsCollapsed ? [] : controller.threadGroups;
+        var keys = hostModel.uniqueKeys(groups.map(function (group) {
+            return group.host.id;
+        }));
+        var table = {};
+        keys.forEach(function (key, index) {
+            table[key] = groups[index];
+        });
+        hostModel.retain(keys);
+        groupsByKey = table;
+        hostModel.sync(keys);
+    }
+    function syncProviders() {
+        var groups = preferences.allowancesCollapsed ? [] : controller.providers;
+        var keys = providerModel.uniqueKeys(groups.map(function (group) {
+            return group.id;
+        }));
+        var table = {};
+        keys.forEach(function (key, index) {
+            table[key] = groups[index];
+        });
+        providerModel.retain(keys);
+        providersByKey = table;
+        providerModel.sync(keys);
     }
 
     implicitHeight: Style.space(95) + (preferences.threadsCollapsed ? 0 : Math.min(threadContent.implicitHeight, Style.space(300))) + (preferences.allowancesCollapsed ? 0 : Math.min(allowanceRows.implicitHeight, Style.space(180))) + (navigationNotice.visible ? navigationNotice.implicitHeight : 0)
 
+    Component.onCompleted: {
+        syncHosts();
+        syncProviders();
+    }
+
+    AntonKeyedModel {
+        id: hostModel
+    }
+    AntonKeyedModel {
+        id: providerModel
+    }
+    Connections {
+        function onProvidersChanged() {
+            popup.syncProviders();
+        }
+        function onThreadGroupsChanged() {
+            popup.syncHosts();
+        }
+
+        target: popup.controller
+    }
+    Connections {
+        function onAllowancesCollapsedChanged() {
+            popup.syncProviders();
+        }
+        function onThreadsCollapsedChanged() {
+            popup.syncHosts();
+        }
+
+        target: popup.preferences
+    }
     AntonToolTip {
         id: tip
 
@@ -163,13 +229,31 @@ Item {
                     width: parent.width
 
                     Repeater {
-                        model: popup.preferences.threadsCollapsed ? 0 : popup.controller.threadGroups.length
+                        model: hostModel
 
                         Column {
                             id: hostGroup
 
-                            readonly property var group: popup.controller.threadGroups[index]
-                            required property int index
+                            // Thread key (with any occurrence suffix) to its view thread, from
+                            // the same view the groups' indices were computed from.
+                            property var entries: ({})
+                            readonly property var group: popup.groupsByKey[key]
+                            required property string key
+
+                            // Retire departed rows, then update the table, then add or move rows.
+                            function syncThreads() {
+                                if (!group)
+                                    return;
+                                var keys = threadModel.uniqueKeys(group.keys), table = {};
+                                for (var i = 0; i < keys.length; i++)
+                                    table[keys[i]] = popup.controller.view.threads[group.indices[i]];
+                                threadModel.retain(keys);
+                                entries = table;
+                                threadModel.sync(keys);
+                            }
+
+                            Component.onCompleted: syncThreads()
+                            onGroupChanged: syncThreads()
 
                             spacing: Style.space(3)
                             width: popup.width
@@ -240,17 +324,21 @@ Item {
                                     theme: popup.theme
                                 }
                             }
+                            AntonKeyedModel {
+                                id: threadModel
+                            }
                             Repeater {
-                                model: hostGroup.group.indices.length
+                                model: threadModel
 
                                 ThreadCard {
                                     required property int index
+                                    required property string key
 
                                     contentItem: threadContent
                                     controller: popup.controller
-                                    entry: popup.view.threads[hostGroup.group.indices[index]] || {}
+                                    entry: hostGroup.entries[key] || {}
                                     focused: popup.controller.focusedKey !== "" && popup.controller.focusedKey === State.threadKey(entry)
-                                    last: index === hostGroup.group.indices.length - 1
+                                    last: index === threadModel.count - 1
                                     now: popup.now
                                     theme: popup.theme
                                     tooltip: tip
@@ -319,14 +407,32 @@ Item {
                 width: parent.width
 
                 Repeater {
-                    model: popup.preferences.allowancesCollapsed ? 0 : popup.controller.providers.length
+                    model: providerModel
 
                     Column {
                         id: providerGroup
 
-                        readonly property bool collapsed: popup.preferences.collapsedProviders.indexOf(provider.id) >= 0
-                        required property int index
-                        readonly property var provider: popup.controller.providers[index]
+                        // Account key (with any occurrence suffix) to its view row.
+                        property var accounts: ({})
+                        readonly property bool collapsed: popup.preferences.collapsedProviders.indexOf(key) >= 0
+                        required property string key
+                        readonly property var provider: popup.providersByKey[key]
+
+                        // Retire departed rows, then update the table, then add or move rows.
+                        function syncAccounts() {
+                            if (!provider)
+                                return;
+                            var keys = collapsed ? [] : accountModel.uniqueKeys(provider.keys), table = {};
+                            for (var i = 0; i < keys.length; i++)
+                                table[keys[i]] = provider.accounts[i];
+                            accountModel.retain(keys);
+                            accounts = table;
+                            accountModel.sync(keys);
+                        }
+
+                        Component.onCompleted: syncAccounts()
+                        onCollapsedChanged: syncAccounts()
+                        onProviderChanged: syncAccounts()
 
                         width: popup.width
 
@@ -380,15 +486,18 @@ Item {
                             topPadding: providerGroup.collapsed ? 0 : Style.space(3)
                             width: parent.width
 
+                            AntonKeyedModel {
+                                id: accountModel
+                            }
                             Repeater {
-                                model: providerGroup.collapsed ? 0 : providerGroup.provider.accounts.length
+                                model: accountModel
 
                                 AllowanceCard {
-                                    required property int index
+                                    required property string key
 
                                     aliasName: popup.controller.accountAlias(entry)
                                     email: popup.email(entry)
-                                    entry: providerGroup.provider.accounts[index]
+                                    entry: providerGroup.accounts[key] || ({})
                                     motionEnabled: popup.controller.motionEnabled
                                     namesHidden: popup.preferences.namesHidden
                                     now: popup.now
