@@ -33,8 +33,6 @@ QtObject {
     property bool motionEnabled: true
     property string navigationError: ""
     property var navigationTarget: null
-    // The display instant for time-derived readings; see SnapshotStore.now.
-    property double now: 0
     // Panel assigns this on each open and close, so the epoch and focus reset
     // below happen before the store restarts.
     property bool opened: false

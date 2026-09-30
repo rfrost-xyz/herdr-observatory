@@ -562,11 +562,6 @@ function keyedEdits(before, after) {
   }
   return edits
 }
-function threadIndex(threads) {
-  var index = Object.create(null)
-  ;(threads || []).forEach(function(thread) { index[threadKey(thread)] = thread })
-  return index
-}
 
 // Readings: pure functions of a structural value and the display instant. Each
 // returns the baseline presentation shape; stale flags come from the view.
@@ -730,7 +725,7 @@ function storeStep(store, event, nowMs) {
 if (typeof module !== "undefined") module.exports = { accountAlias: accountAlias, navigationArgs: navigationArgs, turnTiming: turnTiming, durationLabel: durationLabel, timingHint: timingHint, allowancePaceReading: allowancePaceReading, allowancePaceBand: allowancePaceBand, threadKey: threadKey, completionEpisode: completionEpisode, stableThreads: stableThreads, arrivals: arrivals, providerGroups: providerGroups, childHint: childHint, groupThreads: groupThreads, transitions: transitions, dominantState: dominantState, project: project, ageSeconds: ageSeconds, ageLabel: ageLabel, receiptTimeoutMs: receiptTimeoutMs, focusKeys: focusKeys, reconcileFocus: reconcileFocus, moveFocus: moveFocus, activationKey: activationKey, threadForKey: threadForKey,
   tokens: tokens, percentReading: percentReading, paceText: paceText, parseList: parseList, parseObject: parseObject, stateColourName: stateColourName, accountKey: accountKey,
   toggleListValue: toggleListValue, boundAcknowledgements: boundAcknowledgements, reconcileAcknowledgements: reconcileAcknowledgements, acknowledgeNavigation: acknowledgeNavigation, assignAliases: assignAliases,
-  keyedEdits: keyedEdits, threadIndex: threadIndex,
+  keyedEdits: keyedEdits,
   usageReading: usageReading, childrenReading: childrenReading, completionReading: completionReading, turnReading: turnReading,
   allowanceReading: allowanceReading, readView: readView, diagnostics: diagnostics,
   viewSignature: viewSignature, nextDeadlineMs: nextDeadlineMs, storeStep: storeStep }

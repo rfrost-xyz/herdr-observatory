@@ -45,7 +45,6 @@ Panel {
         id: popoverController
 
         motionEnabled: root.motionEnabled
-        now: snapshot.now
         preferences: popoverPreferences
         view: snapshot.view
 

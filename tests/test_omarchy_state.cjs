@@ -899,13 +899,10 @@ test('keyed edits turn any key list into any other without removing survivors', 
   }
 });
 
-test('thread index and group keys follow thread keys', () => {
-  const { threadIndex, groupThreads, providerGroups } = sandbox.module.exports;
+test('group keys follow thread keys', () => {
+  const { groupThreads, providerGroups } = sandbox.module.exports;
   const view = project({ interval: 5, hosts: [host({ agents: [{ id: 'a', status: 'working', project: 'A' }, { id: 'b', status: 'idle', project: 'B' }] })],
     allowances: [allowanceRow(), allowanceRow({ account_id: 'Work', label: 'Work' })] }, now);
-  const index = threadIndex(view.threads);
-  assert.deepEqual(Object.keys(index), ['laptop:a', 'laptop:b']);
-  assert.equal(index['laptop:b'], view.threads[1]);
   assert.deepEqual(plain(groupThreads(view, [], []).map(g => g.keys)), [['laptop:a', 'laptop:b']]);
   assert.deepEqual(plain(groupThreads(view, ['idle'], []).map(g => g.keys)), [['laptop:a']]);
   assert.deepEqual(plain(groupThreads(view, [], ['laptop']).map(g => g.keys)), [[]]);
