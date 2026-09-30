@@ -303,7 +303,9 @@ directory for preference and palette files, never the user's configuration.
 (`tests/qml/anton`) and Qt's own modules only. Every file except `Panel.qml` must
 be free of warnings; `Panel.qml` may only report the missing `qs.Ui` module and
 its consequences. A member or property that Panel names on a plugin, stub or Qt
-type still fails the gate. Set `QMLLINT` to use a particular Qt 6 build.
+type still fails the gate, as does a child object placed inside one. It supports
+Qt 6.8 (as in CI) and Qt 6.11 or later, and refuses Qt 6.9 and 6.10. Set
+`QMLLINT` to use a particular Qt 6 build.
 
 The QML tests exercise the real `PopupContent.qml`, theme, preferences (against
 captured `privacy.ini` files), controller, keyed rows and shared tooltip with
