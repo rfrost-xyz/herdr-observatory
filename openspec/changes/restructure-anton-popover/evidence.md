@@ -264,6 +264,44 @@ Gates on this round's head:
 - `bash tests/run-qmllint.sh`: exit 0 on Qt 6.11.2 and Qt 6.8.3.
 - Harness `--skip-runtime`: every metric as in "After measurement" (view replacements 1, clock-only changes 2, `required property var ui` 0) except line counts, which follow the removals: `Panel.qml` 183, `State.js` 731, total QML 2312. The runtime is unchanged, so runtime metrics were not re-measured.
 
+## Review round 2
+
+**The `Panel.qml` `missing-property` allowance matched message text only.** Confirmed on Qt 6.11.2 and Qt 6.8.3: with `text: "x"` or `Timer { interval: 1 }` inserted at line 48 inside `AntonController`, the round 1 gate exited 0. Either would stop `Panel.qml` loading at runtime. `tests/run-qmllint.sh` now ties each accepted warning to a location as well as a message:
+
+- A brace-tracking awk pass gives each line of `Panel.qml` its enclosing object.
+- `Could not find property "<name>"` is accepted only on a line whose enclosing object is the `Panel` root, `BarIconButton`, `KeyboardPanel` or `PanelKeyCatcher`, and only for a property that Panel writes on that type (per-type lists).
+- `Cannot assign to non-existent default property` is accepted only on a line that opens a child object directly inside one of those four types.
+- On Qt 6.11 or later every `missing-property` fails. The clean tree reports none there.
+
+The finding also proposed rejecting every `missing-property` from Qt 6.9. That part was not adopted, because a clean tree would fail. Qt 6.9.3 and Qt 6.10.2 (aqtinstall, scratch only) report every read of a `qs.Ui` member: 48 and 49 `missing-property` warnings, for example `Panel.qml:24:41: Member "opened" not found on type "Panel"` (6.9.3) and `Member "opened" not found on type ""` (6.10.2). The round 1 gate already failed on both versions. The script now refuses them with `Unsupported qmllint 6.9: use Qt 6.8 or Qt 6.11 or later` and exit 1. CI uses Qt 6.8.3.
+
+Negative checks: `bash tests/run-qmllint.sh` on a scratch copy of the tracked tree, one injection at a time into `Panel.qml`.
+
+| Injected into `Panel.qml` | Qt 6.11.2 | Qt 6.8.3 |
+| --- | --- | --- |
+| none (current tree) | exit 0 | exit 0, 24 accepted `missing-property` |
+| `text: "x"` at line 48, inside `AntonController` | exit 1: `48:9: Could not find property "text"` | exit 1: same |
+| `Timer { interval: 1 }` at line 48 | exit 1: `48:9: Cannot assign to non-existent default property` | exit 1: same |
+| three-line `Timer { interval: 1 }` block at line 48 | exit 1: same as above | exit 1: same |
+| three-line `Timer` block at line 35, inside `AntonTheme` | exit 1: `35:9: Cannot assign to non-existent default property` | exit 1: same |
+| `text: "x"` at line 37, inside `AntonTheme` | exit 1: `37:9: Could not find property "text"` | exit 1: same |
+| `relaod()` twice, `barStat` (round 1 check) | exit 1: lines 26 and 87 `relaod`, `barStat` | exit 1: line 87 `relaod`, `barStat` |
+| `printErors: false` on `FileView` (round 1 check) | exit 1 | exit 1 |
+| `useActiveColour: false` on `BarIconButton` | exit 0 | exit 1: `106:9: Could not find property "useActiveColour"` |
+| `tooltipText: "x"` on `KeyboardPanel` (a `BarIconButton` property) | exit 0 | exit 1: `151:9: Could not find property "tooltipText"` |
+
+Residual: Qt 6.11 does not report writes to the unresolved `qs.Ui` types, so a misspelt `qs.Ui` property on `BarIconButton` or `KeyboardPanel` is caught only by the Qt 6.8.3 run in CI. Qt 6.9 and 6.10 are unsupported.
+
+The lint commit changes only `tests/run-qmllint.sh` and the plugin README; no QML, JavaScript or Rust source changed. The measurement harness runs qmllint itself and does not use this script, so the measurements stand as recorded.
+
+Gates on this round's head:
+
+- `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings` and `cargo test --locked`: pass.
+- `node --test tests/test_pi_hooks.mjs tests/test_omarchy_state.cjs tests/test_native_distribution.mjs`: 87 passed.
+- `bash tests/run-qml.sh`: 93 passed, 0 failed, on Qt 6.11.2 and Qt 6.8.3.
+- `bash tests/run-qmllint.sh`: exit 0 on Qt 6.11.2 and Qt 6.8.3; exit 1 (refused) on Qt 6.9.3 and Qt 6.10.2.
+- `openspec validate --all --strict`: 4 passed.
+
 ## Traceability
 
 | Requirement / scenario | Implementation | Verification | Commit |
@@ -298,7 +336,7 @@ Programme brief acceptance items:
 | (e) Keyed delegates | Met | `tst_keyed`, `tst_popup` test_13 to test_15b |
 | (f) One shared tooltip | Met. Rendered instances 29 to 1 | `tst_tooltip`, `tst_metrics` |
 | (g) Layout | Partly met. Named height properties replace the literals with unchanged formulas; `ColumnLayout` rejected because it moves rows by 1 px (design D11 Outcome) | `tst_popup` test_03, test_04, test_06; hashes |
-| (h) Tests exercise real components; qmllint | Met. `FixtureUi.qml` removed; `run-qmllint.sh` clean outside `Panel.qml` on Qt 6.11.2 and 6.8.3, in CI | QML suite, CI |
+| (h) Tests exercise real components; qmllint | Met. `FixtureUi.qml` removed; `run-qmllint.sh` clean outside `Panel.qml` on Qt 6.11.2 and 6.8.3, in CI; `Panel.qml` `missing-property` accepted only on `qs.Ui` objects (review round 2) | QML suite, CI |
 | (i) Pixel-identical visuals | Met against the corrected reference: the baseline tree with production formatting renders the same seven images as the final head. Five archived hashes certified the fixture formatter and were replaced (see "Visual reference correction") | reverse and forward formatter checks |
 
 Not yet done: task 4.4, the independent adversarial review. One point for it: after A3 the view can change at a deadline while the popover is closed, so the controller's acknowledgement reconciliation (which writes `privacy.ini`) can run between receipts, which baseline never did. Thresholds and outcomes are unchanged.
