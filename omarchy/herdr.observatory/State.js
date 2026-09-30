@@ -32,7 +32,7 @@ function counter(value) {
 }
 
 function threadUsage(agent, nowMs) {
-  var empty = { contextPercent: null, inputTokens: null, outputTokens: null, uncachedTokens: null, cachePercent: null, compactions: null, age: null, stale: false }
+  var empty = { contextPercent: null, inputTokens: null, outputTokens: null, uncachedTokens: null, cachePercent: null, compactions: null, age: null, stale: false, at: null }
   var t = agent.technical && agent.technical.telemetry
   if (!t || counter(t.seq) === null || t.seq <= 0 || t.seq / 1000 > nowMs) return empty
   var stamp = t.usage_seq === null || t.usage_seq === undefined ? t.seq : t.usage_seq
@@ -48,7 +48,7 @@ function threadUsage(agent, nowMs) {
   var contextPercent = context !== null && window !== null && window > 0 && context <= window
       ? percent(t.context_percent) !== null ? t.context_percent : context / window * 100 : null
   // Measurement freshness: usage older than 120 s is last-known, not current.
-  return { contextPercent: contextPercent, inputTokens: input, outputTokens: output, uncachedTokens: validPartition ? uncached : null, cachePercent: cache, compactions: counter(t.compactions), age: ageLabel(age), stale: age > 120 }
+  return { contextPercent: contextPercent, inputTokens: input, outputTokens: output, uncachedTokens: validPartition ? uncached : null, cachePercent: cache, compactions: counter(t.compactions), age: ageLabel(age), stale: age > 120, at: stamp / 1000 }
 }
 
 // Native turn boundaries measure wall-clock time, including tool waits. No Herdr
@@ -77,7 +77,9 @@ function turnTiming(agent, nowMs, hostReporting) {
   if (accumulated !== null && accumulated > 9007199254740991) accumulated = null
   return { active: active, elapsed: elapsed, last: last, total: accumulated,
            complete: complete, stale: stale, age: ageLabel(age), observedAt: observed,
-           outcome: ["completed", "aborted"].indexOf(source.last_outcome) >= 0 ? source.last_outcome : null }
+           outcome: ["completed", "aborted"].indexOf(source.last_outcome) >= 0 ? source.last_outcome : null,
+           startedAt: start !== null && start > 0 && start <= observed ? start : null,
+           settled: source.active === false, finishedTotal: complete ? total : null }
 }
 
 function durationLabel(seconds) {
@@ -111,7 +113,7 @@ function childCompletion(agent, nowMs) {
   })
   if (!valid || sum !== total) outcomes = null
   // Measurement freshness: child status older than 120 s is last-known.
-  return { total: total, done: done, stamp: stamp, stale: age > 120, age: ageLabel(age), outcomes: outcomes }
+  return { total: total, done: done, stamp: stamp, stale: age > 120, age: ageLabel(age), outcomes: outcomes, at: stamp / 1000 }
 }
 
 function childObservations(agent, nowMs) {
@@ -121,12 +123,12 @@ function childObservations(agent, nowMs) {
   if (starts === null || stops === null || starts > 999 || stops > 999) return null
   var stamp = t.subagent_seq
   if (starts === 0 && stops === 0 && (stamp === null || stamp === undefined))
-    return { starts: 0, stops: 0, stamp: null, stale: false, age: null }
+    return { starts: 0, stops: 0, stamp: null, stale: false, age: null, at: null }
   if (counter(stamp) === null || stamp <= 0 || stamp > t.seq) return null
   var age = ageSeconds(stamp / 1000000, nowMs)
   if (age === null) return null
   // Measurement freshness: child observations older than 120 s are last-known.
-  return { starts: starts, stops: stops, stamp: stamp, stale: age > 120, age: ageLabel(age) }
+  return { starts: starts, stops: stops, stamp: stamp, stale: age > 120, age: ageLabel(age), at: stamp / 1000 }
 }
 
 // Compare stable host/thread identities across sorting, not delegate positions.
@@ -299,7 +301,9 @@ function allowanceView(row, nowMs) {
            remaining: remaining, timeRemaining: timeRemaining,
            paceDifference: current && timeRemaining !== null ? remaining - timeRemaining : null,
            resetCount: resetCount, reset: untilReset !== null ? resetLabel(untilReset) : null,
-           age: current ? ageLabel(age) : "source unavailable" }
+           age: current ? ageLabel(age) : "source unavailable",
+           resetAt: untilReset !== null ? reset : null, durationS: untilReset !== null ? pacing.duration_s : null,
+           sampledAt: current ? row.sampled_at : null }
 }
 
 // Saved aliases (keyed provider:id) win, then the legacy preference table
@@ -527,7 +531,91 @@ function threadIndex(threads) {
   return index
 }
 
+// Readings: pure functions of a structural value and the display instant. Each
+// returns the baseline presentation shape; stale flags come from the view.
+function sinceLabel(atSeconds, nowMs) { return ageLabel(Math.max(0, nowMs / 1000 - atSeconds)) }
+function usageReading(usage, nowMs) {
+  return { contextPercent: usage.contextPercent, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens,
+           uncachedTokens: usage.uncachedTokens, cachePercent: usage.cachePercent, compactions: usage.compactions,
+           age: usage.at === null || usage.at === undefined ? null : sinceLabel(usage.at / 1000, nowMs), stale: usage.stale }
+}
+function childrenReading(children, nowMs) {
+  if (!children) return null
+  return { starts: children.starts, stops: children.stops, stamp: children.stamp, stale: children.stale,
+           age: children.stamp === null ? null : sinceLabel(children.stamp / 1000000, nowMs) }
+}
+function completionReading(completion, nowMs) {
+  if (!completion) return null
+  return { total: completion.total, done: completion.done, stamp: completion.stamp, stale: completion.stale,
+           age: sinceLabel(completion.stamp / 1000000, nowMs), outcomes: completion.outcomes }
+}
+// An active current turn runs from its start to now; a stale one stays frozen
+// at its verified observation. `settled` is the source's explicit inactive state.
+function turnReading(timing, nowMs) {
+  if (!timing) return null
+  var elapsed = null
+  if (timing.active && timing.startedAt !== null) {
+    elapsed = Math.max(0, Math.floor((timing.stale ? timing.observedAt : nowMs / 1000) - timing.startedAt))
+  } else if (timing.settled === true) {
+    elapsed = timing.last
+  }
+  var total = timing.complete ? timing.finishedTotal + (timing.active && elapsed !== null ? elapsed : 0) : null
+  if (total !== null && total > 9007199254740991) total = null
+  return { active: timing.active, elapsed: elapsed, last: timing.last, total: total,
+           complete: timing.complete, stale: timing.stale, age: sinceLabel(timing.observedAt, nowMs),
+           observedAt: timing.observedAt, outcome: timing.outcome }
+}
+// The eleven-key allowance presentation: expected balance, pace, reset
+// countdown and age at the display instant.
+function allowanceReading(account, nowMs) {
+  var nowS = nowMs / 1000
+  var untilReset = account.resetAt !== null && account.resetAt !== undefined && account.resetAt > nowS ? account.resetAt - nowS : null
+  var timeRemaining = untilReset !== null && untilReset <= account.durationS ? untilReset / account.durationS * 100 : null
+  var current = account.remaining !== null
+  return { id: account.id, provider: account.provider, providerLabel: account.providerLabel, label: account.label,
+           statusText: account.statusText, remaining: account.remaining, timeRemaining: timeRemaining,
+           paceDifference: current && timeRemaining !== null ? account.remaining - timeRemaining : null,
+           resetCount: account.resetCount, reset: untilReset !== null ? resetLabel(untilReset) : null,
+           age: current && account.sampledAt !== null && account.sampledAt !== undefined ? sinceLabel(account.sampledAt, nowMs) : "source unavailable" }
+}
+// The baseline presentation view (without host and thread ages) at an instant.
+function readView(view, nowMs) {
+  return { connected: view.connected, working: view.working, partial: view.partial,
+           threads: view.threads.map(function(thread) {
+             return { id: thread.id, hostId: thread.hostId, project: thread.project, navigation: thread.navigation,
+                      title: thread.title, host: thread.host, timing: turnReading(thread.timing, nowMs),
+                      branch: thread.branch, checkout: thread.checkout, usage: usageReading(thread.usage, nowMs),
+                      children: childrenReading(thread.children, nowMs), completion: completionReading(thread.completion, nowMs),
+                      generation: thread.generation, statusGeneration: thread.statusGeneration, state: thread.state, harness: thread.harness }
+           }),
+           discoveryLabel: view.discoveryLabel,
+           hosts: view.hosts.map(function(host) {
+             return { connectionState: host.connectionState, connectionLabel: host.connectionLabel, id: host.id,
+                      name: host.name, navigation: host.navigation, reporting: host.reporting }
+           }),
+           allowances: view.allowances.map(function(account) { return allowanceReading(account, nowMs) }),
+           note: view.note }
+}
+// The IPC diagnostics JSON (field order is part of the contract).
+function diagnostics(view, nowMs) {
+  var timings = view.threads.map(function(thread) { return turnReading(thread.timing, nowMs) })
+  var count = function(test) { return timings.filter(test).length }
+  return JSON.stringify({
+    connected: view.connected,
+    hosts: view.hosts.map(function(h) { return { id: h.id, connection: h.connectionState, reporting: h.reporting } }),
+    threads: view.threads.length,
+    usageReported: view.threads.filter(function(t) { return t.usage && t.usage.inputTokens !== null }).length,
+    timingReported: count(function(t) { return t && t.elapsed !== null }),
+    timingCurrent: count(function(t) { return t && t.active && !t.stale && t.elapsed !== null }),
+    timingTotals: count(function(t) { return t && t.total !== null }),
+    timingStale: count(function(t) { return t && t.stale }),
+    allowances: view.allowances.map(function(a) { return { label: a.label, available: a.remaining !== null } })
+  })
+}
+
 if (typeof module !== "undefined") module.exports = { accountAlias: accountAlias, navigationArgs: navigationArgs, turnTiming: turnTiming, durationLabel: durationLabel, timingHint: timingHint, allowancePaceReading: allowancePaceReading, allowancePaceBand: allowancePaceBand, threadKey: threadKey, completionEpisode: completionEpisode, stableThreads: stableThreads, arrivals: arrivals, providerGroups: providerGroups, childHint: childHint, groupThreads: groupThreads, transitions: transitions, dominantState: dominantState, project: project, ageSeconds: ageSeconds, ageLabel: ageLabel, receiptTimeoutMs: receiptTimeoutMs, focusKeys: focusKeys, reconcileFocus: reconcileFocus, moveFocus: moveFocus, activationKey: activationKey, threadForKey: threadForKey,
   tokens: tokens, percentReading: percentReading, paceText: paceText, parseList: parseList, parseObject: parseObject, stateColourName: stateColourName, accountKey: accountKey,
   toggleListValue: toggleListValue, boundAcknowledgements: boundAcknowledgements, reconcileAcknowledgements: reconcileAcknowledgements, acknowledgeNavigation: acknowledgeNavigation, assignAliases: assignAliases,
-  keyedEdits: keyedEdits, threadIndex: threadIndex }
+  keyedEdits: keyedEdits, threadIndex: threadIndex,
+  usageReading: usageReading, childrenReading: childrenReading, completionReading: completionReading, turnReading: turnReading,
+  allowanceReading: allowanceReading, readView: readView, diagnostics: diagnostics }

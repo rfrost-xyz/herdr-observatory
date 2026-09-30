@@ -712,11 +712,12 @@ test('only providers present in the snapshot form groups', () => {
   assert.equal(project({ hosts: [host()], allowances: [] }, now).allowances.length, 0);
 });
 
-test('the projected allowance view has exactly the eleven contract keys', () => {
+test('the allowance reading has exactly the eleven contract keys', () => {
   const keys = ['id', 'provider', 'providerLabel', 'label', 'statusText', 'remaining', 'timeRemaining',
     'paceDifference', 'resetCount', 'reset', 'age'];
+  const { allowanceReading } = sandbox.module.exports;
   for (const row of [allowanceRow({ reset_count: 1 }), allowanceRow({ status: 'auth_needed', status_text: 'Sign in required', sampled_at: null, windows: [] })])
-    assert.deepEqual(Object.keys(projectOne(row)).sort(), keys.slice().sort());
+    assert.deepEqual(Object.keys(allowanceReading(projectOne(row), now)), keys);
 });
 
 test('account aliases prefer saved names, then the legacy table, then a stable hash', () => {
@@ -906,4 +907,98 @@ test('thread index and group keys follow thread keys', () => {
   assert.deepEqual(plain(groupThreads(view, ['idle'], []).map(g => g.keys)), [['laptop:a']]);
   assert.deepEqual(plain(groupThreads(view, [], ['laptop']).map(g => g.keys)), [[]]);
   assert.deepEqual(plain(providerGroups(view.allowances).map(g => g.keys)), [['codex:Personal', 'codex:Work']]);
+});
+
+// ---------------------------------------------------------------- A2 readings
+const timeOracle = require('./fixtures/popover-time-oracle.json');
+const diagnosticsOracle = require('./fixtures/popover-diagnostics-oracle.json');
+function withoutAges(view) {
+  const copy = plain(view);
+  copy.hosts.forEach(h => delete h.age);
+  copy.threads.forEach(t => delete t.age);
+  return copy;
+}
+
+test('readView of every oracle projection equals the baseline view without host and thread ages', () => {
+  const { readView } = sandbox.module.exports;
+  let checked = 0;
+  for (const c of timeOracle.cases)
+    for (const { nowMs, view } of c.projections) {
+      assert.deepEqual(plain(readView(project(c.raw, nowMs), nowMs)), withoutAges(view), c.name + ' @ ' + nowMs);
+      checked++;
+    }
+  assert.equal(checked, 112);
+  assert.deepEqual(plain(readView(project(null, now), now)), withoutAges(project(null, now)));
+});
+
+test('diagnostics equal every recorded IPC string', () => {
+  const { diagnostics } = sandbox.module.exports;
+  assert.equal(diagnosticsOracle.cases.length, 13);
+  for (const c of diagnosticsOracle.cases) assert.equal(diagnostics(project(c.raw, c.nowMs), c.nowMs), c.diagnostics, c.name + ' @ ' + c.nowMs);
+});
+
+test('readings of a projected view equal its own presentation fields at the same instant', () => {
+  const { usageReading, childrenReading, completionReading, turnReading, allowanceReading } = sandbox.module.exports;
+  const strip = (value, keys) => { if (value === null) return null; const copy = plain(value); keys.forEach(k => delete copy[k]); return copy; };
+  for (const c of timeOracle.cases)
+    for (const { nowMs } of c.projections) {
+      const view = project(c.raw, nowMs);
+      for (const t of view.threads) {
+        assert.deepEqual(plain(usageReading(t.usage, nowMs)), strip(t.usage, ['at']));
+        assert.deepEqual(plain(childrenReading(t.children, nowMs)), strip(t.children, ['at']));
+        assert.deepEqual(plain(completionReading(t.completion, nowMs)), strip(t.completion, ['at']));
+        assert.deepEqual(plain(turnReading(t.timing, nowMs)), strip(t.timing, ['startedAt', 'settled', 'finishedTotal']));
+      }
+      for (const a of view.allowances) assert.deepEqual(plain(allowanceReading(a, nowMs)), strip(a, ['resetAt', 'durationS', 'sampledAt']));
+    }
+});
+
+test('an unknown current turn reports no elapsed time even with a last duration', () => {
+  const { turnReading } = sandbox.module.exports;
+  const agent = { id: 'a', status: 'idle', technical: { turn_timing: { observed_at_s: now / 1000, active: null, started_at_s: now / 1000 - 10,
+    last_duration_s: 42, complete: true, total_finished_duration_s: 100, freshness_seconds: 12 } } };
+  const timing = project({ interval: 5, hosts: [host({ agents: [agent] })], allowances: [] }, now).threads[0].timing;
+  // Baseline (53f2407): active false, elapsed null, last 42, total 100.
+  assert.equal(timing.elapsed, null);
+  const reading = turnReading(timing, now + 5000);
+  assert.equal(reading.active, false);
+  assert.equal(reading.elapsed, null);
+  assert.equal(reading.last, 42);
+  assert.equal(reading.total, 100);
+  const settled = { ...agent, technical: { turn_timing: { ...agent.technical.turn_timing, active: false } } };
+  assert.equal(turnReading(project({ interval: 5, hosts: [host({ agents: [settled] })], allowances: [] }, now).threads[0].timing, now).elapsed, 42);
+});
+
+test('a pacing window without a used percentage keeps its reset countdown and expected balance', () => {
+  const { allowanceReading } = sandbox.module.exports;
+  const account = projectOne(remainingRow(null, now / 1000 + 7200, {}, { duration_s: 10000 }));
+  // Baseline (53f2407): remaining null, timeRemaining 72, reset '0d 2h', no pace.
+  const reading = allowanceReading(account, now);
+  assert.equal(reading.remaining, null);
+  assert.equal(reading.timeRemaining, 72);
+  assert.equal(reading.paceDifference, null);
+  assert.equal(reading.reset, '0d 2h');
+  assert.equal(reading.age, 'source unavailable');
+  assert.equal(account.sampledAt, null);
+});
+
+test('readings advance with the display instant while the structure stays fixed', () => {
+  const { turnReading, allowanceReading, usageReading } = sandbox.module.exports;
+  const agent = { id: 'a', status: 'working', technical: {
+    telemetry: { seq: (now - 30000) * 1000, usage_seq: (now - 30000) * 1000, total_input: 10, total_output: 1 },
+    turn_timing: { observed_at_s: now / 1000, active: true, started_at_s: now / 1000 - 754, freshness_seconds: 12, complete: true, total_finished_duration_s: 100 } } };
+  const view = project({ interval: 5, hosts: [host({ agents: [agent] })], allowances: [allowanceRow()] }, now);
+  const thread = view.threads[0];
+  assert.equal(turnReading(thread.timing, now).elapsed, 754);
+  assert.equal(turnReading(thread.timing, now + 5000).elapsed, 759);
+  assert.equal(turnReading(thread.timing, now + 5000).total, 859);
+  assert.equal(usageReading(thread.usage, now).age, '30s ago');
+  assert.equal(usageReading(thread.usage, now + 31000).age, '1m ago');
+  const account = view.allowances[0];
+  assert.equal(allowanceReading(account, now).reset, '3d 12h');
+  assert.equal(allowanceReading(account, now + 1000).reset, '3d 11h');
+  assert.ok(allowanceReading(account, now + 60000).timeRemaining < allowanceReading(account, now).timeRemaining);
+  // A stale turn stays frozen at its observation.
+  const stale = { ...thread.timing, stale: true };
+  assert.equal(turnReading(stale, now + 60000).elapsed, 754);
 });
