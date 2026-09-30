@@ -89,3 +89,14 @@ The popover SHALL read its status palette from the colour file in the theme loca
 #### Scenario: Theme switch
 - **WHEN** the operator switches the Omarchy theme while the popover is open
 - **THEN** status colours follow the new theme's palette without a restart, as before.
+
+### Requirement: Navigation only from an open popover
+The popover SHALL start thread navigation only in response to an explicit operator action while it is open: a key press in the popover, a tap on a thread row or an accessibility press action. Loading the plugin, hot reloads, opening and closing, focus changes and snapshot updates SHALL NOT start navigation. An action that arrives after the popover has closed, including during its closing fade, SHALL NOT start navigation or report an error.
+
+#### Scenario: Tap during the closing fade
+- **WHEN** the operator taps a thread row after the popover has been closed but while the row is still fading out
+- **THEN** no navigation starts and no error is shown.
+
+#### Scenario: Reload and reopen without input
+- **WHEN** the plugin is reloaded several times, including while open, and the popover is then opened, closed and reopened without operator input
+- **THEN** it stays open with its thread rows visible, and no navigation starts.

@@ -35,6 +35,8 @@ This is change 3 of 3 in the Anton popover programme. Change 1 (`fix-anton-popov
   - Tests exercise the real theme, preferences and controller. `FixtureUi.qml` is removed.
   - Coverage includes acknowledgement persistence, focus, navigation arguments and route errors, a settings round trip against captured `privacy.ini` files, IPC diagnostics against a captured oracle, and delegate identity.
   - qmllint must be clean for the plugin files under the repository's stub imports.
+  - An optional harness (`tests/run-shell-harness.sh`) loads the popover against the installed Omarchy shell modules offscreen, through hot reloads and open/close cycles, and fails if a thread is opened without input. It skips where the shell is not installed, as in CI.
+- **Navigation only from an open popover.** The controller ignores thread activation unless the popover is open, so a tap or accessibility press during the closing fade cannot navigate (added after the live install check, evidence.md "Live install findings").
 - **Visuals stay pixel-identical.** The seven screenshots must match the baseline rendering byte for byte. Five of the archived reference hashes were rendered with `FixtureUi.qml`'s own token formatter (`34.0K`) rather than the production one (`34K`), so the reference is corrected to the baseline tree rendered with the production formatter (design D12, evidence.md "Visual reference correction").
 
 ## Capabilities
@@ -45,12 +47,13 @@ None.
 
 ### Modified Capabilities
 
-- `omarchy-companion`: adds five requirements.
+- `omarchy-companion`: adds six requirements.
   - Clock-separated view updates, with measurement freshness preserved while the popover is open and while it is closed.
   - Stable delegate identity for effects.
   - A single popover tooltip with unchanged behaviour.
   - Preserved local preferences and shell commands (the existing `privacy.ini`, and IPC functions and diagnostics output).
   - A theme palette taken from the shell's current theme location.
+  - Thread navigation only from an explicit action while the popover is open.
 
   Existing requirements are unchanged.
 
@@ -64,7 +67,8 @@ None.
   - `tests/test_omarchy_state.cjs` gains the formatter, time, keyed-edit and oracle tests;
   - `tests/qml/anton/**` moves to the real components, drops `FixtureUi.qml` and gains a `FileView` stub and more `qs.Commons` stub members;
   - `tests/test_native_distribution.mjs` follows navigation into the controller;
-  - a qmllint script runs in CI.
+  - a qmllint script runs in CI;
+  - `tests/run-shell-harness.sh` with `tests/shell/` runs the popover against the installed Omarchy shell modules when they are present.
 - **Measurement:** `tests/measure_anton_popover.mjs` gains additive architecture metrics only (commit `a7ff5c0`). Existing definitions are unchanged. The replacement metric observes the production store logic through `State.storeStep`.
 - **Compatibility:**
   - No runtime (Rust) change. The release binary must be byte-identical, so installed SSH peers and the snapshot contract are unaffected.

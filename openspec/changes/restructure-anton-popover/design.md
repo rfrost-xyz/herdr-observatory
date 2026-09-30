@@ -209,7 +209,7 @@ It owns:
 
 Functions:
 
-- `openThread(key)`;
+- `openThread(key)`, which does nothing unless `opened` is true, so a tap or accessibility press during the closing fade, or any call after closing, starts no process and sets no error (added after the live install check);
 - `activate()`, which opens `State.activationKey(threadKeys, focusedKey)`;
 - `moveFocus(delta)`;
 - `toggleList(name, value)`: `visualEpoch++`, then the preferences toggle, then clear focus;
@@ -321,6 +321,8 @@ Qmllint may resolve a system module instead of a stub. On the planning workstati
 - confirms which module qmllint resolves for each import (for example with `--verbose` or by temporarily hiding the system module path);
 - keeps the non-Panel files importing only modules the repository stubs provide, plus Qt modules;
 - treats the CI qmllint run as the authoritative verification, fixing or documenting any Qt 6.8-only warning.
+
+**Installed-shell harness (added after the live install check).** The QML suite uses a stub `qs.Commons` and no `qs.Ui` at all, so it never runs `Panel.qml` inside the real `KeyboardPanel`, `PanelKeyCatcher` and `BarIconButton`. `tests/run-shell-harness.sh` runs `tests/shell/shell.qml` in Quickshell with `QT_QPA_PLATFORM=offscreen` against the installed shell modules. Offscreen has no layer-shell backend, so a scratch copy of `qs.Ui` swaps `KeyboardPanel`'s `PanelWindow` for a `FloatingWindow` and drops its layer-shell properties, mask and per-monitor dismissal windows; the patch fails loudly if the installed file no longer matches. `anton-runtime` is `tests/shell/fake-runtime.mjs`, which serves the shifted `mixed-fleet` oracle snapshot and logs every invocation. HOME, XDG directories and the palette are synthetic. The harness loads the plugin asynchronously as the shell does, runs a hot-reload storm (including a reload while open), opens, closes and reopens (once during the fade), moves focus, waits 3 s unattended, and checks a visible non-empty card with one visible row per thread and zero `--open-thread` calls. It skips where Quickshell or the shell modules are absent, so CI skips it; compositor focus and pointer delivery remain unexercised.
 
 ### D13. Measurement (coordinator)
 
