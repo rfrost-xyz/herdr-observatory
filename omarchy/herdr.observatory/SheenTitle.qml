@@ -1,3 +1,5 @@
+pragma ComponentBehavior: Bound
+
 import QtQuick
 
 Item {
@@ -15,7 +17,10 @@ Item {
     implicitHeight: titleText.implicitHeight
     implicitWidth: titleText.implicitWidth
 
+    // Qt 6.8 qmllint reads the literal initial phase as a binding.
+    // qmllint disable duplicate-property-binding
     SequentialAnimation on phase {
+        // qmllint enable duplicate-property-binding
         loops: Animation.Infinite
         running: sheen.active && sheen.animate && sheen.visible
 

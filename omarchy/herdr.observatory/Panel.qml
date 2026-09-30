@@ -9,20 +9,20 @@ Panel {
     id: root
 
     property var accountEmails: ({})
-    readonly property color barColour: bar ? bar.barForeground : Color.foreground
+    readonly property color barColour: root.bar ? root.bar.barForeground : Color.foreground
     readonly property bool motionEnabled: Quickshell.env("ANTON_REDUCED_MOTION") !== "1"
 
     implicitHeight: button.implicitHeight
     implicitWidth: button.implicitWidth
-    ipcTarget: moduleName
+    ipcTarget: root.moduleName
     manageIpc: false
     moduleName: "herdr.observatory"
 
     // The controller resets the visual epoch and focus first; then the palette
     // reloads and a dead collector restarts, as before.
     onOpenedChanged: {
-        popoverController.opened = opened;
-        if (opened) {
+        popoverController.opened = root.opened;
+        if (root.opened) {
             popoverTheme.reload();
             snapshot.restart();
             Qt.callLater(function () {

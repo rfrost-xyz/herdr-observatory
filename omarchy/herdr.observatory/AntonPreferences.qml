@@ -12,21 +12,24 @@ import "State.js" as State
 QtObject {
     id: preferences
 
-    readonly property var accountAliases: State.parseObject(settings.accountAliases)
-    readonly property var acknowledgements: State.parseObject(settings.acknowledgedCompletions)
+    readonly property var accountAliases: State.parseObject(store.accountAliases)
+    readonly property var acknowledgements: State.parseObject(store.acknowledgedCompletions)
     readonly property bool allowancesCollapsed: collapsedSections.indexOf("allowances") >= 0
-    readonly property var collapsedHosts: State.parseList(settings.collapsedHosts)
-    readonly property var collapsedProviders: State.parseList(settings.collapsedProviders)
-    readonly property var collapsedSections: State.parseList(settings.collapsedSections)
-    readonly property var hiddenStates: State.parseList(settings.hiddenStates)
+    readonly property var collapsedHosts: State.parseList(store.collapsedHosts)
+    readonly property var collapsedProviders: State.parseList(store.collapsedProviders)
+    readonly property var collapsedSections: State.parseList(store.collapsedSections)
+    readonly property var hiddenStates: State.parseList(store.hiddenStates)
     // The legacy table migrates the original Personal/Work alias settings.
     readonly property var legacyAliases: ({
-            "codex:Personal": settings.personalAlias,
-            "codex:Work": settings.workAlias
+            "codex:Personal": store.personalAlias,
+            "codex:Work": store.workAlias
         })
     required property string location
-    readonly property bool namesHidden: settings.namesHidden
+    readonly property bool namesHidden: store.namesHidden
+    // The stored values; tests may assign them directly, as QSettings would load them.
     readonly property Core.Settings settings: Core.Settings {
+        id: store
+
         property string accountAliases: "{}"
         property string acknowledgedCompletions: "{}"
         property string collapsedHosts: "[]"
@@ -52,26 +55,26 @@ QtObject {
 
     // Keep local acknowledgement storage bounded, even as sessions come and go.
     function setAcknowledgements(value) {
-        settings.acknowledgedCompletions = JSON.stringify(State.boundAcknowledgements(value));
-        settings.setValue("acknowledgedCompletions", settings.acknowledgedCompletions);
-        settings.sync();
+        store.acknowledgedCompletions = JSON.stringify(State.boundAcknowledgements(value));
+        store.setValue("acknowledgedCompletions", store.acknowledgedCompletions);
+        store.sync();
     }
     // Saved aliases are replaced only when concealing; showing names keeps them.
     function setIdentity(hidden, aliases) {
         if (hidden && aliases) {
-            settings.accountAliases = JSON.stringify(aliases);
-            settings.setValue("accountAliases", settings.accountAliases);
+            store.accountAliases = JSON.stringify(aliases);
+            store.setValue("accountAliases", store.accountAliases);
         }
-        settings.namesHidden = hidden;
-        settings.setValue("namesHidden", hidden);
-        settings.setValue("personalAlias", settings.personalAlias);
-        settings.setValue("workAlias", settings.workAlias);
-        settings.sync();
+        store.namesHidden = hidden;
+        store.setValue("namesHidden", hidden);
+        store.setValue("personalAlias", store.personalAlias);
+        store.setValue("workAlias", store.workAlias);
+        store.sync();
     }
     // name is one of hiddenStates, collapsedHosts, collapsedProviders, collapsedSections.
     function toggle(name, value) {
-        settings[name] = JSON.stringify(State.toggleListValue(State.parseList(settings[name]), value));
-        settings.setValue(name, settings[name]);
-        settings.sync();
+        store[name] = JSON.stringify(State.toggleListValue(State.parseList(store[name]), value));
+        store.setValue(name, store[name]);
+        store.sync();
     }
 }

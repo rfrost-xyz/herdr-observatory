@@ -36,3 +36,6 @@ jobs:
       - run: bash tests/run-qml.sh
         env:
           QMLTESTRUNNER: ${{ env.QT_ROOT_DIR }}/bin/qmltestrunner
+      - run: bash tests/run-qmllint.sh
+        env:
+          QMLLINT: ${{ env.QT_ROOT_DIR }}/bin/qmllint
