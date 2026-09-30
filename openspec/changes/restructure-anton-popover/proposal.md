@@ -30,12 +30,12 @@ This is change 3 of 3 in the Anton popover programme. Change 1 (`fix-anton-popov
   - Every staleness rule and threshold is preserved, including while the popover is closed.
 - **Keyed delegates.** Thread, machine, provider and account delegates are identified by stable keys. A delegate and its running animation stay with its thread across reordering and removal of others. Entrance still does not replay on hydration, reconnect, filtering, collapse or sorting.
 - **One shared tooltip** for the popover. It keeps the current delay, timeout, pointer placement, clamping, suppression while scrolling or while a nested metric is hovered, and the theme tokens.
-- **Layout.** `PopupContent` uses a `ColumnLayout` with preferred and maximum heights derived from the real header heights. It preserves today's sizes and the thread/allowance space split.
+- **Layout.** `PopupContent` names its height rules (chrome, thread reserve and share, thread and allowance caps) instead of summing literals, and keeps today's sizes and the thread/allowance space split. A `ColumnLayout` was tried and rejected because it snaps child positions to whole pixels and moves rows by 1 px (design D11).
 - **Tests.**
   - Tests exercise the real theme, preferences and controller. `FixtureUi.qml` is removed.
   - Coverage includes acknowledgement persistence, focus, navigation arguments and route errors, a settings round trip against captured `privacy.ini` files, IPC diagnostics against a captured oracle, and delegate identity.
   - qmllint must be clean for the plugin files under the repository's stub imports.
-- **Visuals stay pixel-identical.** The seven reference screenshots recorded in the archived changes must match byte for byte.
+- **Visuals stay pixel-identical.** The seven screenshots must match the baseline rendering byte for byte. Five of the archived reference hashes were rendered with `FixtureUi.qml`'s own token formatter (`34.0K`) rather than the production one (`34K`), so the reference is corrected to the baseline tree rendered with the production formatter (design D12, evidence.md "Visual reference correction").
 
 ## Capabilities
 

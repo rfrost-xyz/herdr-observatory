@@ -17,7 +17,7 @@ See proposal.md for the motivation. Current state at `53f2407`:
   - Outer Repeaters take integer counts. Cards look up `ui.overview.threads[threadIndex]` and `provider.accounts[index]`.
   - Heights are sums of literals (95, 85, 0.55, 180, 300).
 - **Tooltips.** `AntonSurface.qml` declares a `ToolTip` per surface: 6 per `ThreadCard`, and 29 in the standard fixture.
-- **Screenshots.** The seven screenshot hashes in the archived changes are reproduced at `a7ff5c0` (evidence.md, Baseline).
+- **Screenshots.** The seven screenshot hashes in the archived changes are reproduced at `a7ff5c0` (evidence.md, Baseline). Five of them depend on `FixtureUi.qml`'s token formatter, which keeps a trailing `.0` that production strips (D12).
 - **Constraints.**
   - Rust is out of scope. The release binary must be byte-identical to baseline SHA-256 `74f50d69…`, so peers and the wire contract cannot change.
   - The plugin loads from a flat directory. Components in that directory are available by type name, and every shipped file must be listed in `install.sh` and in both lists in `uninstall.sh`.
@@ -32,7 +32,7 @@ See proposal.md for the motivation. Current state at `53f2407`:
 - Put pure helpers in `State.js`, with node tests.
 - Separate structural projection from the clock, preserving thresholds exactly, whether the popover is open or closed.
 - Use keyed delegates, one tooltip and a layout-based `PopupContent`.
-- Keep the seven screenshots byte-identical.
+- Keep the seven screenshots byte-identical to the baseline rendering with production formatting (D12).
 
 **Non-Goals:**
 
@@ -287,6 +287,8 @@ The two Flickables take `Layout.preferredHeight` and `Layout.maximumHeight` from
 
 If `ColumnLayout` rounds fractional heights differently from `Column`, the screenshots will show it. The fallback is to pin `Layout.minimumHeight` and `Layout.maximumHeight` to the same computed values.
 
+**Outcome.** `ColumnLayout` snaps each child's position to whole pixels: the notice moved from y 129.35 to 130 and every row below it moved 1 px. Pinning minimum and maximum heights did not change that. `PopupContent` therefore stays a `Column` whose heights come from the named properties (`chromeHeight`, `headingHeight`, `sectionHeight`, `threadReserve`, `threadShare`, `allowanceCap`, `threadCap`, `threadViewportHeight`, `noticeHeight`) with the formulas unchanged. Pixel identity takes precedence over the layout type (AGENTS.md presentation rules).
+
 ### D12. Tests, qmllint and CI (lane B unless noted)
 
 **Screenshots.** `tst_popup.qml` renders the real `PopupContent` with the real theme, controller and preferences:
@@ -296,6 +298,8 @@ If `ColumnLayout` rounds fractional heights differently from `Column`, the scree
 - the view is `State.project(raw, now)` with a fixed `now`.
 
 The seven `capture()` calls, their names and their scenes are unchanged.
+
+**Reference correction.** `FixtureUi.qml` formatted tokens as `(n / 1000).toFixed(1) + 'K'`, which keeps a trailing `.0` (`34.0K`). Production `Panel.tokens`, now `State.tokens`, strips it (`34K`). Five archived hashes (dark, light, many-short, discovery-unavailable, short-with-notice) therefore certified the fixture's text, not the production popover. Rendering the unchanged `75d6548` tree with only the fixture formatter replaced by the production one yields a new set of five hashes; the restructured tree yields the same set, and the restructured tree with the fixture formatter patched in yields the archived set. The corrected set in evidence.md is the screenshot gate from task 3.4 onward. `connections-missing` and `discovery-setup` render no token counts and keep their archived hashes.
 
 **New QML tests** cover:
 
@@ -338,7 +342,8 @@ Expected results:
 ## Risks / Trade-offs
 
 - **[Risk] Repeater may not keep items across `ListModel.move`.** Mitigation: D9 makes the identity test first. If moves recreate items, fall back to remove-free ordering in which `stableThreads` already keeps surviving rows in place, so moves are rare. Record the result.
-- **[Risk] `ColumnLayout` geometry could differ by a subpixel from `Column`, breaking hashes.** Mitigation: the D11 fallback. Screenshots gate every lane B commit that touches layout.
+- **[Risk] `ColumnLayout` geometry could differ by a subpixel from `Column`, breaking hashes.** Mitigation: the D11 fallback. Screenshots gate every lane B commit that touches layout. This happened, and the fallback did not help, so `PopupContent` keeps a `Column` with named height rules (D11 Outcome).
+- **[Risk] Qt 6.8 type resolution.** Two plugin files that name each other's types (`AntonSurface` and `AntonToolTip`) load on Qt 6.11 but stall `qmltestrunner` on Qt 6.8.3 after a `qt.qml.typeresolution.cycle` warning. `AntonSurface.tooltip` is therefore typed as the base `ToolTip`.
 - **[Risk] Early deadlines or missed boundaries.** A missed boundary would leave a stale flag late. Mitigation: brute-force node tests around every oracle threshold (D4), and the rule that a deadline may be early but never late.
 - **[Risk] The lanes share a worktree.** Mitigation: explicit-path staging, phase gates (A3 after B7 and B8), and coordinator-only rebases.
 - **[Trade-off] Host and thread age leave the view.** No surface displays them. Keeping them would force a replacement on every receipt.
