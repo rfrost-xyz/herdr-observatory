@@ -35,7 +35,7 @@ Stage explicit paths only. Use atomic Conventional Commits with no attribution t
 - [x] 2.1 **(A1)** Add the D2 pure helpers to `State.js` and export them:
   - `tokens`, `percentReading`, `paceText`, `parseList`, `parseObject`, `stateColourName`, `accountKey`;
   - `toggleListValue`, `boundAcknowledgements`, `reconcileAcknowledgements`, `acknowledgeNavigation`, `assignAliases`;
-  - `keyedEdits` and `threadIndex`;
+  - `keyedEdits`;
   - `keys` on `groupThreads` and `providerGroups` groups.
 
   Keep every existing export and output unchanged.
@@ -156,7 +156,7 @@ Stage explicit paths only. Use atomic Conventional Commits with no attribution t
   - Update `tests/test_native_distribution.mjs` so the navigation assertion reads `AntonController.qml` (`State.navigationArgs(entry)`) and the file-list checks cover the new files. Assert that every plugin `*.qml` and `State.js` appears in all three lists.
 
   Verify with `node --test tests/test_native_distribution.mjs` and `bash -n` on both scripts.
-- [x] 3.9 Add `tests/run-qmllint.sh` (D12) and a `qml` job step in `.github/workflows/checks.yml` that runs it with the installed Qt's qmllint. Remove unused imports and fix every warning so that the plugin files other than `Panel.qml` report 0 warnings with `-I tests/qml/anton`, and `Panel.qml` reports only `qs.Ui` import and unresolved-type warnings. (Result: `Panel.qml` also reports the consequences of the unresolved base, `unqualified` for `anchors.fill: parent` and `inheritance-cycle`, and on Qt 6.8.3 `missing-property` for members of the `qs.Ui` types; the gate accepts only those forms. See evidence.md.)
+- [x] 3.9 Add `tests/run-qmllint.sh` (D12) and a `qml` job step in `.github/workflows/checks.yml` that runs it with the installed Qt's qmllint. Remove unused imports and fix every warning so that the plugin files other than `Panel.qml` report 0 warnings with `-I tests/qml/anton`, and `Panel.qml` reports only `qs.Ui` import and unresolved-type warnings. (Result: `Panel.qml` also reports the consequences of the unresolved base, `unqualified` for `anchors.fill: parent` and `inheritance-cycle`, and on Qt 6.8.3 `missing-property` for members of the `qs.Ui` types; the gate accepts only those forms. Review round 1: the gate first accepted every `missing-property`, so a typo on a plugin type passed; it now accepts only the two `qs.Ui` message forms. See evidence.md.)
 
   Confirm which module qmllint resolves for each import and that the non-Panel files import only stubbed or Qt modules. The CI run with Qt 6.8.3 is authoritative; fix or document any warning that appears only there.
 
@@ -192,3 +192,5 @@ Stage explicit paths only. Use atomic Conventional Commits with no attribution t
   - private-data boundaries.
 
   Fix every in-scope finding, rerun the affected gates and repeat until the review is clean. Then mark the PR ready for review. Live installation is performed by the parent, not by this change's workers.
+
+  - [x] Round 1 remediation: restrict the `Panel.qml` `missing-property` allowance to the `qs.Ui` forms with a recorded negative check; remove the unused `AntonController.now` and `State.threadIndex` and amend D7 and D9; add collector-exit coverage (`tst_store` test_10 and a node `storeStep` case). See evidence.md "Review round 1".

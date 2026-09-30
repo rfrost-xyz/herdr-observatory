@@ -133,12 +133,12 @@ Both lanes worked in the shared worktree and committed explicit paths only. The 
 | 3.6 (named height rules) | `3a513c1` | QML 87 passed; corrected hashes 7/7; `test_03`, `test_04`, `test_06` unchanged |
 | 3.7 (labels from readings) | `d8f7edc` | QML 90 passed; corrected hashes 7/7; test_12, test_16 and test_18 fail on the 3.6 code |
 | 3.8 (IPC diagnostics, install lists) | `dea2925` | JS 83/83 including the every-file install-list test; `bash -n` on both scripts |
-| 3.9 (qmllint) | `a5a69f1` | `run-qmllint.sh`: no warnings outside `Panel.qml`; fails on an injected `ui.ink` |
-| 3.10 (README) | `92a2631` | QML 90 passed; `rendered_tooltip_instances=1` |
-| 2.3 (A3 structural view, `storeStep`) | `74d02c5` | on an export with the 2.3 `State.js` only: node 87/87, QML 90 passed, corrected hashes 7/7 |
-| 2.3 (A3 store) and 2.4 | `41c80a4` | node 87/87; QML 92 passed, 0 binding errors; corrected hashes 7/7; `grep -nE "Date\.now" State.js` prints nothing; leftover-field grep finds only two `delete` statements in a `tst_components` input builder |
+| 3.9 (qmllint) | `dd5b9d9` | `run-qmllint.sh`: no warnings outside `Panel.qml`; fails on an injected `ui.ink`, and (review round 1) on an injected `Panel.qml` member typo |
+| 3.10 (README) | `8cd3cd8` | QML 90 passed; `rendered_tooltip_instances=1` |
+| 2.3 (A3 structural view, `storeStep`) | `af28b74` | on an export with the 2.3 `State.js` only: node 87/87, QML 90 passed, corrected hashes 7/7 |
+| 2.3 (A3 store) and 2.4 | `926fdfb` | node 87/87; QML 92 passed, 0 binding errors; corrected hashes 7/7; `grep -nE "Date\.now" State.js` prints nothing; leftover-field grep finds only two `delete` statements in a `tst_components` input builder |
 | Qt 6.8 type cycle (folded into `f5d6d75`) | `f5d6d75` | CI on the first integrated head showed Qt 6.8.3 `qmltestrunner` stalling after `qt.qml.typeresolution.cycle` between `AntonToolTip.qml` and `AntonSurface.qml` (run cancelled after 15 minutes). `AntonSurface.tooltip` is typed as the base `ToolTip` from the commit that introduced it |
-| Qt 6.8 qmllint (folded into `a5a69f1`) | `a5a69f1` | Qt 6.8.3 reports `Panel.qml`'s unresolved `qs.Ui` members as `missing-property` and a `Panel -> Panel` import cycle, and flags `SheenTitle`'s literal initial `phase` beside its value source. The gate accepts those two `Panel.qml` forms; the `SheenTitle` line has a scoped `qmllint disable`. Both Qt versions: no warnings outside `Panel.qml` |
+| Qt 6.8 qmllint (folded into `dd5b9d9`) | `dd5b9d9` | Qt 6.8.3 reports `Panel.qml`'s unresolved `qs.Ui` members as `missing-property` and a `Panel -> Panel` import cycle, and flags `SheenTitle`'s literal initial `phase` beside its value source. The gate accepts those two `Panel.qml` forms; the `SheenTitle` line has a scoped `qmllint disable`. Both Qt versions: no warnings outside `Panel.qml` |
 
 Lane A regression checks: with the new `tst_store` and the A2 store, `test_08` and `test_09` fail; two mutations of `nextDeadlineMs` (2 ms late, and dropping the turn-freshness candidate) each fail both deadline tests. The 1 ms brute-force scan checked 85,010 start instants within 2 s of each oracle threshold and found 39 structural changes, none after its deadline.
 
@@ -171,9 +171,9 @@ With production formatting, the pixel differences from the archived images lie o
 
 The final tree renders this set on Qt 6.11.2 and on Qt 6.8.3. `tst_components` keeps its original `inputTokens: 10000`; `capture()` now waits for rendering before grabbing, and the unchanged baseline still reproduces the archived set with that change.
 
-## After measurement (`41c80a4` tree)
+## After measurement (`926fdfb` tree)
 
-Same command, same fixtures, three 30 s windows. The harness ran on a head whose tree is identical to `41c80a4` (later commits change only this directory). The release binary rebuilt at the final head has SHA-256 `74f50d695c89e4cc01198c77df9d31ab9b1230e8e5948a6a73dceb569d76931d`, identical to baseline, and `git diff origin/main -- omarchy/anton-runtime` is empty. Runtime figures therefore measure the same executable. Because CPU and projection timings moved between sessions, the unchanged `a7ff5c0` source was measured again in the after session with the same binary ("baseline, same session").
+Same command, same fixtures, three 30 s windows. The harness ran on a head whose tree is identical to `926fdfb` (later commits change only this directory). The release binary rebuilt at the final head has SHA-256 `74f50d695c89e4cc01198c77df9d31ab9b1230e8e5948a6a73dceb569d76931d`, identical to baseline, and `git diff origin/main -- omarchy/anton-runtime` is empty. Runtime figures therefore measure the same executable. Because CPU and projection timings moved between sessions, the unchanged `a7ff5c0` source was measured again in the after session with the same binary ("baseline, same session").
 
 | Metric | Baseline (recorded) | Baseline, same session | After | Note |
 | --- | --- | --- | --- | --- |
@@ -218,7 +218,7 @@ Architecture metrics:
 
 Scope: controlled synthetic fixtures on one workstation, not a live fleet. The QML engine, rendering, GPU, remote hosts and live Omarchy integration are not measured; projection cost is measured in Node. The live install is performed by the parent after review.
 
-### Final gates (source tree of `41c80a4`)
+### Final gates (source tree of `926fdfb`)
 
 - `cargo fmt --check`: pass. `cargo clippy --locked --all-targets -- -D warnings`: pass.
 - `cargo test --locked`, six runs on this branch: every non-lib target passed every time (bin 8, `native_navigation` 6, `native_process` 26). The lib suite (65) passed in three runs and failed one test in each of the other three, a different test in two of them (`native::…checkpoint_startup_reconciles_expired_and_removed_hosts_without_empty_creation` twice, `allowances::…malformed_or_oversized_values_stay_unknown_and_private_fields_never_pass` once). This is the pre-existing baseline flakiness; no Rust source changed, and it is not fixed here.
@@ -230,21 +230,50 @@ Scope: controlled synthetic fixtures on one workstation, not a live fleet. The Q
 
 ### Per-commit check
 
-Every source commit from `a3e7822` to `41c80a4` was exported and run through the JS suites, `run-qml.sh` on Qt 6.11.2 and Qt 6.8.3, and, where present, `run-qmllint.sh` on both Qt versions. All passed on every commit (JS 76 to 87, QML 44 to 92, 0 failures, lint exit 0). Screenshot hashes matched the archived set for commits that still have `FixtureUi.qml` and the corrected set from `b152fa3` onward, except in three of the fifteen runs (see below); rerunning each of those commits three times matched 7/7 every time.
+Every source commit from `a3e7822` to `926fdfb` was exported and run through the JS suites, `run-qml.sh` on Qt 6.11.2 and Qt 6.8.3, and, where present, `run-qmllint.sh` on both Qt versions. All passed on every commit (JS 76 to 87, QML 44 to 92, 0 failures, lint exit 0). Screenshot hashes matched the archived set for commits that still have `FixtureUi.qml` and the corrected set from `b152fa3` onward, except in three of the fifteen runs (see below); rerunning each of those commits three times matched 7/7 every time.
 
 ### Screenshot stability
 
 On the final tree, 1 of 8 consecutive runs produced four mismatching screenshots (dark, light, many-short, discovery-unavailable). In each, 41 or 82 pixels differ, all at x 64 to 69: the `%` glyph of a context dial is rasterised slightly differently. The same tree renders the reference set in the other runs, so this is rendering nondeterminism in the test process, not a change to the popover. Six runs of the unchanged baseline tree (44 tests) all matched. The likely cause is glyph-cache history, which lane B also observed; it is not fixed here. CI does not compare hashes.
 
+## Review round 1
+
+Findings from the first independent review, all accepted.
+
+**qmllint gate accepted every `missing-property` in `Panel.qml`.** Confirmed: with `popoverTheme.reload()` changed to `relaod()` (both calls) and `barState` to `barStat` in `Panel.qml`, the old gate exited 0. `tests/run-qmllint.sh` now accepts a `Panel.qml` `missing-property` warning only as `Cannot assign to non-existent default property` (a child of an unresolved `qs.Ui` parent) or `Could not find property "<name>"` for the properties Panel writes on `Panel`, `BarIconButton`, `KeyboardPanel`, `PanelKeyCatcher` and their `anchors` group. Negative checks on a scratch copy of the tracked tree:
+
+| Injected into `Panel.qml` | Qt 6.11.2 | Qt 6.8.3 |
+| --- | --- | --- |
+| `relaod()` twice, `barStat` | exit 1: `Member "relaod" not found on type "AntonTheme"` (lines 26, 88), `Member "barStat" not found on type "AntonController"` | exit 1: line 88 `relaod`, `barStat` |
+| `printErors: false` on `FileView` | exit 1: `Could not find property "printErors"` | exit 1: same |
+| none (current tree) | exit 0 | exit 0, 24 accepted `missing-property` |
+
+Qt 6.8.3 does not report members used inside `onOpenedChanged` (a handler of the unresolved base), so the line 26 typo is caught only by Qt 6.11. Typos on `Color`, `Style`, `SnapshotStore` and `State` members are likewise reported as `Member ... not found` on Qt 6.11 and fail; misspelt ids were already caught by the `unqualified` rule.
+
+**Unused `AntonController.now` and `State.threadIndex`.** Confirmed by grep: no reader of `controller.now`, and `threadIndex` was called only by its node test. Both are removed with the Panel binding and the test, and D7 and D9 now describe the implementation (cards take `now` directly; delegates resolve through PopupContent's per-group `entries` and `accounts` tables).
+
+**Collector exit not covered.** Added `tst_store` test_10: a snapshot, then `running = false` and `exited(1, 0)`; `raw` is null, the view is disconnected, `lastReceipt` is unchanged, the retry restarts the collector within 7 s without writing to stdin, and the next line reconnects. The node `storeStep` test gains the matching `update` after `raw = null` (view empty, `deadline` null, `lastReceipt` unchanged).
+
+The fixups were folded with an autosquash rebase, which rewrote `a5a69f1`, `92a2631`, `74d02c5` and `41c80a4` as `dd5b9d9`, `8cd3cd8`, `af28b74` and `926fdfb`; this file now cites the new hashes. Those commits change only `tests/run-qmllint.sh` and the README relative to the originals, so earlier results for their source trees still apply. The tightened lint gate exits 0 on every commit from `dd5b9d9` to this round's head on Qt 6.11.2 and Qt 6.8.3.
+
+Gates on this round's head:
+
+- `cargo fmt --check` and `cargo clippy --locked --all-targets -- -D warnings`: pass. `cargo test --locked`, three runs: two passed every target; one failed only the known flaky lib test `checkpoint_startup_reconciles_expired_and_removed_hosts_without_empty_creation` (see "Final gates"). No Rust source changed.
+- `node --test tests/test_pi_hooks.mjs tests/test_omarchy_state.cjs tests/test_native_distribution.mjs`: 87 passed.
+- `bash tests/run-qml.sh`: 93 passed, 0 failed, on Qt 6.11.2 and Qt 6.8.3 (aqtinstall download). Corrected hashes 7/7 on Qt 6.11.2 and on two of three Qt 6.8.3 runs; the first Qt 6.8.3 run showed the four-image `%` glyph instability described under "Screenshot stability".
+- `bash tests/run-qmllint.sh`: exit 0 on Qt 6.11.2 and Qt 6.8.3.
+- Harness `--skip-runtime`: every metric as in "After measurement" (view replacements 1, clock-only changes 2, `required property var ui` 0) except line counts, which follow the removals: `Panel.qml` 183, `State.js` 731, total QML 2312. The runtime is unchanged, so runtime metrics were not re-measured.
+
 ## Traceability
 
 | Requirement / scenario | Implementation | Verification | Commit |
 | --- | --- | --- | --- |
-| Clock-separated view updates | `State.project` (structural), readings, `nextDeadlineMs`, `storeStep`; `SnapshotStore` steps every path through `storeStep`; components read `State.*Reading(entry, now)` | node oracle equivalence (112 projections), signature constancy, deadline brute force; harness `view_replacements` 1, clock-only 2 | `aadd09b`, `ccece10`, `d8f7edc`, `74d02c5`, `41c80a4` |
-| Scenario: open popover with an unchanged snapshot | `storeStep` replaces only on signature change; `now` ticks while open | `tst_store` test_08 (same view over three ticks, `now` advances); `tst_popup` test_16 (stopwatch 12m 34s to 12m 39s, same view) | `41c80a4`, `d8f7edc` |
-| Scenario: host stops reporting while closed | timer steps whether open or closed; host `sampled_at + maxAge` deadline | `tst_store` test_09 (60 s heartbeat, maxAge 25 s, stops within 1.5 s) | `41c80a4` |
-| Scenario: threshold instants | readings and structural flags reproduce baseline | `readView of every oracle projection…`, readings at every oracle instant, pinned `settled` and reset cases; `tst_popup` test_17, test_18 | `aadd09b`, `74d02c5` |
-| Scenario: silent collector | `storeStep` tick drops raw after `receiptTimeoutMs` | `tst_store` test_05; node `storeStep` timeout case | `41c80a4` |
+| Clock-separated view updates | `State.project` (structural), readings, `nextDeadlineMs`, `storeStep`; `SnapshotStore` steps every path through `storeStep`; components read `State.*Reading(entry, now)` | node oracle equivalence (112 projections), signature constancy, deadline brute force; harness `view_replacements` 1, clock-only 2 | `aadd09b`, `ccece10`, `d8f7edc`, `af28b74`, `926fdfb` |
+| Scenario: open popover with an unchanged snapshot | `storeStep` replaces only on signature change; `now` ticks while open | `tst_store` test_08 (same view over three ticks, `now` advances); `tst_popup` test_16 (stopwatch 12m 34s to 12m 39s, same view) | `926fdfb`, `d8f7edc` |
+| Scenario: host stops reporting while closed | timer steps whether open or closed; host `sampled_at + maxAge` deadline | `tst_store` test_09 (60 s heartbeat, maxAge 25 s, stops within 1.5 s) | `926fdfb` |
+| Scenario: threshold instants | readings and structural flags reproduce baseline | `readView of every oracle projection…`, readings at every oracle instant, pinned `settled` and reset cases; `tst_popup` test_17, test_18 | `aadd09b`, `af28b74` |
+| Scenario: silent collector | `storeStep` tick drops raw after `receiptTimeoutMs` | `tst_store` test_05; node `storeStep` timeout case | `926fdfb` |
+| Collector exit and restart (owner EOF) | exit handler nulls `raw` and steps an `update`; retry after 5 s | `tst_store` test_10; node `storeStep` update after `raw = null` | review round 1 |
 | Stable delegate identity | `AntonKeyedModel` over `State.keyedEdits`; four keyed Repeater levels | node `keyed edits…` (2000 random cases); `tst_keyed` test_01, test_02; `tst_popup` test_14, test_15b | `a3e7822`, `95845c1` |
 | Scenario: earlier thread disappears during a highlight | keyed thread rows | `tst_popup` test_13 | `95845c1` |
 | Scenario: row reappears after filtering | entrance gated as before on keyed delegates | `tst_popup` test_15 (hydration, filter, machine and section collapse, reconnect, sort leave entrance at 1) | `95845c1` |

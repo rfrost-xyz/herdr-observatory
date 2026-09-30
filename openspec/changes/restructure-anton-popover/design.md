@@ -84,7 +84,6 @@ Each helper is exported through `module.exports` and reachable from QML as `Stat
   - Both inputs are arrays of unique strings.
 - `groupThreads(view, hidden, collapsed)`: gains `keys`, the thread keys of `indices` in the same order, alongside the existing fields.
 - `providerGroups(allowances)`: gains `keys`, the account keys in order, alongside the existing fields.
-- `threadIndex(threads)`: an object mapping each thread key to its thread.
 
 ### D3. Time separation and view shape (lane A)
 
@@ -197,7 +196,7 @@ All colour properties are plain `property color` with default bindings, so tests
 
 A `QtObject`. Inputs:
 
-- `view` (the structural view), `preferences` (AntonPreferences) and `now`;
+- `view` (the structural view) and `preferences` (AntonPreferences). It has no `now` input: no controller action depends on the display instant, and the cards take `now` directly;
 - `opened` and `motionEnabled` (bool);
 - `runtimePath` (string, from `Qt.resolvedUrl("anton-runtime")` with `file://` stripped).
 
@@ -251,7 +250,7 @@ Readings are computed inside the cards from `entry` and `now`: `State.usageReadi
 - provider groups, keyed by provider id;
 - the accounts of each provider, from `provider.keys`.
 
-Delegates declare `required property string key` and resolve their data through `threadIndex` or a provider or account lookup.
+Delegates declare `required property string key` and resolve their data through a per-group table that PopupContent rebuilds in the same sync: `entries` maps each thread key (with any occurrence suffix) to its view thread, and `accounts` maps each account key to its account.
 
 Sync runs synchronously in the handler that reacts to a view or preference change, before the controller's `Qt.callLater` emission. A newly created delegate therefore exists when `newThreads` fires, and an existing delegate keeps its running animation.
 
@@ -313,7 +312,7 @@ The seven `capture()` calls, their names and their scenes are unchanged.
 
 `run-qml.sh` may set `QML_XHR_ALLOW_FILE_READ` and `QML_XHR_ALLOW_FILE_WRITE` for file copies. `FixtureUi.qml` is deleted. `tst_metrics.qml` keeps its scene (two machines, three threads, two accounts) and its counting rule.
 
-**qmllint.** `tests/run-qmllint.sh` runs Qt 6 qmllint with `-I tests/qml/anton` over every plugin QML file, fails on any warning in files other than `Panel.qml`, and prints the `Panel.qml` warnings. `Panel.qml` may keep only `qs.Ui` import and unresolved-type warnings, because the repository has no `qs.Ui` stub. CI runs the script in the `qml` job. Evidence also records a local run with a scratch `qs` symlink to the Omarchy shell, which covers `Panel.qml`.
+**qmllint.** `tests/run-qmllint.sh` runs Qt 6 qmllint with `-I tests/qml/anton` over every plugin QML file, fails on any warning in files other than `Panel.qml`, and prints the `Panel.qml` warnings. `Panel.qml` may keep only warnings caused by the missing `qs.Ui` stub: the `qs.Ui` import and its types, the unresolved base, `unqualified` on `anchors.fill: parent`, and (Qt 6.8) `missing-property` only as `Cannot assign to non-existent default property` or `Could not find property` for a fixed list of properties Panel writes on the `qs.Ui` types. Any other `missing-property`, such as `Member "relaod" not found on type "AntonTheme"`, fails, because lint is `Panel.qml`'s only automated check. CI runs the script in the `qml` job. Evidence also records a local run with a scratch `qs` symlink to the Omarchy shell, which covers `Panel.qml`.
 
 The stubs change: `qs.Commons` `Color` gains `currentThemePath`, `foreground`, `urgent` and `popups`, and `Quickshell.Io` gains `FileView` and `StdioCollector`. The stubs only grow, but the harness qmllint delta between baseline and after is not strictly like-for-like; evidence says so.
 
