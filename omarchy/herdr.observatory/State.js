@@ -1,4 +1,47 @@
 // Pure presentation projection. Observatory owns collection and disclosure.
+//
+// Time is always passed in as nowMs (epoch milliseconds); nothing here reads
+// the clock. Three layers:
+//
+// 1. Structural view: project(raw, nowMs). It holds only values that change at
+//    a receipt or at a source-time threshold, never relative-time labels:
+//      view       {connected, working, partial, threads, discoveryLabel, hosts, allowances, note}
+//      host       {connectionState, connectionLabel, id, name, navigation, reporting}
+//      thread     {id, hostId, project, navigation, title, host, branch, checkout,
+//                  generation, statusGeneration, state, harness, usage, children, completion, timing}
+//      usage      {contextPercent, inputTokens, outputTokens, uncachedTokens, cachePercent, compactions, stale, at}
+//      children   null | {starts, stops, stamp, stale, at}
+//      completion null | {total, done, stamp, stale, at, outcomes}
+//      timing     null | {active, stale, complete, outcome, observedAt, startedAt, last, finishedTotal, settled}
+//      allowance  {id, provider, providerLabel, label, statusText, remaining, resetCount, resetAt, durationS, sampledAt}
+//    `at` is the source stamp in ms and `stamp` the source stamp in µs;
+//    observedAt, startedAt, resetAt and sampledAt are in seconds. `settled` is
+//    true only when the source says the turn is explicitly inactive (active
+//    null means unknown). resetAt and durationS are set whenever the pacing
+//    window has a future reset; sampledAt only while a balance is current.
+//    Stale and reporting flags are decided here, with unchanged thresholds:
+//    host sample age < interval + 20 s, telemetry stamps stale after 120 s,
+//    turn freshness (default 12 s, one second of clock skew accepted), and
+//    allowance samples current for 600 s (one second of skew accepted).
+//
+// 2. Readings: usageReading, childrenReading, completionReading, turnReading,
+//    allowanceReading(value, nowMs) return the baseline presentation shapes
+//    (age labels, active elapsed, totals, expected balance, pace, reset
+//    countdown) at the display instant. readView(view, nowMs) assembles the
+//    whole presentation view without host and thread ages; diagnostics(view,
+//    nowMs) is the IPC JSON. Stale flags always come from the structural view.
+//
+// 3. Store: storeStep(store, event, nowMs) is the SnapshotStore logic on a
+//    plain {raw, lastReceipt, view, signature, deadline} object. A receipt
+//    ({type: "receipt", raw}, raw null when malformed, which keeps
+//    lastReceipt) or an update ({type: "update"}, the caller set raw)
+//    re-projects; a tick ({type: "tick"}) drops raw after receiptTimeoutMs(raw)
+//    without a receipt, else re-projects only once nowMs reaches the deadline.
+//    A re-projection keeps surviving rows in place (stableThreads), recomputes
+//    the deadline (nextDeadlineMs: the earliest ms at which the structure can
+//    change, possibly early, never late) and replaces view and signature
+//    (viewSignature) only when the signature differs. It returns true on
+//    replacement.
 function number(value) {
   return typeof value === "number" && isFinite(value) ? value : null
 }
@@ -32,7 +75,7 @@ function counter(value) {
 }
 
 function threadUsage(agent, nowMs) {
-  var empty = { contextPercent: null, inputTokens: null, outputTokens: null, uncachedTokens: null, cachePercent: null, compactions: null, age: null, stale: false, at: null }
+  var empty = { contextPercent: null, inputTokens: null, outputTokens: null, uncachedTokens: null, cachePercent: null, compactions: null, stale: false, at: null }
   var t = agent.technical && agent.technical.telemetry
   if (!t || counter(t.seq) === null || t.seq <= 0 || t.seq / 1000 > nowMs) return empty
   var stamp = t.usage_seq === null || t.usage_seq === undefined ? t.seq : t.usage_seq
@@ -48,12 +91,12 @@ function threadUsage(agent, nowMs) {
   var contextPercent = context !== null && window !== null && window > 0 && context <= window
       ? percent(t.context_percent) !== null ? t.context_percent : context / window * 100 : null
   // Measurement freshness: usage older than 120 s is last-known, not current.
-  return { contextPercent: contextPercent, inputTokens: input, outputTokens: output, uncachedTokens: validPartition ? uncached : null, cachePercent: cache, compactions: counter(t.compactions), age: ageLabel(age), stale: age > 120, at: stamp / 1000 }
+  return { contextPercent: contextPercent, inputTokens: input, outputTokens: output, uncachedTokens: validPartition ? uncached : null, cachePercent: cache, compactions: counter(t.compactions), stale: age > 120, at: stamp / 1000 }
 }
 
 // Native turn boundaries measure wall-clock time, including tool waits. No Herdr
 // status duration is used. An old source freezes at its verified observation.
-function turnTiming(agent, nowMs, hostReporting) {
+function turnSource(agent, nowMs, hostReporting) {
   var source = agent.technical && agent.technical.turn_timing
   if (!source || typeof source !== "object") return null
   var observed = number(source.observed_at_s), start = number(source.started_at_s)
@@ -64,23 +107,16 @@ function turnTiming(agent, nowMs, hostReporting) {
   var freshness = number(source.freshness_seconds)
   if (freshness === null) freshness = 12
   if (freshness < 1 || freshness > 180 || age === null) return null
-  var stale = !hostReporting || age > freshness
-  var last = counter(source.last_duration_s), total = counter(source.total_finished_duration_s)
-  var active = source.active === true, elapsed = null
-  if (active && start !== null && start > 0 && start <= observed) {
-    elapsed = Math.max(0, Math.floor((stale ? observed : nowMs / 1000) - start))
-  } else if (source.active === false) {
-    elapsed = last
-  }
+  var total = counter(source.total_finished_duration_s)
   var complete = source.complete === true && total !== null
-  var accumulated = complete ? total + (active && elapsed !== null ? elapsed : 0) : null
-  if (accumulated !== null && accumulated > 9007199254740991) accumulated = null
-  return { active: active, elapsed: elapsed, last: last, total: accumulated,
-           complete: complete, stale: stale, age: ageLabel(age), observedAt: observed,
+  return { active: source.active === true, stale: !hostReporting || age > freshness, complete: complete,
            outcome: ["completed", "aborted"].indexOf(source.last_outcome) >= 0 ? source.last_outcome : null,
-           startedAt: start !== null && start > 0 && start <= observed ? start : null,
-           settled: source.active === false, finishedTotal: complete ? total : null }
+           observedAt: observed, startedAt: start !== null && start > 0 && start <= observed ? start : null,
+           last: counter(source.last_duration_s), finishedTotal: complete ? total : null,
+           settled: source.active === false }
 }
+// The baseline turn presentation at nowMs (see turnReading).
+function turnTiming(agent, nowMs, hostReporting) { return turnReading(turnSource(agent, nowMs, hostReporting), nowMs) }
 
 function durationLabel(seconds) {
   if (counter(seconds) === null) return "—"
@@ -113,7 +149,7 @@ function childCompletion(agent, nowMs) {
   })
   if (!valid || sum !== total) outcomes = null
   // Measurement freshness: child status older than 120 s is last-known.
-  return { total: total, done: done, stamp: stamp, stale: age > 120, age: ageLabel(age), outcomes: outcomes, at: stamp / 1000 }
+  return { total: total, done: done, stamp: stamp, stale: age > 120, at: stamp / 1000, outcomes: outcomes }
 }
 
 function childObservations(agent, nowMs) {
@@ -123,12 +159,12 @@ function childObservations(agent, nowMs) {
   if (starts === null || stops === null || starts > 999 || stops > 999) return null
   var stamp = t.subagent_seq
   if (starts === 0 && stops === 0 && (stamp === null || stamp === undefined))
-    return { starts: 0, stops: 0, stamp: null, stale: false, age: null, at: null }
+    return { starts: 0, stops: 0, stamp: null, stale: false, at: null }
   if (counter(stamp) === null || stamp <= 0 || stamp > t.seq) return null
   var age = ageSeconds(stamp / 1000000, nowMs)
   if (age === null) return null
   // Measurement freshness: child observations older than 120 s are last-known.
-  return { starts: starts, stops: stops, stamp: stamp, stale: age > 120, age: ageLabel(age), at: stamp / 1000 }
+  return { starts: starts, stops: stops, stamp: stamp, stale: age > 120, at: stamp / 1000 }
 }
 
 // Compare stable host/thread identities across sorting, not delegate positions.
@@ -291,19 +327,14 @@ function allowanceView(row, nowMs) {
   if (reset !== null && reset <= nowS) reset = null
   var current = used !== null && reset !== null
   var remaining = current ? 100 - used : null
-  var untilReset = reset !== null ? reset - nowS : null
-  var timeRemaining = untilReset !== null && untilReset <= pacing.duration_s ? untilReset / pacing.duration_s * 100 : null
   var resetCount = fresh && counter(row.reset_count) !== null && row.reset_count <= 10000
     && (row.reset_expires_at === null || row.reset_expires_at === undefined
         || (number(row.reset_expires_at) !== null && row.reset_expires_at > nowS)) ? row.reset_count : null
+  // A reset countdown exists whenever the flagged window has a future reset,
+  // even without a used percentage; the sample time only with a balance.
   return { id: accountId, provider: provider, providerLabel: boundedLabel(row.provider_label, 40) || provider, label: boundedLabel(row.label, 40) || accountId,
-           statusText: statusText(row.status_text),
-           remaining: remaining, timeRemaining: timeRemaining,
-           paceDifference: current && timeRemaining !== null ? remaining - timeRemaining : null,
-           resetCount: resetCount, reset: untilReset !== null ? resetLabel(untilReset) : null,
-           age: current ? ageLabel(age) : "source unavailable",
-           resetAt: untilReset !== null ? reset : null, durationS: untilReset !== null ? pacing.duration_s : null,
-           sampledAt: current ? row.sampled_at : null }
+           statusText: statusText(row.status_text), remaining: remaining, resetCount: resetCount,
+           resetAt: reset, durationS: reset !== null ? pacing.duration_s : null, sampledAt: current ? row.sampled_at : null }
 }
 
 // Saved aliases (keyed provider:id) win, then the legacy preference table
@@ -321,16 +352,20 @@ function accountAlias(account, saved, legacy, pool) {
   return pool[hash % pool.length]
 }
 
+// Measurement freshness, not transport: a host sample stays current for its
+// sampling interval plus 20 s of peer and scheduling slack.
+function hostMaxAge(raw) {
+  var interval = number(raw.interval)
+  return (interval !== null && interval >= 2 && interval <= 60 ? interval : 5) + 20
+}
+
 function project(raw, nowMs) {
   var empty = { connected: false, working: null, partial: false, threads: [], hosts: [],
                 allowances: [], discoveryLabel: "", note: "Observatory unavailable" }
   if (!raw || !Array.isArray(raw.hosts) || !Array.isArray(raw.allowances)) return empty
   var discovery = raw.fleet_discovery && raw.fleet_discovery.state
   if (["available", "unavailable", "discovering"].indexOf(discovery) < 0) discovery = "disabled"
-  var interval = number(raw.interval)
-  // Measurement freshness, not transport: a host sample stays current for its
-  // sampling interval plus 20 s of peer and scheduling slack.
-  var maxAge = (interval !== null && interval >= 2 && interval <= 60 ? interval : 5) + 20
+  var maxAge = hostMaxAge(raw)
   var hosts = [], threads = [], working = 0, missing = 0, reportingCount = 0
   for (var i = 0; i < raw.hosts.length; i++) {
     var host = raw.hosts[i]
@@ -339,7 +374,7 @@ function project(raw, nowMs) {
     var reporting = host.connection_state !== "setup_needed" && host.online === true && age !== null && age < maxAge && Array.isArray(host.agents)
     var connection = host.connection_state === "setup_needed" ? "setup_needed" : host.connection_state === "connecting" ? "connecting" : reporting ? "connected" : "unreachable"
     hosts.push({ connectionState: connection, connectionLabel: connection === "setup_needed" ? "Setup needed" : connection === "connecting" ? "Connecting" : connection === "connected" ? "Connected" : "Unreachable", id: label(host.id, "unknown"), name: label(host.label, label(host.id, "Host")), navigation: host.navigation === undefined ? null : host.navigation,
-                 reporting: reporting, age: reporting ? ageLabel(age) : "source unavailable" })
+                 reporting: reporting })
     if (!reporting) { missing++; continue }
     reportingCount++
     var agents = Array.isArray(host.agents) ? host.agents : []
@@ -352,10 +387,12 @@ function project(raw, nowMs) {
       threads.push({ id: label(agent.id, ""), hostId: label(host.id, "unknown"), project: label(agent.project, "Untitled"),
                      navigation: agent.navigation !== undefined && agent.navigation !== null ? agent.navigation : host.navigation === undefined ? null : host.navigation,
                      title: label(agent.title, "No task title reported"), host: label(host.label, label(host.id, "Host")),
-                     timing: turnTiming(agent, nowMs, reporting), branch: label(agent.branch, ""), checkout: label(agent.checkout, ""), usage: threadUsage(agent, nowMs), children: childObservations(agent, nowMs), completion: childCompletion(agent, nowMs),
+                     branch: label(agent.branch, ""), checkout: label(agent.checkout, ""),
                      generation: counter(agent.technical && agent.technical.session_generation) || 0,
                      statusGeneration: counter(agent.technical && agent.technical.state_change_seq) || 0,
-                     state: state, harness: label(agent.harness, "Unknown"), age: ageLabel(age) })
+                     state: state, harness: label(agent.harness, "Unknown"),
+                     usage: threadUsage(agent, nowMs), children: childObservations(agent, nowMs), completion: childCompletion(agent, nowMs),
+                     timing: turnSource(agent, nowMs, reporting) })
     }
   }
   threads.sort(function(a, b) {
@@ -613,9 +650,87 @@ function diagnostics(view, nowMs) {
   })
 }
 
+// ---------------------------------------------------------------- store
+function viewSignature(view) { return JSON.stringify(view) }
+
+// The earliest integer ms after nowMs at which project(raw, ·) can change, or
+// null. Every source-time threshold contributes the ms either side of it, so
+// the deadline may be early (one no-op projection) but is never late.
+function nextDeadlineMs(raw, nowMs) {
+  if (!raw || !Array.isArray(raw.hosts) || !Array.isArray(raw.allowances)) return null
+  var best = null
+  var near = function(ms) {
+    if (typeof ms !== "number" || !isFinite(ms)) return
+    var base = Math.floor(ms)
+    for (var at = base - 1; at <= base + 1; at++) if (at > nowMs && (best === null || at < best)) best = at
+  }
+  var seconds = function(value, offset) { var s = number(value); if (s !== null) near((s + offset) * 1000) }
+  var micros = function(value, offsetMs) { var us = number(value); if (us !== null) near(us / 1000 + offsetMs) }
+  var maxAge = hostMaxAge(raw)
+  raw.hosts.forEach(function(host) {
+    if (!host || typeof host !== "object") return
+    seconds(host.sampled_at, 0)
+    seconds(host.sampled_at, maxAge)
+    ;(Array.isArray(host.agents) ? host.agents : []).forEach(function(agent) {
+      var technical = agent && typeof agent === "object" && agent.technical
+      if (!technical || typeof technical !== "object") return
+      var t = technical.telemetry
+      if (t && typeof t === "object") {
+        micros(t.seq, 0)
+        ;[t.seq, t.usage_seq, t.subagent_status_seq, t.subagent_seq].forEach(function(stamp) { micros(stamp, 0); micros(stamp, 120000) })
+      }
+      var turn = technical.turn_timing
+      if (turn && typeof turn === "object") {
+        var freshness = number(turn.freshness_seconds)
+        seconds(turn.observed_at_s, -1)
+        seconds(turn.observed_at_s, freshness === null ? 12 : freshness)
+      }
+    })
+  })
+  raw.allowances.forEach(function(row) {
+    if (!row || typeof row !== "object") return
+    seconds(row.sampled_at, -1)
+    seconds(row.sampled_at, 600)
+    seconds(row.reset_expires_at, 0)
+    ;(Array.isArray(row.windows) ? row.windows : []).forEach(function(window) { if (window && typeof window === "object") seconds(window.resets_at, 0) })
+  })
+  return best
+}
+
+function storeUpdate(store, nowMs) {
+  var next = project(store.raw, nowMs)
+  next.threads = stableThreads(store.view && Array.isArray(store.view.threads) ? store.view.threads : [], next.threads)
+  store.deadline = nextDeadlineMs(store.raw, nowMs)
+  var signature = viewSignature(next)
+  if (signature === store.signature) return false
+  store.signature = signature
+  store.view = next
+  return true
+}
+// SnapshotStore logic on a plain {raw, lastReceipt, view, signature, deadline}
+// object. Events: {type: "receipt", raw} (raw null for a malformed or oversized
+// line, which leaves lastReceipt), {type: "update"} (the caller set raw), and
+// {type: "tick"} (receipt timeout, then any structural deadline). Returns true
+// when the view was replaced.
+function storeStep(store, event, nowMs) {
+  if (event.type === "receipt") {
+    store.raw = event.raw
+    if (event.raw !== null) store.lastReceipt = nowMs
+    return storeUpdate(store, nowMs)
+  }
+  if (event.type === "update") return storeUpdate(store, nowMs)
+  if (store.raw !== null && nowMs - store.lastReceipt > receiptTimeoutMs(store.raw)) {
+    store.raw = null
+    return storeUpdate(store, nowMs)
+  }
+  if (store.deadline !== null && store.deadline !== undefined && nowMs >= store.deadline) return storeUpdate(store, nowMs)
+  return false
+}
+
 if (typeof module !== "undefined") module.exports = { accountAlias: accountAlias, navigationArgs: navigationArgs, turnTiming: turnTiming, durationLabel: durationLabel, timingHint: timingHint, allowancePaceReading: allowancePaceReading, allowancePaceBand: allowancePaceBand, threadKey: threadKey, completionEpisode: completionEpisode, stableThreads: stableThreads, arrivals: arrivals, providerGroups: providerGroups, childHint: childHint, groupThreads: groupThreads, transitions: transitions, dominantState: dominantState, project: project, ageSeconds: ageSeconds, ageLabel: ageLabel, receiptTimeoutMs: receiptTimeoutMs, focusKeys: focusKeys, reconcileFocus: reconcileFocus, moveFocus: moveFocus, activationKey: activationKey, threadForKey: threadForKey,
   tokens: tokens, percentReading: percentReading, paceText: paceText, parseList: parseList, parseObject: parseObject, stateColourName: stateColourName, accountKey: accountKey,
   toggleListValue: toggleListValue, boundAcknowledgements: boundAcknowledgements, reconcileAcknowledgements: reconcileAcknowledgements, acknowledgeNavigation: acknowledgeNavigation, assignAliases: assignAliases,
   keyedEdits: keyedEdits, threadIndex: threadIndex,
   usageReading: usageReading, childrenReading: childrenReading, completionReading: completionReading, turnReading: turnReading,
-  allowanceReading: allowanceReading, readView: readView, diagnostics: diagnostics }
+  allowanceReading: allowanceReading, readView: readView, diagnostics: diagnostics,
+  viewSignature: viewSignature, nextDeadlineMs: nextDeadlineMs, storeStep: storeStep }
