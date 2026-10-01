@@ -11,8 +11,8 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
-use std::fs::File;
-use std::io::BufReader;
+use std::fs::{File, Metadata};
+use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -758,6 +758,115 @@ impl Row {
             "compactions": compactions,
         })
     }
+    /// Whether a checkpointed row may resume this file: same dev/inode, header
+    /// and tail hashes, an offset within the file, and every bound revalidated.
+    fn resumable(
+        &self,
+        stream: &mut BufReader<File>,
+        head: &[u8],
+        info: &Metadata,
+        time: f64,
+    ) -> bool {
+        let mtime = mtime_us(info);
+        let matches = self.file == [info.dev(), info.ino()]
+            && head.len() as u64 <= self.offset
+            && self.offset <= info.len()
+            && self.turns.validate()
+            && self.claude.validate(time)
+            && self.fingerprint.as_ref().is_some_and(|f| {
+                f.header == common::sha256(head)
+                    && self.offset <= f.size
+                    && f.size <= info.len()
+                    && (f.size != info.len() || f.mtime_us == mtime)
+            });
+        matches
+            && tail(stream, self.offset)
+                .is_ok_and(|hash| self.fingerprint.as_ref().is_some_and(|f| f.tail == hash))
+    }
+}
+
+const TAIL: usize = 524288;
+
+fn mtime_us(info: &Metadata) -> u64 {
+    (info.mtime().max(0) as u64) * 1_000_000 + (info.mtime_nsec().max(0) as u64) / 1000
+}
+/// sha256 of the up to 1 KiB that end at `offset`.
+fn tail(stream: &mut BufReader<File>, offset: u64) -> Result<String> {
+    stream
+        .seek(SeekFrom::Start(offset.saturating_sub(1024)))
+        .map_err(|_| "Claude session seek failed")?;
+    let mut bytes = vec![0; offset.min(1024) as usize];
+    stream
+        .read_exact(&mut bytes)
+        .map_err(|_| "Claude session read failed")?;
+    Ok(common::sha256(&bytes))
+}
+fn position(stream: &mut BufReader<File>) -> Result<u64> {
+    Ok(stream
+        .stream_position()
+        .map_err(|_| "Claude session seek failed")?)
+}
+
+/// One bounded replay pass over a bound session file. It resumes `previous`
+/// only when the file is provably the same and has only grown; otherwise it
+/// starts after the header. A pass reads at most `TAIL` bytes and stops at
+/// `deadline`; a partial last line waits for the next pass.
+pub fn replay(
+    root: &Path,
+    path: &Path,
+    id: &str,
+    previous: Option<Row>,
+    time: f64,
+    deadline: Instant,
+) -> Result<Row> {
+    let (mut stream, head) = open_session(root, path, id)?;
+    let info = stream
+        .get_ref()
+        .metadata()
+        .map_err(|_| "Claude session stat failed")?;
+    let mut row = match previous {
+        Some(row) if row.resumable(&mut stream, &head, &info, time) => row,
+        _ => Row::new([info.dev(), info.ino()], head.len() as u64, time),
+    };
+    stream
+        .seek(SeekFrom::Start(row.offset))
+        .map_err(|_| "Claude session seek failed")?;
+    let end = info.len().min(row.offset + TAIL as u64);
+    while position(&mut stream)? < end && Instant::now() < deadline {
+        let offset = position(&mut stream)?;
+        let bytes = line(&mut stream, (LINE + 1).min((end - offset) as usize))
+            .map_err(|_| "Claude session read failed")?;
+        let terminated = bytes.last() == Some(&b'\n');
+        if row.skipping || bytes.len() > LINE {
+            // Oversized records fail closed until the classifier handles them.
+            if !row.skipping {
+                row.invalid();
+            }
+            row.offset = position(&mut stream)?;
+            row.skipping = !terminated;
+            continue;
+        }
+        if !terminated {
+            break;
+        }
+        row.offset = position(&mut stream)?;
+        match serde_json::from_slice::<Value>(&bytes)
+            .ok()
+            .and_then(|value| Record::from_value(&value, id, time))
+        {
+            Some(record) => row.apply(&record),
+            None => row.invalid(),
+        }
+    }
+    row.caught_up = row.offset == info.len() && !row.skipping;
+    row.at = time;
+    row.fingerprint = Some(Fingerprint {
+        size: info.len(),
+        mtime_us: mtime_us(&info),
+        header: common::sha256(&head),
+        tail: tail(&mut stream, row.offset)?,
+    });
+    Ok(row)
 }
 
 #[cfg(test)]
@@ -765,12 +874,12 @@ mod tests {
     use super::*;
     use crate::common::now;
     use std::time::Duration;
-    struct Fixture {
+    pub(super) struct Fixture {
         root: PathBuf,
-        projects: PathBuf,
+        pub(super) projects: PathBuf,
     }
     impl Fixture {
-        fn new() -> Self {
+        pub(super) fn new() -> Self {
             static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             let root = std::env::temp_dir().join(format!(
                 "anton-claude-{}-{}-{}",
@@ -782,7 +891,7 @@ mod tests {
             std::fs::create_dir_all(&projects).unwrap();
             Self { root, projects }
         }
-        fn file(&self, entry: &str, name: &str, text: &str) -> PathBuf {
+        pub(super) fn file(&self, entry: &str, name: &str, text: &str) -> PathBuf {
             let directory = self.projects.join(entry);
             std::fs::create_dir_all(&directory).unwrap();
             let path = directory.join(name);
@@ -1069,6 +1178,7 @@ mod tests {
 mod replay_tests {
     use super::*;
     use crate::common::now;
+    use std::time::Duration;
     const ID: &str = "fixture-session-a";
     const BASE: u64 = 1_767_225_600;
 
@@ -1507,5 +1617,116 @@ mod replay_tests {
                 .values()
                 .all(Value::is_null)
         );
+    }
+
+    fn header() -> String {
+        format!("{{\"type\":\"mode\",\"mode\":\"normal\",\"sessionId\":\"{ID}\"}}\n")
+    }
+    fn padded_user(second: u64, pad: usize) -> String {
+        user(second).replace("synthetic", &"x".repeat(pad))
+    }
+    /// Replays to completion with the block round-tripped through serde between
+    /// passes, as a checkpoint would; returns the row and the pass count.
+    fn passes(fixture: &tests::Fixture, path: &Path, mut row: Option<Row>) -> (Row, usize) {
+        for count in 1..64 {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut next = replay(&fixture.projects, path, ID, row, now(), deadline).unwrap();
+            next.claude =
+                serde_json::from_value(serde_json::to_value(&next.claude).unwrap()).unwrap();
+            if next.caught_up {
+                return (next, count);
+            }
+            row = Some(next);
+        }
+        panic!("replay never caught up");
+    }
+    fn body(lines: &[String]) -> String {
+        lines.iter().map(|line| format!("{line}\n")).collect()
+    }
+    #[test]
+    fn replay_resumes_byte_cursor_across_tail_bounded_passes() {
+        let fixture = tests::Fixture::new();
+        let mut lines = Vec::new();
+        for index in 0..700 {
+            lines.push(padded_user(index * 3, 1000));
+            lines.push(assistant(
+                &format!("msg_{index}"),
+                index * 3 + 1,
+                "null",
+                [1, 2, 3, 4],
+            ));
+            lines.push(assistant(
+                &format!("msg_{index}"),
+                index * 3 + 2,
+                "\"end_turn\"",
+                [1, 2, 3, 4],
+            ));
+        }
+        let text = header() + &body(&lines);
+        assert!(text.len() > 2 * TAIL);
+        let path = fixture.file("slug", &format!("{ID}.jsonl"), &text);
+        let (row, count) = passes(&fixture, &path, None);
+        assert!(count >= 3, "{count}");
+        assert_eq!(row.offset, text.len() as u64);
+        assert_eq!(row.usage(), run(&lines).usage());
+        assert_eq!(get(&row, "total_input"), json!(700 * 8));
+        // Growth resumes from the checkpoint without recounting.
+        let more = assistant("msg_z", 9000, "\"end_turn\"", [5, 5, 5, 5]);
+        std::fs::write(&path, text.clone() + &more + "\n").unwrap();
+        let (grown, count) = passes(&fixture, &path, Some(row));
+        assert_eq!(count, 1);
+        assert_eq!(get(&grown, "total_input"), json!(700 * 8 + 15));
+    }
+    #[test]
+    fn replay_waits_for_partial_lines_and_restarts_on_replacement() {
+        let fixture = tests::Fixture::new();
+        let first = assistant("msg_a", 1, "\"end_turn\"", [1, 2, 3, 4]);
+        let partial = assistant("msg_b", 2, "\"end_turn\"", [10, 0, 0, 0]);
+        let text = header() + &first + "\n" + &partial;
+        let path = fixture.file("slug", &format!("{ID}.jsonl"), &text);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let row = replay(&fixture.projects, &path, ID, None, now(), deadline).unwrap();
+        assert!(!row.caught_up && row.valid);
+        assert_eq!(row.offset, (header().len() + first.len() + 1) as u64);
+        assert_eq!(get(&row, "total_input"), json!(8));
+        std::fs::write(&path, text.clone() + "\n").unwrap();
+        let (row, _) = passes(&fixture, &path, Some(row));
+        assert_eq!(get(&row, "total_input"), json!(18));
+        // A same-size rewrite with different content is a replacement.
+        let rewritten = text
+            .replace("msg_a", "msg_q")
+            .replace(&counters([1, 2, 3, 4]), &counters([2, 2, 3, 4]))
+            + "\n";
+        assert_eq!(rewritten.len(), text.len() + 1);
+        std::fs::write(&path, &rewritten).unwrap();
+        let (row, _) = passes(&fixture, &path, Some(row));
+        assert_eq!(get(&row, "total_input"), json!(19));
+        // A tampered block is never resumed.
+        let mut tampered = row.clone();
+        tampered.claude.closed = vec!["not-a-hash".to_owned()];
+        let (row, _) = passes(&fixture, &path, Some(tampered));
+        assert_eq!(get(&row, "total_input"), json!(19));
+        // A header naming another session fails before any replay.
+        std::fs::write(
+            &path,
+            header().replace(ID, "fixture-session-b") + &first + "\n",
+        )
+        .unwrap();
+        assert!(replay(&fixture.projects, &path, ID, Some(row), now(), deadline).is_err());
+    }
+    #[test]
+    fn replay_deadline_and_oversized_lines_fail_closed() {
+        let fixture = tests::Fixture::new();
+        let first = assistant("msg_a", 1, "\"end_turn\"", [1, 2, 3, 4]);
+        let path = fixture.file("slug", &format!("{ID}.jsonl"), &(header() + &first + "\n"));
+        let row = replay(&fixture.projects, &path, ID, None, now(), Instant::now()).unwrap();
+        assert!(!row.caught_up);
+        assert_eq!(row.offset, header().len() as u64);
+        assert_eq!(get(&row, "usage_seq"), Value::Null);
+        let big = padded_user(2, LINE + 10);
+        std::fs::write(&path, header() + &first + "\n" + &big + "\n").unwrap();
+        let (row, _) = passes(&fixture, &path, Some(row));
+        assert!(!row.valid && !row.skipping);
+        assert_eq!(get(&row, "total_input"), Value::Null);
     }
 }
