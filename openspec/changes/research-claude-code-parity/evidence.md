@@ -112,6 +112,15 @@ Round 7, on `07966f9`, found 3 blocking and 8 other findings, all addressed:
 - D10: the Claude pid is passed by the wrapper, and stdin is captured with a sentinel;
 - D11: a pattern rule for credential variables and `apiKeyHelper`, the `~/.claude.json` credential caveat with allowlisted extraction, source normalisation, and the row sample time.
 
+Round 8, on `4ea41ee`, found 3 blocking and 5 other findings, all addressed:
+
+- D1: the predecessor scan is bounded by bytes, with three outcomes. The 16-record window never reached `session_id` in 4 of 4 successors;
+- D3: explicit retention drop triggers, a peer all-null sample on binding failure, and the no-cursor case;
+- D11: stamping only on changed window values, because rewinds change `current_usage`;
+- D4: replay omits `window` rather than writing nulls;
+- D10: a POSIX sh wrapper, a mandatory new session, the shell-prefix and managed-policy limits, and the render triggers;
+- D11: deltas for reporter account reads and inferred account authority.
+
 ## User decisions (2026-10-01)
 
 - `~/.claude.json` is accepted as provider-owned state, not an authentication file, for Claude identity and usage data.

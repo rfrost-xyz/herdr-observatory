@@ -176,7 +176,12 @@ Anton fields are `technical.telemetry.*` and `technical.turn_timing.*` (`model.r
 **Lookup.**
 - Look for `<root>/<entry>/<id>.jsonl` at depth exactly two, within the Codex discovery entry and time budgets.
 - Require exactly one match. Zero or several matches leave telemetry unknown, and so does a scan truncated by the entry or time budget (`native.rs:651-670`).
-- **Predecessor after `/clear`.** If Herdr reports an id whose file has ended because a successor exists, the binding would show a stale session. Change 2 first settles from the binary which id SessionStart(clear) delivers. Until that is proven, the fallback is fail-closed. Within the discovery budget, files in the same directory that are newer than the bound file's last record are checked: the `session_id` of their first 16 records. If any equals the bound id, the session is unknown. Change 2 adds a synthetic fixture.
+- **Predecessor after `/clear`.** If Herdr reports an id whose file has ended because a successor exists, the binding would show a stale session. Change 2 first settles from the binary which id SessionStart(clear) delivers. Until that is proven, the fallback is fail-closed. Within the discovery budget, files in the same directory that are newer than the bound file's last record are scanned to their first record carrying `session_id`, bounded at 256 KiB and 512 records. In observed successors it first appears at record 16 to 19, after about 60 KiB. There are three outcomes:
+  1. End of file within the bound with no `session_id`: not a successor.
+  2. Bound exhausted first: unknown (fail closed).
+  3. First `session_id` equals the bound id: unknown.
+
+  A negative result is not cached while the candidate is still growing. The fixture's first `session_id` appears after more than 16 records and 64 KiB. Change 2 adds a synthetic fixture.
 - Positive bindings are re-scanned every 60 seconds too, unlike today's cache, which re-discovers only missing paths (`native.rs:698-711`). A second match reverts the session to unknown.
 - Never derive the slug, and never use `cwd` or pids.
 
@@ -215,11 +220,18 @@ Anton fields are `technical.telemetry.*` and `technical.turn_timing.*` (`model.r
 - Totals use the top-level usage, which equals the sum of the `message` iterations. Advisor iterations are excluded, matching Claude Code's own accounting.
 
 **Replay and coverage.**
-- Totals come from the replay cursor, not a tail read. Codex reads provider-cumulative totals from a 512 KiB tail (`native.rs:504-580`), but Claude has no cumulative record.
+- Totals come from the replay cursor, not a tail read. Codex reads provider-cumulative totals from a 512 KiB tail (`native.rs:504-633`), but Claude has no cumulative record.
 - The whole Claude numeric sample is published only when the cursor has `caught_up && !skipping`. That sample is the totals, last-response values, `context`, `model` and `usage_seq`. This follows the gating Codex applies to turns, children and compactions (`native.rs:764, 783, 815`).
 - Each pass reads at most `TAIL` bytes and resumes from the checkpoint, so a cold multi-megabyte transcript takes several passes before values are known.
-- `NativeTelemetry` keeps the last published Claude sample in memory per key. A pass that is not caught up re-emits it unchanged, with its original `usage_seq`. A binding change or file replacement (dev/inode, header or tail mismatch) drops it. Growth does not. This is the retention the spec requires for an intermittent read on local hosts.
-- Peers start a fresh `NativeTelemetry` on every probe (`main.rs:1026`), so peer threads are retained locally. `State::sample` keeps the last validated Claude telemetry per agent id and `session_generation`, filled only from live peer samples in this owner run. Every caught-up Claude pass publishes a sample, with `seq = coverage_seq`, `event:"session"` and `phase:"ready"`, even when every value is null. So the retained sample is re-emitted only when the peer agent's `technical.telemetry` is absent, which then means exactly the not-caught-up case. It is dropped when the generation changes or the pane disappears. It retains the same numeric subset as the local rule (totals, last-response values, `context`, `model`, `usage_seq`), with child fields null. A caught-up peer sample with null totals replaces it, as on a local host. It is never stored in the checkpoint, because a loaded checkpoint is never a current measurement. Change 2 adds peer fixtures for three passes: one that does not catch up, a caught-up pass with invalid totals, and a caught-up pass where everything is unknown.
+- `NativeTelemetry` keeps the last published Claude sample in memory per key. A pass that is not caught up re-emits it unchanged, with its original `usage_seq`. Retention covers only an incomplete replay of a bound, identity-checked file. Any of these drops it:
+  - a binding change;
+  - file replacement (dev/inode, header or tail mismatch);
+  - zero, several or truncated discovery;
+  - an open, ownership, header or D2 identity failure;
+  - a positive D1 predecessor result.
+
+  Growth does not drop it. This is the retention the spec requires for an intermittent read on local hosts.
+- Peers start a fresh `NativeTelemetry` on every probe (`main.rs:1026`), so peer threads are retained locally. `State::sample` keeps the last validated Claude telemetry per agent id and `session_generation`, filled only from live peer samples in this owner run. Every caught-up Claude pass publishes a sample, with `seq = coverage_seq`, `event:"session"` and `phase:"ready"`, even when every value is null. A peer that cannot bind or verify the file publishes an all-null Claude sample stamped with the incoming cursor row's `coverage_seq`, which is an original source time. The causes are the drop triggers listed for local retention. Its arrival replaces the retained sample. When no cursor row exists (for example, evicted by the 32-row or 256 KiB bound), the local drops the retained sample instead of re-emitting it. So the retained sample is re-emitted only when the peer agent's `technical.telemetry` is absent for a bound session with a cursor row, which is the incomplete-replay case. It is dropped when the generation changes or the pane disappears. It retains the same numeric subset as the local rule (totals, last-response values, `context`, `model`, `usage_seq`), with child fields null. A caught-up peer sample with null totals replaces it, as on a local host. It is never stored in the checkpoint, because a loaded checkpoint is never a current measurement. Change 2 adds peer fixtures for three passes: one that does not catch up, a caught-up pass with invalid totals, and a caught-up pass where everything is unknown, and a bound session whose file becomes ambiguous after one caught-up sample.
 - An unparseable line of 64 KiB or less calls `invalid()`, which for Claude rows also clears `totals_valid`.
 
 **`usage_seq`.**
@@ -244,7 +256,7 @@ Anton fields are `technical.telemetry.*` and `technical.turn_timing.*` (`model.r
 
 - `context` is the occupancy of the last counted group with a non-null `stop_reason`, by Claude Code's rule: `input + cache_creation + cache_read` of the selected iteration or the top level.
 - The last-response fields use that same selected usage object, so last-response input never exceeds `context`. Top-level usage feeds only the totals.
-- In change 2, `window` and `context_percent` stay null. Change 3 supplies them from the reporter (D10).
+- In change 2, the replay object omits `window` and `context_percent` rather than writing nulls, because the merge at `native.rs:770-780` lets replay keys replace metadata keys. Change 3 supplies them from the reporter (D10) and owns the merge order.
 
 **Rejected sources for the window.**
 - **A model-to-window table.** A 1M-context session is indistinguishable in transcripts, and Claude Code's own rule depends on beta headers and environment overrides.
@@ -402,12 +414,12 @@ Every block field is required, bounded and revalidated on reuse:
 - The rest of this section details A, because it is the stable surface. If the user picks B, change 3 keeps the same reporter wire, binding, model-match and consent rules, replacing only the trigger and installation.
 - The statusLine command is a subprocess that inherits Claude's environment, including `HERDR_*` and `CLAUDE_CONFIG_DIR`. A function hook runs in-process with the same environment.
 
-**Settings value.** The `statusLine.command` in `~/.claude/settings.json` becomes a self-contained, marker-owned shell wrapper that embeds the user's original command, quoted with the existing `shell_quote`. The wrapper:
+**Settings value.** The `statusLine.command` in `~/.claude/settings.json` becomes a self-contained, marker-owned POSIX `sh` wrapper (Claude Code runs it through `/bin/sh`, which may be dash on other hosts) that embeds the user's original command, quoted with the existing `shell_quote`. The wrapper:
 
 1. captures stdin once, byte for byte, through a sentinel or a private temporary file. Plain command substitution strips trailing newlines. A fixture checks that trailing newlines survive;
 2. pipes it to the original command;
 3. saves the original command's exit status and writes its output unchanged;
-4. if the runtime path exists and is executable, starts `anton-runtime --report claude` detached (for example with `setsid`). The reporter gets the saved bytes on its own stdin, has stdout and stderr redirected to `/dev/null`, runs under a total deadline, and ignores all errors. It never holds Claude's pipes;
+4. if the runtime path exists and is executable, starts `anton-runtime --report claude` in a new session (required, for example `setsid`). Claude Code spawns the command detached, so the wrapper leads its own process group. The reporter gets the saved bytes on its own stdin, has stdout and stderr redirected to `/dev/null`, runs under a total deadline, and ignores all errors. It never holds Claude's pipes;
 5. exits with the saved status. Claude Code hides the status line on a non-zero exit [bin].
 
 Two behaviours are unverified and become change 3 risks with tests: whether Claude waits for stdout EOF, and whether aborting a superseded render kills the process group.
@@ -434,14 +446,14 @@ A machine without the plugin, including another host receiving the dotfile, ther
 - The report is bound by kind `id`, comparing the statusLine `session_id` with Herdr's `agent_session.value`. `reporter.rs` currently requires kind `path` and `harness == "pi"`.
 - Wire values: `event:"session"` and `phase:"ready"` (the values the collector already fills in, so nothing visible changes). `seq` is render time in microseconds, kept strictly increasing per pane in the reporter state. `obs_model` is the statusLine model id canonicalised: a trailing `[1m]` or `[2m]` is stripped and the id lower-cased. The `[1m]` suffix that selects a 1M window never reaches transcripts, and the telemetry sanitiser rejects brackets.
 - It sends no `usage_seq`, totals or `display_agent`.
-- statusLine runs are event-driven: new messages, token usage, model or mode changes, rate-limit reset timers, and `refreshInterval` only when configured. Nothing runs while a session is idle.
+- statusLine renders are event-driven: new messages, token usage, model, mode, effort, thinking, fast-mode or PR-status changes, timers at rate-limit resets and prompt-cache expiry, and `refreshInterval` when configured. Timer renders have no API response behind them.
 - The collector takes `window` only from a bound reporter sample whose canonical model equals replay's last model, compared case-insensitively. A model alias rather than a full id is a change 3 risk, with a fixture, and `context` only from replay (D4). It computes `context_percent` once, without the Codex reserve. `context_window.used_percentage` is not used.
 
 **Rate limits are not part of change 3.** Rate limits belong to an account, not a pane, and v2 pane metadata has no free keys (16 of 16 used, `reporter.rs`). Change 4 extends the reporter with a private account channel (D11), together with the AGENTS.md and spec amendments that make an account read lawful. Change 3 reads no account data.
 
 **Scope limits.**
 - Remote hosts have no plugin state. Remote Claude window and allowances are unavailable in this programme.
-- These sessions stay without a window: a project or local `statusLine` override, a `CLAUDE_CONFIG_DIR` that differs from the installed settings, an untrusted workspace, or `disableAllHooks`.
+- These sessions stay without a window: `CLAUDE_CODE_SHELL_PREFIX` set (the reporter exits, because `$PPID` would be the prefix process), a managed-policy `statusLine`, a project or local `statusLine` override, a `CLAUDE_CONFIG_DIR` that differs from the installed settings, an untrusted workspace, or `disableAllHooks`.
 
 **Change 3 gate.** The user first chooses surface A or B. `~/.claude/settings.json` is tracked in place by the user's dotfiles, and AGENTS.md says installers refuse managed configuration. `managed()` detects only chezmoi.
 
@@ -482,8 +494,8 @@ The user accepted `~/.claude.json` as provider-owned state, not an authenticatio
 
 **Source time.**
 - The statusLine payload has no sample time.
-- The reporter stamps each window separately. A window's `sampled_at` becomes render time only when that window gains a new `(used_percentage, resets_at)` value, or when `current_usage` changed on this render. A window that disappears because it expired is not a new sample: Claude Code schedules a render at each reset, with no API response behind it. Otherwise the previous stamp is kept. Change 4 adds a fixture for the reset-timer render.
-- A session's first report after state loss is not stamped fresh until `current_usage` changes on a later render.
+- The reporter stamps each window separately. A window's `sampled_at` becomes render time only when that window gains a new `(used_percentage, resets_at)` value. A change in `current_usage` alone is not evidence of a response, because a rewind changes it with no API call. Rows therefore go stale sooner, which is compliant. Change 4 may instead stamp on a strict increase of `cost.total_api_duration_ms` within one Claude process, only if a fixture confirms that field's scope. Change 4 adds rewind and prompt-cache-expiry fixtures. A window that disappears because it expired is not a new sample: Claude Code schedules a render at each reset, with no API response behind it. Otherwise the previous stamp is kept. Change 4 adds a fixture for the reset-timer render.
+- A session's first report after state loss is not stamped fresh until a window value changes on a later render.
 - In the per-account file, the newest `sampled_at` per window wins. A write with an older stamp is ignored.
 - So the existing ten-minute rule ages out idle accounts honestly.
 - `cachedUsageUtilization` is a fallback only when its `accountUuid` matches, with `fetchedAtMs` as its source time. It usually fails the ten-minute rule.
@@ -503,7 +515,9 @@ The user accepted `~/.claude.json` as provider-owned state, not an authenticatio
 - "Provider-neutral allowance rows" (duration by window name for Claude, single pacing window);
 - any Codex-specific pacing wording, and the Codex-only Purpose;
 - `omarchy-companion`: "Native read-only identity RPCs SHALL be matched against existing account mappings" gains the Claude provider-state source, and "Account refresh independent of agents" gains the Claude exception;
-- AGENTS.md: "Allowances use explicit account mappings and source identity, independent of thread activity" gains the Claude exception.
+- AGENTS.md: "Allowances use explicit account mappings and source identity, independent of thread activity" gains the Claude exception;
+- AGENTS.md line 16 and `harness-telemetry` "Supplementary harness reports": the Claude reporter may read the allowlisted `~/.claude.json` paths and write its private account state file;
+- the source-identity clause of "Account-bound allowance observation" and AGENTS.md line 73. For Claude, the account authority is attribution inferred from `~/.claude.json` at report time. The change 4 user gate accepts this explicitly.
 
 **Forbidden sources.**
 - The credential file and the OAuth usage endpoint.
