@@ -810,16 +810,19 @@ fn turns_join_needs_a_dequeue_or_remove_and_each_join_consumes_it() {
             Some((second(1), second(7), "completed".into()))
         );
     }
-    // A trigger joins a pending start it was dequeued into.
+    // With no active turn a trigger never joins: it replaces an unconfirmed
+    // pending start, so an idle gap after a command echo is never absorbed,
+    // and it consumes the evidence.
     let row = run(&[
-        user(4, "hello", ""),
-        dequeue(5),
-        user(6, "queued", ""),
-        assistant(7, "msg_a", "\"end_turn\""),
-        system("turn_duration", 9),
+        user(4, "<command-name>/model</command-name>", ""),
+        dequeue(4000),
+        user(4000, "queued", ""),
+        assistant(4001, "msg_a", "\"end_turn\""),
+        system("turn_duration", 4003),
     ]);
     assert!(row.turns.valid && !row.claude.queued_since_start);
-    assert_eq!(finished(&row, "user", 4).map(|t| t.1), Some(second(9)));
+    assert_eq!(row.turns.total, 3);
+    assert!(finished(&row, "user", 4).is_none());
     // Each join consumes the evidence: a second prompt needs its own.
     let row = run(&[
         user(10, "hello", ""),

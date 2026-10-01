@@ -1205,10 +1205,11 @@ impl Row {
                 else {
                     return self.turns_unknown();
                 };
-                if (active || block.pending_start.is_some()) && block.queued_since_start {
-                    // Input taken into the running turn or pending start joins
-                    // it, and consumes the queue evidence.
-                    block.queued_since_start = false;
+                // Each trigger consumes the queue evidence. Only input taken
+                // into a running turn joins it; with no active turn the
+                // trigger replaces a pending start, which may be an idle
+                // command echo that no assistant record ever confirmed.
+                if std::mem::take(&mut block.queued_since_start) && active {
                     return;
                 }
                 if active {
