@@ -19,6 +19,7 @@ test, installed plugin or peer changes.
 
 - [x] 2.1 Record the metric mapping and decisions D1 to D11 in design.md, closing each open question with a decision.
 - [x] 2.2 Name the follow-up changes and their order in proposal.md.
+- [x] 2.3 Record the change 2 fixture inventory and the counts-only corpus check.
 
 ## 3. Baseline
 

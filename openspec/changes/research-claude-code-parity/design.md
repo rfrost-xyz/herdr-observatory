@@ -126,8 +126,13 @@ the shapes below.
 
 **Goals:**
 
-- Fix every decision change 2 needs, so implementation does not improvise.
-- Fix the direction, constraints, user gates and spec deltas for changes 3 and 4. Each of those changes still carries its own design and review.
+- Record the evidence, the direction for each change, and the user gates.
+- Give change 2 a starting design (D1 to D9) and a fixture inventory built from eight review rounds.
+- Fix the direction, constraints, user gates and spec deltas for changes 3 and 4.
+
+**Scope of authority.**
+- D1 to D9 are change 2's starting design. Change 2's own design restates and refines them, and its synthetic fixtures and implementation review are authoritative where they differ.
+- D10 and D11 are direction only and depend on the change 3 and change 4 gates. The option-A wrapper detail in D10 is provisional.
 - Give each Codex metric a Claude source, or a reasoned "unavailable".
 
 **Non-Goals:**
@@ -411,7 +416,7 @@ Every block field is required, bounded and revalidated on reuse:
   - **A. The statusLine input.** It is stable and documented, but it is a single settings slot, which plugins cannot provide.
   - **B. The plugin function-hook event `session.measure`.** It is plugin-owned, with no statusLine edit, and has change semantics built in. However, it is early access and an internal API. It needs `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` in the Claude environment (a shell profile, or the settings `env` key), and the plugin must be installed and enabled, which Claude Code records in settings `enabledPlugins`.
 - Both surfaces touch user-level configuration. Change 3 puts this choice to the user at its gate (below).
-- The rest of this section details A, because it is the stable surface. If the user picks B, change 3 keeps the same reporter wire, binding, model-match and consent rules, replacing only the trigger and installation.
+- The rest of this section details A, because it is the stable surface. That detail is provisional until the gate. If the user picks B, change 3 keeps the same reporter wire, binding, model-match and consent rules, replacing only the trigger and installation.
 - The statusLine command is a subprocess that inherits Claude's environment, including `HERDR_*` and `CLAUDE_CONFIG_DIR`. A function hook runs in-process with the same environment.
 
 **Settings value.** The `statusLine.command` in `~/.claude/settings.json` becomes a self-contained, marker-owned POSIX `sh` wrapper (Claude Code runs it through `/bin/sh`, which may be dash on other hosts) that embeds the user's original command, quoted with the existing `shell_quote`. The wrapper:
@@ -523,6 +528,50 @@ The user accepted `~/.claude.json` as provider-owned state, not an authenticatio
 - The credential file and the OAuth usage endpoint.
 - `claude auth status` and headless `/usage`.
 - Transcript `credential_org` and `session_context`.
+
+## Change 2 inputs
+
+**Fixture inventory.** Change 2 builds a named synthetic fixture for each case found during research and review:
+
+- **Usage groups:**
+  - identical-split groups (main) and streaming-partial groups (subagent style);
+  - groups interleaved with user and attachment records;
+  - a reopened closed group;
+  - advisor iterations, a `compaction` iteration, `<synthetic>` records, and an aborted group (`stop_reason: null`);
+  - a missing counter, and an unparseable line.
+- **Classifier:** an oversized line that crosses `TAIL`, plus oversized assistant, user and attachment records.
+- **Identity:**
+  - a header mismatch;
+  - a record whose `sessionId` differs;
+  - records without `sessionId`;
+  - a fork via `forkedFrom`;
+  - the post-`/clear` predecessor, with the first `session_id` after more than 16 records and more than 64 KiB.
+- **Discovery:** zero, several or truncated matches; a symlinked root; a second match appearing after binding; resume in place and resume to a new file.
+- **Compaction:** `compact_boundary`, `microcompact_boundary` and `isCompactSummary`.
+- **Children:**
+  - async and synchronous launches, and a launch without `agentId`;
+  - a resume via `resumedAgentId`, including for an unknown child;
+  - notifications through `origin`, through `commandMode`, and without `origin`;
+  - the statuses `completed`, `failed`, `killed`, `blocked` and an unknown status;
+  - exceeding the cap.
+- **Turns:**
+  - human, task-notification, peer (`isMeta`), coordinator and command-echo triggers;
+  - a synthetic record confirming a pending start, and an abort during a pending start;
+  - an orphan abort;
+  - queued input with and without a queue operation;
+  - a silent end (stop-hook summary or `end_turn`) followed by queued input;
+  - an orphan `turn_duration`;
+  - non-monotonic and overlapping timestamps;
+  - each wrapper tag.
+- **Checkpoints:** a warm restart with the `claude` block, a missing or invalid block, an old binary round trip, and the 32-row bound.
+- **Peers:**
+  - a pass that does not catch up;
+  - a caught-up pass with invalid totals, and one where everything is unknown;
+  - a binding that becomes ambiguous after one caught-up sample;
+  - no cursor row;
+  - an old local with a new peer, and cost with several large transcripts.
+
+**Corpus check.** As a verification step, change 2 also runs a local counts-only replay of the real transcript corpus through the implementation. It prints aggregates only, and nothing from it is committed. Prose review could not converge on these rules; replay can.
 
 ## Risks / Trade-offs
 
