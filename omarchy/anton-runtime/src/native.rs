@@ -79,10 +79,10 @@ fn verified(path: &Path, session: &str) -> bool {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Fingerprint {
-    size: u64,
-    mtime_us: u64,
-    header: String,
-    tail: String,
+    pub(crate) size: u64,
+    pub(crate) mtime_us: u64,
+    pub(crate) header: String,
+    pub(crate) tail: String,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Cursor {
@@ -402,7 +402,7 @@ fn replay(
     Ok(state)
 }
 
-fn timestamp_us(stamp: &str) -> Option<u64> {
+pub(crate) fn timestamp_us(stamp: &str) -> Option<u64> {
     // RFC3339 source timestamps only. Offset/fraction conversion is exact to the
     // microsecond; timezone-less timestamps do not become fresh measurements.
     if stamp.len() < 20 || !stamp.is_ascii() {
