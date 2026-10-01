@@ -224,13 +224,16 @@ impl Cursor {
         }
     }
 }
+/// Validates peer or checkpoint cursor rows within 32 rows and `LIMIT` bytes.
+/// Codex rows are charged against the byte budget first, in key order, and
+/// Claude rows after them, so Claude rows never displace Codex rows.
 pub fn validate_cursors(raw: &Value) -> BTreeMap<String, Cursor> {
     let mut result = BTreeMap::new();
     let Some(rows) = raw.as_object().filter(|v| v.len() <= 32) else {
         return result;
     };
-    let mut size = 0;
     let time = now();
+    let mut valid = vec![];
     for (key, row) in rows {
         if !hex_id(key, 64) {
             continue;
@@ -247,20 +250,25 @@ pub fn validate_cursors(raw: &Value) -> BTreeMap<String, Cursor> {
             } else {
                 cursor.envelope = None;
             }
-            size += serde_json::to_vec(&cursor)
-                .map(|v| v.len())
-                .unwrap_or(LIMIT + 1)
-                + key.len()
-                + 8;
-            if size > LIMIT {
-                break;
-            }
-            result.insert(key.clone(), cursor);
+            valid.push((key, cursor));
         }
+    }
+    // A stable sort keeps key order within each kind.
+    valid.sort_by_key(|(_, cursor)| cursor.is_claude());
+    let mut size = 0;
+    for (key, cursor) in valid {
+        size += serde_json::to_vec(&cursor)
+            .map(|v| v.len())
+            .unwrap_or(LIMIT + 1)
+            + key.len()
+            + 8;
+        if size > LIMIT {
+            break;
+        }
+        result.insert(key.clone(), cursor);
     }
     result
 }
-
 fn replay(
     path: &Path,
     session: &str,
@@ -1271,11 +1279,16 @@ impl Checkpoints {
             .unwrap_or(LIMIT + 1)
                 > LIMIT
         {
+            // The oldest Claude row goes first; Codex rows only once none is left.
             let Some(index) = self
                 .rows
                 .iter()
                 .enumerate()
-                .min_by(|(_, a), (_, b)| a.cursor.at.total_cmp(&b.cursor.at))
+                .min_by(|(_, a), (_, b)| {
+                    (!a.cursor.is_claude())
+                        .cmp(&!b.cursor.is_claude())
+                        .then(a.cursor.at.total_cmp(&b.cursor.at))
+                })
                 .map(|(index, _)| index)
             else {
                 break;

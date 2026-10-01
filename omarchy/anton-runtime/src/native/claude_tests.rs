@@ -607,3 +607,82 @@ fn claude_truncated_predecessor_scan_is_rescanned_not_cached() {
     let (telemetry, _, _) = enrich(&mut follower, &json!({}));
     assert_eq!(totals(&telemetry), json!([3461, 111, 3300, 50, 26]));
 }
+
+/// Fills `row` to the 128-child cap, about 11 KB.
+fn padded(row: &Value) -> Value {
+    let mut row = row.clone();
+    let children = row["children"].as_object_mut().unwrap();
+    for index in 0.. {
+        if children.len() == 128 {
+            break;
+        }
+        children.insert(
+            sha256(format!("child-{index}").as_bytes()),
+            json!("completed"),
+        );
+    }
+    row
+}
+
+#[test]
+fn codex_rows_are_charged_before_claude_rows_in_cursor_and_checkpoint_bounds() {
+    let fixture = Fixture::new();
+    fixture.write(&session());
+    let (_, _, cursors) = enrich(&mut NativeTelemetry::default(), &json!({}));
+    let claude = cursors[key()].clone();
+    // Claude keys sort before Codex keys, so key order alone favours Claude.
+    let claude_key = |index: usize| format!("{index:064x}");
+    let codex_key = |index: usize| format!("f{index:063x}");
+    let rows = |count: usize, pad: bool, at: f64| {
+        let mut rows = serde_json::Map::new();
+        let (codex, claude) = if pad {
+            (padded(&codex_row(at)), padded(&claude))
+        } else {
+            (codex_row(at), claude.clone())
+        };
+        for index in 0..count {
+            rows.insert(claude_key(index), claude.clone());
+            rows.insert(codex_key(index), codex.clone());
+        }
+        rows
+    };
+    // One host: 16 padded Codex rows fit alone; with 16 Claude rows they do not.
+    let mixed = Value::Object(rows(16, true, now()));
+    let valid = validate_cursors(&mixed);
+    assert!((0..16).all(|index| valid.contains_key(&codex_key(index))));
+    assert!(valid.values().any(Cursor::is_claude));
+    assert!(serde_json::to_vec(&valid).unwrap().len() <= LIMIT);
+    // Checkpoints: Codex rows are older, yet Claude rows are evicted first,
+    // for the 256 KiB bound and for the 32-row bound.
+    let owner = fixture.root.join(".herdr-observatory-install");
+    std::fs::write(&owner, b"herdr.observatory\n").unwrap();
+    let state = fixture.root.join("state");
+    std::fs::create_dir(&state).unwrap();
+    for (count, pad) in [(16, true), (20, false)] {
+        let split = |claude: bool, at: f64| {
+            let rows = rows(count, pad, at)
+                .into_iter()
+                .filter(|(_, row)| row.get("claude").is_some() == claude)
+                .collect();
+            Value::Object(rows)
+        };
+        let hosts = BTreeMap::from([
+            ("codex-host".to_owned(), split(false, now() - 100.0)),
+            ("claude-host".to_owned(), split(true, now() - 10.0)),
+        ]);
+        Checkpoints::new(&state, &owner)
+            .unwrap()
+            .update(&hosts, true)
+            .unwrap();
+        let loaded = Checkpoints::new(&state, &owner).unwrap();
+        let codex = loaded.for_host("codex-host");
+        assert_eq!(codex.as_object().unwrap().len(), count, "{count}");
+        assert!(
+            !loaded
+                .for_host("claude-host")
+                .as_object()
+                .unwrap()
+                .is_empty()
+        );
+    }
+}
