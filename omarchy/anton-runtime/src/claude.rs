@@ -2004,4 +2004,30 @@ mod replay_tests {
         let (row, _) = passes(&fixture, &path, Some(row));
         assert_eq!(get(&row, "total_input"), json!(8));
     }
+
+    #[test]
+    fn projection_survives_the_telemetry_view_unchanged() {
+        let lines = [
+            assistant("msg_a", 1, "\"end_turn\"", [10, 20, 300, 40]),
+            assistant_with(
+                "msg_b",
+                2,
+                "\"end_turn\"",
+                &(counters([5, 6, 70, 8]) + &iterations(&[("message", [1, 2, 30, 4])])),
+                "",
+            ),
+            system("compact_boundary", 3),
+        ];
+        let usage = run(&lines).usage();
+        assert!(usage.as_object().unwrap().values().all(|v| !v.is_null()));
+        assert!(usage.get("window").is_none() && usage.get("context_percent").is_none());
+        let mut raw = usage.clone();
+        raw["seq"] = json!(micros(3));
+        raw["event"] = json!("session");
+        raw["phase"] = json!("ready");
+        let view = crate::telemetry::telemetry_view_at(&raw, now()).unwrap();
+        for (key, value) in usage.as_object().unwrap() {
+            assert_eq!(&view[key], value, "{key}");
+        }
+    }
 }
