@@ -188,7 +188,8 @@ Anton fields are `technical.telemetry.*` and `technical.turn_timing.*` (`model.r
 - Open with `common::open_owned`: per-component no-follow, regular file, owner uid. A symlink anywhere fails closed.
 - The header is the first line: at most 64 KiB, newline-terminated, with `sessionId == id`. Any first-record type is tolerated.
 - Any later record that carries a `sessionId` different from the bound id makes the session's telemetry unknown.
-- Fork and branch paths copy the parent's records into the new file and rewrite `sessionId`, adding `forkedFrom` [bin]. A record carrying `forkedFrom` is inherited history and feeds no total, last-response value, turn, child or compaction. Only its presence is read, never the nested id. Change 2 adds a synthetic fork fixture. Records without `sessionId` (`file-history-snapshot`, `file-history-delta`) are ignored for identity and feed no metric. A fork that copied history therefore never counts a response in two sessions.
+- Fork and branch paths copy the parent's records into the new file and rewrite `sessionId`, adding `forkedFrom` [bin]. A record carrying `forkedFrom` is inherited history and feeds no total, last-response value, turn, child or compaction. Only its presence is read, never the nested id. Change 2 adds a synthetic fork fixture. So a response is never counted in both sessions.
+- Records without `sessionId` (`file-history-snapshot`, `file-history-delta`) are ignored for identity and feed no metric.
 - Thread replay never reads `<id>/subagents/**`, `tool-results/**`, `memory/**` or `~/.claude.json`.
 
 ### D3. Deduplicated usage replay
