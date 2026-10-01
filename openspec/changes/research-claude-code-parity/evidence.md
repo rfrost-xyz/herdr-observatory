@@ -75,7 +75,7 @@ Round 3, on `edd2383`, found 4 blocking and 17 other findings, all addressed:
 - D10: define the wire values, wrapper exit and detachment, event-driven cadence, model match, exact-match ownership and consent flag;
 - D11: resolve the config file, handle account switches, define the merge order, and handle a missing `seven_day` window.
 
-A structure-only simulation of D7 with the round 3 fixes kept valid accumulated coverage in 18 of 18 main files: 109 turns, 0 orphan ends and 0 overlaps (reviewer's measurement).
+A structure-only simulation of D7 with the round 3 fixes reported valid accumulated coverage in 18 of 18 main files: 109 turns, 0 orphan ends and 0 overlaps (reviewer's measurement). Round 7 showed that figure was too generous: silent turn ends let stale turns absorb idle gaps.
 
 Round 4, on `6e01c99`, found 6 blocking and 9 other findings, all addressed:
 
@@ -94,7 +94,7 @@ Round 5, on `4f2b02d`, found 3 blocking and 9 other findings, all addressed:
 - D10: the change key with binding, persist after success, no throttle, uninstall that tolerates drift, and conflicts that skip only the Claude reporter;
 - D11: the no-session behaviour with thread-independence deltas, and refusal under `CLAUDE_CONFIG_DIR`.
 
-The reviewer's D7 replay kept valid coverage in 18 of 18 files (114 turns, 0 orphans, 0 overlaps, 37 queued triggers joined). Discovery used 84 entries of the 8,192 budget.
+The reviewer's D7 replay reported valid coverage in 18 of 18 files (114 turns, 0 orphans, 0 overlaps, 37 queued triggers joined). This was later corrected in round 7. Discovery used 84 entries of the 8,192 budget.
 
 Round 6, on `8b5c5dc`, found 1 blocking and 5 other findings, all addressed:
 
@@ -102,6 +102,15 @@ Round 6, on `8b5c5dc`, found 1 blocking and 5 other findings, all addressed:
 - **D3:** a precise peer re-emit trigger and subset.
 - **D7:** the wrapper tag table.
 - **D10:** process identity and expiry in the change key, plus mode preservation and compare-before-rename for the settings edit.
+
+Round 7, on `07966f9`, found 3 blocking and 8 other findings, all addressed:
+
+- D7: silent turn ends (stop-hook summary or `end_turn`) clear the queued state. With that change the older-version file becomes unknown, and the largest joined gap fell from 66,701 s to 764 s;
+- D1 and D2: the snake-case `session_id` after `/clear`, with a fail-closed predecessor check;
+- D3: every caught-up pass publishes, so the peer re-emit trigger is exact;
+- D8: row-level field ownership;
+- D10: the Claude pid is passed by the wrapper, and stdin is captured with a sentinel;
+- D11: a pattern rule for credential variables and `apiKeyHelper`, the `~/.claude.json` credential caveat with allowlisted extraction, source normalisation, and the row sample time.
 
 ## User decisions (2026-10-01)
 
@@ -122,8 +131,8 @@ that pane through the Herdr SessionStart hook. No such probe was run.
 | Advisor iterations | Second pass: 51 deduplicated responses (94 lines) across main and subagent files. Top-level usage equals the sum of `message` iterations in 51 of 51 |
 | No window size in transcripts | 0 window fields. `[1m]` in 0 of about 5,800 model strings |
 | Compaction records | 0 observed. Shape from the binary |
-| Turn ends | 103 `turn_duration` records. `durationMs` matches the prompt-to-record gap (median difference 0.011 s, 98 turns) |
-| Non-monotonic timestamps | 23 negative gaps in file order |
+| Turn ends | 103 `turn_duration` records. `durationMs` matches the prompt-to-record gap (median difference 0.011 s, 98 turns), but with outliers: in round 7, 96 of 115 turns were within ±2 s. One older-version file had 22 stop-hook summaries and only 2 `turn_duration` records |
+| Non-monotonic timestamps | Common in file order. The first pass counted 23 negative gaps, method unrecorded. Round 7, comparing every consecutive timestamped record, counted 274 (assistant, attachment and user records) |
 | Async children | 23 `async_launched` results: 17 with `agentId` (17 matching child files), 6 without. 49 task notifications, statuses `completed` 47 and `failed` 2. 20 notification task ids matched a known child, 32 did not. 4 of 13 `queued_command` notifications had no `origin` but all had `commandMode: "task-notification"` |
 | Child resume | 8 `SendMessage` uses. 5 results carry `resumedAgentId` and `success` |
 | Prompt-shaped non-turns (second pass) | Records without `origin` that match a naive prompt predicate: 19 slash-command echoes, 12 local-command outputs, 2 bash-mode records, 3 interrupt markers |

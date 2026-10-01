@@ -32,13 +32,13 @@ the shapes below.
 - **Header** [obs 18/18]: the first line of every main file is `{"type":"mode","mode":…,"sessionId":<id>}`.
   - Mode records also recur mid-file.
   - The header carries identity only, with no version or cwd.
-- **Record identity** [obs 18/18, 0 mismatches]: every main-file record that carries `sessionId` equals the file stem. `file-history-snapshot` and `file-history-delta` records carry none (16 of 18 files contain them).
+- **Record identity** [obs 18/18, 0 mismatches]: every main-file record that carries `sessionId` equals the file stem. Records also carry a snake-case `session_id`, which is what hooks receive. In 5 of 18 files it differs from the stem. In 4 of those, every record's `session_id` names an earlier, ended main file with no shared `message.id` or `uuid`, and the file opens with a `/clear` echo. In the fifth it switches mid-file to an id that has no file. Whether SessionStart(clear) delivers the old or new id to Herdr is not established. All live Herdr ids resolved to files with no such cross-reference. `file-history-snapshot` and `file-history-delta` records carry none (16 of 18 files contain them).
 - **Parent and child separation** [obs]: `isSidechain` is false on every main-file record and true on every subagent record, so children are never interleaved into the parent.
 - **Session ids across resume, fork and clear**:
   - `--resume` and `--continue` reuse the original session id; only `--fork-session` creates a new one [doc, `claude --help`].
   - Whether a resume appends to the same file is unverified [inf].
-  - `/clear` and fork produce a new id [doc, Herdr hook matcher].
-- **Timestamps** [obs]: ISO-8601 UTC with milliseconds on every record that has one. They are not monotonic in file order (23 negative gaps).
+  - `/clear` and fork produce a new transcript file and `sessionId` [obs]. After `/clear`, the snake-case `session_id` seen by hooks can still name the predecessor (above).
+- **Timestamps** [obs]: ISO-8601 UTC with milliseconds on every record that has one. They are commonly non-monotonic in file order, including assistant, user and queued-command records.
 - **Sizes** [obs]:
   - Main file p50 721 KB, max 5.4 MB.
   - Line p50 1.6 KB, p99 42.7 KB, max 832 KB; 5 lines are over 256 KiB.
@@ -73,7 +73,7 @@ the shapes below.
 - **Prompts** [obs]: human prompts are user records with text content, no `toolUseResult` and no `isMeta`. `peer`-origin records carry `isMeta: true` (6 of 6) and still open real turns.
   - Newer prompts carry `origin.kind` (`human`, `task-notification`, `peer`, `coordinator`), `promptId` and `turnPosition`.
   - The same predicate also matches records without `origin` that are not model turns [obs, second pass]: slash-command echoes (19), local-command output (12), bash-mode records (2) and interrupt markers (3). 15 plain-text records without `origin` were followed by an assistant record.
-- **Turn ends** [obs]: `system/turn_duration` records (103 in the first pass).
+- **Turn ends** [obs]: `system/turn_duration` records (103 in the first pass). They are not universal. One file from an older Claude Code version had 22 `system/stop_hook_summary` records but only 2 `turn_duration`, so turns ended silently.
 - **Aborts** [obs]: the user text `[Request interrupted by user]` (plus a "for tool use" variant [bin]), `interruptedMessageId`, or `isAbortedMidStream`.
 - **Async Agent children** [obs]:
   - There were 23 parent `tool_result` records with `toolUseResult.status: "async_launched"`.
@@ -176,6 +176,7 @@ Anton fields are `technical.telemetry.*` and `technical.turn_timing.*` (`model.r
 **Lookup.**
 - Look for `<root>/<entry>/<id>.jsonl` at depth exactly two, within the Codex discovery entry and time budgets.
 - Require exactly one match. Zero or several matches leave telemetry unknown, and so does a scan truncated by the entry or time budget (`native.rs:651-670`).
+- **Predecessor after `/clear`.** If Herdr reports an id whose file has ended because a successor exists, the binding would show a stale session. Change 2 first settles from the binary which id SessionStart(clear) delivers. Until that is proven, the fallback is fail-closed. Within the discovery budget, files in the same directory that are newer than the bound file's last record are checked: the `session_id` of their first 16 records. If any equals the bound id, the session is unknown. Change 2 adds a synthetic fixture.
 - Positive bindings are re-scanned every 60 seconds too, unlike today's cache, which re-discovers only missing paths (`native.rs:698-711`). A second match reverts the session to unknown.
 - Never derive the slug, and never use `cwd` or pids.
 
@@ -196,6 +197,7 @@ Anton fields are `technical.telemetry.*` and `technical.turn_timing.*` (`model.r
 - Any later record that carries a `sessionId` different from the bound id makes the session's telemetry unknown.
 - Fork and branch paths copy the parent's records into the new file and rewrite `sessionId`, adding `forkedFrom` [bin]. A record carrying `forkedFrom` is inherited history and feeds no total, last-response value, turn, child or compaction. Only its presence is read, never the nested id. Change 2 adds a synthetic fork fixture. So a response is never counted in both sessions.
 - Records without `sessionId` (`file-history-snapshot`, `file-history-delta`) are ignored for identity and feed no metric.
+- The snake-case `session_id` is not an identity check for the bound file, because it names the predecessor in post-`/clear` files (5 of 18). It is used only by the D1 predecessor check.
 - Thread replay never reads `<id>/subagents/**`, `tool-results/**`, `memory/**` or `~/.claude.json`.
 
 ### D3. Deduplicated usage replay
@@ -217,7 +219,7 @@ Anton fields are `technical.telemetry.*` and `technical.turn_timing.*` (`model.r
 - The whole Claude numeric sample is published only when the cursor has `caught_up && !skipping`. That sample is the totals, last-response values, `context`, `model` and `usage_seq`. This follows the gating Codex applies to turns, children and compactions (`native.rs:764, 783, 815`).
 - Each pass reads at most `TAIL` bytes and resumes from the checkpoint, so a cold multi-megabyte transcript takes several passes before values are known.
 - `NativeTelemetry` keeps the last published Claude sample in memory per key. A pass that is not caught up re-emits it unchanged, with its original `usage_seq`. A binding change or file replacement (dev/inode, header or tail mismatch) drops it. Growth does not. This is the retention the spec requires for an intermittent read on local hosts.
-- Peers start a fresh `NativeTelemetry` on every probe (`main.rs:1026`), so peer threads are retained locally. `State::sample` keeps the last validated Claude telemetry per agent id and `session_generation`, filled only from live peer samples in this owner run. It is re-emitted only when the peer agent's `technical.telemetry` is absent, which is the not-caught-up case, and dropped when the generation changes or the pane disappears. It retains the same numeric subset as the local rule (totals, last-response values, `context`, `model`, `usage_seq`), with child fields null. A caught-up peer sample with null totals replaces it, as on a local host. It is never stored in the checkpoint, because a loaded checkpoint is never a current measurement. Change 2 adds peer fixtures for a pass that does not catch up and for a caught-up pass with invalid totals.
+- Peers start a fresh `NativeTelemetry` on every probe (`main.rs:1026`), so peer threads are retained locally. `State::sample` keeps the last validated Claude telemetry per agent id and `session_generation`, filled only from live peer samples in this owner run. Every caught-up Claude pass publishes a sample, with `seq = coverage_seq`, `event:"session"` and `phase:"ready"`, even when every value is null. So the retained sample is re-emitted only when the peer agent's `technical.telemetry` is absent, which then means exactly the not-caught-up case. It is dropped when the generation changes or the pane disappears. It retains the same numeric subset as the local rule (totals, last-response values, `context`, `model`, `usage_seq`), with child fields null. A caught-up peer sample with null totals replaces it, as on a local host. It is never stored in the checkpoint, because a loaded checkpoint is never a current measurement. Change 2 adds peer fixtures for three passes: one that does not catch up, a caught-up pass with invalid totals, and a caught-up pass where everything is unknown.
 - An unparseable line of 64 KiB or less calls `invalid()`, which for Claude rows also clears `totals_valid`.
 
 **`usage_seq`.**
@@ -314,6 +316,7 @@ Wrapper tags are matched on the leading tag of user text:
 
 **Ending a turn.**
 - `system/turn_duration` completes the active turn at its own timestamp.
+- A silent end clears `queued_since_start`. A silent end is `system/stop_hook_summary`, or an assistant line with `stop_reason: end_turn` and no pending tool use, while a turn is active. A later trigger with no `turn_duration` then takes the unknown path rather than joining the stale turn and absorbing the idle gap. In a reviewer's replay, the older-version file becomes honestly unknown, and the largest remaining joined gap fell from 66,701 s to 764 s. Change 2 adds a fixture for a silent end followed by queued input.
 - An abort ends the active turn as aborted at the abort record's timestamp.
 - A `turn_duration` with no active turn is ignored when it directly follows an abort. Otherwise it makes accumulated coverage unknown.
 
@@ -322,7 +325,7 @@ Wrapper tags are matched on the leading tag of user text:
 - A start earlier than the previous end, or an end earlier than its start, makes accumulated coverage unknown through `Turns::unknown`.
 - The current or last valid interval stays available, as the spec allows.
 
-**Durations.** `turn_duration.durationMs` is never substituted. It is used only as a test cross-check.
+**Durations.** `turn_duration.durationMs` is never substituted. It is used only as a test cross-check with an explicit tolerance, because the spec includes permission waits.
 
 **State.** The finished intervals and total stay in the unchanged row-level `Turns` struct. Pending-start state lives in the `claude` block (D8), so `Turns` keeps its schema for older binaries.
 
@@ -335,7 +338,8 @@ Wrapper tags are matched on the leading tag of user text:
 - Offsets are bytes, never timestamps.
 
 **Row-level fields.**
-- `Cursor::children`, `valid`, `compactions_valid`, `turns`, `fingerprint` and `offset` keep their existing meaning for Claude rows. `seq` follows D6. `turns` and `fingerprint` remain required, so checkpoint v1 is kept.
+- `Cursor::children`, `valid`, `compactions_valid`, `turns`, `fingerprint`, `offset`, `file`, `at`, `caught_up` and `skipping` keep their existing meaning for Claude rows. `seq` follows D6.
+- Row-level `envelope` stays `None`, and `compaction_markers` and `compaction_summaries` stay 0. Claude classifier state and the boundary count live only in the block. `turns` and `fingerprint` remain required, so checkpoint v1 is kept.
 
 **The `claude` block.** All other Claude parser state lives in one required `claude: ClaudeCursor` block with `deny_unknown_fields`. `Cursor` itself does not deny unknown fields (`native.rs:88-110`), so an older binary would silently drop loose fields. A Claude-keyed row whose block is absent or invalid is discarded and replayed fresh, never resumed with zeroed sums.
 
@@ -351,7 +355,7 @@ Every block field is required, bounded and revalidated on reuse:
 - the compaction boundary count and the compaction-iteration flag;
 - the pending turn start: key hash and Unix second, or none;
 - the abort-adjacency flag;
-- `queued_since_start`: set by any `queue-operation` while a turn is active, reset when a turn starts or ends, and false whenever `Turns.active` is none;
+- `queued_since_start`: set by any `queue-operation` while a turn is active; reset when a turn starts or ends, and on a silent end (D7); false whenever `Turns.active` is none;
 - the Claude envelope classifier state (D3), or none.
 
 **Rediscovery.** D1 re-scans positive bindings too (D1 "Lookup").
@@ -400,7 +404,7 @@ Every block field is required, bounded and revalidated on reuse:
 
 **Settings value.** The `statusLine.command` in `~/.claude/settings.json` becomes a self-contained, marker-owned shell wrapper that embeds the user's original command, quoted with the existing `shell_quote`. The wrapper:
 
-1. captures stdin once, byte for byte;
+1. captures stdin once, byte for byte, through a sentinel or a private temporary file. Plain command substitution strips trailing newlines. A fixture checks that trailing newlines survive;
 2. pipes it to the original command;
 3. saves the original command's exit status and writes its output unchanged;
 4. if the runtime path exists and is executable, starts `anton-runtime --report claude` detached (for example with `setsid`). The reporter gets the saved bytes on its own stdin, has stdout and stderr redirected to `/dev/null`, runs under a total deadline, and ignores all errors. It never holds Claude's pipes;
@@ -422,7 +426,7 @@ A machine without the plugin, including another host receiving the dotfile, ther
 
 **Reporter.**
 - The reporter runs only with `HERDR_ENV` and a pane.
-- A private per-pane state file holds the change key `(session_id, canonical model, window, Claude process identity)`. The identity is the parent pid plus its start time, so a restart with `--resume` re-reports. The state also expires below any metadata TTL change 3 sets. Whether Herdr clears metadata on agent restart is unverified, and is a change 3 risk with a fixture. When the key is unchanged the reporter exits without any RPC. State is persisted only after `pane.report_metadata` succeeds for a matching `agent_session.value`, so a render that arrives before Herdr's SessionStart hook is retried on the next render. There is no throttle: the key changes rarely.
+- A private per-pane state file holds the change key `(session_id, canonical model, window, Claude process identity)`. The wrapper passes its own `$PPID`, which is the Claude process, to the detached reporter. The reporter reads that pid's start time from `/proc` and checks the process is alive. A restart with `--resume` therefore re-reports. Change 3 adds a fixture for the claude, wrapper, detached reporter chain. The state also expires below any metadata TTL change 3 sets. Whether Herdr clears metadata on agent restart is unverified, and is a change 3 risk with a fixture. When the key is unchanged the reporter exits without any RPC. State is persisted only after `pane.report_metadata` succeeds for a matching `agent_session.value`, so a render that arrives before Herdr's SessionStart hook is retried on the next render. There is no throttle: the key changes rarely.
 - The reporter exits unless the local receipt records the user's consent and the exact wrapper value. A wrapper that arrived by dotfiles on a host where the user never consented therefore reports nothing.
 
 **Window channel.**
@@ -460,13 +464,20 @@ The user accepted `~/.claude.json` as provider-owned state, not an authenticatio
 - It refuses to attribute when a legacy `.config.json` exists in the config directory, or when `CLAUDE_CODE_CUSTOM_OAUTH_URL` is set. Either changes the file name.
 - The reporter refuses attribution whenever `CLAUDE_CONFIG_DIR` is set, so its file matches the collector's fixed `$HOME/.claude.json`. The collector is spawned by QML without the session's environment.
 - It hashes the id with the prefix `observatory-claude-account-v1:`, so Claude keys cannot collide with Codex keys (`allowances.rs:63-66`), and stores only the hash.
-- The reporter refuses to attribute rate limits when its own environment names a non-subscription auth mode. It checks variable names only: `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CODE_CUSTOM_OAUTH_URL`, and every provider switch in the binary (`CLAUDE_CODE_USE_BEDROCK`, `_VERTEX`, `_FOUNDRY`, `_ANTHROPIC_AWS`, `_ANTHROPIC_GOOGLE_CLOUD`, `_MANTLE`, `_GATEWAY`).
+- The reporter refuses to attribute rate limits whenever its own environment could select a different credential. This is a pattern rule over variable names only, not a closed list. It refuses when any of these is set:
+  - `ANTHROPIC_*KEY*`, `ANTHROPIC_*TOKEN*` or `ANTHROPIC_CUSTOM_HEADERS`;
+  - `CLAUDE_CODE_*TOKEN*`, `CLAUDE_CODE_*_FILE_DESCRIPTOR` or `CLAUDE_CODE_HOST_*`;
+  - `CCR_OAUTH_TOKEN_FILE` or `CLAUDE_CODE_CUSTOM_OAUTH_URL`;
+  - any provider switch (`CLAUDE_CODE_USE_*`).
+- It also refuses when user settings set `apiKeyHelper`.
+- A token read from a well-known path without any variable is a named residual risk, with a fixture.
 - It also refuses when the payload contains `rate_limits.spend_limit`, which only gateway mode emits. A gateway sign-in without `spend_limit` is a residual change 4 risk.
 - The reporter keeps, per session, the account hash each sample was attributed under. If the account read for a session changes (a `/login` elsewhere), it drops that session's samples until `rate_limits` or `current_usage` change afterwards. In-process limits carry no account id, so a residual risk remains and is recorded in change 4.
 - The collector accepts an observation only when its hash matches an explicit Claude account mapping. The mapping gains a provider field, and the user obtains the key from diagnostics, as for Codex.
 
 **Identity.**
 - Collection reads `oauthAccount.{accountUuid, emailAddress}` only. `organizationUuid` is not needed.
+- `~/.claude.json` may hold credentials elsewhere [bin]: `primaryApiKey` after a Console `/login` on a host without a keychain, and MCP `env` or `headers` values. Change 4 extracts only the allowlisted paths (`oauthAccount.accountUuid`, `oauthAccount.emailAddress`, `cachedUsageUtilization`) and never logs, persists or retains other values. It skips the file entirely, attributing nothing, when `primaryApiKey` is present. The AGENTS.md amendment is scoped to these conditions and re-confirmed with the user at the change 4 gate.
 - The email is shown only after the existing hashed mapping check.
 
 **Source time.**
@@ -476,6 +487,8 @@ The user accepted `~/.claude.json` as provider-owned state, not an authenticatio
 - In the per-account file, the newest `sampled_at` per window wins. A write with an older stamp is ignored.
 - So the existing ten-minute rule ages out idle accounts honestly.
 - `cachedUsageUtilization` is a fallback only when its `accountUuid` matches, with `fetchedAtMs` as its source time. It usually fails the ten-minute rule.
+- Change 4 normalises each source: ISO `resets_at` (cache) and epoch seconds (statusLine) both become Unix seconds; the utilisation scale of each source is confirmed by fixture; unrecognised window keys are ignored.
+- The row sample time is the oldest stamp among present windows. The row is stale when that stamp is older than ten minutes. A scenario covers one fresh and one stale window.
 
 **Durations and pacing.**
 - Neither source carries a duration. Change 4 maps the provider window names `five_hour` (18,000 s) and `seven_day` (604,800 s) to durations.
