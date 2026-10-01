@@ -9,8 +9,21 @@ use serde_json::{Value, json};
 
 /// No consumed node: the value is skipped.
 const NONE: u8 = u8::MAX;
-/// Raw bytes kept for one key name or one value capture.
+/// Raw bytes kept for one value capture.
 const CAP: usize = 1024;
+/// Raw bytes kept for one key name: one more than the longest consumed key
+/// written entirely as `\uXXXX` escapes, so a longer name cannot match.
+const NAME: usize = {
+    let mut longest = 0;
+    let mut index = 0;
+    while index < NODES.len() {
+        if NODES[index].1.len() > longest {
+            longest = NODES[index].1.len();
+        }
+        index += 1;
+    }
+    6 * longest + 1
+};
 const DEPTH: usize = 128;
 const WORDS: [&[u8]; 3] = [b"true", b"false", b"null"];
 
@@ -225,7 +238,7 @@ impl Classifier {
     }
     fn record_byte(&mut self, ch: u8) {
         if self.key != 0 {
-            if self.nodes.last().is_some_and(|node| *node != NONE) && self.name.len() <= CAP {
+            if self.nodes.last().is_some_and(|node| *node != NONE) && self.name.len() < NAME {
                 self.name.push(ch);
             }
         } else if self.capture != NONE && self.value.len() <= CAP {
@@ -493,11 +506,12 @@ impl Classifier {
 impl Iterations {
     fn validate(&self) -> bool {
         let safe = |v: &u64| *v <= super::SAFE;
+        let kinds = super::ITERATIONS.len() as u8;
         self.shape <= 2
-            && self.kind <= 4
+            && self.kind <= kinds
             && self
                 .candidate
-                .is_none_or(|(kind, counters)| kind <= 4 && counters.iter().flatten().all(safe))
+                .is_none_or(|(kind, counters)| kind <= kinds && counters.iter().flatten().all(safe))
             && self.counters.iter().flatten().all(safe)
     }
 }
@@ -531,7 +545,7 @@ impl Classifier {
             && (128..=191).contains(&self.hi)
             && self.started <= 1
             && self.done <= 1
-            && self.name.len() <= CAP + 1
+            && self.name.len() <= NAME
             // Only a literal keeps its node across a pass: it holds no bytes.
             && (self.capture == NONE || self.lex == 3 && self.capture < count)
             && self.value.is_empty()
@@ -542,8 +556,8 @@ impl Classifier {
             && (self.lex == 1 || self.key == 0)
             && (self.lex != 3 || (self.index as usize) < WORDS[self.literal as usize].len());
         let record = &self.record;
-        let fields = record.kind <= 5
-            && record.subtype <= 4
+        let fields = record.kind as usize <= super::KINDS.len()
+            && record.subtype as usize <= super::SUBTYPES.len()
             && record.identity <= 2
             && record.stop <= super::STOP_OTHER
             && record.stamp.is_none_or(|stamp| stamp <= super::SAFE)
@@ -824,7 +838,7 @@ mod tests {
             ("lex", json!(1)),
             ("index", json!(4)),
             ("seen", json!(u64::MAX)),
-            ("name", json!(vec![b'a'; CAP + 2])),
+            ("name", json!(vec![b'a'; NAME + 1])),
         ];
         for (field, value) in tampered {
             let mut state = state.clone();
