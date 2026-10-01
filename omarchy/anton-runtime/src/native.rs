@@ -1435,4 +1435,104 @@ mod tests {
         let saved: CheckpointFile = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert!(saved.records.is_empty());
     }
+    /// Clears the per-run cursor fields so a golden comparison is stable.
+    fn normalised(cursors: &Value) -> Value {
+        let mut value = cursors.clone();
+        for cursor in value.as_object_mut().unwrap().values_mut() {
+            cursor["at"] = json!(0);
+            cursor["file"] = json!([0, 0]);
+            if cursor["fingerprint"].is_object() {
+                cursor["fingerprint"]["mtime_us"] = json!(0);
+            }
+        }
+        value
+    }
+    fn codex_agent(session: &str) -> Value {
+        json!({"agent":"codex","agent_session":{"agent":"codex","source":"herdr:codex","kind":"id","value":session}})
+    }
+    /// Codex-only enrichment, cursors and checkpoint rows as produced before
+    /// Claude dispatch existed (`a2b3363`). Any change here changes Codex output.
+    #[test]
+    fn codex_only_enrich_cursor_and_checkpoint_are_unchanged() {
+        let fixture = Fixture::new();
+        let child = |kind: &str, ms: u64| json!({"json":{"type":"event_msg","payload":{"type":"sub_agent_activity","agent_path":"/root/worker","kind":kind,"occurred_at_ms":ms}}});
+        let usage = json!({"json":{"type":"event_msg","timestamp":"2026-01-01T00:00:30+00:00","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":12,"output_tokens":3,"cached_input_tokens":0,"cache_write_input_tokens":4,"total_tokens":185000},"total_token_usage":{"input_tokens":21700000,"output_tokens":4200,"cached_input_tokens":20000000,"cache_write_input_tokens":0},"model_context_window":258400}}}});
+        fixture.write(
+            &[
+                json!({"json":{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-a","started_at":1767225601}}}),
+                child("started", 1_767_225_602_000),
+                child("interrupted", 1_767_225_603_000),
+                json!({"json":{"type":"compacted","payload":{}}}),
+                json!({"json":{"type":"event_msg","payload":{"type":"context_compacted"}}}),
+                usage,
+                json!({"json":{"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-a","started_at":1767225601,"completed_at":1767225620}}}),
+                child("interacted", 1_767_225_621_000),
+                child("completed", 1_767_225_625_000),
+            ],
+            "session",
+        );
+        let mut follower = NativeTelemetry::default();
+        let mut agents = vec![codex_agent("session"), codex_agent("absent")];
+        let cursors = follower.enrich(&mut agents, &json!({}));
+        let mut timing = agents[0]["_native_turn_timing"].clone();
+        timing["observed_at_s"] = json!(0);
+        assert_eq!(
+            json!({"telemetry":agents[0]["_native_telemetry"],"timing":timing,"absent":agents[1],"cursors":normalised(&cursors)}),
+            json!({
+                "absent": codex_agent("absent"),
+                "cursors": {"384ed787d76c0bbd72bc0b86f6a2ea605455237463b18f5ef656c40cd66dbe63": {
+                    "at": 0, "caught_up": true,
+                    "children": {"e75c94502a7fbb74b08bc4ffc5219f31d5d16266272e870171adc0310a3e01f7": "completed"},
+                    "compaction_markers": 1, "compaction_summaries": 1, "compactions_valid": true,
+                    "file": [0, 0],
+                    "fingerprint": {"header": "b35d3bda40a5e3ad26bf99af603b7a02d858f8ca2b6a2a1f96fc1879d77f627c", "mtime_us": 0, "size": 1317, "tail": "850b6772e93a8ef47b0c76a3da0a96bebdeb489af8bdda25e0ece15537eaa6a8"},
+                    "offset": 1317, "seq": 1_767_225_625_000_000_u64, "skipping": false,
+                    "turns": {"active": null, "current_known": true, "finished": {"4ea1a6a42fdcde0801691c1a": [1767225601, 1767225620, "completed"]}, "last": "4ea1a6a42fdcde0801691c1a", "last_duration": 19, "last_end": 1767225620, "last_outcome": "completed", "start": null, "supported": true, "total": 19, "valid": true},
+                    "valid": true
+                }},
+                "telemetry": {
+                    "cache_read": 0, "cache_write": 4, "compactions": 1, "context": 185000, "context_percent": 70,
+                    "event": "session", "input": 12, "model": null, "output_tokens": 3, "phase": "ready", "result": null,
+                    "seq": 1_767_225_630_000_000_u64, "subagent_completed": 1, "subagent_done": 1, "subagent_failed": 0,
+                    "subagent_interrupted": 0, "subagent_running": 0, "subagent_seq": null, "subagent_starts": null,
+                    "subagent_status_seq": 1_767_225_625_000_000_u64, "subagent_stops": null, "subagent_total": 1,
+                    "subagent_unknown": 0, "tool": null, "total_cache_read": 20000000, "total_cache_write": 0,
+                    "total_input": 21700000, "total_output": 4200, "total_uncached_input": 1700000,
+                    "usage_seq": 1_767_225_630_000_000_u64, "usage_source": "codex-rollout", "window": 258400
+                },
+                "timing": {"active": false, "complete": true, "last_duration_s": 19, "last_outcome": "completed", "observed_at_s": 0, "started_at_s": null, "total_finished_duration_s": 19}
+            })
+        );
+        let owner = fixture.root.join(".herdr-observatory-install");
+        std::fs::write(&owner, b"herdr.observatory\n").unwrap();
+        let state = fixture.root.join("state");
+        std::fs::create_dir(&state).unwrap();
+        let mut cache = Checkpoints::new(&state, &owner).unwrap();
+        cache
+            .update(
+                &BTreeMap::from([("test".to_owned(), cursors.clone())]),
+                true,
+            )
+            .unwrap();
+        let saved = std::fs::read_to_string(state.join("replay-checkpoints.json")).unwrap();
+        assert!(!saved.contains("claude"));
+        let file: CheckpointFile = serde_json::from_str(&saved).unwrap();
+        let (key, row) = cursors.as_object().unwrap().iter().next().unwrap();
+        assert_eq!(file.records.len(), 1);
+        assert_eq!(&file.records[0].session, key);
+        assert_eq!(&serde_json::to_value(&file.records[0].cursor).unwrap(), row);
+        let mut cursor = file.records[0].cursor.clone();
+        cursor.at = 0.0;
+        cursor.file = [0, 0];
+        cursor.fingerprint.as_mut().unwrap().mtime_us = 0;
+        assert_eq!(
+            serde_json::to_string(&cursor).unwrap(),
+            concat!(
+                r#"{"file":[0,0],"offset":1317,"children":{"e75c94502a7fbb74b08bc4ffc5219f31d5d16266272e870171adc0310a3e01f7":"completed"},"seq":1767225625000000,"valid":true,"compactions_valid":true,"compaction_markers":1,"compaction_summaries":1,"caught_up":true,"skipping":false,"turns":{"valid":true,"supported":tru"#,
+                r#"e,"current_known":true,"active":null,"start":null,"last":"4ea1a6a42fdcde0801691c1a","last_duration":19,"last_outcome":"completed","last_end":1767225620,"total":19,"finished":{"4ea1a6a42fdcde0801691c1a":[1767225601,1767225620,"completed"]}},"fingerprint":{"size":1317,"mtime_us":0,"header":"b35d3bda40a5e3ad26bf99af603b7a02d858f8ca2b6a2a1f96fc1879d77f627c","tail":"850b6772e93a8ef47b0c76a3da0a96bebdeb489af8bdda25e0ece15537eaa6a8"},"at":0.0}"#
+            )
+        );
+        let again = follower.enrich(&mut agents, &cursors);
+        assert_eq!(normalised(&again), normalised(&cursors));
+    }
 }
