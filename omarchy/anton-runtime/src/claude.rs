@@ -1433,10 +1433,19 @@ pub fn resume(
         .map_err(|_| "Claude session stat failed")?;
     let (mut row, resumed) = match previous {
         Some(row) if row.resumable(&mut stream, &head, &info, time) => (row, true),
-        _ => (
-            Row::new([info.dev(), info.ino()], head.len() as u64, time),
-            false,
-        ),
+        _ => {
+            // D2 tolerates any first record, so a fresh pass applies the
+            // header as the first record; a resumed pass never re-applies it.
+            let mut row = Row::new([info.dev(), info.ino()], head.len() as u64, time);
+            match serde_json::from_slice::<Value>(&head)
+                .ok()
+                .and_then(|value| Record::from_value(&value, id, time))
+            {
+                Some(record) => row.apply(&record),
+                None => row.invalid(),
+            }
+            (row, false)
+        }
     };
     stream
         .seek(SeekFrom::Start(row.offset))
@@ -2253,6 +2262,60 @@ mod replay_tests {
     }
     fn body(lines: &[String]) -> String {
         lines.iter().map(|line| format!("{line}\n")).collect()
+    }
+    #[test]
+    fn replay_applies_a_counted_header_once_on_a_fresh_pass_only() {
+        let fixture = tests::Fixture::new();
+        let deadline = || Instant::now() + Duration::from_secs(5);
+        // A prompt header opens the first turn, which an abort then ends.
+        let interrupt = user(30).replace("synthetic", "[Request interrupted by user]");
+        let path = fixture.file(
+            "entry",
+            &format!("{ID}.jsonl"),
+            &body(&[
+                user(1),
+                assistant("msg_a", 2, "\"tool_use\"", [1, 1, 0, 0]),
+                interrupt,
+                user(40),
+                assistant("msg_b", 41, "\"end_turn\"", [1, 1, 0, 0]),
+                system("turn_duration", 42),
+            ]),
+        );
+        let (row, resumed) = resume(&fixture.projects, &path, ID, None, now(), deadline()).unwrap();
+        assert!(!resumed && row.caught_up);
+        assert!(row.turns.valid && row.turns.supported);
+        assert_eq!(row.turns.total, 31);
+        assert_eq!(row.turns.finished.len(), 2);
+        // An assistant header with usage counts; a resumed pass never re-applies it.
+        let path = fixture.file(
+            "entry",
+            &format!("{ID}.jsonl"),
+            &body(&[
+                assistant("msg_h", 1, "\"end_turn\"", [1000, 0, 0, 0]),
+                assistant("msg_a", 2, "\"end_turn\"", [5, 0, 0, 0]),
+            ]),
+        );
+        let (row, _) = resume(&fixture.projects, &path, ID, None, now(), deadline()).unwrap();
+        assert_eq!(get(&row, "total_uncached_input"), json!(1005));
+        assert_eq!(row.claude.coverage_seq, micros(2));
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        std::io::Write::write_fmt(
+            &mut file,
+            format_args!("{}\n", assistant("msg_b", 3, "\"end_turn\"", [7, 0, 0, 0])),
+        )
+        .unwrap();
+        let (row, resumed) =
+            resume(&fixture.projects, &path, ID, Some(row), now(), deadline()).unwrap();
+        assert!(resumed && row.caught_up);
+        assert_eq!(get(&row, "total_uncached_input"), json!(1012));
+        // A header without a timestamp or metric still feeds nothing.
+        let path = fixture.file("entry", &format!("{ID}.jsonl"), &header());
+        let (row, _) = resume(&fixture.projects, &path, ID, None, now(), deadline()).unwrap();
+        assert_eq!(row.claude.coverage_seq, 0);
+        assert!(row.turns.valid && !row.turns.supported);
     }
     #[test]
     fn replay_resumes_byte_cursor_across_tail_bounded_passes() {
