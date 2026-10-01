@@ -416,12 +416,6 @@ const SUBTYPES: &[&str] = &[
     "turn_duration",
     "stop_hook_summary",
 ];
-const COUNTERS: &[&str] = &[
-    "input_tokens",
-    "output_tokens",
-    "cache_read_input_tokens",
-    "cache_creation_input_tokens",
-];
 
 /// The fields of one record that replay consumes, extracted identically from a
 /// parsed line or by the oversized-line classifier. Strings are hashed or
@@ -480,85 +474,194 @@ const ITERATIONS: &[&str] = &[
     "compaction",
 ];
 
+/// The consumed paths as (parent node, key); node 0 is the record and node
+/// `ITEM` is each element of `message.usage.iterations`. The parsed path and
+/// the oversized-line classifier both convert through `Record::set`.
+pub(crate) const NODES: &[(u8, &str)] = &[
+    (0, ""),
+    (0, "type"),
+    (0, "subtype"),
+    (0, "sessionId"),
+    (0, "uuid"),
+    (0, "timestamp"),
+    (0, "isMeta"),
+    (0, "forkedFrom"),
+    (0, "isCompactSummary"),
+    (0, "message"),
+    (MESSAGE, "id"),
+    (MESSAGE, "model"),
+    (MESSAGE, "stop_reason"),
+    (MESSAGE, "usage"),
+    (USAGE, "input_tokens"),
+    (USAGE, "output_tokens"),
+    (USAGE, "cache_read_input_tokens"),
+    (USAGE, "cache_creation_input_tokens"),
+    (USAGE, "iterations"),
+    (ITERATIONS_NODE, ""),
+    (ITEM, "type"),
+    (ITEM, "input_tokens"),
+    (ITEM, "output_tokens"),
+    (ITEM, "cache_read_input_tokens"),
+    (ITEM, "cache_creation_input_tokens"),
+];
+pub(crate) const MESSAGE: u8 = 9;
+pub(crate) const USAGE: u8 = 13;
+pub(crate) const ITERATIONS_NODE: u8 = 18;
+pub(crate) const ITEM: u8 = 19;
+
+/// The running D4 iteration fold: the compaction flag and the latest element
+/// that is neither advisor nor compaction, as its kind and counters.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Iterations {
+    /// 0 absent or null, 1 an array, 2 any other value.
+    pub shape: u8,
+    pub compaction: bool,
+    pub candidate: Option<(u8, [Option<u64>; 4])>,
+    /// The element being read.
+    pub kind: u8,
+    pub counters: [Option<u64>; 4],
+}
+impl Iterations {
+    /// Sets one field of the element being read.
+    pub(crate) fn set(&mut self, node: u8, value: &Value) {
+        match node {
+            20 => self.kind = index(ITERATIONS, value.as_str()),
+            21..=24 => self.counters[(node - 21) as usize] = common::number(value),
+            _ => {}
+        }
+    }
+    /// Folds the element being read into the running selection.
+    pub(crate) fn push(&mut self) {
+        if self.kind == 4 {
+            self.compaction = true;
+        }
+        if ![3, 4].contains(&self.kind) {
+            self.candidate = Some((self.kind, self.counters));
+        }
+        self.kind = 0;
+        self.counters = [None; 4];
+    }
+}
+
 impl Record {
+    /// Sets one consumed scalar field from its JSON value. A container value
+    /// arrives as an empty object or array of the same kind.
+    pub(crate) fn set(&mut self, node: u8, value: &Value, id: &str, time: f64) {
+        let wrap = |key: &str| json!({ key: value });
+        match node {
+            1 => self.kind = index(KINDS, value.as_str()),
+            2 => self.subtype = index(SUBTYPES, value.as_str()),
+            3 => {
+                self.identity = match session_identity(&wrap("sessionId"), id) {
+                    Identity::Absent => IDENTITY_ABSENT,
+                    Identity::Match => IDENTITY_MATCH,
+                    Identity::Mismatch => IDENTITY_MISMATCH,
+                }
+            }
+            4 => {
+                self.uuid = value
+                    .as_str()
+                    .filter(|uuid| safe_id(uuid, 128))
+                    .map(|uuid| turn_key(id, uuid))
+            }
+            5 => {
+                self.stamp = value
+                    .as_str()
+                    .and_then(timestamp_us)
+                    .filter(|stamp| *stamp <= horizon(time))
+            }
+            6 => self.meta = *value == true,
+            7 => self.forked = forked(&wrap("forkedFrom")),
+            8 => self.compact_summary = !value.is_null() && *value != false,
+            10 => {
+                self.message = value
+                    .as_str()
+                    .filter(|id| safe_id(id, 128))
+                    .map(|id| common::sha256(id.as_bytes()))
+            }
+            11 => {
+                self.synthetic = value == "<synthetic>";
+                self.model = value
+                    .as_str()
+                    .filter(|model| telemetry::safe_model(model))
+                    .map(str::to_owned);
+            }
+            12 => {
+                self.stop = match value {
+                    Value::Null => STOP_NULL,
+                    Value::String(stop) if stop == "end_turn" => STOP_END_TURN,
+                    Value::String(stop) if stop == "tool_use" => STOP_TOOL_USE,
+                    Value::String(_) => STOP_OTHER,
+                    _ => 0,
+                }
+            }
+            14..=17 => self.usage[(node - 14) as usize] = common::number(value),
+            _ => {}
+        }
+    }
+    /// Completes a record once every field is set: assistant-only fields are
+    /// cleared on other types and the D4 selection and `bad` flag are derived.
+    pub(crate) fn finish(&mut self, message_object: bool, iterations: &Iterations) {
+        if self.kind != KIND_ASSISTANT {
+            *self = Self {
+                kind: self.kind,
+                subtype: self.subtype,
+                identity: self.identity,
+                forked: self.forked,
+                compact_summary: self.compact_summary,
+                meta: self.meta,
+                stamp: self.stamp,
+                uuid: self.uuid.take(),
+                ..Self::default()
+            };
+            return;
+        }
+        self.compaction_iteration = iterations.compaction;
+        self.selected = iterations
+            .candidate
+            .and_then(|(kind, counters)| select(kind, counters));
+        self.bad = !message_object
+            || self.message.is_none()
+            || self.stop == 0
+            || self.stamp.is_none()
+            || iterations.shape == 2;
+    }
     /// Extracts a parsed line; `None` when the line is not a JSON object.
     pub fn from_value(value: &Value, id: &str, time: f64) -> Option<Self> {
         value.as_object()?;
-        let text = |value: &Value| value.as_str().map(str::to_owned);
-        let mut record = Self {
-            kind: index(KINDS, value["type"].as_str()),
-            subtype: index(SUBTYPES, value["subtype"].as_str()),
-            identity: match session_identity(value, id) {
-                Identity::Absent => IDENTITY_ABSENT,
-                Identity::Match => IDENTITY_MATCH,
-                Identity::Mismatch => IDENTITY_MISMATCH,
-            },
-            forked: forked(value),
-            compact_summary: value
-                .get("isCompactSummary")
-                .is_some_and(|v| !v.is_null() && *v != false),
-            meta: value["isMeta"] == true,
-            stamp: value["timestamp"]
-                .as_str()
-                .and_then(timestamp_us)
-                .filter(|stamp| *stamp <= horizon(time)),
-            uuid: value["uuid"]
-                .as_str()
-                .filter(|uuid| safe_id(uuid, 128))
-                .map(|uuid| turn_key(id, uuid)),
-            ..Self::default()
-        };
-        if record.kind != KIND_ASSISTANT {
-            return Some(record);
+        let mut record = Self::default();
+        let mut iterations = Iterations::default();
+        for (node, (parent, key)) in NODES.iter().enumerate() {
+            let parent = match *parent {
+                0 => value,
+                MESSAGE => &value["message"],
+                USAGE => &value["message"]["usage"],
+                _ => continue,
+            };
+            if let Some(field) = parent.as_object().and_then(|object| object.get(*key)) {
+                record.set(node as u8, field, id, time);
+            }
         }
-        let message = &value["message"];
-        let model = text(&message["model"]);
-        record.synthetic = model.as_deref() == Some("<synthetic>");
-        record.model = model.filter(|model| telemetry::safe_model(model));
-        record.message = message["id"]
-            .as_str()
-            .filter(|id| safe_id(id, 128))
-            .map(|id| common::sha256(id.as_bytes()));
-        record.stop = match message.get("stop_reason") {
-            Some(Value::Null) => STOP_NULL,
-            Some(Value::String(stop)) if stop == "end_turn" => STOP_END_TURN,
-            Some(Value::String(stop)) if stop == "tool_use" => STOP_TOOL_USE,
-            Some(Value::String(_)) => STOP_OTHER,
-            _ => 0,
-        };
-        let usage = &message["usage"];
-        for (slot, name) in record.usage.iter_mut().zip(COUNTERS) {
-            *slot = common::number(&usage[*name]);
-        }
-        let mut iterations_bad = false;
-        match usage.get("iterations") {
+        match value.pointer("/message/usage/iterations") {
             None | Some(Value::Null) => {}
             Some(Value::Array(list)) => {
-                let kinds: Vec<u8> = list
-                    .iter()
-                    .map(|v| index(ITERATIONS, v["type"].as_str()))
-                    .collect();
-                record.compaction_iteration = kinds.contains(&4);
-                record.selected = list
-                    .iter()
-                    .zip(&kinds)
-                    .rev()
-                    .find(|(_, kind)| ![3, 4].contains(*kind))
-                    .and_then(|(iteration, kind)| {
-                        let mut counters = [None; 4];
-                        for (slot, name) in counters.iter_mut().zip(COUNTERS) {
-                            *slot = common::number(&iteration[*name]);
+                iterations.shape = 1;
+                for item in list {
+                    for (node, (parent, key)) in NODES.iter().enumerate() {
+                        if *parent == ITEM
+                            && let Some(field) =
+                                item.as_object().and_then(|object| object.get(*key))
+                        {
+                            iterations.set(node as u8, field);
                         }
-                        select(*kind, counters)
-                    });
+                    }
+                    iterations.push();
+                }
             }
-            Some(_) => iterations_bad = true,
+            Some(_) => iterations.shape = 2,
         }
-        record.bad = !message.is_object()
-            || record.message.is_none()
-            || record.stop == 0
-            || record.stamp.is_none()
-            || iterations_bad;
+        record.finish(value["message"].is_object(), &iterations);
         Some(record)
     }
 }
