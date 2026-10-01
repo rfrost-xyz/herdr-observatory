@@ -15,7 +15,8 @@ omarchy/herdr.observatory/README.md for current operation.
   no fallback to another host. Preserve most-recent matching window behaviour.
 - Required Pi reporters may read `pane.get` and write bounded owned presentation
   metadata through `pane.report_metadata`. Native Herdr remains authoritative.
-  Codex enrichment belongs to collection, not synchronous Observatory callbacks.
+  Codex and Claude Code enrichment belong to collection, not synchronous
+  Observatory callbacks.
 - No Python or Docker subprocess, web listener, independent daemon or autostart
   service is part of the supported plugin. QML owns the Rust collector lifetime.
   Peers are invoked over existing authenticated SSH and exit after bounded work.
@@ -44,24 +45,32 @@ not add features or compatibility work to the retired web application.
 ## Native data contracts
 
 - Validate exact native session identity/header, session-root confinement,
-  ownership and every symlink boundary before reading Codex records. Bound
-  discovery, file reads, line/envelope parsing, total work and caches.
+  ownership and every symlink boundary before reading Codex or Claude Code
+  records. Bound discovery, file reads, line/envelope parsing, total work and
+  caches. Claude Code binds Herdr's session id to exactly one transcript;
+  ambiguous, truncated, forked or predecessor bindings stay unknown, and split
+  responses count once.
 - Cumulative input/output/cache/uncached counters have session scope; last-response
   values have response scope. Preserve original source timestamps. Pi input
   excludes cache buckets at source: include read/write in total input while
-  retaining source input as uncached. Missing complete totals remain unknown.
+  retaining source input as uncached; Claude Code follows the same partition.
+  Missing complete totals remain unknown.
 - Codex context uses its verified baseline reserve; Pi uses supported context
-  API. Compactions require complete bounded coverage. Repeated or reset counters
+  API. Claude Code context has no window or percentage without a compliant
+  window source; never invent one from a model table. Compactions require complete bounded coverage. Repeated or reset counters
   cannot create activity. Reported old values remain last-known for the same
   bound live session; session replacement invalidates them.
-- Codex completion is based on typed native child lifecycle evidence and bounded
-  hashed associations, never start/stop hook ratios. Resumed work invalidates old
+- Codex and Claude Code completion is based on typed native child lifecycle
+  evidence (Claude Code: structured launch, resume and task-notification
+  records) and bounded hashed associations, never start/stop hook ratios. Resumed work invalidates old
   completion. Outcome partitions must sum coherently; older total/done-only
   metadata remains usable without inventing running children. No raw child IDs,
   names, prompts or results enter popover/peer telemetry.
 - Turn timing uses validated saved Unix-second starts/completions/aborts, includes
   waits inside turns, excludes idle gaps and counts each interval once. Never
-  substitute `duration_ms`. Incomplete accumulated coverage stays unknown.
+  substitute `duration_ms` or `durationMs`. Claude Code joins queued input to a
+  turn only with queue evidence; silent turn ends make coverage unknown.
+  Incomplete accumulated coverage stays unknown.
 - Native metadata v2 uses immutable four numeric groups plus named provenance,
   child/completion/outcome fields within 16 report keys and 80 characters/value.
   Never split a coherent report across equal sequence writes or mix wire versions.
