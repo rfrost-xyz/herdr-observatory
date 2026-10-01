@@ -6,8 +6,8 @@
 //! never saved.
 use super::text::{LIMIT, Text, WIDE};
 use super::{
-    ATTACHMENT, BLOCK, Blocks, CONTENT, FRAMES, ITEM, ITERATIONS_NODE, Iterations, MESSAGE, NODES,
-    ORIGIN, PROMPT, Record, TEXT_NODES, TOOL, USAGE,
+    ATTACHMENT, BLOCK, Blocks, COMPACT_SUMMARY, CONTENT, FORKED, FRAMES, INTERRUPTED, ITEM,
+    ITERATIONS_NODE, Iterations, MESSAGE, NODES, ORIGIN, PROMPT, Record, TEXT_NODES, TOOL, USAGE,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -30,6 +30,9 @@ const NAME: usize = {
     6 * longest + 1
 };
 const DEPTH: usize = 128;
+/// Nodes whose non-null, non-false value only signals presence, so a string
+/// of any length is recorded at its start and never buffered.
+const PRESENCE: [u8; 5] = [FORKED, COMPACT_SUMMARY, ORIGIN, TOOL, INTERRUPTED];
 const WORDS: [&[u8]; 3] = [b"true", b"false", b"null"];
 
 /// How a classified record is applied to replay state.
@@ -560,6 +563,10 @@ impl Classifier {
                         self.lex = 1;
                         self.key = 0;
                         self.capture = capture;
+                        if PRESENCE.contains(&capture) {
+                            self.scalar(capture, &json!(""), id, time);
+                            self.capture = NONE;
+                        }
                         self.value.clear();
                         self.scan.clear();
                     }
@@ -1179,6 +1186,44 @@ mod tests {
         assert_eq!(record.identity, super::super::IDENTITY_MISMATCH);
         let fork = lines[10].replacen("msg_a", &long, 1);
         assert!(matches!(whole(fork.as_bytes()), Outcome::Record(record) if record.forked));
+    }
+
+    #[test]
+    fn classifier_reads_presence_only_fields_of_any_string_length() {
+        let long =
+            serde_json::to_string(&format!("Error: {}\n\u{e9}", "q".repeat(2 * CAP))).unwrap();
+        let message = "\"message\":{\"role\":\"user\",\"content\":\"x\"}";
+        for key in [
+            "toolUseResult",
+            "interruptedMessageId",
+            "isCompactSummary",
+            "forkedFrom",
+            "origin",
+        ] {
+            let line = user(&format!("\"{key}\":{long},{message}"));
+            let expected = expected(&line);
+            assert!(matches!(&expected, Outcome::Record(_)), "{key}");
+            assert_eq!(whole(line.as_bytes()), expected, "{key}");
+            // A pass boundary inside the value loses nothing either.
+            for into in [3, CAP, CAP + 9] {
+                let parts = split(&line, "Error: ", into);
+                assert_eq!(classify(&parts, true), expected, "{key} {into}");
+            }
+        }
+        for (node, key) in [
+            (FORKED, "forkedFrom"),
+            (COMPACT_SUMMARY, "isCompactSummary"),
+            (ORIGIN, "origin"),
+            (TOOL, "toolUseResult"),
+            (INTERRUPTED, "interruptedMessageId"),
+        ] {
+            assert_eq!(NODES[node as usize], (0, key));
+        }
+        // Literals keep their exact meaning.
+        for value in ["false", "null", "true"] {
+            let line = user(&format!("\"isCompactSummary\":{value},{message}"));
+            assert_eq!(whole(line.as_bytes()), expected(&line), "{value}");
+        }
     }
 
     #[test]

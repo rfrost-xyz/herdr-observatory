@@ -627,6 +627,8 @@ pub(crate) const NODES: &[(u8, &str)] = &[
     (BLOCK, "text"),
     (0, "operation"),
 ];
+pub(crate) const FORKED: u8 = 7;
+pub(crate) const COMPACT_SUMMARY: u8 = 8;
 pub(crate) const MESSAGE: u8 = 9;
 pub(crate) const USAGE: u8 = 13;
 pub(crate) const ITERATIONS_NODE: u8 = 18;
@@ -804,8 +806,8 @@ impl Record {
                     .filter(|stamp| *stamp <= horizon(time))
             }
             6 => self.meta = *value == true,
-            7 => self.forked = forked(&wrap("forkedFrom")),
-            8 => self.compact_summary = !value.is_null() && *value != false,
+            FORKED => self.forked = forked(&wrap("forkedFrom")),
+            COMPACT_SUMMARY => self.compact_summary = !value.is_null() && *value != false,
             10 => {
                 self.message = value
                     .as_str()
