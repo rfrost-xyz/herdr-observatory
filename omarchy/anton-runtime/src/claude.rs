@@ -18,6 +18,9 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 mod classifier;
+// Wired into record extraction by the next commit.
+#[allow(dead_code)]
+mod text;
 pub use classifier::{Classifier, Outcome};
 
 const LINE: usize = 65536;
