@@ -828,6 +828,7 @@ impl NativeTelemetry {
                 match claude::predecessor(&path, session, &mut budget) {
                     claude::Predecessor::Clear { growing } => (Some(path), growing),
                     claude::Predecessor::Unknown => (None, false),
+                    claude::Predecessor::Truncated => (None, true),
                 }
             }
             claude::Discovery::Truncated => (None, true),

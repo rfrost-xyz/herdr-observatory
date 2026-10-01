@@ -85,8 +85,9 @@ fn session(root: &Path, path: &Path, counts: &mut Counts) {
                 Predecessor::Clear { growing: false } => counts.tick("bind.predecessor.clear"),
                 Predecessor::Clear { growing: true } => counts.tick("bind.predecessor.growing"),
                 Predecessor::Unknown => counts.tick("bind.predecessor.unknown"),
+                Predecessor::Truncated => counts.tick("bind.predecessor.truncated"),
             }
-            bound = result != Predecessor::Unknown;
+            bound = matches!(result, Predecessor::Clear { .. });
             successors(path, id, &result, counts);
         }
         Discovery::Found(_) => counts.tick("bind.found_other"),
@@ -401,6 +402,7 @@ fn successors(path: &Path, id: &str, result: &Predecessor, counts: &mut Counts) 
         Predecessor::Clear { growing: false } => "clear",
         Predecessor::Clear { growing: true } => "growing",
         Predecessor::Unknown => "unknown",
+        Predecessor::Truncated => "truncated",
     };
     let (Some(directory), Ok(own)) = (path.parent(), std::fs::metadata(path)) else {
         return counts.tick(format!("successor.{prefix}.uninspectable"));

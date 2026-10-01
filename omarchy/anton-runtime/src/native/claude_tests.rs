@@ -584,3 +584,26 @@ fn child_status_unknown_is_accepted_on_claude_rows_only() {
     let valid = validate_cursors(&rows);
     assert!(valid.contains_key(&key()) && !valid.contains_key(&codex_key));
 }
+
+#[test]
+fn claude_truncated_predecessor_scan_is_rescanned_not_cached() {
+    let fixture = Fixture::new();
+    fixture.write(&session());
+    // Discovery takes one entry; the predecessor scan of the bound file's
+    // directory then exhausts the shared 8192-entry budget.
+    let directory = fixture.projects.join("entry-a");
+    for index in 0..8200 {
+        std::fs::write(directory.join(format!("pad-{index}")), b"").unwrap();
+    }
+    let mut follower = NativeTelemetry::default();
+    let (telemetry, _, cursors) = enrich(&mut follower, &json!({}));
+    assert!(telemetry.is_null() && cursors == json!({}));
+    let binding = &follower.claude[&key()];
+    assert!(binding.path.is_none() && binding.rescan);
+    // The next pass, well within 60 s, rescans and binds.
+    for index in 0..8200 {
+        std::fs::remove_file(directory.join(format!("pad-{index}"))).unwrap();
+    }
+    let (telemetry, _, _) = enrich(&mut follower, &json!({}));
+    assert_eq!(totals(&telemetry), json!([3461, 111, 3300, 50, 26]));
+}

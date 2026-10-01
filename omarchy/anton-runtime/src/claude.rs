@@ -113,8 +113,12 @@ pub enum Predecessor {
     /// No successor names the bound id. `growing` is set when a candidate ended
     /// within the bound with no `session_id`; that result must not be cached.
     Clear { growing: bool },
-    /// A successor names the bound id, or the scan could not decide.
+    /// A successor names the bound id, a candidate exceeds 256 KiB or 512
+    /// records, or the bound file or a candidate is unsafe or unparseable.
     Unknown,
+    /// The scan ran out of entries or time, or hit an IO error. Like a
+    /// truncated discovery, this result is unknown and must not be cached.
+    Truncated,
 }
 
 /// D1 predecessor check after `/clear`: every `.jsonl` file in the bound file's
@@ -135,22 +139,22 @@ pub fn predecessor(path: &Path, id: &str, budget: &mut Budget) -> Predecessor {
         return Predecessor::Unknown;
     }
     let Ok(entries) = std::fs::read_dir(directory) else {
-        return Predecessor::Unknown;
+        return Predecessor::Truncated;
     };
     let mut growing = false;
     for entry in entries {
         if !budget.take() {
-            return Predecessor::Unknown;
+            return Predecessor::Truncated;
         }
         let Ok(entry) = entry else {
-            return Predecessor::Unknown;
+            return Predecessor::Truncated;
         };
         let name = entry.file_name();
         if name == own || !name.to_string_lossy().ends_with(".jsonl") {
             continue;
         }
         let Ok(info) = entry.metadata() else {
-            return Predecessor::Unknown;
+            return Predecessor::Truncated;
         };
         if info.is_dir() {
             continue;
@@ -162,9 +166,9 @@ pub fn predecessor(path: &Path, id: &str, budget: &mut Budget) -> Predecessor {
             continue;
         }
         match first_session_id(&entry.path(), id, budget) {
-            Some(Successor::Ended) => growing = true,
-            Some(Successor::Other) => {}
-            None => return Predecessor::Unknown,
+            Ok(Successor::Ended) => growing = true,
+            Ok(Successor::Other) => {}
+            Err(result) => return result,
         }
     }
     Predecessor::Clear { growing }
@@ -177,29 +181,42 @@ enum Successor {
     Other,
 }
 
-/// Cases 2 (bound exhausted) and 3 (first `session_id` is the bound id) and any
-/// unreadable or unparseable record return `None`.
-fn first_session_id(path: &Path, id: &str, budget: &Budget) -> Option<Successor> {
-    let mut stream = BufReader::new(common::open_owned(path, false, false).ok()?);
+/// Cases 2 (bound exhausted) and 3 (first `session_id` is the bound id), and an
+/// unsafe candidate or unparseable record, return `Unknown`. The time budget
+/// running out or a read error returns `Truncated`.
+fn first_session_id(
+    path: &Path,
+    id: &str,
+    budget: &Budget,
+) -> std::result::Result<Successor, Predecessor> {
+    let file = common::open_owned(path, false, false).map_err(|_| Predecessor::Unknown)?;
+    let mut stream = BufReader::new(file);
     let mut consumed = 0;
     for _ in 0..SUCCESSOR_RECORDS {
         let remaining = SUCCESSOR_BYTES - consumed;
-        if remaining == 0 || budget.expired() {
-            return None;
+        if remaining == 0 {
+            return Err(Predecessor::Unknown);
         }
-        let bytes = line(&mut stream, remaining).ok()?;
+        if budget.expired() {
+            return Err(Predecessor::Truncated);
+        }
+        let bytes = line(&mut stream, remaining).map_err(|_| Predecessor::Truncated)?;
         consumed += bytes.len();
         if bytes.last() != Some(&b'\n') {
-            return (bytes.len() < remaining).then_some(Successor::Ended);
+            return if bytes.len() < remaining {
+                Ok(Successor::Ended)
+            } else {
+                Err(Predecessor::Unknown)
+            };
         }
-        let record: Value = serde_json::from_slice(&bytes).ok()?;
+        let record: Value = serde_json::from_slice(&bytes).map_err(|_| Predecessor::Unknown)?;
         match record.get("session_id") {
             None => {}
-            Some(Value::String(value)) if value != id => return Some(Successor::Other),
-            Some(_) => return None,
+            Some(Value::String(value)) if value != id => return Ok(Successor::Other),
+            Some(_) => return Err(Predecessor::Unknown),
         }
     }
-    None
+    Err(Predecessor::Unknown)
 }
 
 /// D2: the path must be exactly `<root>/<entry>/<id>.jsonl`, opened without
@@ -1777,11 +1794,11 @@ mod tests {
         );
         assert_eq!(
             predecessor(&bound, ID, &mut Budget::with_entries(2, far)),
-            Predecessor::Unknown
+            Predecessor::Truncated
         );
         assert_eq!(
             predecessor(&bound, ID, &mut Budget::new(Instant::now())),
-            Predecessor::Unknown
+            Predecessor::Truncated
         );
         std::fs::remove_file(&next).unwrap();
         let elsewhere = fixture.file(
