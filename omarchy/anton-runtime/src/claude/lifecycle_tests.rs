@@ -897,3 +897,285 @@ fn turns_after_an_unjoined_trigger_publish_nothing_until_a_proven_end() {
     );
     assert_eq!(row.turns.last_duration, Some(10));
 }
+
+/// Applies one parsed line, or `invalid()` for a non-JSON line, then checks
+/// the state every pass boundary must accept.
+fn step(row: &mut Row, line: Option<&String>, trail: &[Option<String>]) {
+    match line {
+        Some(line) => {
+            let value: Value = serde_json::from_str(line).unwrap();
+            row.apply(&Record::from_value(&value, ID, now()).unwrap());
+        }
+        None => row.invalid(),
+    }
+    assert!(row.gate(now()), "rejected after {trail:#?}");
+}
+fn steps(lines: &[Option<String>]) -> Row {
+    let mut row = Row::new([1, 2], 0, now());
+    for (index, line) in lines.iter().enumerate() {
+        step(&mut row, line.as_ref(), &lines[..=index]);
+    }
+    row
+}
+/// Nothing is current and no interval is the last since `last`.
+fn lost(row: &Row, last: Option<&str>) {
+    assert!(
+        !row.turns.valid && !row.turns.current_known,
+        "{:?}",
+        row.turns
+    );
+    assert!(row.turns.active.is_none() && row.turns.start.is_none());
+    assert!(row.claude.pending_start.is_none() && !row.claude.queued_since_start);
+    let key = last.map(|uuid| turn_key(ID, uuid));
+    assert_eq!(row.turns.last, key);
+}
+
+#[test]
+fn turns_lost_mid_turn_publish_no_truncated_interval() {
+    let opened = [
+        user(10, "hello", ""),
+        assistant(11, "msg_a", "\"tool_use\""),
+    ];
+    let bad = user(12, "next", "").replace(&stamp(12), "not-a-time");
+    let epoch = user(12, "next", "").replace(&stamp(12), "1970-01-01T00:00:00.500Z");
+    let unknown = user(12, "x", "\"origin\":{\"kind\":\"future-kind\"}");
+    // A: unknown origin; B: a non-JSON line; C: triggers without a stamp.
+    for (case, lost_at, rest) in [
+        ("A", Some(unknown), vec![]),
+        ("B", None, vec![]),
+        (
+            "C",
+            Some(bad),
+            vec![queue(14), dequeue(15), user(16, "queued", "")],
+        ),
+        ("C0", Some(epoch), vec![]),
+    ] {
+        let mut lines: Vec<Option<String>> = opened.iter().cloned().map(Some).collect();
+        lines.push(lost_at);
+        lines.extend(
+            [
+                assistant(13, "msg_b", "\"tool_use\""),
+                notified(17, "agent-x", "completed"),
+            ]
+            .map(Some),
+        );
+        lines.extend(rest.into_iter().map(Some));
+        lines.push(Some(assistant(18, "msg_c", "\"end_turn\"")));
+        // While the real turn may still run, no late trigger is its start.
+        let row = steps(&lines);
+        lost(&row, None);
+        assert!(row.claude.ambiguous, "{case}");
+        lines.push(Some(system("turn_duration", 30)));
+        let row = steps(&lines);
+        lost(&row, None);
+        assert!(!row.claude.ambiguous, "{case}");
+        // The next trigger after that proven end opens a turn normally.
+        lines.extend(
+            [
+                user(40, "again", ""),
+                assistant(41, "msg_d", "\"tool_use\""),
+            ]
+            .map(Some),
+        );
+        let row = steps(&lines);
+        assert_eq!(row.turns.start, Some(second(40)), "{case}");
+        assert!(row.turns.current_known && !row.turns.valid, "{case}");
+    }
+}
+
+#[test]
+fn turns_lost_while_idle_keep_later_turns_publishable() {
+    let mut lines: Vec<Option<String>> = [
+        user(1, "hello", ""),
+        assistant(2, "msg_a", "\"end_turn\""),
+        system("turn_duration", 3),
+    ]
+    .map(Some)
+    .to_vec();
+    // An unparseable line between turns loses no running turn.
+    lines.push(None);
+    lines.extend([user(10, "next", ""), assistant(11, "msg_b", "\"tool_use\"")].map(Some));
+    let row = steps(&lines);
+    assert!(!row.claude.ambiguous && row.turns.current_known);
+    assert_eq!(row.turns.start, Some(second(10)));
+    // D: an unrecognised origin may itself have opened a turn.
+    let mut lines = lines[..3].to_vec();
+    lines.extend(
+        [
+            user(10, "x", "\"origin\":{\"kind\":\"future-kind\"}"),
+            assistant(11, "msg_b", "\"tool_use\""),
+            notified(14, "agent-x", "completed"),
+            assistant(15, "msg_c", "\"end_turn\""),
+            system("turn_duration", 30),
+        ]
+        .map(Some),
+    );
+    let row = steps(&lines);
+    lost(&row, Some("user-1"));
+    assert_eq!(row.turns.last_duration, Some(2));
+}
+
+#[test]
+fn turns_rejected_start_is_lost_with_its_queue_evidence() {
+    let ended = [
+        user(10, "hello", ""),
+        assistant(11, "msg_a", "\"tool_use\""),
+        system("turn_duration", 20),
+    ];
+    // E: a start before the previous end; F: with a dequeue while pending;
+    // G: a repeated uuid of a finished turn.
+    for (case, trigger, queued) in [
+        ("E", user(15, "next", ""), false),
+        ("F", user(15, "next", ""), true),
+        ("G", user(10, "hello", ""), true),
+    ] {
+        let mut lines: Vec<Option<String>> = ended.iter().cloned().map(Some).collect();
+        lines.push(Some(trigger));
+        if queued {
+            lines.push(Some(dequeue(16)));
+        }
+        lines.push(Some(assistant(21, "msg_b", "\"tool_use\"")));
+        let row = steps(&lines);
+        lost(&row, Some("user-10"));
+        assert!(row.claude.ambiguous, "{case}");
+        lines.extend(
+            [
+                notified(22, "agent-x", "completed"),
+                assistant(23, "msg_c", "\"end_turn\""),
+                system("turn_duration", 30),
+            ]
+            .map(Some),
+        );
+        let row = steps(&lines);
+        lost(&row, Some("user-10"));
+        assert_eq!(row.turns.last_duration, Some(10), "{case}");
+    }
+    // An abort that confirms a rejected start is still a proven end.
+    let mut lines: Vec<Option<String>> = ended.iter().cloned().map(Some).collect();
+    lines.extend(
+        [
+            user(15, "next", ""),
+            user(16, "[Request interrupted by user]", ""),
+            user(40, "again", ""),
+            assistant(41, "msg_d", "\"tool_use\""),
+        ]
+        .map(Some),
+    );
+    let row = steps(&lines);
+    assert!(!row.claude.ambiguous && row.turns.current_known);
+    assert_eq!(row.turns.start, Some(second(40)));
+}
+
+#[test]
+fn turns_rejected_start_at_a_pass_boundary_still_catches_up() {
+    // H: about 800 KiB after a rejected start with queue evidence, so the
+    // first pass boundary falls inside that state.
+    let fixture = super::tests::Fixture::new();
+    let pad = "p".repeat(8000);
+    let mut lines = vec![record("system", 1, "\"subtype\":\"init\"")];
+    lines.extend([
+        user(10, "hello", ""),
+        assistant(11, "msg_a", "\"end_turn\""),
+        system("turn_duration", 20),
+        user(15, "next", ""),
+        dequeue(16),
+        assistant(21, "msg_b", "\"tool_use\""),
+    ]);
+    lines.extend((0..100).map(|n| record("progress", 30 + n, &format!("\"data\":\"{pad}\""))));
+    // The lost turn's own end, then a turn that publishes normally.
+    lines.extend([
+        system("turn_duration", 190),
+        user(200, "again", ""),
+        assistant(201, "msg_c", "\"tool_use\""),
+    ]);
+    let text = lines.join("\n") + "\n";
+    assert!(text.len() > TAIL);
+    let path = fixture.file("slug-a", &format!("{ID}.jsonl"), &text);
+    let deadline = || std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut row = None;
+    let mut restarts = 0;
+    for _ in 0..4 {
+        let (next, resumed) =
+            resume(&fixture.projects, &path, ID, row.take(), now(), deadline()).unwrap();
+        restarts += usize::from(!resumed);
+        row = Some(next);
+    }
+    let row = row.unwrap();
+    assert_eq!(restarts, 1);
+    assert!(row.caught_up && row.offset == text.len() as u64);
+    assert!(!row.claude.ambiguous && row.turns.current_known);
+    assert_eq!(row.turns.start, Some(second(200)));
+    let (_, resumed) = resume(&fixture.projects, &path, ID, Some(row), now(), deadline()).unwrap();
+    assert!(resumed);
+}
+
+/// A deterministic xorshift sequence, so a failure always reproduces.
+struct Seeded(u64);
+impl Seeded {
+    fn below(&mut self, n: u64) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0 % n
+    }
+}
+
+#[test]
+fn turns_fuzzed_replay_states_stay_resumable() {
+    for seed in [
+        0x9e37_79b9_7f4a_7c15,
+        0x2545_f491_4f6c_dd1d,
+        0x1234_5678_9abc_def1,
+    ] {
+        let mut random = Seeded(seed);
+        for _ in 0..1500 {
+            let (mut at, mut message) = (100u64, 0);
+            let mut lines: Vec<Option<String>> = vec![];
+            for index in 0..5 + random.below(30) {
+                at = match random.below(6) {
+                    0 => at.saturating_sub(random.below(8)),
+                    1 => at,
+                    _ => at + random.below(5),
+                };
+                message += u64::from(random.below(5) == 0);
+                let id = format!("msg_{message}");
+                let line = match random.below(22) {
+                    0..=2 => user(at, "prompt", ""),
+                    3 => user(at, "[Request interrupted by user]", ""),
+                    4 => assistant(at, &id, "\"tool_use\""),
+                    5 => assistant(at, &id, "\"end_turn\""),
+                    6 => assistant(at, &id, "null"),
+                    7 => system("turn_duration", at),
+                    8 => system("stop_hook_summary", at),
+                    9 => dequeue(at),
+                    10 => queue(at),
+                    11 => operation(at, "remove"),
+                    12 => user(at, "<command-name>/x</command-name>", ""),
+                    13 => queued(at, "prompt", "later"),
+                    14 => notified(at, "agent-x", "completed"),
+                    15 => user(at, "x", "\"origin\":{\"kind\":\"future-kind\"}"),
+                    16 => user(at, "late", "").replace(&stamp(at), "not-a-time"),
+                    17 => user(at, "zero", "").replace(&stamp(at), "1970-01-01T00:00:00.500Z"),
+                    18 => user(at, "anon", "").replace(&format!("\"sessionId\":\"{ID}\","), ""),
+                    19 => assistant(at, &id, "null").replacen(
+                        "\"message\"",
+                        "\"isAbortedMidStream\":true,\"message\"",
+                        1,
+                    ),
+                    20 => String::new(),
+                    _ => user(at, "peer", "\"isMeta\":true,\"origin\":{\"kind\":\"peer\"}"),
+                };
+                // Unique uuids except an occasional repeat.
+                let line = (!line.is_empty()).then(|| {
+                    if random.below(15) == 0 {
+                        line
+                    } else {
+                        line.replacen(&format!("-{at}\""), &format!("-{at}-{index}\""), 1)
+                    }
+                });
+                lines.push(line);
+            }
+            steps(&lines);
+        }
+    }
+}

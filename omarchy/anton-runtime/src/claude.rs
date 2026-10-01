@@ -362,8 +362,10 @@ pub struct ClaudeCursor {
     pub pending_start: Option<(String, u64)>,
     pub abort_adjacent: bool,
     pub queued_since_start: bool,
-    /// An unjoined trigger arrived during an active turn, which may still be
-    /// running: no turn opens until `turn_duration` or an abort proves an end.
+    /// Turn coverage was lost where a turn may still be running (an unjoined
+    /// trigger during a turn, an unrecognised origin, a trigger without a
+    /// stamp or key, a rejected start, or a failed record during a turn): no
+    /// turn opens until `turn_duration` or an abort proves an end.
     pub ambiguous: bool,
     /// The oversized-record classifier while a line over `LINE` is being read.
     #[serde(deserialize_with = "Option::deserialize")]
@@ -1061,7 +1063,7 @@ impl Row {
     pub fn invalid(&mut self) {
         self.valid = false;
         self.compactions_valid = false;
-        self.turns_unknown();
+        self.lose_turn();
         self.fail_totals();
     }
     /// D3 coverage table for a relevant record that cannot be classified.
@@ -1074,7 +1076,19 @@ impl Row {
             // one can only make turns unknown later; it needs no arm.
             _ => return,
         }
+        self.lose_turn();
+    }
+    /// Turn coverage is lost where a turn may still be running: no later
+    /// trigger may open a turn until `turn_duration` or an abort proves an end.
+    fn lose_turn(&mut self) {
+        let running = self.turns.active.is_some() || self.claude.pending_start.is_some();
         self.turns_unknown();
+        self.claude.ambiguous |= running;
+    }
+    /// As `lose_turn`, for a record that may itself have opened a turn.
+    fn ambiguous(&mut self) {
+        self.turns_unknown();
+        self.claude.ambiguous = true;
     }
     /// Accumulated turn coverage becomes unknown, with the D8 turn state.
     fn turns_unknown(&mut self) {
@@ -1199,7 +1213,8 @@ impl Row {
         let block = &mut self.claude;
         match Turn::of(record) {
             Turn::Ignored => {}
-            Turn::Unknown => self.turns_unknown(),
+            // An unrecognised origin may be a trigger, or input to a turn.
+            Turn::Unknown => self.ambiguous(),
             // Only a dequeue or remove shows input taken into the running
             // turn or pending start; an enqueue alone never permits a join.
             Turn::Queue if [2, 3].contains(&record.operation) => {
@@ -1220,7 +1235,7 @@ impl Row {
                 // Second 0 is no valid start (`Turns::begin`): a missing stamp.
                 let (Some(key), Some(second)) = (record.uuid.clone(), second.filter(|s| *s > 0))
                 else {
-                    return self.turns_unknown();
+                    return self.ambiguous();
                 };
                 // Each trigger consumes the queue evidence. Only input taken
                 // into a running turn joins it; with no active turn the
@@ -1241,8 +1256,9 @@ impl Row {
                 }
             }
             Turn::Abort => {
-                self.claude.ambiguous = false;
                 self.confirm();
+                // A proven end, even when `confirm` rejected the start.
+                self.claude.ambiguous = false;
                 self.claude.abort_adjacent = true;
                 self.end(second, Turns::abort);
             }
@@ -1262,6 +1278,11 @@ impl Row {
     fn confirm(&mut self) {
         if let Some((key, second)) = self.claude.pending_start.take() {
             self.turns.begin(key, second);
+            // A rejected start (before the previous end, or a repeated key)
+            // may still be a running turn, with its queue evidence.
+            if self.turns.active.is_none() {
+                self.ambiguous();
+            }
         }
     }
     /// Ends the active turn, if any, at a validated Unix second.
@@ -1404,6 +1425,10 @@ impl Row {
                 || !active && self.claude.pending_start.is_none() && !self.turns.valid)
             && (self.claude.pending_start.is_none() || !active)
     }
+    /// The replay state every pass boundary must leave resumable.
+    fn gate(&self, time: f64) -> bool {
+        self.turns.validate() && self.claude.validate(time) && self.turn_state()
+    }
     /// Whether a checkpointed row may resume this file: same dev/inode, header
     /// and tail hashes, an offset within the file, and every bound revalidated.
     fn resumable(
@@ -1418,9 +1443,7 @@ impl Row {
             && (self.skipping || self.claude.classifier.is_none())
             && head.len() as u64 <= self.offset
             && self.offset <= info.len()
-            && self.turns.validate()
-            && self.claude.validate(time)
-            && self.turn_state()
+            && self.gate(time)
             && self.fingerprint.as_ref().is_some_and(|f| {
                 f.header == common::sha256(head)
                     && self.offset <= f.size
