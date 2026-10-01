@@ -29,7 +29,13 @@ const ENTRIES: usize = 8192;
 const SUCCESSOR_BYTES: usize = 262144;
 const SUCCESSOR_RECORDS: usize = 512;
 
+#[cfg(test)]
+thread_local! { pub(crate) static TEST_ROOT: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) }; }
 pub fn projects_root() -> PathBuf {
+    #[cfg(test)]
+    if let Some(root) = TEST_ROOT.with(|value| value.borrow().clone()) {
+        return root;
+    }
     std::env::var_os("CLAUDE_CONFIG_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| common::expand_home("~/.claude"))
@@ -1407,14 +1413,30 @@ pub fn replay(
     time: f64,
     deadline: Instant,
 ) -> Result<Row> {
+    resume(root, path, id, previous, time, deadline).map(|(row, _)| row)
+}
+/// `replay` that also reports whether `previous` was resumed. A pass that
+/// starts after the header instead (no row, replacement, failed bounds) is a
+/// restart, which drops any retained sample (D3).
+pub fn resume(
+    root: &Path,
+    path: &Path,
+    id: &str,
+    previous: Option<Row>,
+    time: f64,
+    deadline: Instant,
+) -> Result<(Row, bool)> {
     let (mut stream, head) = open_session(root, path, id)?;
     let info = stream
         .get_ref()
         .metadata()
         .map_err(|_| "Claude session stat failed")?;
-    let mut row = match previous {
-        Some(row) if row.resumable(&mut stream, &head, &info, time) => row,
-        _ => Row::new([info.dev(), info.ino()], head.len() as u64, time),
+    let (mut row, resumed) = match previous {
+        Some(row) if row.resumable(&mut stream, &head, &info, time) => (row, true),
+        _ => (
+            Row::new([info.dev(), info.ino()], head.len() as u64, time),
+            false,
+        ),
     };
     stream
         .seek(SeekFrom::Start(row.offset))
@@ -1453,7 +1475,7 @@ pub fn replay(
         header: common::sha256(&head),
         tail: tail(&mut stream, row.offset)?,
     });
-    Ok(row)
+    Ok((row, resumed))
 }
 
 #[cfg(test)]
