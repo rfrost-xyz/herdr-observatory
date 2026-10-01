@@ -362,9 +362,21 @@ fn claude_rows_without_a_valid_block_replay_fresh_from_the_header() {
         assistant(30, "msg-4", "\"end_turn\"", [5, 6, 7, 8])
     ));
     // An old binary re-serialises the row through a `Cursor` without the
-    // block. The row stays valid and survives a checkpoint, but is not resumed.
+    // block. With an `unknown` child it reads as an invalid Codex row and is
+    // dropped; otherwise it stays valid and survives a checkpoint, but is not
+    // resumed.
     let mut stripped = cursors.clone();
     stripped[key()].as_object_mut().unwrap().remove("claude");
+    assert!(validate_cursors(&stripped).is_empty());
+    for status in stripped[key()]["children"]
+        .as_object_mut()
+        .unwrap()
+        .values_mut()
+    {
+        if status == "unknown" {
+            *status = json!("completed");
+        }
+    }
     assert_eq!(validate_cursors(&stripped).len(), 1);
     let stripped = checkpointed(&fixture, &stripped);
     assert!(stripped[key()].get("claude").is_none());
@@ -531,4 +543,44 @@ fn claude_rows_share_the_32_row_checkpoint_bound_with_hashed_keys() {
     assert!(a.get(sha256(b"host-a-0")).is_none() && a.get(sha256(b"host-a-1")).is_none());
     assert_eq!(a[sha256(b"host-a-2")]["claude"], row["claude"]);
     assert_eq!(b.as_object().unwrap().len(), 17);
+}
+
+/// A caught-up Codex row as `codex_only_enrich_cursor_and_checkpoint_are_unchanged`
+/// pins it, stamped `at`.
+fn codex_row(at: f64) -> Value {
+    json!({
+        "at": at, "caught_up": true,
+        "children": {"e75c94502a7fbb74b08bc4ffc5219f31d5d16266272e870171adc0310a3e01f7": "completed"},
+        "compaction_markers": 1, "compaction_summaries": 1, "compactions_valid": true,
+        "file": [1, 2],
+        "fingerprint": {"header": "b35d3bda40a5e3ad26bf99af603b7a02d858f8ca2b6a2a1f96fc1879d77f627c", "mtime_us": 1, "size": 1317, "tail": "850b6772e93a8ef47b0c76a3da0a96bebdeb489af8bdda25e0ece15537eaa6a8"},
+        "offset": 1317, "seq": 1_767_225_625_000_000_u64, "skipping": false,
+        "turns": {"active": null, "current_known": true, "finished": {"4ea1a6a42fdcde0801691c1a": [1767225601, 1767225620, "completed"]}, "last": "4ea1a6a42fdcde0801691c1a", "last_duration": 19, "last_end": 1767225620, "last_outcome": "completed", "start": null, "supported": true, "total": 19, "valid": true},
+        "valid": true
+    })
+}
+
+#[test]
+fn child_status_unknown_is_accepted_on_claude_rows_only() {
+    let fixture = Fixture::new();
+    fixture.write(&session());
+    let (_, _, cursors) = enrich(&mut NativeTelemetry::default(), &json!({}));
+    let claude = cursors[key()].clone();
+    assert!(
+        claude["children"]
+            .as_object()
+            .unwrap()
+            .values()
+            .any(|v| v == "unknown")
+    );
+    let mut codex = codex_row(now());
+    let codex_key = sha256(b"anton-native-session-v1:fixture-codex");
+    let rows = json!({key(): claude, codex_key.clone(): codex.clone()});
+    assert_eq!(validate_cursors(&rows).len(), 2);
+    // Only Claude rows produce `unknown`: a Codex row carrying it is replayed fresh.
+    codex["children"]["e75c94502a7fbb74b08bc4ffc5219f31d5d16266272e870171adc0310a3e01f7"] =
+        json!("unknown");
+    let rows = json!({key(): claude, codex_key.clone(): codex});
+    let valid = validate_cursors(&rows);
+    assert!(valid.contains_key(&key()) && !valid.contains_key(&codex_key));
 }

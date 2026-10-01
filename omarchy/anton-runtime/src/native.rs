@@ -129,9 +129,12 @@ impl Cursor {
             .any(|v| *v > max)
             || self.children.len() > 128
             || self.children.iter().any(|(key, status)| {
+                // D6: only Claude rows produce the `unknown` status.
+                let unknown = self.claude.is_some() && status == "unknown";
                 !hex_id(key, 64)
-                    || !["running", "completed", "interrupted", "errored", "unknown"]
-                        .contains(&status.as_str())
+                    || !unknown
+                        && !["running", "completed", "interrupted", "errored"]
+                            .contains(&status.as_str())
             })
             || self.turns.as_ref().is_some_and(|turns| !turns.validate())
             || self.fingerprint.as_ref().is_some_and(|f| {
