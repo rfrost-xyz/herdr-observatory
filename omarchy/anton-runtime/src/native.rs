@@ -1218,10 +1218,16 @@ impl Checkpoints {
                 .unwrap(),
         };
         if let Ok(bytes) = common::read_owned(&state.join("replay-checkpoints.json"), LIMIT, true) {
-            if let Ok(value) = serde_json::from_slice::<CheckpointFile>(&bytes) {
-                if value.version == 1 && value.records.len() <= 32 {
+            // Rows are decoded one by one, so a row this build cannot read,
+            // such as another build's Claude block, never discards the others.
+            if let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
+                let records = value["records"].as_array().filter(|v| v.len() <= 32);
+                if let (Some(1), Some(records)) = (value["version"].as_u64(), records) {
                     cache.loaded = true;
-                    cache.rows = value.records;
+                    cache.rows = records
+                        .iter()
+                        .filter_map(|row| serde_json::from_value(row.clone()).ok())
+                        .collect();
                     cache.written = cache.signature();
                     cache.rows.retain(|row| {
                         hex_id(&row.host, 64)
@@ -1678,6 +1684,38 @@ mod tests {
         assert!(Checkpoints::new(&state, &owner).is_err());
         values.get_mut("test").unwrap()[&session]["at"] = json!(now() - 86401.0);
         assert!(validate_cursors(&values["test"]).is_empty());
+    }
+    #[test]
+    fn checkpoint_rows_load_individually_so_one_unreadable_row_keeps_the_rest() {
+        let fixture = Fixture::new();
+        fixture.write(&[], "fixture-session");
+        let owner = fixture.root.join(".herdr-observatory-install");
+        std::fs::write(&owner, b"herdr.observatory\n").unwrap();
+        let state = fixture.root.join("state");
+        std::fs::create_dir(&state).unwrap();
+        let path = state.join("replay-checkpoints.json");
+        let cursor = replay(
+            &fixture.file,
+            "fixture-session",
+            None,
+            now(),
+            Instant::now() + Duration::from_secs(2),
+        )
+        .unwrap();
+        let session = sha256(b"session");
+        let values = BTreeMap::from([("kept".to_owned(), json!({session.clone():cursor}))]);
+        let mut cache = Checkpoints::new(&state, &owner).unwrap();
+        cache.update(&values, true).unwrap();
+        let mut file: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let mut unreadable = file["records"][0].clone();
+        unreadable["session"] = json!(sha256(b"other"));
+        unreadable["cursor"]["claude"] = json!({"field_from_another_build": 1});
+        file["records"].as_array_mut().unwrap().push(unreadable);
+        common::atomic_checkpoint_write(&path, &serde_json::to_vec(&file).unwrap()).unwrap();
+        let loaded = Checkpoints::new(&state, &owner).unwrap();
+        let hydrated = loaded.for_host("kept");
+        assert!(hydrated.get(&session).is_some());
+        assert!(hydrated.get(sha256(b"other")).is_none());
     }
     #[test]
     fn checkpoint_startup_reconciles_expired_and_removed_hosts_without_empty_creation() {
