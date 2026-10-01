@@ -1886,4 +1886,122 @@ mod replay_tests {
         assert_eq!(get(&row, "total_input"), Value::Null);
         assert_eq!(get(&row, "context"), json!(1));
     }
+
+    /// `line` with a leading filler key of `pad` bytes.
+    fn lead_pad(line: &str, pad: usize) -> String {
+        line.replacen('{', &format!("{{\"pad\":\"{}\",", "p".repeat(pad)), 1)
+    }
+    fn content_pad(line: &str, pad: usize) -> String {
+        line.replacen(
+            "\"content\":[]",
+            &format!("\"content\":[{{\"text\":\"{}\"}}]", "c".repeat(pad)),
+            1,
+        )
+    }
+    #[test]
+    fn oversized_records_crossing_tail_are_classified_across_passes() {
+        let fixture = tests::Fixture::new();
+        let selected = iterations(&[("message", [1, 1, 1, 1]), ("advisor_message", [9, 9, 9, 9])]);
+        let lines = vec![
+            assistant("msg_a", 1, "\"end_turn\"", [1, 2, 3, 4]),
+            lead_pad(&padded_user(2, LINE), TAIL),
+            content_pad(
+                &assistant_with(
+                    "msg_b",
+                    3,
+                    "\"end_turn\"",
+                    &(counters([10, 20, 30, 40]) + &selected),
+                    "",
+                ),
+                TAIL + LINE,
+            ),
+            lead_pad(&attachment(4), 2 * LINE),
+            lead_pad(&system("compact_boundary", 5), LINE),
+            lead_pad(&system("microcompact_boundary", 6), LINE),
+        ];
+        let text = header() + &body(&lines);
+        let path = fixture.file("slug", &format!("{ID}.jsonl"), &text);
+        let (row, count) = passes(&fixture, &path, None);
+        assert!(count >= 3, "{count}");
+        assert!(row.valid && row.compactions_valid && row.turns.valid);
+        assert!(!row.skipping && row.claude.classifier.is_none());
+        assert_eq!(row.usage(), run(&lines).usage());
+        assert_eq!(get(&row, "total_input"), json!(8 + 80));
+        assert_eq!(get(&row, "context"), json!(3));
+        assert_eq!(get(&row, "output_tokens"), json!(1));
+        assert_eq!(get(&row, "compactions"), json!(1));
+        assert_eq!(get(&row, "usage_seq"), json!(micros(3)));
+    }
+
+    #[test]
+    fn oversized_unclassifiable_records_follow_the_coverage_table() {
+        let fixture = tests::Fixture::new();
+        let good = assistant("msg_a", 1, "\"end_turn\"", [1, 2, 3, 4]);
+        let next = assistant("msg_c", 9, "\"end_turn\"", [1, 0, 0, 0]);
+        // A pass boundary inside the timestamp of an oversized assistant line.
+        let late = assistant("msg_b", 2, "\"end_turn\"", [5, 5, 5, 5]);
+        let at = lead_pad(&late, 0).find(&stamp(2)).unwrap();
+        let cut = lead_pad(&late, TAIL - good.len() - 1 - at - 5);
+        let text = header() + &body(&[good.clone(), cut, next.clone()]);
+        assert_eq!(text.find(&stamp(2)).unwrap() + 5, header().len() + TAIL);
+        let path = fixture.file("slug", &format!("{ID}.jsonl"), &text);
+        let (row, count) = passes(&fixture, &path, None);
+        assert!(count >= 2);
+        assert!(row.valid && row.compactions_valid && !row.turns.valid);
+        assert_eq!(totals(&row), [(); 5].map(|_| Value::Null));
+        // The next complete group restores last-response values only.
+        assert_eq!(get(&row, "context"), json!(1));
+        assert_eq!(get(&row, "compactions"), json!(0));
+        let duplicated = |line: &str, key: &str| {
+            lead_pad(line, LINE).replacen(
+                &format!("\"{key}\""),
+                &format!("\"{key}\":\"x\",\"{key}\""),
+                1,
+            )
+        };
+        let cases = [
+            (
+                duplicated(&system("compact_boundary", 2), "subtype"),
+                [true, false],
+            ),
+            (duplicated(&user(2), "uuid"), [false, true]),
+            (duplicated(&attachment(2), "timestamp"), [false, true]),
+        ];
+        for (line, [valid, compactions]) in cases {
+            let lines = [good.clone(), line, next.clone()];
+            std::fs::write(&path, header() + &body(&lines)).unwrap();
+            let (row, _) = passes(&fixture, &path, None);
+            assert_eq!([row.valid, row.compactions_valid], [valid, compactions]);
+            assert!(!row.turns.valid);
+            assert_eq!(get(&row, "total_input"), json!(9));
+            assert_eq!(get(&row, "compactions") != Value::Null, compactions);
+        }
+    }
+
+    #[test]
+    fn block_requires_every_field_and_a_consistent_classifier() {
+        let fixture = tests::Fixture::new();
+        let big = lead_pad(&assistant("msg_a", 1, "\"end_turn\"", [1, 2, 3, 4]), TAIL);
+        let path = fixture.file("slug", &format!("{ID}.jsonl"), &(header() + &big + "\n"));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let row = replay(&fixture.projects, &path, ID, None, now(), deadline).unwrap();
+        assert!(row.skipping && row.claude.classifier.is_some() && !row.caught_up);
+        let block = serde_json::to_value(&row.claude).unwrap();
+        for field in block.as_object().unwrap().keys() {
+            let mut missing = block.clone();
+            missing.as_object_mut().unwrap().remove(field);
+            assert!(
+                serde_json::from_value::<ClaudeCursor>(missing).is_err(),
+                "{field}"
+            );
+        }
+        let (mut stream, head) = open_session(&fixture.projects, &path, ID).unwrap();
+        let info = stream.get_ref().metadata().unwrap();
+        assert!(row.resumable(&mut stream, &head, &info, now()));
+        let mut stray = row.clone();
+        stray.skipping = false;
+        assert!(!stray.resumable(&mut stream, &head, &info, now()));
+        let (row, _) = passes(&fixture, &path, Some(row));
+        assert_eq!(get(&row, "total_input"), json!(8));
+    }
 }
