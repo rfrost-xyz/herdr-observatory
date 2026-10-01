@@ -76,6 +76,19 @@ pub fn session_binding(agent: &Value) -> Option<String> {
     }
     Some(sha256(format!("{harness}:{kind}:{value}").as_bytes()))
 }
+pub fn safe_model(model: &str) -> bool {
+    model.len() <= 64
+        && !model.contains("..")
+        && !model.contains(":/")
+        && model.split('/').count() <= 2
+        && model.split('/').all(|part| {
+            !part.is_empty()
+                && part.as_bytes()[0].is_ascii_alphanumeric()
+                && part
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || b"_.:-".contains(&c))
+        })
+}
 pub fn telemetry_view(raw: &Value) -> Option<Value> {
     telemetry_view_at(raw, now())
 }
@@ -121,19 +134,7 @@ pub fn telemetry_view_at(raw: &Value, time: f64) -> Option<Value> {
         .unwrap_or(Value::Null);
     result["model"] = raw["model"]
         .as_str()
-        .filter(|model| {
-            model.len() <= 64
-                && !model.contains("..")
-                && !model.contains(":/")
-                && model.split('/').count() <= 2
-                && model.split('/').all(|part| {
-                    !part.is_empty()
-                        && part.as_bytes()[0].is_ascii_alphanumeric()
-                        && part
-                            .bytes()
-                            .all(|c| c.is_ascii_alphanumeric() || b"_.:-".contains(&c))
-                })
-        })
+        .filter(|model| safe_model(model))
         .map(|s| json!(s))
         .unwrap_or(Value::Null);
     result["result"] = raw["result"]
@@ -178,7 +179,7 @@ pub fn telemetry_view_at(raw: &Value, time: f64) -> Option<Value> {
     }
     result["usage_source"] = raw["usage_source"]
         .as_str()
-        .filter(|s| ["codex-rollout", "pi-extension"].contains(s))
+        .filter(|s| ["codex-rollout", "pi-extension", "claude-transcript"].contains(s))
         .map(|s| json!(s))
         .unwrap_or(Value::Null);
     if (!raw["usage_seq"].is_null() || !raw["usage_source"].is_null())
