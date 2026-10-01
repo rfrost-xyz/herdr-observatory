@@ -18,10 +18,7 @@ pub const WRAPPERS: &[&str] = &[
     "bash-stderr",
     "task-notification",
 ];
-// Consumed by turn classification in the next commit.
-#[allow(dead_code)]
 pub const LEAD_NONE: u8 = 0;
-#[allow(dead_code)]
 pub const LEAD_COMMAND: u8 = 1;
 pub const LEAD_NOTIFICATION: u8 = 7;
 pub const LEAD_OTHER: u8 = WRAPPERS.len() as u8 + 1;

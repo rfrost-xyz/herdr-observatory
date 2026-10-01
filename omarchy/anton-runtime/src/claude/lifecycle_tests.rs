@@ -82,13 +82,30 @@ fn assistant(second: u64, message: &str, stop: &str) -> String {
         ),
     )
 }
+fn system(subtype: &str, second: u64) -> String {
+    record("system", second, &format!("\"subtype\":\"{subtype}\""))
+}
+fn queue(second: u64) -> String {
+    record("queue-operation", second, "\"operation\":\"enqueue\"")
+}
+/// Replays `lines`, checking the D8 turn invariants after every record.
 fn run(lines: &[String]) -> Row {
     let mut row = Row::new([1, 2], 0, now());
     for line in lines {
         let value: Value = serde_json::from_str(line).unwrap();
         row.apply(&Record::from_value(&value, ID, now()).unwrap());
+        assert!(row.turns.validate() && row.claude.validate(now()), "{line}");
+        assert!(row.turn_state(), "{line}");
     }
     row
+}
+fn second(at: u64) -> u64 {
+    BASE + at
+}
+/// The finished interval of the turn opened by `kind` at `at`.
+fn finished(row: &Row, kind: &str, at: u64) -> Option<(u64, u64, String)> {
+    let key = turn_key(ID, &format!("{kind}-{at}"));
+    row.turns.finished.get(&key).cloned()
 }
 fn key(agent: &str) -> String {
     common::sha256(agent.as_bytes())
@@ -289,4 +306,436 @@ fn children_ignore_forked_and_foreign_records() {
     let foreign = launch(10, "agent-a").replace(ID, "fixture-session-b");
     let row = run(&[foreign]);
     assert!(!row.valid && row.children.is_empty());
+}
+
+#[test]
+fn turns_trigger_by_origin_and_by_shape() {
+    let origin = |kind: &str| format!("\"origin\":{{\"kind\":\"{kind}\"}}");
+    let triggers = [
+        user(10, "hello", &origin("human")),
+        user(
+            10,
+            &notice("shell-1", "completed"),
+            &origin("task-notification"),
+        ),
+        user(
+            10,
+            "peer message",
+            &format!("{},\"isMeta\":true", origin("peer")),
+        ),
+        user(10, "coordinate", &origin("coordinator")),
+        // Rule 2 precedes rule 3: a recognised origin wins over tool results.
+        user(
+            10,
+            "hello",
+            &format!("{},\"toolUseResult\":{{}}", origin("human")),
+        ),
+        queued(10, "task-notification", &notice("shell-1", "failed")),
+        // Rule 4: text without origin, a slash-command echo, any other tag.
+        user(10, "plain prompt", ""),
+        user(10, "<command-name>/review</command-name>", ""),
+        user(10, "<command-message>review</command-message>", ""),
+        user(10, &notice("shell-1", "completed"), ""),
+    ];
+    for trigger in triggers {
+        let kind = if trigger.contains("\"attachment\"") {
+            "attachment"
+        } else {
+            "user"
+        };
+        let row = run(&[
+            trigger.clone(),
+            assistant(12, "msg_a", "\"end_turn\""),
+            system("turn_duration", 20),
+        ]);
+        assert!(row.turns.valid && row.turns.supported, "{trigger}");
+        assert_eq!(
+            finished(&row, kind, 10),
+            Some((second(10), second(20), "completed".into())),
+            "{trigger}"
+        );
+        assert_eq!(row.turns.total, 10);
+    }
+    // A trigger alone sets `supported`; nothing is active until confirmed.
+    let pending = run(&[user(10, "hello", "")]);
+    assert!(pending.turns.supported && pending.turns.active.is_none());
+    assert_eq!(
+        pending.claude.pending_start,
+        Some((turn_key(ID, "user-10"), second(10)))
+    );
+}
+
+#[test]
+fn turns_ignore_metadata_tool_results_and_wrapper_output() {
+    let ignored = [
+        user(
+            10,
+            "<local-command-caveat>x</local-command-caveat>",
+            "\"isMeta\":true",
+        ),
+        tool(10, "{\"status\":\"async_launched\"}"),
+        user(10, "summary", "\"isCompactSummary\":true"),
+        queued(10, "prompt", "queued human input"),
+        user(10, "<local-command-stdout>ok</local-command-stdout>", ""),
+        user(10, "<local-command-stderr>no</local-command-stderr>", ""),
+        user(10, "<bash-input>ls</bash-input>", ""),
+        user(10, "<bash-stdout>a</bash-stdout>", ""),
+        user(10, "<bash-stderr>b</bash-stderr>", ""),
+        system("compact_boundary", 10),
+        system("microcompact_boundary", 10),
+        record(
+            "user",
+            10,
+            "\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"image\"}]}",
+        ),
+        record("attachment", 10, "\"attachment\":{\"type\":\"fixture\"}"),
+    ];
+    for line in &ignored {
+        let row = run(&[line.clone(), assistant(12, "msg_a", "\"end_turn\"")]);
+        assert!(row.turns.valid && !row.turns.supported, "{line}");
+        assert!(row.turns.active.is_none() && row.claude.pending_start.is_none());
+        // Inside a turn they neither end it nor start another.
+        let row = run(&[
+            user(5, "hello", ""),
+            assistant(6, "msg_a", "\"tool_use\""),
+            line.clone(),
+            assistant(12, "msg_b", "\"end_turn\""),
+            system("turn_duration", 20),
+        ]);
+        assert!(row.turns.valid, "{line}");
+        assert_eq!(row.turns.finished.len(), 1);
+        assert_eq!(
+            finished(&row, "user", 5),
+            Some((second(5), second(20), "completed".into()))
+        );
+    }
+    // An unrecognised origin is ambiguous and fails closed.
+    let other = run(&[
+        user(5, "hello", ""),
+        assistant(6, "msg_a", "\"end_turn\""),
+        user(10, "x", "\"origin\":{\"kind\":\"scheduler\"}"),
+    ]);
+    assert!(!other.turns.valid && other.turns.active.is_none());
+}
+
+#[test]
+fn turns_pending_start_needs_an_assistant_record_including_synthetic() {
+    // A newer trigger replaces an unconfirmed one.
+    let row = run(&[
+        user(10, "first", ""),
+        user(12, "second", ""),
+        assistant(13, "msg_a", "\"end_turn\""),
+        system("turn_duration", 20),
+    ]);
+    assert_eq!(finished(&row, "user", 10), None);
+    assert_eq!(
+        finished(&row, "user", 12),
+        Some((second(12), second(20), "completed".into()))
+    );
+    // A `<synthetic>` error record confirms the start but feeds no usage.
+    let synthetic =
+        assistant(13, "msg_a", "\"stop_sequence\"").replace("claude-fixture-1", "<synthetic>");
+    let row = run(&[
+        user(10, "hello", ""),
+        synthetic,
+        system("turn_duration", 20),
+    ]);
+    assert_eq!(
+        finished(&row, "user", 10),
+        Some((second(10), second(20), "completed".into()))
+    );
+    assert_eq!(row.usage()["usage_seq"], Value::Null);
+    // Confirmation restores `current_known` and starts at the trigger's second.
+    let row = run(&[
+        user(10, "hello", ""),
+        assistant(15, "msg_a", "\"tool_use\""),
+    ]);
+    assert!(row.turns.current_known);
+    assert_eq!(row.turns.active, Some(turn_key(ID, "user-10")));
+    assert_eq!(row.turns.start, Some(second(10)));
+    assert!(row.claude.pending_start.is_none());
+}
+
+#[test]
+fn turns_abort_during_pending_start_confirms_and_aborts() {
+    let mid_stream =
+        assistant(15, "msg_a", "null").replace("\"type\"", "\"isAbortedMidStream\":true,\"type\"");
+    for abort in [
+        user(15, "[Request interrupted by user]", ""),
+        user(15, "[Request interrupted by user for tool use]", ""),
+        record("user", 15, "\"interruptedMessageId\":\"msg_a\""),
+        record("attachment", 15, "\"interruptedMessageId\":\"msg_a\""),
+        mid_stream,
+    ] {
+        let row = run(&[user(10, "hello", ""), abort.clone()]);
+        assert!(row.turns.valid, "{abort}");
+        assert_eq!(
+            finished(&row, "user", 10),
+            Some((second(10), second(15), "aborted".into())),
+            "{abort}"
+        );
+        // The same abort ends an active turn.
+        let row = run(&[
+            user(10, "hello", ""),
+            assistant(11, "msg_b", "\"tool_use\""),
+            abort.clone(),
+        ]);
+        assert_eq!(
+            finished(&row, "user", 10),
+            Some((second(10), second(15), "aborted".into())),
+            "{abort}"
+        );
+        assert_eq!(row.turns.last_outcome.as_deref(), Some("aborted"));
+    }
+    // Abort precedes the ignore rules: a marker carried by a meta record.
+    let row = run(&[
+        user(10, "hello", ""),
+        user(15, "[Request interrupted by user]", "\"isMeta\":true"),
+    ]);
+    assert_eq!(
+        finished(&row, "user", 10).map(|t| t.2),
+        Some("aborted".into())
+    );
+}
+
+#[test]
+fn turns_orphan_abort_and_orphan_turn_duration() {
+    let marker = |at| user(at, "[Request interrupted by user]", "");
+    // An orphan abort is ignored apart from the adjacency flag.
+    let row = run(&[marker(5)]);
+    assert!(row.turns.valid && row.claude.abort_adjacent);
+    assert!(row.turns.finished.is_empty());
+    // A `turn_duration` directly after an abort is ignored.
+    for lines in [
+        vec![marker(5), system("turn_duration", 6)],
+        vec![
+            marker(5),
+            record("attachment", 6, "\"attachment\":{}"),
+            system("turn_duration", 7),
+        ],
+        vec![
+            user(1, "hello", ""),
+            assistant(2, "msg_a", "\"tool_use\""),
+            marker(5),
+            system("turn_duration", 6),
+        ],
+    ] {
+        let row = run(&lines);
+        assert!(row.turns.valid && row.turns.supported, "{lines:?}");
+        assert!(!row.claude.abort_adjacent);
+    }
+    // Otherwise it makes accumulated coverage unknown.
+    for lines in [
+        vec![system("turn_duration", 6)],
+        vec![
+            marker(5),
+            assistant(6, "msg_a", "\"end_turn\""),
+            system("turn_duration", 7),
+        ],
+        vec![marker(5), user(6, "hello", ""), system("turn_duration", 7)],
+        vec![
+            marker(5),
+            system("turn_duration", 6),
+            system("turn_duration", 7),
+        ],
+        vec![
+            user(1, "hello", ""),
+            assistant(2, "msg_a", "\"end_turn\""),
+            system("turn_duration", 3),
+            system("turn_duration", 4),
+        ],
+    ] {
+        let row = run(&lines);
+        assert!(!row.turns.valid && row.turns.supported, "{lines:?}");
+    }
+}
+
+#[test]
+fn turns_queued_input_joins_only_after_a_queue_operation() {
+    let joined = run(&[
+        user(10, "hello", ""),
+        assistant(11, "msg_a", "\"tool_use\""),
+        queue(12),
+        user(13, "also this", ""),
+        assistant(14, "msg_b", "\"end_turn\""),
+        system("turn_duration", 20),
+    ]);
+    assert!(joined.turns.valid);
+    assert_eq!(joined.turns.finished.len(), 1);
+    assert_eq!(
+        finished(&joined, "user", 10),
+        Some((second(10), second(20), "completed".into()))
+    );
+    // Without one the gap is never absorbed: coverage becomes unknown, and
+    // the trigger opens a pending start that the next assistant confirms.
+    let row = run(&[
+        user(10, "hello", ""),
+        assistant(11, "msg_a", "\"tool_use\""),
+        user(13, "also this", ""),
+    ]);
+    assert!(!row.turns.valid && row.turns.active.is_none());
+    assert_eq!(
+        row.claude.pending_start,
+        Some((turn_key(ID, "user-13"), second(13)))
+    );
+    let row = run(&[
+        user(10, "hello", ""),
+        assistant(11, "msg_a", "\"tool_use\""),
+        user(13, "also this", ""),
+        assistant(14, "msg_b", "\"end_turn\""),
+        system("turn_duration", 20),
+    ]);
+    assert!(!row.turns.valid && row.turns.current_known);
+    assert_eq!(
+        row.turns.last.as_deref(),
+        Some(turn_key(ID, "user-13").as_str())
+    );
+    assert_eq!(row.turns.last_duration, Some(7));
+    // A queue operation outside a turn, or before the turn started, is stale.
+    for early in [vec![queue(5)], vec![user(4, "x", ""), queue(5)]] {
+        let mut lines = early;
+        lines.extend([
+            user(10, "hello", ""),
+            assistant(11, "msg_a", "\"tool_use\""),
+            user(13, "also this", ""),
+        ]);
+        assert!(!run(&lines).turns.valid);
+    }
+}
+
+#[test]
+fn turns_silent_end_followed_by_queued_input_is_unknown() {
+    for silent in [
+        assistant(15, "msg_b", "\"end_turn\""),
+        system("stop_hook_summary", 15),
+    ] {
+        let row = run(&[
+            user(10, "hello", ""),
+            assistant(11, "msg_a", "\"tool_use\""),
+            queue(12),
+            silent.clone(),
+            user(500, "much later", ""),
+        ]);
+        assert!(!row.turns.valid, "{silent}");
+        assert!(row.turns.active.is_none() && row.turns.finished.is_empty());
+        assert_eq!(
+            row.claude.pending_start,
+            Some((turn_key(ID, "user-500"), second(500)))
+        );
+    }
+    // A tool-use stop is not a silent end: the queued input still joins.
+    let row = run(&[
+        user(10, "hello", ""),
+        assistant(11, "msg_a", "\"tool_use\""),
+        queue(12),
+        assistant(13, "msg_b", "\"tool_use\""),
+        user(14, "queued", ""),
+        system("turn_duration", 20),
+    ]);
+    assert!(row.turns.valid);
+    assert_eq!(finished(&row, "user", 10).map(|t| t.1), Some(second(20)));
+    // A queue operation after the silent end lets input join again.
+    let row = run(&[
+        user(10, "hello", ""),
+        assistant(11, "msg_a", "\"end_turn\""),
+        queue(12),
+        user(13, "queued", ""),
+        system("turn_duration", 20),
+    ]);
+    assert!(row.turns.valid && row.turns.finished.len() == 1);
+}
+
+#[test]
+fn turns_floor_seconds_and_fail_closed_on_overlap_or_reversal() {
+    // Both bounds floor to the second: x.250 -> x.
+    let row = run(&[
+        user(10, "hello", ""),
+        assistant(11, "msg_a", "\"end_turn\""),
+        system("turn_duration", 20),
+    ]);
+    assert_eq!(
+        row.turns.finished.values().next().map(|t| (t.0, t.1)),
+        Some((second(10), second(20)))
+    );
+    // Non-monotonic records inside a turn are fine.
+    let row = run(&[
+        user(10, "hello", ""),
+        assistant(9, "msg_a", "\"tool_use\""),
+        tool(8, "{}"),
+        assistant(12, "msg_b", "\"end_turn\""),
+        system("turn_duration", 20),
+    ]);
+    assert!(row.turns.valid && row.turns.total == 10);
+    // A start before the previous end makes coverage unknown.
+    let row = run(&[
+        user(10, "hello", ""),
+        assistant(11, "msg_a", "\"end_turn\""),
+        system("turn_duration", 20),
+        user(15, "again", ""),
+        assistant(16, "msg_b", "\"end_turn\""),
+        system("turn_duration", 25),
+    ]);
+    assert!(!row.turns.valid && row.turns.active.is_none());
+    // The last valid interval stays available.
+    assert_eq!(row.turns.last_end, Some(second(20)));
+    // An end before its start makes coverage unknown.
+    let row = run(&[
+        user(10, "hello", ""),
+        assistant(11, "msg_a", "\"end_turn\""),
+        system("turn_duration", 5),
+    ]);
+    assert!(!row.turns.valid && row.turns.finished.is_empty());
+    // A trigger or end without a validated timestamp fails closed.
+    let undated = user(10, "hello", "").replace(&stamp(10), "x");
+    assert!(!run(&[undated]).turns.valid);
+    let undated = system("turn_duration", 20).replace(&stamp(20), "x");
+    let row = run(&[
+        user(10, "hello", ""),
+        assistant(11, "msg_a", "\"end_turn\""),
+        undated,
+    ]);
+    assert!(!row.turns.valid);
+}
+
+#[test]
+fn turns_state_survives_a_block_round_trip() {
+    let row = run(&[
+        user(10, "hello", ""),
+        assistant(11, "msg_a", "\"tool_use\""),
+        queue(12),
+    ]);
+    assert!(row.claude.queued_since_start);
+    let block: ClaudeCursor =
+        serde_json::from_value(serde_json::to_value(&row.claude).unwrap()).unwrap();
+    assert_eq!(block, row.claude);
+    let pending = run(&[
+        user(10, "hello", ""),
+        user(11, "[Request interrupted by user]", ""),
+    ]);
+    assert!(pending.claude.abort_adjacent);
+    let pending = run(&[user(30, "hello", "")]);
+    let block = serde_json::to_value(&pending.claude).unwrap();
+    assert_eq!(block["pending_start"][1], json!(second(30)));
+    let mut tampered = block.clone();
+    tampered["pending_start"][0] = json!("not-a-key");
+    let tampered: ClaudeCursor = serde_json::from_value(tampered).unwrap();
+    assert!(!tampered.validate(now()));
+}
+
+#[test]
+fn turns_block_inconsistent_with_turns_is_rejected() {
+    let mut queued = run(&[
+        user(10, "hello", ""),
+        assistant(11, "msg_a", "\"tool_use\""),
+        queue(12),
+    ]);
+    assert!(queued.turn_state());
+    queued.turns.unknown();
+    assert!(!queued.turn_state());
+    let mut pending = run(&[
+        user(10, "hello", ""),
+        assistant(11, "msg_a", "\"tool_use\""),
+    ]);
+    pending.claude.pending_start = Some((turn_key(ID, "user-20"), second(20)));
+    assert!(!pending.turn_state());
 }

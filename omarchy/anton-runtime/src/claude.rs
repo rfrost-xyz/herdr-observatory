@@ -920,6 +920,54 @@ impl Record {
     }
 }
 
+/// The D7 role of one record, by the precedence of the classification rules.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Turn {
+    Abort,
+    Trigger,
+    Ignored,
+    /// A user record whose `origin.kind` is not recognised.
+    Unknown,
+    Assistant,
+    End,
+    /// `system/stop_hook_summary`; an `end_turn` assistant line is the other.
+    Silent,
+    Queue,
+}
+impl Turn {
+    fn of(record: &Record) -> Self {
+        let lead = record.text.as_ref().map(|text| text.lead);
+        // Rule 1: any interrupt marker, `interruptedMessageId` or mid-stream abort.
+        if record.interrupt || record.interrupted || record.aborted {
+            return Self::Abort;
+        }
+        match record.kind {
+            KIND_ASSISTANT => Self::Assistant,
+            KIND_QUEUE => Self::Queue,
+            KIND_SYSTEM if record.subtype == SUBTYPE_TURN_DURATION => Self::End,
+            KIND_SYSTEM if record.subtype == SUBTYPE_STOP_HOOK_SUMMARY => Self::Silent,
+            // Rule 2: a recognised origin, or a queued task notification.
+            KIND_USER if (1..ORIGIN_OTHER).contains(&record.origin) => Self::Trigger,
+            KIND_ATTACHMENT if record.queued && record.mode == MODE_NOTIFICATION => Self::Trigger,
+            // Rule 3: metadata, tool results, summaries and command output.
+            KIND_USER if record.meta || record.tool || record.compact_summary => Self::Ignored,
+            KIND_USER if record.origin == ORIGIN_OTHER => Self::Unknown,
+            // Rule 4: remaining text without a leading tag, a slash-command
+            // echo, or any tag outside the output wrappers.
+            KIND_USER => match lead {
+                Some(
+                    text::LEAD_NONE
+                    | text::LEAD_COMMAND
+                    | text::LEAD_NOTIFICATION
+                    | text::LEAD_OTHER,
+                ) => Self::Trigger,
+                _ => Self::Ignored,
+            },
+            _ => Self::Ignored,
+        }
+    }
+}
+
 /// Row-level replay state. Field names and meanings match `native::Cursor` so
 /// the native dispatch maps between them, except that `seq` starts at 0 (D6).
 #[derive(Clone, Debug)]
@@ -972,7 +1020,7 @@ impl Row {
     pub fn invalid(&mut self) {
         self.valid = false;
         self.compactions_valid = false;
-        self.turns.unknown();
+        self.turns_unknown();
         self.fail_totals();
     }
     /// D3 coverage table for a relevant record that cannot be classified.
@@ -981,9 +1029,17 @@ impl Row {
             KIND_ASSISTANT => self.fail_totals(),
             KIND_SYSTEM => self.compactions_valid = false,
             KIND_USER | KIND_ATTACHMENT => self.valid = false,
+            // A queue record only ever lets a trigger join a turn, so missing
+            // one can only make turns unknown later; it needs no arm.
             _ => return,
         }
+        self.turns_unknown();
+    }
+    /// Accumulated turn coverage becomes unknown, with the D8 turn state.
+    fn turns_unknown(&mut self) {
         self.turns.unknown();
+        self.claude.pending_start = None;
+        self.claude.queued_since_start = false;
     }
     fn close_group(&mut self) {
         let Some(group) = self.claude.open.take() else {
@@ -1016,8 +1072,12 @@ impl Row {
             IDENTITY_ABSENT => return self.unclassified(record.kind),
             _ => {}
         }
-        if record.forked || record.kind == KIND_ASSISTANT && record.synthetic {
+        if record.forked {
             return;
+        }
+        if record.kind == KIND_ASSISTANT && record.synthetic {
+            // D3 skips its usage, but it still confirms a pending start (D7).
+            return self.turn(record);
         }
         if record.bad && relevant {
             return self.unclassified(record.kind);
@@ -1029,6 +1089,7 @@ impl Row {
             self.assistant(record);
         }
         self.children(record);
+        self.turn(record);
     }
     /// D6: inserts or updates one child, failing closed at the cap or
     /// without a validated timestamp. `seq` is the largest accepted stamp.
@@ -1088,6 +1149,75 @@ impl Row {
                 _ => "unknown",
             };
             self.child(task, status, false, record.stamp);
+        }
+    }
+    /// D7 turn timing for one record of this session.
+    fn turn(&mut self, record: &Record) {
+        let second = record.stamp.map(|stamp| stamp / 1_000_000);
+        let active = self.turns.active.is_some();
+        let block = &mut self.claude;
+        match Turn::of(record) {
+            Turn::Ignored => {}
+            Turn::Unknown => self.turns_unknown(),
+            Turn::Queue => block.queued_since_start |= active,
+            Turn::Silent => block.queued_since_start = false,
+            Turn::Assistant => {
+                block.abort_adjacent = false;
+                self.confirm();
+                if record.stop == STOP_END_TURN {
+                    self.claude.queued_since_start = false;
+                }
+            }
+            Turn::Trigger => {
+                block.abort_adjacent = false;
+                self.turns.supported = true;
+                let (Some(key), Some(second)) = (record.uuid.clone(), second) else {
+                    return self.turns_unknown();
+                };
+                if active && block.queued_since_start {
+                    // Input queued into the running turn joins it.
+                    return;
+                }
+                if active {
+                    // The turn may have ended without a record: never absorb the gap.
+                    self.turns_unknown();
+                }
+                self.claude.pending_start = Some((key, second));
+            }
+            Turn::Abort => {
+                self.confirm();
+                self.claude.abort_adjacent = true;
+                self.end(second, Turns::abort);
+            }
+            Turn::End => {
+                self.turns.supported = true;
+                let adjacent = std::mem::take(&mut block.abort_adjacent);
+                if active {
+                    self.end(second, Turns::finish);
+                } else if !adjacent || block.pending_start.is_some() {
+                    self.turns_unknown();
+                }
+            }
+        }
+    }
+    /// A pending start followed by an assistant record or abort becomes the turn.
+    fn confirm(&mut self) {
+        if let Some((key, second)) = self.claude.pending_start.take() {
+            self.claude.queued_since_start = false;
+            self.turns.begin(key, second);
+        }
+    }
+    /// Ends the active turn, if any, at a validated Unix second.
+    fn end(&mut self, second: Option<u64>, end: fn(&mut Turns, u64)) {
+        if self.turns.active.is_none() {
+            return;
+        }
+        match second {
+            Some(second) => {
+                self.claude.queued_since_start = false;
+                end(&mut self.turns, second);
+            }
+            None => self.turns_unknown(),
         }
     }
     /// The D6 `subagent_status_seq`: the largest accepted child record stamp,
@@ -1208,6 +1338,12 @@ impl Row {
             "compactions": compactions,
         })
     }
+    /// D8: queued input belongs to an active turn, a pending start to none.
+    fn turn_state(&self) -> bool {
+        let active = self.turns.active.is_some();
+        (!self.claude.queued_since_start || active)
+            && (self.claude.pending_start.is_none() || !active)
+    }
     /// Whether a checkpointed row may resume this file: same dev/inode, header
     /// and tail hashes, an offset within the file, and every bound revalidated.
     fn resumable(
@@ -1224,6 +1360,7 @@ impl Row {
             && self.offset <= info.len()
             && self.turns.validate()
             && self.claude.validate(time)
+            && self.turn_state()
             && self.fingerprint.as_ref().is_some_and(|f| {
                 f.header == common::sha256(head)
                     && self.offset <= f.size
@@ -1759,7 +1896,9 @@ mod replay_tests {
         );
         assert_eq!(get(&row, "context"), json!(8));
         assert_eq!(row.claude.closed.len(), 0);
-        assert!(row.valid && row.compactions_valid && row.turns.valid);
+        assert!(row.valid && row.compactions_valid);
+        // D7: a `turn_duration` after a start no assistant record confirmed.
+        assert!(!row.turns.valid);
     }
     #[test]
     fn usage_reopened_closed_group_makes_totals_unknown_until_next_group() {
