@@ -675,4 +675,165 @@ mod tests {
             }
         }
     }
+
+    /// Splits `line` just after the first `marker` plus `into` bytes.
+    fn split<'a>(line: &'a str, marker: &str, into: usize) -> [&'a [u8]; 2] {
+        let at = line.find(marker).unwrap() + into;
+        let (head, tail) = line.as_bytes().split_at(at);
+        [head, tail]
+    }
+
+    #[test]
+    fn classifier_state_survives_pass_boundaries_except_inside_captures() {
+        let lines = lines();
+        let padded = &lines[1];
+        let survive = [
+            ("yyyy", 100),
+            ("\\u00e9", 3),
+            ("\u{1f600}", 2),
+            ("\"timestamp\"", 5),
+            ("\"isMeta\":false", 11),
+            ("\"stop_reason\"", 14),
+            ("\"content\"", 0),
+        ];
+        for (marker, into) in survive {
+            let parts = split(padded, marker, into);
+            assert_eq!(classify(&parts, true), expected(padded), "{marker}");
+        }
+        let cut = [
+            ("\"input_tokens\":10", 16),
+            ("\"timestamp\":\"", 15),
+            ("\"msg_a\"", 3),
+            ("\"claude-fixture-1\"", 4),
+        ];
+        for (marker, into) in cut {
+            let parts = split(padded, marker, into);
+            assert_eq!(classify(&parts, true), Outcome::Unclassified(1), "{marker}");
+        }
+        let user = &lines[14];
+        let parts = split(user, "\"u-1\"", 2);
+        assert_eq!(classify(&parts, true), Outcome::Unclassified(2));
+        // Fields under `message` of another record type are never consumed.
+        let parts = split(user, "\"ignored\"", 2);
+        assert_eq!(classify(&parts, true), expected(user));
+    }
+
+    fn whole(line: &[u8]) -> Outcome {
+        classify(&[line], false)
+    }
+
+    #[test]
+    fn classifier_rejects_malformed_json_and_nesting_beyond_its_bound() {
+        let user = format!("{{\"type\":\"user\",\"sessionId\":\"{ID}\"");
+        let malformed: Vec<Vec<u8>> = vec![
+            format!("{user}}} x").into(),
+            user.clone().into(),
+            b"[1]".to_vec(),
+            b"{} {}".to_vec(),
+            b"{\"a\":\"\\x\"}".to_vec(),
+            b"{\"a\":\"\\u12\"}".to_vec(),
+            b"{\"a\":\"\x01\"}".to_vec(),
+            b"{\"a\":\"\xff\"}".to_vec(),
+            b"{\"a\":\"\xc0\x80\"}".to_vec(),
+            b"{\"a\":\"\xed\xa0\x80\"}".to_vec(),
+            b"{\"a\":\"\xe2\x82\"}".to_vec(),
+            b"{\"a\":01}".to_vec(),
+            b"{\"a\":-}".to_vec(),
+            b"{\"a\":1.}".to_vec(),
+            b"{\"a\":tru}".to_vec(),
+            b"{\"a\" 1}".to_vec(),
+            b"{\"a\":1,}".to_vec(),
+            b"{\"a\":[1,]}".to_vec(),
+            b"{,}".to_vec(),
+            b"{\"type\":\"user\",\"type\":\"user\"}".to_vec(),
+            format!("{{\"a\":{}1{}}}", "[".repeat(DEPTH), "]".repeat(DEPTH)).into(),
+        ];
+        for line in malformed {
+            assert_eq!(
+                whole(&line),
+                Outcome::Invalid,
+                "{}",
+                String::from_utf8_lossy(&line)
+            );
+        }
+        let deep = format!(
+            "{{\"a\":{}1{}}}",
+            "[".repeat(DEPTH - 1),
+            "]".repeat(DEPTH - 1)
+        );
+        assert!(matches!(whole(deep.as_bytes()), Outcome::Record(_)));
+    }
+
+    #[test]
+    fn classifier_loses_duplicated_or_overlong_consumed_fields() {
+        let lines = lines();
+        let base = &lines[0];
+        let long = "z".repeat(CAP + 1);
+        let unclassified = [
+            base.replacen("\"uuid\"", "\"timestamp\":\"x\",\"uuid\"", 1),
+            base.replacen("\"model\"", "\"id\":\"msg_b\",\"model\"", 1),
+            base.replacen(
+                "\"input_tokens\"",
+                "\"output_tokens\":1,\"input_tokens\"",
+                1,
+            ),
+            base.replacen("msg_a", &long, 1),
+            base.replacen(":10,", &format!(":1{},", "0".repeat(CAP)), 1),
+        ];
+        for line in &unclassified {
+            assert_eq!(
+                whole(line.as_bytes()),
+                Outcome::Unclassified(1),
+                "{line:.160}"
+            );
+        }
+        let system = &lines[16];
+        let duplicated = system.replacen("\"type\"", "\"subtype\":\"x\",\"type\"", 1);
+        assert_eq!(whole(duplicated.as_bytes()), Outcome::Unclassified(4));
+        // Long values and repeated keys outside consumed paths are skipped.
+        let skipped = base.replacen(
+            "\"uuid\"",
+            &format!("\"pad\":\"{long}\",\"pad\":[\"{long}\"],\"{long}\":1,\"uuid\""),
+            1,
+        );
+        assert_eq!(whole(skipped.as_bytes()), expected(base));
+        // A mismatched session or a fork decides the record whatever was lost.
+        let mismatch = lines[11].replacen("msg_a", &long, 1);
+        let Outcome::Record(record) = whole(mismatch.as_bytes()) else {
+            panic!("mismatch must stay a record");
+        };
+        assert_eq!(record.identity, super::super::IDENTITY_MISMATCH);
+        let fork = lines[10].replacen("msg_a", &long, 1);
+        assert!(matches!(whole(fork.as_bytes()), Outcome::Record(record) if record.forked));
+    }
+
+    #[test]
+    fn classifier_validate_rejects_tampered_state() {
+        let mut classifier = Classifier::default();
+        assert!(classifier.feed(b"{\"type\":\"user\",\"isMeta\":tr", ID, now()));
+        classifier.suspend();
+        let state = serde_json::to_value(&classifier).unwrap();
+        let restored: Classifier = serde_json::from_value(state.clone()).unwrap();
+        assert!(restored.validate());
+        let tampered = [
+            ("stack", json!([3, 3])),
+            ("nodes", json!([200])),
+            ("pending", json!([99])),
+            ("lex", json!(4)),
+            ("capture", json!(200)),
+            ("lex", json!(1)),
+            ("index", json!(4)),
+            ("seen", json!(u64::MAX)),
+            ("name", json!(vec![b'a'; CAP + 2])),
+        ];
+        for (field, value) in tampered {
+            let mut state = state.clone();
+            state[field] = value;
+            let restored: Classifier = serde_json::from_value(state).unwrap();
+            assert!(!restored.validate(), "{field}");
+        }
+        let mut missing = state.clone();
+        missing.as_object_mut().unwrap().remove("record");
+        assert!(serde_json::from_value::<Classifier>(missing).is_err());
+    }
 }
