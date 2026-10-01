@@ -235,9 +235,14 @@ mod tests {
     #[test]
     fn missing_peer_drains_large_cursor_request_before_returning_status() {
         let home = std::env::temp_dir().join(format!(
-            "anton-missing-peer-{}-{}",
+            "anton-missing-peer-{}-{}-{}",
             std::process::id(),
-            common::now().to_bits()
+            common::now().to_bits(),
+            {
+                static SEQUENCE: std::sync::atomic::AtomicUsize =
+                    std::sync::atomic::AtomicUsize::new(0);
+                SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            }
         ));
         std::fs::create_dir(&home).unwrap();
         let command = vec![

@@ -237,9 +237,14 @@ mod tests {
         use std::io::{BufRead, BufReader, Write};
         use std::os::unix::net::UnixListener;
         let base = std::env::temp_dir().join(format!(
-            "anton-report-{}-{}",
+            "anton-report-{}-{}-{}",
             std::process::id(),
-            common::now().to_bits()
+            common::now().to_bits(),
+            {
+                static SEQUENCE: std::sync::atomic::AtomicUsize =
+                    std::sync::atomic::AtomicUsize::new(0);
+                SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            }
         ));
         std::fs::create_dir(&base).unwrap();
         let path = base.join("herdr.sock");

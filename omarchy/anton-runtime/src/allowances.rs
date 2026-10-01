@@ -742,9 +742,14 @@ mod tests {
     impl Fixture {
         fn new() -> Self {
             let path = std::env::temp_dir().join(format!(
-                "anton-allowance-{}-{}",
+                "anton-allowance-{}-{}-{}",
                 std::process::id(),
-                common::now().to_bits()
+                common::now().to_bits(),
+                {
+                    static SEQUENCE: std::sync::atomic::AtomicUsize =
+                        std::sync::atomic::AtomicUsize::new(0);
+                    SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                }
             ));
             fs::create_dir(&path).unwrap();
             fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();

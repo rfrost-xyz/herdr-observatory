@@ -1267,9 +1267,14 @@ mod tests {
     #[test]
     fn reconciliation_preserves_rename_and_rejects_retired_host_and_account_events() {
         let root = std::env::temp_dir().join(format!(
-            "anton-reconcile-{}-{}",
+            "anton-reconcile-{}-{}-{}",
             std::process::id(),
-            common::now().to_bits()
+            common::now().to_bits(),
+            {
+                static SEQUENCE: std::sync::atomic::AtomicUsize =
+                    std::sync::atomic::AtomicUsize::new(0);
+                SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            }
         ));
         std::fs::create_dir(&root).unwrap();
         let owner = root.join("owner");

@@ -545,9 +545,14 @@ mod tests {
     fn repeat_install_migration_and_uninstall_preserve_unrelated_hooks() {
         use std::os::unix::fs::PermissionsExt;
         let home = std::env::temp_dir().join(format!(
-            "anton-hooks-{}-{}",
+            "anton-hooks-{}-{}-{}",
             std::process::id(),
-            common::now().to_bits()
+            common::now().to_bits(),
+            {
+                static SEQUENCE: std::sync::atomic::AtomicUsize =
+                    std::sync::atomic::AtomicUsize::new(0);
+                SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            }
         ));
         let root = home.join("plugin");
         let (legacy, extension, config) = paths(&home);

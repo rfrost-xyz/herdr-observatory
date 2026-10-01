@@ -671,9 +671,14 @@ mod tests {
     #[test]
     fn recent_window_ancestry_ignores_title_and_shared_terminal_ambiguity() {
         let root = std::env::temp_dir().join(format!(
-            "anton-nav-{}-{}",
+            "anton-nav-{}-{}-{}",
             std::process::id(),
-            common::now().to_bits()
+            common::now().to_bits(),
+            {
+                static SEQUENCE: std::sync::atomic::AtomicUsize =
+                    std::sync::atomic::AtomicUsize::new(0);
+                SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            }
         ));
         fs::create_dir(&root).unwrap();
         for (pid, parent, comm, args) in [
