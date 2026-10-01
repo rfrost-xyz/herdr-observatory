@@ -85,8 +85,20 @@ fn assistant(second: u64, message: &str, stop: &str) -> String {
 fn system(subtype: &str, second: u64) -> String {
     record("system", second, &format!("\"subtype\":\"{subtype}\""))
 }
+/// A `queue-operation` record; only `enqueue` is written when input is typed.
 fn queue(second: u64) -> String {
-    record("queue-operation", second, "\"operation\":\"enqueue\"")
+    operation(second, "enqueue")
+}
+fn operation(second: u64, operation: &str) -> String {
+    record(
+        "queue-operation",
+        second,
+        &format!("\"operation\":\"{operation}\""),
+    )
+}
+/// The queued input is taken into the running turn.
+fn dequeue(second: u64) -> String {
+    operation(second, "dequeue")
 }
 /// Replays `lines`, checking the D8 turn invariants after every record.
 fn run(lines: &[String]) -> Row {
@@ -556,6 +568,7 @@ fn turns_queued_input_joins_only_after_a_queue_operation() {
         user(10, "hello", ""),
         assistant(11, "msg_a", "\"tool_use\""),
         queue(12),
+        dequeue(12),
         user(13, "also this", ""),
         assistant(14, "msg_b", "\"end_turn\""),
         system("turn_duration", 20),
@@ -592,7 +605,12 @@ fn turns_queued_input_joins_only_after_a_queue_operation() {
     );
     assert_eq!(row.turns.last_duration, Some(7));
     // A queue operation outside a turn, or before the turn started, is stale.
-    for early in [vec![queue(5)], vec![user(4, "x", ""), queue(5)]] {
+    for early in [
+        vec![queue(5)],
+        vec![dequeue(5)],
+        vec![user(4, "x", ""), queue(5)],
+        vec![user(4, "x", ""), dequeue(5)],
+    ] {
         let mut lines = early;
         lines.extend([
             user(10, "hello", ""),
@@ -612,7 +630,7 @@ fn turns_silent_end_followed_by_queued_input_is_unknown() {
         let row = run(&[
             user(10, "hello", ""),
             assistant(11, "msg_a", "\"tool_use\""),
-            queue(12),
+            dequeue(12),
             silent.clone(),
             user(500, "much later", ""),
         ]);
@@ -627,7 +645,7 @@ fn turns_silent_end_followed_by_queued_input_is_unknown() {
     let row = run(&[
         user(10, "hello", ""),
         assistant(11, "msg_a", "\"tool_use\""),
-        queue(12),
+        dequeue(12),
         assistant(13, "msg_b", "\"tool_use\""),
         user(14, "queued", ""),
         system("turn_duration", 20),
@@ -638,7 +656,7 @@ fn turns_silent_end_followed_by_queued_input_is_unknown() {
     let row = run(&[
         user(10, "hello", ""),
         assistant(11, "msg_a", "\"end_turn\""),
-        queue(12),
+        dequeue(12),
         user(13, "queued", ""),
         system("turn_duration", 20),
     ]);
@@ -702,7 +720,7 @@ fn turns_state_survives_a_block_round_trip() {
     let row = run(&[
         user(10, "hello", ""),
         assistant(11, "msg_a", "\"tool_use\""),
-        queue(12),
+        dequeue(12),
     ]);
     assert!(row.claude.queued_since_start);
     let block: ClaudeCursor =
@@ -727,7 +745,7 @@ fn turns_block_inconsistent_with_turns_is_rejected() {
     let mut queued = run(&[
         user(10, "hello", ""),
         assistant(11, "msg_a", "\"tool_use\""),
-        queue(12),
+        dequeue(12),
     ]);
     assert!(queued.turn_state());
     queued.turns.unknown();
@@ -756,4 +774,65 @@ fn turns_trigger_at_unix_second_zero_is_a_missing_stamp() {
     lines.push(epoch);
     let row = run(&lines);
     assert!(!row.turns.valid && row.claude.pending_start.is_none());
+}
+
+#[test]
+fn turns_join_needs_a_dequeue_or_remove_and_each_join_consumes_it() {
+    // A killed turn writes no end record: an enqueue alone never lets the
+    // resumed session's prompt absorb the idle gap.
+    let row = run(&[
+        user(10, "hello", ""),
+        assistant(11, "msg_a", "\"tool_use\""),
+        queue(12),
+        user(10812, "resumed later", ""),
+        assistant(10813, "msg_b", "\"end_turn\""),
+        system("turn_duration", 10820),
+    ]);
+    assert!(!row.turns.valid);
+    assert!(finished(&row, "user", 10).is_none());
+    // A dequeue or remove before the first assistant line still counts.
+    for taken in ["dequeue", "remove"] {
+        let row = run(&[
+            user(1, "hello", ""),
+            queue(2),
+            operation(2, taken),
+            assistant(3, "msg_a", "\"tool_use\""),
+            user(5, "queued", ""),
+            assistant(6, "msg_b", "\"end_turn\""),
+            system("turn_duration", 7),
+        ]);
+        assert!(row.turns.valid, "{taken}");
+        assert_eq!(row.turns.total, 6);
+        assert_eq!(
+            finished(&row, "user", 1),
+            Some((second(1), second(7), "completed".into()))
+        );
+    }
+    // A trigger joins a pending start it was dequeued into.
+    let row = run(&[
+        user(4, "hello", ""),
+        dequeue(5),
+        user(6, "queued", ""),
+        assistant(7, "msg_a", "\"end_turn\""),
+        system("turn_duration", 9),
+    ]);
+    assert!(row.turns.valid && !row.claude.queued_since_start);
+    assert_eq!(finished(&row, "user", 4).map(|t| t.1), Some(second(9)));
+    // Each join consumes the evidence: a second prompt needs its own.
+    let row = run(&[
+        user(10, "hello", ""),
+        assistant(11, "msg_a", "\"tool_use\""),
+        dequeue(12),
+        user(13, "queued", ""),
+        user(14, "queued again", ""),
+    ]);
+    assert!(!row.turns.valid);
+    // An unknown operation is not evidence either.
+    let row = run(&[
+        user(10, "hello", ""),
+        assistant(11, "msg_a", "\"tool_use\""),
+        operation(12, "popAll"),
+        user(13, "queued", ""),
+    ]);
+    assert!(!row.turns.valid);
 }

@@ -665,6 +665,7 @@ impl Classifier {
             && !record.bad
             && record.origin <= super::ORIGIN_OTHER
             && record.mode as usize <= super::MODES.len()
+            && record.operation as usize <= super::OPERATIONS.len()
             && [&record.agent, &record.resumed]
                 .iter()
                 .all(|key| key.as_deref().is_none_or(|key| crate::common::hex_id(key, 64)))
@@ -705,7 +706,7 @@ mod tests {
     fn lines() -> Vec<String> {
         let pad = "y".repeat(3000);
         let iterations = "\"iterations\":[{\"type\":\"message\",\"input_tokens\":1,\"output_tokens\":2,\"cache_read_input_tokens\":3,\"cache_creation_input_tokens\":4},{\"type\":\"advisor_message\",\"input_tokens\":9,\"output_tokens\":9,\"cache_read_input_tokens\":9,\"cache_creation_input_tokens\":9},7,null,{\"type\":\"compaction\"}]";
-        vec![
+        let mut lines = vec![
             assistant("", ""),
             assistant(
                 &format!("\"pad\":\"{pad}\\n\\u00e9\\\"\",\"isMeta\":false,"),
@@ -742,9 +743,28 @@ mod tests {
             format!(
                 "{{\"type\":\"queue-operation\",\"sessionId\":\"{ID}\",\"timestamp\":\"{STAMP}\"}}"
             ),
+            format!(
+                "{{\"type\":\"attachment\",\"operation\":\"dequeue\",\"sessionId\":\"{ID}\",\"timestamp\":\"{STAMP}\"}}"
+            ),
             format!("{{\"type\":7,\"sessionId\":5,\"uuid\":[],\"timestamp\":{{}}}}"),
             "{}".to_owned(),
-        ]
+        ];
+        for operation in [
+            "\"enqueue\"",
+            "\"dequeue\"",
+            "\"remove\"",
+            "\"popAll\"",
+            "7",
+            "null",
+            "{\"op\":\"dequeue\"}",
+        ] {
+            for key in ["operation", "oper\\u0061tion"] {
+                lines.push(format!(
+                    "{{\"type\":\"queue-operation\",\"{key}\":{operation},\"sessionId\":\"{ID}\",\"timestamp\":\"{STAMP}\",\"content\":\"{pad}\"}}"
+                ));
+            }
+        }
+        lines
     }
     fn expected(line: &str) -> Outcome {
         let value: Value = serde_json::from_str(line).unwrap();

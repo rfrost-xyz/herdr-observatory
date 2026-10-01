@@ -499,6 +499,8 @@ pub struct Record {
     /// An attachment is a `queued_command`, with its `commandMode` index.
     pub queued: bool,
     pub mode: u8,
+    /// A queue record's `operation` index: 0 absent or unrecognised.
+    pub operation: u8,
     /// The first text of a user record or queued command, and whether any
     /// user text is an interrupt marker. Derived by `finish`.
     #[serde(deserialize_with = "Option::deserialize")]
@@ -589,6 +591,7 @@ pub(crate) const NODES: &[(u8, &str)] = &[
     (CONTENT, ""),
     (BLOCK, "type"),
     (BLOCK, "text"),
+    (0, "operation"),
 ];
 pub(crate) const MESSAGE: u8 = 9;
 pub(crate) const USAGE: u8 = 13;
@@ -604,6 +607,7 @@ pub(crate) const CONTENT: u8 = 39;
 /// Each element of `message.content` or `attachment.prompt`.
 pub(crate) const BLOCK: u8 = 40;
 pub(crate) const BLOCK_TEXT: u8 = 42;
+pub(crate) const OPERATION: u8 = 43;
 /// Nodes whose string values go to the text analyser, never a capture.
 pub(crate) const TEXT_NODES: [u8; 3] = [PROMPT, CONTENT, BLOCK_TEXT];
 /// Nodes that only frame consumed fields; their own scalars carry nothing.
@@ -620,6 +624,7 @@ pub(crate) const fn consumed(kind: u8) -> u64 {
             KIND_ASSISTANT => bits(MESSAGE, 24) | 1 << ABORTED,
             KIND_USER => 1 << MESSAGE | bits(ORIGIN, 32) | bits(CONTENT, BLOCK_TEXT),
             KIND_ATTACHMENT => bits(ATTACHMENT, PROMPT) | bits(BLOCK, BLOCK_TEXT),
+            KIND_QUEUE => 1 << OPERATION,
             _ => 0,
         }
 }
@@ -627,6 +632,8 @@ const ORIGINS: &[&str] = &["human", "task-notification", "peer", "coordinator"];
 pub const ORIGIN_OTHER: u8 = ORIGINS.len() as u8 + 1;
 pub const ORIGIN_NOTIFICATION: u8 = 2;
 const MODES: &[&str] = &["prompt", "task-notification"];
+/// `queue-operation` operations; a dequeue or remove takes queued input.
+pub(crate) const OPERATIONS: &[&str] = &["enqueue", "dequeue", "remove"];
 pub const MODE_PROMPT: u8 = 1;
 pub const MODE_NOTIFICATION: u8 = 2;
 
@@ -805,6 +812,7 @@ impl Record {
             ABORTED => self.aborted = *value == true,
             36 => self.queued = value == "queued_command",
             37 => self.mode = index(MODES, value.as_str()),
+            OPERATION => self.operation = index(OPERATIONS, value.as_str()),
             _ => {}
         }
     }
@@ -830,6 +838,9 @@ impl Record {
         if !attachment {
             self.queued = false;
             self.mode = 0;
+        }
+        if self.kind != KIND_QUEUE {
+            self.operation = 0;
         }
         self.text = if user {
             blocks.content.first.clone()
@@ -1165,7 +1176,12 @@ impl Row {
         match Turn::of(record) {
             Turn::Ignored => {}
             Turn::Unknown => self.turns_unknown(),
-            Turn::Queue => block.queued_since_start |= active,
+            // Only a dequeue or remove shows input taken into the running
+            // turn or pending start; an enqueue alone never permits a join.
+            Turn::Queue if [2, 3].contains(&record.operation) => {
+                block.queued_since_start |= active || block.pending_start.is_some();
+            }
+            Turn::Queue => {}
             Turn::Silent => block.queued_since_start = false,
             Turn::Assistant => {
                 block.abort_adjacent = false;
@@ -1182,8 +1198,10 @@ impl Row {
                 else {
                     return self.turns_unknown();
                 };
-                if active && block.queued_since_start {
-                    // Input queued into the running turn joins it.
+                if (active || block.pending_start.is_some()) && block.queued_since_start {
+                    // Input taken into the running turn or pending start joins
+                    // it, and consumes the queue evidence.
+                    block.queued_since_start = false;
                     return;
                 }
                 if active {
@@ -1211,7 +1229,6 @@ impl Row {
     /// A pending start followed by an assistant record or abort becomes the turn.
     fn confirm(&mut self) {
         if let Some((key, second)) = self.claude.pending_start.take() {
-            self.claude.queued_since_start = false;
             self.turns.begin(key, second);
         }
     }
@@ -1346,10 +1363,11 @@ impl Row {
             "compactions": compactions,
         })
     }
-    /// D8: queued input belongs to an active turn, a pending start to none.
+    /// D8: queue evidence belongs to an active turn or a pending start, and a
+    /// pending start only exists with no active turn.
     fn turn_state(&self) -> bool {
         let active = self.turns.active.is_some();
-        (!self.claude.queued_since_start || active)
+        (!self.claude.queued_since_start || active || self.claude.pending_start.is_some())
             && (self.claude.pending_start.is_none() || !active)
     }
     /// Whether a checkpointed row may resume this file: same dev/inode, header
