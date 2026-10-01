@@ -111,6 +111,7 @@ impl Turns {
     }
     /// Opens the interval for an exact hashed key at a validated Unix second.
     /// Overlap with the previous end or an open interval makes coverage unknown.
+    #[allow(dead_code)]
     pub fn begin(&mut self, key: String, start: u64) {
         self.supported = true;
         if !hex_id(&key, 24) || start == 0 || start > 9_007_199_254_740_991 {
@@ -134,9 +135,11 @@ impl Turns {
         self.start = Some(start);
         self.current_known = true;
     }
+    #[allow(dead_code)]
     pub fn finish(&mut self, end: u64) {
         self.end(end, "completed");
     }
+    #[allow(dead_code)]
     pub fn abort(&mut self, end: u64) {
         self.end(end, "aborted");
     }
