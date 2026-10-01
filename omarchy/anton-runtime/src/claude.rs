@@ -3,10 +3,14 @@
 //! Native paths and ids stay in process memory.
 use crate::{
     Result,
-    common::{self, safe_id},
-    native::line,
+    common::{self, hex_id, safe_id},
+    native::{Fingerprint, line, timestamp_us},
+    telemetry,
+    turns::Turns,
 };
-use serde_json::Value;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::BufReader;
 use std::os::unix::fs::MetadataExt;
@@ -248,6 +252,512 @@ pub fn forked(record: &Value) -> bool {
     record
         .get("forkedFrom")
         .is_some_and(|value| !value.is_null())
+}
+
+const SAFE: u64 = 9_007_199_254_740_991;
+const RING: usize = 32;
+
+/// Usage counters in source order: input, output, cache read, cache creation.
+pub type Counters = [u64; 4];
+
+fn sum(counters: &[u64]) -> Option<u64> {
+    counters
+        .iter()
+        .try_fold(0u64, |total, value| total.checked_add(*value))
+        .filter(|total| *total <= SAFE)
+}
+
+/// The D4 usage object of one response and its allowlisted model.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Response {
+    pub usage: Counters,
+    pub model: Option<String>,
+}
+impl Response {
+    fn validate(&self) -> bool {
+        sum(&self.usage).is_some() && self.model.as_deref().is_none_or(telemetry::safe_model)
+    }
+}
+
+/// The open D3 group: hashed `message.id`, its counted contribution, the stop
+/// state of its latest line and, when that stop is non-null, its response.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Group {
+    pub id: String,
+    pub usage: Counters,
+    pub stop: u8,
+    pub response: Option<Response>,
+    /// Set when coverage failed while the group was open: it cannot restore
+    /// `last_valid`, because it is not a complete group after the failure.
+    pub tainted: bool,
+}
+
+/// Stop states: `null`, `end_turn`, `tool_use` and any other string.
+pub const STOP_NULL: u8 = 1;
+pub const STOP_END_TURN: u8 = 2;
+pub const STOP_TOOL_USE: u8 = 3;
+pub const STOP_OTHER: u8 = 4;
+
+/// D8: every Claude parser field beyond the shared row-level cursor fields.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClaudeCursor {
+    /// Sums of closed counted groups. The open group's contribution is separate.
+    pub input: u64,
+    pub output: u64,
+    pub cache_read: u64,
+    pub cache_creation: u64,
+    pub totals_valid: bool,
+    pub last: Option<Response>,
+    pub last_valid: bool,
+    pub usage_seq: u64,
+    pub coverage_seq: u64,
+    pub open: Option<Group>,
+    pub closed: Vec<String>,
+    pub compactions: u64,
+    pub compaction_iteration: bool,
+    pub pending_start: Option<(String, u64)>,
+    pub abort_adjacent: bool,
+    pub queued_since_start: bool,
+}
+impl Default for ClaudeCursor {
+    fn default() -> Self {
+        Self {
+            input: 0,
+            output: 0,
+            cache_read: 0,
+            cache_creation: 0,
+            totals_valid: true,
+            last: None,
+            last_valid: true,
+            usage_seq: 0,
+            coverage_seq: 0,
+            open: None,
+            closed: Vec::new(),
+            compactions: 0,
+            compaction_iteration: false,
+            pending_start: None,
+            abort_adjacent: false,
+            queued_since_start: false,
+        }
+    }
+}
+impl ClaudeCursor {
+    /// Cumulative counters including the open group's contribution.
+    pub fn totals(&self) -> Option<Counters> {
+        let open = self.open.as_ref().map(|g| g.usage).unwrap_or_default();
+        let mut result = [0; 4];
+        for (index, value) in [
+            self.input,
+            self.output,
+            self.cache_read,
+            self.cache_creation,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            result[index] = sum(&[value, open[index]])?;
+        }
+        sum(&[result[0], result[2], result[3]])?;
+        Some(result)
+    }
+    /// Revalidates every bound on reuse; `time` is the caller's Unix time.
+    pub fn validate(&self, time: f64) -> bool {
+        let horizon = ((time + 1.0) * 1e6).clamp(0.0, SAFE as f64) as u64;
+        let mut ids = std::collections::BTreeSet::new();
+        self.totals().is_some()
+            && self.last.as_ref().is_none_or(Response::validate)
+            && (self.last_valid || self.last.is_none())
+            && self.usage_seq <= self.coverage_seq
+            && self.coverage_seq <= horizon
+            && self.open.as_ref().is_none_or(|group| {
+                hex_id(&group.id, 64)
+                    && (STOP_NULL..=STOP_OTHER).contains(&group.stop)
+                    && (group.stop != STOP_NULL || group.response.is_none())
+                    && (!group.tainted || group.response.is_none())
+                    && group.response.as_ref().is_none_or(Response::validate)
+                    && !self.closed.contains(&group.id)
+            })
+            && self.closed.len() <= RING
+            && self
+                .closed
+                .iter()
+                .all(|id| hex_id(id, 64) && ids.insert(id.as_str()))
+            && self.compactions <= SAFE
+            && self
+                .pending_start
+                .as_ref()
+                .is_none_or(|(key, second)| hex_id(key, 24) && (1..=SAFE).contains(second))
+    }
+}
+
+pub const KIND_OTHER: u8 = 0;
+pub const KIND_ASSISTANT: u8 = 1;
+pub const KIND_USER: u8 = 2;
+pub const KIND_ATTACHMENT: u8 = 3;
+pub const KIND_SYSTEM: u8 = 4;
+pub const KIND_QUEUE: u8 = 5;
+pub const SUBTYPE_COMPACT_BOUNDARY: u8 = 1;
+pub const SUBTYPE_MICROCOMPACT_BOUNDARY: u8 = 2;
+pub const SUBTYPE_TURN_DURATION: u8 = 3;
+pub const SUBTYPE_STOP_HOOK_SUMMARY: u8 = 4;
+const KINDS: &[&str] = &[
+    "assistant",
+    "user",
+    "attachment",
+    "system",
+    "queue-operation",
+];
+const SUBTYPES: &[&str] = &[
+    "compact_boundary",
+    "microcompact_boundary",
+    "turn_duration",
+    "stop_hook_summary",
+];
+const COUNTERS: &[&str] = &[
+    "input_tokens",
+    "output_tokens",
+    "cache_read_input_tokens",
+    "cache_creation_input_tokens",
+];
+
+/// The fields of one record that replay consumes, extracted identically from a
+/// parsed line or by the oversized-line classifier. Strings are hashed or
+/// allowlisted; no content leaves the parser.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Record {
+    pub kind: u8,
+    pub subtype: u8,
+    pub identity: u8,
+    pub forked: bool,
+    pub compact_summary: bool,
+    pub meta: bool,
+    /// Validated timestamp in microseconds, at most now plus 1 s.
+    pub stamp: Option<u64>,
+    /// The D7 turn key of `uuid`.
+    pub uuid: Option<String>,
+    /// sha256 of `message.id`.
+    pub message: Option<String>,
+    pub synthetic: bool,
+    pub model: Option<String>,
+    pub stop: u8,
+    pub usage: [Option<u64>; 4],
+    /// The D4 iteration, when Claude Code's rule selects one over top level.
+    pub selected: Option<Counters>,
+    pub compaction_iteration: bool,
+    /// A consumed field is present with a value replay cannot represent.
+    pub bad: bool,
+}
+pub const IDENTITY_ABSENT: u8 = 0;
+pub const IDENTITY_MATCH: u8 = 1;
+pub const IDENTITY_MISMATCH: u8 = 2;
+
+fn index(names: &[&str], value: Option<&str>) -> u8 {
+    value
+        .and_then(|value| names.iter().position(|name| *name == value))
+        .map_or(0, |position| position as u8 + 1)
+}
+fn horizon(time: f64) -> u64 {
+    ((time + 1.0) * 1e6).clamp(0.0, SAFE as f64) as u64
+}
+pub fn turn_key(id: &str, uuid: &str) -> String {
+    common::sha256(format!("anton-turn-v1:{id}:{uuid}").as_bytes())[..24].to_owned()
+}
+/// D4: the last iteration that is neither `advisor_message` nor `compaction`,
+/// used only when it is `message` or `fallback_message` with four numeric
+/// counters summing above zero.
+fn select(kind: u8, counters: [Option<u64>; 4]) -> Option<Counters> {
+    let counters = [counters[0]?, counters[1]?, counters[2]?, counters[3]?];
+    ([1, 2].contains(&kind) && sum(&counters).is_some_and(|total| total > 0)).then_some(counters)
+}
+const ITERATIONS: &[&str] = &[
+    "message",
+    "fallback_message",
+    "advisor_message",
+    "compaction",
+];
+
+impl Record {
+    /// Extracts a parsed line; `None` when the line is not a JSON object.
+    pub fn from_value(value: &Value, id: &str, time: f64) -> Option<Self> {
+        value.as_object()?;
+        let text = |value: &Value| value.as_str().map(str::to_owned);
+        let mut record = Self {
+            kind: index(KINDS, value["type"].as_str()),
+            subtype: index(SUBTYPES, value["subtype"].as_str()),
+            identity: match session_identity(value, id) {
+                Identity::Absent => IDENTITY_ABSENT,
+                Identity::Match => IDENTITY_MATCH,
+                Identity::Mismatch => IDENTITY_MISMATCH,
+            },
+            forked: forked(value),
+            compact_summary: value
+                .get("isCompactSummary")
+                .is_some_and(|v| !v.is_null() && *v != false),
+            meta: value["isMeta"] == true,
+            stamp: value["timestamp"]
+                .as_str()
+                .and_then(timestamp_us)
+                .filter(|stamp| *stamp <= horizon(time)),
+            uuid: value["uuid"]
+                .as_str()
+                .filter(|uuid| safe_id(uuid, 128))
+                .map(|uuid| turn_key(id, uuid)),
+            ..Self::default()
+        };
+        if record.kind != KIND_ASSISTANT {
+            return Some(record);
+        }
+        let message = &value["message"];
+        let model = text(&message["model"]);
+        record.synthetic = model.as_deref() == Some("<synthetic>");
+        record.model = model.filter(|model| telemetry::safe_model(model));
+        record.message = message["id"]
+            .as_str()
+            .filter(|id| safe_id(id, 128))
+            .map(|id| common::sha256(id.as_bytes()));
+        record.stop = match message.get("stop_reason") {
+            Some(Value::Null) => STOP_NULL,
+            Some(Value::String(stop)) if stop == "end_turn" => STOP_END_TURN,
+            Some(Value::String(stop)) if stop == "tool_use" => STOP_TOOL_USE,
+            Some(Value::String(_)) => STOP_OTHER,
+            _ => 0,
+        };
+        let usage = &message["usage"];
+        for (slot, name) in record.usage.iter_mut().zip(COUNTERS) {
+            *slot = common::number(&usage[*name]);
+        }
+        let mut iterations_bad = false;
+        match usage.get("iterations") {
+            None | Some(Value::Null) => {}
+            Some(Value::Array(list)) => {
+                let kinds: Vec<u8> = list
+                    .iter()
+                    .map(|v| index(ITERATIONS, v["type"].as_str()))
+                    .collect();
+                record.compaction_iteration = kinds.contains(&4);
+                record.selected = list
+                    .iter()
+                    .zip(&kinds)
+                    .rev()
+                    .find(|(_, kind)| ![3, 4].contains(*kind))
+                    .and_then(|(iteration, kind)| {
+                        let mut counters = [None; 4];
+                        for (slot, name) in counters.iter_mut().zip(COUNTERS) {
+                            *slot = common::number(&iteration[*name]);
+                        }
+                        select(*kind, counters)
+                    });
+            }
+            Some(_) => iterations_bad = true,
+        }
+        record.bad = !message.is_object()
+            || record.message.is_none()
+            || record.stop == 0
+            || record.stamp.is_none()
+            || iterations_bad;
+        Some(record)
+    }
+}
+
+/// Row-level replay state. Field names and meanings match `native::Cursor` so
+/// the native dispatch maps between them, except that `seq` starts at 0 (D6).
+#[derive(Clone, Debug)]
+pub struct Row {
+    pub file: [u64; 2],
+    pub offset: u64,
+    pub children: BTreeMap<String, String>,
+    pub seq: u64,
+    pub valid: bool,
+    pub compactions_valid: bool,
+    pub caught_up: bool,
+    pub skipping: bool,
+    pub turns: Turns,
+    pub fingerprint: Option<Fingerprint>,
+    pub at: f64,
+    pub claude: ClaudeCursor,
+}
+impl Row {
+    pub fn new(file: [u64; 2], offset: u64, time: f64) -> Self {
+        Self {
+            file,
+            offset,
+            children: BTreeMap::new(),
+            seq: 0,
+            valid: true,
+            compactions_valid: true,
+            caught_up: false,
+            skipping: false,
+            turns: Turns::default(),
+            fingerprint: None,
+            at: time,
+            claude: ClaudeCursor::default(),
+        }
+    }
+    /// Last-response values stay unknown until the next complete counted group.
+    fn fail_last(&mut self) {
+        let block = &mut self.claude;
+        block.last_valid = false;
+        block.last = None;
+        if let Some(group) = &mut block.open {
+            group.tainted = true;
+            group.response = None;
+        }
+    }
+    fn fail_totals(&mut self) {
+        self.claude.totals_valid = false;
+        self.fail_last();
+    }
+    /// An unparseable line, or a record naming another session.
+    pub fn invalid(&mut self) {
+        self.valid = false;
+        self.compactions_valid = false;
+        self.turns.unknown();
+        self.fail_totals();
+    }
+    /// D3 coverage table for a relevant record that cannot be classified.
+    fn unclassified(&mut self, kind: u8) {
+        match kind {
+            KIND_ASSISTANT => self.fail_totals(),
+            KIND_SYSTEM => self.compactions_valid = false,
+            KIND_USER | KIND_ATTACHMENT => self.valid = false,
+            _ => return,
+        }
+        self.turns.unknown();
+    }
+    fn close_group(&mut self) {
+        let Some(group) = self.claude.open.take() else {
+            return;
+        };
+        // `assistant` keeps sums plus the open contribution within 2^53.
+        let block = &mut self.claude;
+        block.input += group.usage[0];
+        block.output += group.usage[1];
+        block.cache_read += group.usage[2];
+        block.cache_creation += group.usage[3];
+        if let Some(response) = group.response {
+            block.last = Some(response);
+            block.last_valid = true;
+        }
+        block.closed.push(group.id);
+        if block.closed.len() > RING {
+            block.closed.remove(0);
+        }
+    }
+    /// Applies one record's extracted fields to the replay state.
+    pub fn apply(&mut self, record: &Record) {
+        if let Some(stamp) = record.stamp {
+            self.claude.coverage_seq = self.claude.coverage_seq.max(stamp);
+        }
+        let relevant =
+            [KIND_ASSISTANT, KIND_USER, KIND_ATTACHMENT, KIND_SYSTEM].contains(&record.kind);
+        match record.identity {
+            IDENTITY_MISMATCH => return self.invalid(),
+            IDENTITY_ABSENT => return self.unclassified(record.kind),
+            _ => {}
+        }
+        if record.forked || record.kind == KIND_ASSISTANT && record.synthetic {
+            return;
+        }
+        if record.bad && relevant {
+            return self.unclassified(record.kind);
+        }
+        if record.kind == KIND_SYSTEM && record.subtype == SUBTYPE_COMPACT_BOUNDARY {
+            self.claude.compactions = (self.claude.compactions + 1).min(SAFE);
+        }
+        if record.kind == KIND_ASSISTANT {
+            self.assistant(record);
+        }
+    }
+    /// D3 grouping: a different `message.id` closes the open group, a later line
+    /// of the open group replaces its contribution, and a closed id reopening
+    /// makes totals unknown.
+    fn assistant(&mut self, record: &Record) {
+        let (Some(id), Some(stamp)) = (record.message.clone(), record.stamp) else {
+            return self.unclassified(KIND_ASSISTANT);
+        };
+        if self.claude.open.as_ref().is_none_or(|group| group.id != id) {
+            self.close_group();
+            if self.claude.closed.contains(&id) {
+                return self.fail_totals();
+            }
+            self.claude.open = Some(Group {
+                id,
+                usage: [0; 4],
+                stop: STOP_NULL,
+                response: None,
+                tainted: false,
+            });
+        }
+        let counters = [
+            record.usage[0],
+            record.usage[1],
+            record.usage[2],
+            record.usage[3],
+        ];
+        let complete = counters.iter().all(Option::is_some);
+        let usage = counters.map(|v| v.unwrap_or(0));
+        let block = &mut self.claude;
+        block.usage_seq = block.usage_seq.max(stamp);
+        block.compaction_iteration |= record.compaction_iteration;
+        let group = block.open.as_mut().unwrap();
+        group.usage = usage;
+        group.stop = record.stop;
+        group.response =
+            (complete && record.stop != STOP_NULL && !group.tainted).then(|| Response {
+                usage: record.selected.unwrap_or(usage),
+                model: record.model.clone(),
+            });
+        if !complete || block.totals().is_none() {
+            // Totals stay unknown; a zero contribution keeps the sums bounded.
+            if let Some(group) = &mut block.open {
+                group.usage = [0; 4];
+            }
+            self.fail_totals();
+        }
+    }
+}
+
+impl Row {
+    /// D3 to D5 projection into the telemetry object. `window` and
+    /// `context_percent` are omitted rather than null, so a merge never replaces
+    /// metadata values (D4). Publishing it only when caught up is the caller's.
+    pub fn usage(&self) -> Value {
+        let block = &self.claude;
+        let known = block.usage_seq > 0;
+        let totals = block.totals().filter(|_| known && block.totals_valid);
+        let response = block
+            .open
+            .as_ref()
+            .and_then(|group| group.response.clone())
+            .or_else(|| block.last.clone().filter(|_| block.last_valid))
+            .filter(|_| known);
+        let context = response
+            .as_ref()
+            .and_then(|r| sum(&[r.usage[0], r.usage[2], r.usage[3]]));
+        let compactions = (known && self.compactions_valid && !block.compaction_iteration)
+            .then_some(block.compactions);
+        let total = |index: usize| totals.map(|t| t[index]);
+        json!({
+            "total_input": totals.and_then(|t| sum(&[t[0], t[2], t[3]])),
+            "total_cache_read": total(2),
+            "total_cache_write": total(3),
+            "total_uncached_input": total(0),
+            "total_output": total(1),
+            "input": context,
+            "output_tokens": response.as_ref().map(|r| r.usage[1]),
+            "cache_read": response.as_ref().map(|r| r.usage[2]),
+            "cache_write": response.as_ref().map(|r| r.usage[3]),
+            "context": context,
+            "model": response.and_then(|r| r.model),
+            "usage_seq": known.then_some(block.usage_seq),
+            "usage_source": known.then_some("claude-transcript"),
+            "compactions": compactions,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -553,5 +1063,449 @@ mod tests {
         assert!(forked(&parse(
             "{\"sessionId\":\"x\",\"forkedFrom\":{\"sessionId\":\"y\",\"messageUuid\":\"z\"}}"
         )));
+    }
+}
+#[cfg(test)]
+mod replay_tests {
+    use super::*;
+    use crate::common::now;
+    const ID: &str = "fixture-session-a";
+    const BASE: u64 = 1_767_225_600;
+
+    fn stamp(second: u64) -> String {
+        format!(
+            "2026-01-01T{:02}:{:02}:{:02}.250Z",
+            second / 3600,
+            second / 60 % 60,
+            second % 60
+        )
+    }
+    fn micros(second: u64) -> u64 {
+        (BASE + second) * 1_000_000 + 250_000
+    }
+    /// A synthetic assistant line; `stop` is raw JSON (`null` or a string).
+    fn assistant(message: &str, second: u64, stop: &str, usage: [u64; 4]) -> String {
+        assistant_with(message, second, stop, &counters(usage), "")
+    }
+    fn counters(usage: [u64; 4]) -> String {
+        format!(
+            "\"input_tokens\":{},\"output_tokens\":{},\"cache_read_input_tokens\":{},\"cache_creation_input_tokens\":{}",
+            usage[0], usage[1], usage[2], usage[3]
+        )
+    }
+    fn assistant_with(message: &str, second: u64, stop: &str, usage: &str, extra: &str) -> String {
+        format!(
+            "{{\"type\":\"assistant\",\"sessionId\":\"{ID}\",\"uuid\":\"a-{message}-{second}\",\"timestamp\":\"{}\",{extra}\"message\":{{\"id\":\"{message}\",\"model\":\"claude-fixture-1\",\"stop_reason\":{stop},\"usage\":{{{usage}}},\"content\":[]}}}}",
+            stamp(second)
+        )
+    }
+    fn user(second: u64) -> String {
+        format!(
+            "{{\"type\":\"user\",\"sessionId\":\"{ID}\",\"uuid\":\"u-{second}\",\"timestamp\":\"{}\",\"message\":{{\"role\":\"user\",\"content\":\"synthetic\"}}}}",
+            stamp(second)
+        )
+    }
+    fn attachment(second: u64) -> String {
+        format!(
+            "{{\"type\":\"attachment\",\"sessionId\":\"{ID}\",\"timestamp\":\"{}\",\"attachment\":{{\"type\":\"fixture\"}}}}",
+            stamp(second)
+        )
+    }
+    fn system(subtype: &str, second: u64) -> String {
+        format!(
+            "{{\"type\":\"system\",\"subtype\":\"{subtype}\",\"sessionId\":\"{ID}\",\"timestamp\":\"{}\"}}",
+            stamp(second)
+        )
+    }
+    fn run(lines: &[String]) -> Row {
+        let mut row = Row::new([1, 2], 0, now());
+        for line in lines {
+            match serde_json::from_str::<Value>(line)
+                .ok()
+                .and_then(|value| Record::from_value(&value, ID, now()))
+            {
+                Some(record) => row.apply(&record),
+                None => row.invalid(),
+            }
+        }
+        row
+    }
+    fn get(row: &Row, key: &str) -> Value {
+        row.usage()[key].clone()
+    }
+    fn totals(row: &Row) -> [Value; 5] {
+        let usage = row.usage();
+        [
+            "total_input",
+            "total_output",
+            "total_cache_read",
+            "total_cache_write",
+            "total_uncached_input",
+        ]
+        .map(|key| usage[key].clone())
+    }
+
+    #[test]
+    fn usage_identical_split_and_streaming_partial_groups_count_once() {
+        let split = run(&[
+            assistant("msg_a", 1, "null", [10, 5, 100, 20]),
+            assistant("msg_a", 2, "null", [10, 5, 100, 20]),
+            assistant("msg_a", 3, "\"end_turn\"", [10, 5, 100, 20]),
+        ]);
+        assert_eq!(
+            totals(&split),
+            [json!(130), json!(5), json!(100), json!(20), json!(10)]
+        );
+        let partial = run(&[
+            assistant("msg_a", 1, "null", [10, 1, 100, 20]),
+            assistant("msg_a", 2, "null", [10, 3, 100, 20]),
+            assistant("msg_a", 3, "\"tool_use\"", [10, 9, 100, 20]),
+            assistant("msg_b", 4, "\"end_turn\"", [2, 4, 130, 0]),
+        ]);
+        assert_eq!(
+            totals(&partial),
+            [json!(262), json!(13), json!(230), json!(20), json!(12)]
+        );
+        for (key, value) in [
+            ("input", json!(132)),
+            ("context", json!(132)),
+            ("output_tokens", json!(4)),
+            ("cache_read", json!(130)),
+            ("cache_write", json!(0)),
+            ("model", json!("claude-fixture-1")),
+            ("usage_seq", json!(micros(4))),
+            ("usage_source", json!("claude-transcript")),
+            ("compactions", json!(0)),
+        ] {
+            assert_eq!(get(&partial, key), value, "{key}");
+        }
+        let usage = partial.usage();
+        assert!(usage.get("window").is_none() && usage.get("context_percent").is_none());
+    }
+    #[test]
+    fn usage_groups_survive_interleaved_user_attachment_and_system_records() {
+        let row = run(&[
+            assistant("msg_a", 1, "null", [1, 2, 3, 4]),
+            user(2),
+            attachment(3),
+            system("turn_duration", 4),
+            "{\"type\":\"queue-operation\",\"operation\":\"enqueue\"}".to_owned(),
+            "{\"type\":\"file-history-snapshot\",\"messageId\":\"m\"}".to_owned(),
+            assistant("msg_a", 5, "\"end_turn\"", [1, 2, 3, 4]),
+        ]);
+        assert_eq!(
+            totals(&row),
+            [json!(8), json!(2), json!(3), json!(4), json!(1)]
+        );
+        assert_eq!(get(&row, "context"), json!(8));
+        assert_eq!(row.claude.closed.len(), 0);
+        assert!(row.valid && row.compactions_valid && row.turns.valid);
+    }
+    #[test]
+    fn usage_reopened_closed_group_makes_totals_unknown_until_next_group() {
+        let row = run(&[
+            assistant("msg_a", 1, "\"end_turn\"", [1, 1, 1, 1]),
+            assistant("msg_b", 2, "\"end_turn\"", [2, 2, 2, 2]),
+            assistant("msg_a", 3, "\"end_turn\"", [1, 1, 1, 1]),
+        ]);
+        assert_eq!(
+            totals(&row),
+            [
+                Value::Null,
+                Value::Null,
+                Value::Null,
+                Value::Null,
+                Value::Null
+            ]
+        );
+        assert_eq!(get(&row, "context"), Value::Null);
+        assert_eq!(get(&row, "model"), Value::Null);
+        let mut lines = vec![
+            assistant("msg_a", 1, "\"end_turn\"", [1, 1, 1, 1]),
+            assistant("msg_b", 2, "\"end_turn\"", [2, 2, 2, 2]),
+            assistant("msg_a", 3, "\"end_turn\"", [1, 1, 1, 1]),
+            assistant("msg_c", 4, "\"end_turn\"", [3, 5, 7, 9]),
+        ];
+        let row = run(&lines);
+        assert_eq!(get(&row, "total_input"), Value::Null);
+        assert_eq!(get(&row, "context"), json!(19));
+        assert_eq!(get(&row, "output_tokens"), json!(5));
+        // The ring holds the last 32 closed ids; an older id is beyond it.
+        lines.truncate(1);
+        for index in 0..33 {
+            lines.push(assistant(
+                &format!("msg_n{index}"),
+                10 + index,
+                "\"end_turn\"",
+                [1, 0, 0, 0],
+            ));
+        }
+        lines.push(assistant("msg_a", 50, "\"end_turn\"", [1, 0, 0, 0]));
+        let row = run(&lines);
+        assert_eq!(row.claude.closed.len(), 32);
+        assert_eq!(get(&row, "total_uncached_input"), json!(35));
+    }
+
+    fn iterations(list: &[(&str, [u64; 4])]) -> String {
+        let items: Vec<String> = list
+            .iter()
+            .map(|(kind, usage)| format!("{{\"type\":\"{kind}\",{}}}", counters(*usage)))
+            .collect();
+        format!(",\"iterations\":[{}]", items.join(","))
+    }
+    #[test]
+    fn usage_advisor_iterations_select_context_and_top_level_feeds_totals() {
+        let top = counters([5, 30, 200, 10]);
+        let advisor = iterations(&[
+            ("message", [2, 10, 100, 5]),
+            ("advisor_message", [50, 50, 50, 50]),
+            ("message", [3, 20, 100, 5]),
+        ]);
+        let row = run(&[assistant_with(
+            "msg_a",
+            1,
+            "\"end_turn\"",
+            &(top.clone() + &advisor),
+            "",
+        )]);
+        assert_eq!(
+            totals(&row),
+            [json!(215), json!(30), json!(200), json!(10), json!(5)]
+        );
+        assert_eq!(get(&row, "context"), json!(108));
+        assert_eq!(get(&row, "input"), json!(108));
+        assert_eq!(get(&row, "output_tokens"), json!(20));
+        for (list, context) in [
+            (iterations(&[("fallback_message", [1, 1, 1, 1])]), 3),
+            (iterations(&[("message", [0, 0, 0, 0])]), 215),
+            (
+                iterations(&[("message", [1, 1, 1, 1]), ("tool_round", [9, 9, 9, 9])]),
+                215,
+            ),
+            (
+                iterations(&[("message", [1, 1, 1, 1]), ("advisor_message", [9, 9, 9, 9])]),
+                3,
+            ),
+            (
+                ",\"iterations\":[{\"type\":\"message\",\"input_tokens\":1}]".to_owned(),
+                215,
+            ),
+            (",\"iterations\":[7]".to_owned(), 215),
+            (",\"iterations\":[]".to_owned(), 215),
+            (",\"iterations\":null".to_owned(), 215),
+        ] {
+            let row = run(&[assistant_with(
+                "msg_a",
+                1,
+                "\"end_turn\"",
+                &(top.clone() + &list),
+                "",
+            )]);
+            assert_eq!(get(&row, "context"), json!(context), "{list}");
+            assert_eq!(get(&row, "total_input"), json!(215), "{list}");
+        }
+        let row = run(&[assistant_with(
+            "msg_a",
+            1,
+            "\"end_turn\"",
+            &(top + ",\"iterations\":{}"),
+            "",
+        )]);
+        assert_eq!(get(&row, "total_input"), Value::Null);
+    }
+    #[test]
+    fn usage_compaction_iteration_makes_compactions_unknown() {
+        let top = counters([5, 30, 200, 10]);
+        let list = iterations(&[("compaction", [1, 1, 1, 1]), ("message", [2, 2, 2, 2])]);
+        let row = run(&[
+            system("compact_boundary", 1),
+            assistant_with("msg_a", 2, "\"end_turn\"", &(top + &list), ""),
+        ]);
+        assert_eq!(get(&row, "compactions"), Value::Null);
+        assert_eq!(get(&row, "context"), json!(6));
+        assert_eq!(get(&row, "total_input"), json!(215));
+    }
+    #[test]
+    fn usage_synthetic_records_are_neutral() {
+        let synthetic = |message: &str, second: u64| {
+            assistant(message, second, "\"stop_sequence\"", [0, 0, 0, 0])
+                .replace("claude-fixture-1", "<synthetic>")
+        };
+        let row = run(&[
+            assistant("msg_a", 1, "null", [1, 2, 3, 4]),
+            synthetic("msg_s", 2),
+            assistant("msg_a", 3, "\"end_turn\"", [1, 2, 3, 4]),
+            synthetic("msg_a", 4),
+        ]);
+        assert_eq!(
+            totals(&row),
+            [json!(8), json!(2), json!(3), json!(4), json!(1)]
+        );
+        assert_eq!(get(&row, "model"), json!("claude-fixture-1"));
+        assert_eq!(get(&row, "usage_seq"), json!(micros(3)));
+        assert!(row.claude.closed.is_empty());
+    }
+    #[test]
+    fn usage_aborted_group_counts_but_is_never_last_response() {
+        let row = run(&[
+            assistant("msg_a", 1, "\"end_turn\"", [1, 2, 3, 4]),
+            assistant("msg_b", 2, "null", [10, 20, 30, 40]),
+        ]);
+        assert_eq!(
+            totals(&row),
+            [json!(88), json!(22), json!(33), json!(44), json!(11)]
+        );
+        assert_eq!(get(&row, "context"), json!(8));
+        assert_eq!(get(&row, "output_tokens"), json!(2));
+        assert_eq!(get(&row, "usage_seq"), json!(micros(2)));
+        let row = run(&[
+            assistant("msg_a", 1, "\"end_turn\"", [1, 2, 3, 4]),
+            assistant("msg_b", 2, "null", [10, 20, 30, 40]),
+            assistant("msg_c", 3, "\"tool_use\"", [5, 0, 0, 0]),
+        ]);
+        assert_eq!(get(&row, "context"), json!(5));
+        let unsafe_model = run(&[assistant("msg_a", 1, "\"end_turn\"", [1, 2, 3, 4])
+            .replace("claude-fixture-1", "../model")]);
+        assert_eq!(get(&unsafe_model, "model"), Value::Null);
+        assert_eq!(get(&unsafe_model, "context"), json!(8));
+    }
+
+    #[test]
+    fn usage_missing_counter_or_unparseable_line_is_unknown_until_next_group() {
+        let missing = "\"input_tokens\":1,\"output_tokens\":2,\"cache_read_input_tokens\":3";
+        let float = "\"input_tokens\":1.0,\"output_tokens\":2,\"cache_read_input_tokens\":3,\"cache_creation_input_tokens\":4";
+        for broken in [
+            assistant_with("msg_b", 2, "\"end_turn\"", missing, ""),
+            assistant_with("msg_b", 2, "\"end_turn\"", float, ""),
+            "{\"type\":\"assistant\",\"sessionId\":\"fixture".to_owned(),
+            "[1,2]".to_owned(),
+        ] {
+            let mut lines = vec![
+                assistant("msg_a", 1, "\"end_turn\"", [1, 2, 3, 4]),
+                broken.clone(),
+            ];
+            let row = run(&lines);
+            assert_eq!(get(&row, "total_input"), Value::Null, "{broken}");
+            assert_eq!(get(&row, "context"), Value::Null, "{broken}");
+            assert_eq!(get(&row, "model"), Value::Null, "{broken}");
+            lines.push(assistant("msg_c", 3, "\"end_turn\"", [3, 3, 3, 3]));
+            let row = run(&lines);
+            assert_eq!(get(&row, "total_output"), Value::Null, "{broken}");
+            assert_eq!(get(&row, "context"), json!(9), "{broken}");
+            assert_eq!(get(&row, "model"), json!("claude-fixture-1"), "{broken}");
+        }
+        let row = run(&["not json".to_owned(), system("compact_boundary", 1)]);
+        assert!(!row.valid && !row.compactions_valid && !row.turns.valid);
+        assert_eq!(get(&row, "compactions"), Value::Null);
+        // A failure inside an open group taints it: its later lines cannot
+        // restore the last response, only a group opened afterwards can.
+        let row = run(&[
+            assistant("msg_a", 1, "null", [1, 2, 3, 4]),
+            "not json".to_owned(),
+            assistant("msg_a", 2, "\"end_turn\"", [1, 2, 3, 4]),
+        ]);
+        assert_eq!(get(&row, "context"), Value::Null);
+    }
+    #[test]
+    fn identity_mismatch_fork_and_absent_session_feed_no_metric() {
+        let good = assistant("msg_a", 1, "\"end_turn\"", [1, 2, 3, 4]);
+        let other = good
+            .replace(ID, "fixture-session-b")
+            .replace("msg_a", "msg_b");
+        let row = run(&[good.clone(), other]);
+        assert_eq!(
+            totals(&row),
+            [
+                Value::Null,
+                Value::Null,
+                Value::Null,
+                Value::Null,
+                Value::Null
+            ]
+        );
+        assert!(!row.valid && !row.compactions_valid && !row.turns.valid);
+        let fork = assistant_with(
+            "msg_f",
+            2,
+            "\"end_turn\"",
+            &counters([50, 50, 50, 50]),
+            "\"forkedFrom\":{\"sessionId\":\"fixture-session-b\",\"messageUuid\":\"x\"},",
+        );
+        let compact =
+            system("compact_boundary", 3).replace("\"system\",", "\"system\",\"forkedFrom\":{},");
+        let snapshot =
+            "{\"type\":\"file-history-snapshot\",\"messageId\":\"m\",\"snapshot\":{}}".to_owned();
+        let row = run(&[good.clone(), fork, compact, snapshot]);
+        assert_eq!(
+            totals(&row),
+            [json!(8), json!(2), json!(3), json!(4), json!(1)]
+        );
+        assert_eq!(get(&row, "compactions"), json!(0));
+        assert_eq!(get(&row, "usage_seq"), json!(micros(1)));
+        assert!(row.valid && row.compactions_valid && row.turns.valid);
+        let null_fork = good.replace(
+            "\"type\":\"assistant\",",
+            "\"type\":\"assistant\",\"forkedFrom\":null,",
+        );
+        assert_eq!(get(&run(&[null_fork]), "total_output"), json!(2));
+        let anonymous = good.replace(&format!("\"sessionId\":\"{ID}\","), "");
+        let row = run(&[anonymous]);
+        assert_eq!(get(&row, "total_input"), Value::Null);
+        assert!(row.valid && row.compactions_valid && !row.turns.valid);
+    }
+    #[test]
+    fn compactions_count_boundaries_only() {
+        let summary = format!(
+            "{{\"type\":\"user\",\"sessionId\":\"{ID}\",\"isCompactSummary\":true,\"timestamp\":\"{}\",\"message\":{{\"content\":\"synthetic\"}}}}",
+            stamp(3)
+        );
+        let row = run(&[
+            system("compact_boundary", 1),
+            system("microcompact_boundary", 2),
+            summary,
+            system("compact_boundary", 4),
+            assistant("msg_a", 5, "\"end_turn\"", [1, 2, 3, 4]),
+        ]);
+        assert_eq!(get(&row, "compactions"), json!(2));
+        let row = run(&[system("compact_boundary", 1)]);
+        assert_eq!(row.claude.compactions, 1);
+        assert_eq!(get(&row, "compactions"), Value::Null);
+    }
+    #[test]
+    fn usage_seq_is_the_largest_counted_timestamp_and_coverage_covers_all() {
+        let row = run(&[
+            assistant("msg_a", 9, "null", [1, 0, 0, 0]),
+            assistant("msg_a", 5, "\"end_turn\"", [1, 0, 0, 0]),
+            assistant("msg_b", 7, "\"end_turn\"", [1, 0, 0, 0]),
+            user(30),
+        ]);
+        assert_eq!(get(&row, "usage_seq"), json!(micros(9)));
+        assert_eq!(row.claude.coverage_seq, micros(30));
+        for line in [
+            assistant("msg_c", 0, "\"end_turn\"", [1, 0, 0, 0])
+                .replace(&stamp(0), "2026-01-01T00:00:00"),
+            assistant("msg_c", 0, "\"end_turn\"", [1, 0, 0, 0])
+                .replace(&stamp(0), "2999-01-01T00:00:00Z"),
+            assistant_with("msg_c", 0, "7", &counters([1, 0, 0, 0]), ""),
+            assistant("msg_c", 0, "\"end_turn\"", [1, 0, 0, 0])
+                .replace("\"stop_reason\":\"end_turn\",", ""),
+            assistant("msg-c", 0, "\"end_turn\"", [1, 0, 0, 0]).replace("msg-c", "bad id"),
+        ] {
+            let row = run(&[
+                assistant("msg_a", 1, "\"end_turn\"", [1, 0, 0, 0]),
+                line.clone(),
+            ]);
+            assert_eq!(get(&row, "total_input"), Value::Null, "{line}");
+            assert_eq!(get(&row, "usage_seq"), json!(micros(1)), "{line}");
+        }
+        let empty = run(&[user(1)]);
+        assert!(
+            empty
+                .usage()
+                .as_object()
+                .unwrap()
+                .values()
+                .all(Value::is_null)
+        );
     }
 }
