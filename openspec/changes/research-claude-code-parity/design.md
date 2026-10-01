@@ -181,7 +181,7 @@ Anton fields are `technical.telemetry.*` and `technical.turn_timing.*` (`model.r
 **Lookup.**
 - Look for `<root>/<entry>/<id>.jsonl` at depth exactly two, within the Codex discovery entry and time budgets.
 - Require exactly one match. Zero or several matches leave telemetry unknown, and so does a scan truncated by the entry or time budget (`native.rs:651-670`).
-- **Predecessor after `/clear`.** If Herdr reports an id whose file has ended because a successor exists, the binding would show a stale session. Change 2 first settles from the binary which id SessionStart(clear) delivers. Until that is proven, the fallback is fail-closed. Within the discovery budget, files in the same directory that are newer than the bound file's last record are scanned to their first record carrying `session_id`, bounded at 256 KiB and 512 records. In observed successors it first appears at 0-based record 16 to 19, in a record ending 69 to 76 KiB into the file. There are three outcomes:
+- **Predecessor after `/clear`.** If Herdr reports an id whose file has ended because a successor exists, the binding would show a stale session. Change 2 first settles from the binary which id SessionStart(clear) delivers. Until that is proven, the fallback is fail-closed. Within the discovery budget, files in the same directory that are newer than the bound file's last record are scanned to their first record carrying `session_id`, bounded at 256 KiB and 512 records. In observed successors it first appears at 0-based record 16 to 19, in a record ending 69 to 76 KiB into the file. There are four cases, with two results:
   1. End of file within the bound with no `session_id`: not a successor.
   2. Bound exhausted first: unknown (fail closed).
   3. First `session_id` equals the bound id: unknown.
@@ -415,7 +415,7 @@ Every block field is required, bounded and revalidated on reuse:
 - Codex needs no hook, because its transcript carries the window. Pi has the installer-owned extension.
 - For Claude, two surfaces carry the window and live rate limits:
   - **A. The statusLine input.** It is stable and documented, but it is a single settings slot, which plugins cannot provide.
-  - **B. The plugin function-hook event `session.measure`.** It is plugin-owned, with no statusLine edit, and has change semantics built in. However, it is early access and an internal API. It needs `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` in the Claude environment (a shell profile, or the settings `env` key), and the plugin must be installed and enabled, which Claude Code records in settings `enabledPlugins`.
+  - **B. The plugin function-hook event `session.measure`.** It is plugin-owned, with no statusLine edit, and has change semantics built in. However, it is early access and an internal API. It loads with `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` in the Claude environment, or through a server-side rollout that the installer cannot control. Setting the variable means editing a shell profile or the settings `env` key. The plugin must be installed and enabled, which Claude Code records in settings `enabledPlugins`.
 - Both surfaces touch user-level configuration. Change 3 puts this choice to the user at its gate (below).
 - The rest of this section details A, because it is the stable surface. That detail is provisional until the gate. If the user picks B, change 3 keeps the same reporter wire, binding, model-match and consent rules, replacing only the trigger and installation.
 - The statusLine command is a subprocess that inherits Claude's environment, including `HERDR_*` and `CLAUDE_CONFIG_DIR`. A function hook runs in-process with the same environment.
@@ -469,7 +469,7 @@ Change 3 starts by asking the user whether Anton may edit this tracked file, giv
 - `harness-telemetry` "Supplementary harness reports" (Pi-only and local-only wording).
 - "Scoped cumulative harness metrics": the Pi context API and Codex reserve sentences; context wording assigned here from D9.
 - "Minimal adapter lifecycle": one owned integration per harness.
-- AGENTS.md: the "Required Pi reporters" line, line 53, and the "refuse managed configuration" line, scoped to the user-approved exception.
+- AGENTS.md: the "Required Pi reporters" line, line 53, and the "refuse managed configuration" line, scoped to the user-approved exception. Line 19 gains a statement that the bounded, short-lived detached reporter child is not an independent daemon.
 
 ### D11. Allowances and identity (change 4)
 
@@ -494,7 +494,7 @@ The user accepted `~/.claude.json` as provider-owned state, not an authenticatio
 - The collector accepts an observation only when its hash matches an explicit Claude account mapping. The mapping gains a provider field, and the user obtains the key from diagnostics, as for Codex.
 
 **Identity.**
-- Collection reads `oauthAccount.{accountUuid, emailAddress}` only. `organizationUuid` is not needed.
+- For identity, collection reads only `oauthAccount.{accountUuid, emailAddress}`. `organizationUuid` is not needed. Allowance data comes from the reporter file and the `cachedUsageUtilization` fallback, listed below.
 - `~/.claude.json` may hold credentials elsewhere [bin]: `primaryApiKey` after a Console `/login` on a host without a keychain, and MCP `env` or `headers` values. Change 4 extracts only the allowlisted paths (`oauthAccount.accountUuid`, `oauthAccount.emailAddress`, `cachedUsageUtilization`) and never logs, persists or retains other values. It skips the file entirely, attributing nothing, when `primaryApiKey` is present. The AGENTS.md amendment is scoped to these conditions and re-confirmed with the user at the change 4 gate.
 - The email is shown only after the existing hashed mapping check.
 

@@ -114,14 +114,14 @@ Round 7, on `07966f9`, found 3 blocking and 8 other findings, all addressed:
 
 Round 8, on `4ea41ee`, found 3 blocking and 5 other findings, all addressed:
 
-- D1: the predecessor scan is bounded by bytes, with three outcomes. The 16-record window never reached `session_id` in 4 of 4 successors;
+- D1: the predecessor scan is bounded by bytes, with explicit outcomes. The 16-record window never reached `session_id` in 4 of 4 successors;
 - D3: explicit retention drop triggers, a peer all-null sample on binding failure, and the no-cursor case;
 - D11: stamping only on changed window values, because rewinds change `current_usage`;
 - D4: replay omits `window` rather than writing nulls;
 - D10: a POSIX sh wrapper, a mandatory new session, the shell-prefix and managed-policy limits, and the render triggers;
 - D11: deltas for reporter account reads and inferred account authority.
 
-The final bounded review, on `bb5ba89`, checked fact labels, privacy, consistency and compliance only, following the scope-of-authority pivot. It found 2 minor wording findings and 2 change 2 inputs, all applied. It verified every repository reference, the binary strings, the corpus structure and the privacy scan. A re-run on `bb34de9` found 2 wording contradictions (rate limits placed in change 3; PostModelSwitch fields) and 3 change 2 inputs. All were applied.
+The final bounded review, on `bb5ba89`, checked fact labels, privacy, consistency and compliance only, following the scope-of-authority pivot. It found 2 minor wording findings and 2 change 2 inputs, all applied. It verified every repository reference, the binary strings, the corpus structure and the privacy scan. A re-run on `bb34de9` found 2 wording contradictions (rate limits placed in change 3; PostModelSwitch fields) and 3 change 2 inputs. All were applied. A further re-run on `0af3c23` found an outcome-count contradiction and a missing rollout path for function hooks. Both are fixed.
 
 ## User decisions (2026-10-01)
 
