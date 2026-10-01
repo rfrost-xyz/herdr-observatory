@@ -140,6 +140,7 @@ impl Fixture {
             ])
             .env("HOME", self.dir.join("home"))
             .env("CODEX_HOME", self.dir.join("home/.codex"))
+            .env("CLAUDE_CONFIG_DIR", self.dir.join("home/.claude"))
             .env("XDG_STATE_HOME", self.dir.join("xdg-state"))
             .env(
                 "PATH",
@@ -170,6 +171,48 @@ impl Fixture {
     fn agents(&self) {
         let binding = common::sha256(b"pi:path:/synthetic/session");
         *self.raw.lock().unwrap() = json!({"protocol":1,"version":"fixture","workspaces":[{"workspace_id":"w1","label":"Synthetic","worktree":{"checkout_path":"/synthetic/branch"}}],"agents":[{"pane_id":"w1:p1","workspace_id":"w1","cwd":"/synthetic/branch","agent":"pi","agent_status":"working","agent_session":{"agent":"pi","source":"herdr:pi","kind":"path","value":"/synthetic/session"},"tokens":{"obs_v":"2","obs_bind":binding,"obs_seq":"1700000000000000","obs_event":"output","obs_phase":"output","obs_n0":"12345,678,12000,0","obs_n1":"4000,128000,1700000000000000,90000","obs_n2":"800,88000,0,2000","obs_n3":"2,3","obs_usage_source":"pi-extension"}}]});
+    }
+    /// One Claude pane bound by id, and its synthetic transcript `text`.
+    fn claude(&self, text: &str) {
+        fs::create_dir_all(self.dir.join("home/.claude/projects/entry-a")).unwrap();
+        write(&self.transcript("entry-a"), text, 0o600);
+        *self.raw.lock().unwrap() = json!({"protocol":1,"version":"fixture","workspaces":[{"workspace_id":"w1","label":"Synthetic","worktree":{"checkout_path":"/synthetic/branch"}}],"agents":[{"pane_id":"w1:p1","workspace_id":"w1","cwd":"/synthetic/branch","agent":"claude","agent_status":"working","agent_session":{"agent":"claude","source":"herdr:claude","kind":"id","value":CLAUDE_ID}}]});
+    }
+    fn transcript(&self, entry: &str) -> PathBuf {
+        self.dir
+            .join(format!("home/.claude/projects/{entry}/{CLAUDE_ID}.jsonl"))
+    }
+    /// One direct peer probe with `cursors`, as the SSH command runs it.
+    fn probe(&self, cursors: &Value) -> Value {
+        let mut child = Command::new(BIN);
+        child
+            .args([
+                "--root",
+                self.peer.to_str().unwrap(),
+                "--state",
+                self.dir.join("peer-state").to_str().unwrap(),
+                "--probe",
+            ])
+            .env("HOME", self.dir.join("home"))
+            .env("CODEX_HOME", self.dir.join("home/.codex"))
+            .env("CLAUDE_CONFIG_DIR", self.dir.join("home/.claude"));
+        let input = json!({"version":1,"host_id":"remote","cursors":cursors});
+        let mut child = child
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.to_string().as_bytes())
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success());
+        let response: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(response["ok"], true);
+        response
     }
     fn codex(&self) {
         let reset = (common::now() + 86400.0) as u64;
@@ -1590,4 +1633,226 @@ fn legacy_allowance_cache_is_available_at_startup_when_codex_fails() {
     assert_eq!(cached, legacy["cache"]);
     assert!(lines(&f.dir.join("codex-calls")) <= 1);
     assert!(!snapshot["allowances"].to_string().contains("daily_usage"));
+}
+
+const CLAUDE_ID: &str = "fixture-claude-session";
+fn claude_record(kind: &str, second: u64, fields: &str) -> String {
+    format!(
+        "{{\"type\":\"{kind}\",\"sessionId\":\"{CLAUDE_ID}\",\"uuid\":\"{kind}-{second}\",\"timestamp\":\"2026-01-01T00:{:02}:{:02}.250Z\",{fields}}}",
+        second / 60,
+        second % 60
+    )
+}
+fn claude_assistant(second: u64, message: &str, stop: &str, usage: [u64; 4]) -> String {
+    claude_record(
+        "assistant",
+        second,
+        &format!(
+            "\"message\":{{\"id\":\"{message}\",\"model\":\"claude-fixture-1\",\"stop_reason\":{stop},\"usage\":{{\"input_tokens\":{},\"output_tokens\":{},\"cache_read_input_tokens\":{},\"cache_creation_input_tokens\":{}}},\"content\":[]}}",
+            usage[0], usage[1], usage[2], usage[3]
+        ),
+    )
+}
+/// One finished turn with two counted groups: 25 output tokens in total and a
+/// last response of 1110 context tokens.
+fn claude_transcript() -> String {
+    let lines = [
+        format!("{{\"type\":\"permission-mode\",\"sessionId\":\"{CLAUDE_ID}\"}}"),
+        claude_record(
+            "user",
+            10,
+            "\"message\":{\"role\":\"user\",\"content\":\"synthetic\"}",
+        ),
+        claude_assistant(11, "msg-1", "\"tool_use\"", [100, 20, 1000, 50]),
+        claude_assistant(12, "msg-2", "\"end_turn\"", [10, 5, 1100, 0]),
+        claude_record("system", 13, "\"subtype\":\"turn_duration\""),
+    ];
+    lines.map(|line| line + "\n").concat()
+}
+fn telemetry(snapshot: &Value, host: usize) -> &Value {
+    &snapshot["hosts"][host]["agents"][0]["technical"]["telemetry"]
+}
+/// Whether `host` is online with its pane, so a null telemetry is a value.
+fn pane(snapshot: &Value, host: usize) -> bool {
+    snapshot["hosts"][host]["online"] == true && snapshot["hosts"][host]["agents"][0].is_object()
+}
+/// The retained numeric subset as the local re-emits it: children and
+/// compactions are null.
+fn retained_subset(telemetry: &Value) -> Value {
+    let mut value = telemetry.clone();
+    for (key, field) in value.as_object_mut().unwrap() {
+        if key.starts_with("subagent_") || key == "compactions" {
+            *field = Value::Null;
+        }
+    }
+    value
+}
+
+#[test]
+fn claude_peer_probe_publishes_transcript_telemetry_and_old_cursor_replays_fresh() {
+    let f = Fixture::new();
+    f.claude(&claude_transcript());
+    let first = f.probe(&json!({}));
+    let technical = &first["result"]["agents"][0]["technical"];
+    let sample = &technical["telemetry"];
+    assert_eq!(sample["usage_source"], "claude-transcript");
+    assert_eq!(
+        [
+            &sample["total_input"],
+            &sample["total_output"],
+            &sample["context"],
+            &sample["output_tokens"],
+        ],
+        [&json!(2260), &json!(25), &json!(1110), &json!(5)]
+    );
+    assert!(sample["context_percent"].is_null() && sample["window"].is_null());
+    assert_eq!(technical["turn_timing"]["complete"], true);
+    let cursors = first["result"]["cursors"].clone();
+    let (key, row) = cursors.as_object().unwrap().iter().next().unwrap();
+    assert_eq!(cursors.as_object().unwrap().len(), 1);
+    assert!(row["claude"].is_object() && row["caught_up"] == true);
+    assert!(!cursors.to_string().contains(CLAUDE_ID));
+    // An old local re-serialises the row without its block: the peer replays
+    // the transcript from the header instead of resuming zeroed sums.
+    let mut old = cursors.clone();
+    old[key].as_object_mut().unwrap().remove("claude");
+    let fresh = f.probe(&old);
+    assert_eq!(
+        fresh["result"]["agents"][0]["technical"]["telemetry"],
+        *sample
+    );
+    let replayed = &fresh["result"]["cursors"][key];
+    assert_eq!(
+        [&replayed["claude"], &replayed["offset"], &replayed["turns"]],
+        [&row["claude"], &row["offset"], &row["turns"]]
+    );
+    // With the block, the row resumes: a marked sum survives.
+    let mut marked = cursors.clone();
+    marked[key]["claude"]["output"] = json!(row["claude"]["output"].as_u64().unwrap() + 1000);
+    let warm = f.probe(&marked);
+    assert_eq!(
+        warm["result"]["agents"][0]["technical"]["telemetry"]["total_output"],
+        1025
+    );
+}
+
+#[test]
+fn claude_peer_sample_is_retained_for_incomplete_replay_and_dropped_on_ambiguity() {
+    let f = Fixture::new();
+    f.claude(&claude_transcript());
+    let mut stream = Stream::new(&f);
+    let first = stream.until(|v| (0..2).all(|host| telemetry(v, host)["total_output"] == 25));
+    assert_eq!(telemetry(&first, 0), telemetry(&first, 1));
+    let caught = telemetry(&first, 1).clone();
+    assert_eq!(caught["subagent_total"], 0);
+    // A partial trailing line: each fresh peer follower resumes the returned
+    // row without catching up and publishes nothing, so the local re-emits
+    // the retained subset, matching the local follower's own retention.
+    let path = f.transcript("entry-a");
+    let partial = format!(
+        "{}\n",
+        claude_assistant(20, "msg-3", "\"end_turn\"", [7, 7, 7, 7])
+    );
+    let append = |text: &str| {
+        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        file.write_all(text.as_bytes()).unwrap();
+    };
+    append(&partial[..40]);
+    let incomplete = stream.until(|v| {
+        (0..2).all(|host| {
+            telemetry(v, host)["subagent_total"].is_null()
+                && telemetry(v, host)["total_output"] == 25
+        })
+    });
+    assert_eq!(*telemetry(&incomplete, 1), retained_subset(&caught));
+    assert_eq!(telemetry(&incomplete, 0), telemetry(&incomplete, 1));
+    append(&partial[40..]);
+    stream.until(|v| telemetry(v, 1)["total_output"] == 32);
+    // A second match makes the binding ambiguous: the peer publishes an
+    // all-null sample at the row's source time, which replaces the retained one.
+    fs::create_dir_all(f.dir.join("home/.claude/projects/entry-b")).unwrap();
+    fs::copy(&path, f.transcript("entry-b")).unwrap();
+    let ambiguous = stream.until(|v| {
+        pane(v, 1) && telemetry(v, 1)["seq"].is_u64() && telemetry(v, 1)["usage_seq"].is_null()
+    });
+    let unknown = telemetry(&ambiguous, 1);
+    assert_eq!(unknown["seq"], 1_767_225_620_250_000u64);
+    for (key, value) in unknown.as_object().unwrap() {
+        assert!(
+            ["seq", "event", "phase"].contains(&key.as_str()) || value.is_null(),
+            "{key}"
+        );
+    }
+    // Back to one match with an incomplete replay: nothing is re-emitted.
+    fs::remove_file(f.transcript("entry-b")).unwrap();
+    append("{\"type\":");
+    stream.until(|v| pane(v, 1) && telemetry(v, 1).is_null());
+    stream.close();
+}
+
+#[test]
+fn claude_peer_retention_follows_invalid_totals_unknown_samples_and_missing_rows() {
+    let f = Fixture::new();
+    f.claude(&claude_transcript());
+    let probe = f.probe(&json!({}));
+    let caught = probe["result"]["agents"][0]["technical"]["telemetry"].clone();
+    let rows = probe["result"]["cursors"].clone();
+    // Edited copies of a real probe response, served by a stub peer. Each one
+    // carries a distinct title, so a snapshot shows when it was accepted.
+    legacy_peer(&f);
+    let serve = |title: &str, telemetry: &Value, cursors: &Value| {
+        let mut response = probe.clone();
+        let result = &mut response["result"];
+        result["sampled_at"] = json!(common::now());
+        result["agents"][0]["title"] = json!(title);
+        result["agents"][0]["technical"]["telemetry"] = telemetry.clone();
+        result["cursors"] = cursors.clone();
+        // Replace atomically: the stub may read the file at any moment.
+        let staged = f.dir.join("remote-sample.json.tmp");
+        write(&staged, response.to_string(), 0o600);
+        fs::rename(&staged, f.dir.join("remote-sample.json")).unwrap();
+    };
+    let mut stream = Stream::new(&f);
+    let step = |title: &str, telemetry: &Value, cursors: &Value| {
+        serve(title, telemetry, cursors);
+        let snapshot = stream.until(|v| v["hosts"][1]["agents"][0]["title"] == title);
+        self::telemetry(&snapshot, 1).clone()
+    };
+    let incomplete = Value::Null;
+    assert_eq!(step("caught-up", &caught, &rows), caught);
+    assert_eq!(
+        step("incomplete", &incomplete, &rows),
+        retained_subset(&caught)
+    );
+    // A caught-up sample with invalid totals replaces the retained one.
+    let mut invalid = caught.clone();
+    for key in [
+        "total_input",
+        "total_output",
+        "total_cache_read",
+        "total_cache_write",
+        "total_uncached_input",
+    ] {
+        invalid[key] = Value::Null;
+    }
+    assert_eq!(step("invalid-totals", &invalid, &rows), invalid);
+    assert_eq!(
+        step("incomplete-invalid", &incomplete, &rows),
+        retained_subset(&invalid)
+    );
+    // A caught-up sample where everything is unknown drops it.
+    assert_eq!(step("caught-up-again", &caught, &rows), caught);
+    let mut unknown = caught.clone();
+    for (key, value) in unknown.as_object_mut().unwrap() {
+        if !["seq", "event", "phase"].contains(&key.as_str()) && !key.starts_with("subagent_") {
+            *value = Value::Null;
+        }
+    }
+    assert_eq!(step("unknown", &unknown, &rows), unknown);
+    assert!(step("incomplete-unknown", &incomplete, &rows).is_null());
+    // No cursor row: dropped, and a returning row does not revive it.
+    assert_eq!(step("caught-up-last", &caught, &rows), caught);
+    assert!(step("no-row", &incomplete, &json!({})).is_null());
+    assert!(step("row-returns", &incomplete, &rows).is_null());
+    stream.close();
 }
