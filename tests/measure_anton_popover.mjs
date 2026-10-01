@@ -19,6 +19,7 @@ import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
 import { createRequire } from 'node:module';
+import { createHash } from 'node:crypto';
 import { spawn, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
@@ -41,6 +42,8 @@ if (flag('--help')) {
   --claude-agents N    Claude agents per synthetic host in the Claude probes, 1 to 16 (default 4)
   --claude-seconds N   fixed window of each Claude probe, 10 to 300 (default 30)
   --claude-large-mb N  bytes per transcript in the large Claude variant, in MB, 0 to 32 (default 6; 0 skips it)
+  --claude-old-local PATH  also run each Claude variant with PATH as the local runtime and
+                       the measured binary as the fake-SSH peer (old local, new peer)
   --colors-method M    colors.toml open counting: auto, inotify, strace or none (default auto)
   --json               print JSON only
 
@@ -67,6 +70,8 @@ const claudeSeconds = Number(option('--claude-seconds', 30));
 const claudeLargeMb = Number(option('--claude-large-mb', 6));
 if (!(Number.isInteger(claudeCount) && claudeCount >= 1 && claudeCount <= 16 && claudeSeconds >= 10 && claudeSeconds <= 300 && claudeLargeMb >= 0 && claudeLargeMb <= 32))
   throw new Error('Invalid Claude agent count, window or transcript size');
+const claudeOldLocal = option('--claude-old-local', null) === null ? null : path.resolve(option('--claude-old-local', null));
+if (claudeOldLocal !== null && !fs.statSync(claudeOldLocal, { throwIfNoEntry: false })?.isFile()) throw new Error('--claude-old-local is not a regular file');
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const median = values => { const v = values.filter(Number.isFinite).sort((a, b) => a - b); return v.length ? (v.length % 2 ? v[(v.length - 1) / 2] : (v[v.length / 2 - 1] + v[v.length / 2]) / 2) : null; };
@@ -133,14 +138,14 @@ async function themeWatcher(dir, counter) {
   await delay(50); opens = 0;
   return { method: 'inotify', count: () => opens, stop: async () => { child.kill(); await new Promise(r => child.once('exit', r)); } };
 }
-function fixture(base, label) {
+function fixture(base, label, localBinary = binary) {
   const dir = path.join(base, label); const root = path.join(dir, 'plugin'); const peer = path.join(dir, 'peer'); const home = path.join(dir, 'home');
   const theme = path.join(home, '.local/state/omarchy/current/theme');
   for (const p of [dir, root, peer, path.join(dir, 'bin'), path.join(dir, 'state'), path.join(dir, 'peer-state'), home]) fs.mkdirSync(p, { recursive: true, mode: 0o700 });
   fs.mkdirSync(theme, { recursive: true });
   fs.writeFileSync(path.join(theme, 'colors.toml'), 'accent = "#123456"\nbackground = "#101010"\nforeground = "#eeeeee"\n');
   fs.writeFileSync(path.join(home, '.local/state/omarchy/current/theme.name'), 'synthetic\n');
-  for (const p of [root, peer]) { fs.copyFileSync(binary, path.join(p, 'anton-runtime')); fs.chmodSync(path.join(p, 'anton-runtime'), 0o755); fs.writeFileSync(path.join(p, '.herdr-observatory-install'), 'herdr.observatory\n', { mode: 0o600 }); }
+  for (const p of [root, peer]) { fs.copyFileSync(p === root ? localBinary : binary, path.join(p, 'anton-runtime')); fs.chmodSync(path.join(p, 'anton-runtime'), 0o755); fs.writeFileSync(path.join(p, '.herdr-observatory-install'), 'herdr.observatory\n', { mode: 0o600 }); }
   const localSocket = path.join(dir, 'local.sock'), remoteSocket = path.join(dir, 'remote.sock');
   fs.writeFileSync(path.join(root, '.config.json'), JSON.stringify({ interval: 5, hosts: [{ id: 'local', socket_path: localSocket }, { id: 'remote', transport: 'ssh', target: 'fixture', socket_path: remoteSocket }] }), { mode: 0o600 });
   fs.writeFileSync(path.join(peer, '.config.json'), JSON.stringify({ hosts: [{ id: 'remote', socket_path: remoteSocket }] }), { mode: 0o600 });
@@ -574,8 +579,8 @@ function claudeEmpty(error) {
   return { error, transcript_bytes: null, claude_agents: nil, claude_agents_with_native_telemetry: nil, usage_source_claude_transcript: nil,
            present: Object.fromEntries([...CLAUDE_METRICS, 'turn_timing'].map(k => [k, nil])), first_native_ms: nil, all_native_ms: nil, runtime_cpu_seconds: null, peak_rss_kib: null };
 }
-async function claudeProbe(base, variant, target) {
-  const f = fixture(base, `claude-${variant}`);
+async function claudeProbe(base, variant, target, localBinary = binary) {
+  const f = fixture(base, `claude-${variant}`, localBinary);
   // Never let a parent CLAUDE_CONFIG_DIR point the runtime at a real transcript root.
   delete f.env.CLAUDE_CONFIG_DIR;
   if (Object.keys(f.env).some(k => k === 'CLAUDE_CONFIG_DIR')) throw new Error('CLAUDE_CONFIG_DIR leaked into the Claude probe');
@@ -621,10 +626,16 @@ async function claudeProbe(base, variant, target) {
   }
 }
 async function claudeMetrics(base) {
-  const guard = async (variant, target) => { try { return await claudeProbe(base, variant, target); } catch (error) { return claudeEmpty(String(error?.message ?? error).slice(0, 400)); } };
+  const guard = async (variant, target, local) => { try { return await claudeProbe(base, variant, target, local); } catch (error) { return claudeEmpty(String(error?.message ?? error).slice(0, 400)); } };
   return { scope: `One ${claudeSeconds}s run per variant, ${claudeCount} Claude agents per host (local and fake-SSH peer). Native telemetry = technical.telemetry present on a Claude agent; the fixture panes carry no Herdr metadata, so only native replay can supply it. present counts agents with a numeric telemetry field (turn_timing: object present) in the last snapshot. CPU is user+sys of the runtime and reaped descendants (fake-SSH peer probes running locally); RSS is sampled every 50 ms over the runtime family. Remote hosts, Qt and GPU are not measured.`,
-           agents_per_host: claudeCount, window_seconds: claudeSeconds, standard: await guard('standard', 0), large: claudeLargeMb > 0 ? { target_bytes: claudeLargeMb * 1e6, ...await guard('large', claudeLargeMb * 1e6) } : null };
+           agents_per_host: claudeCount, window_seconds: claudeSeconds, standard: await guard('standard', 0), large: claudeLargeMb > 0 ? { target_bytes: claudeLargeMb * 1e6, ...await guard('large', claudeLargeMb * 1e6) } : null,
+           // Old local, new peer: the old local re-serialises cursor rows without the claude block, so the
+           // peer replays every Claude row from the header on each probe. Hashes only; no binary paths.
+           old_local: claudeOldLocal === null ? null : { local_binary_sha256: sha256(claudeOldLocal), peer_binary_sha256: sha256(binary),
+             standard: await guard('old-local-standard', 0, claudeOldLocal),
+             large: claudeLargeMb > 0 ? { target_bytes: claudeLargeMb * 1e6, ...await guard('old-local-large', claudeLargeMb * 1e6, claudeOldLocal) } : null } };
 }
+const sha256 = file => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 
 // ---------------------------------------------------------------- report
 const base = fs.mkdtempSync(path.join(os.tmpdir(), 'anton-measure-'));
@@ -669,7 +680,7 @@ try {
       ['ui. member references in QML', report.architecture?.ui_member_references], ['preference parse calls in QML', report.architecture?.preference_parse_calls],
       ['ToolTip declarations in QML', report.architecture?.tooltip_declarations], ['hard-coded ~/.local/state/omarchy paths in QML', report.architecture?.hardcoded_omarchy_state_paths],
       ['clock-only view changes in 60 s', report.architecture?.clock_only_view_changes_60s], ['qmllint warnings (Qt 6)', report.architecture?.qmllint?.total],
-      ...[['standard', report.claude?.standard], ['large', report.claude?.large]].flatMap(([name, c]) => [
+      ...[['standard', report.claude?.standard], ['large', report.claude?.large], ['old-local standard', report.claude?.old_local?.standard], ['old-local large', report.claude?.old_local?.large]].filter(([name, c]) => c || !name.startsWith('old-local')).flatMap(([name, c]) => [
         [`Claude ${name}: native agents local/peer`, c && `${c.claude_agents_with_native_telemetry.local}/${c.claude_agents_with_native_telemetry.peer} of ${c.claude_agents.local}/${c.claude_agents.peer}`],
         [`Claude ${name}: runtime CPU seconds`, c?.runtime_cpu_seconds]])];
     const width = Math.max(...rows.map(x => x[0].length));
