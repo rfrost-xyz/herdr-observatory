@@ -1125,6 +1125,9 @@ struct CheckpointFile {
     version: u32,
     records: Vec<CheckpointRow>,
 }
+/// A process spawned by another thread briefly shares the lock's open file
+/// description until it calls exec, so the checkpoint lock waits this long.
+const LOCK_WAIT: Duration = Duration::from_millis(250);
 pub struct Checkpoints {
     state: PathBuf,
     owner: PathBuf,
@@ -1170,7 +1173,7 @@ impl Checkpoints {
         }
         let lease = common::open_owned(&state.join("replay-checkpoints.lock"), true, true)
             .and_then(|file| {
-                lock(&file, true, Duration::ZERO)?;
+                lock(&file, true, LOCK_WAIT)?;
                 let info = file
                     .metadata()
                     .map_err(|_| "Cannot inspect checkpoint lease")?;
@@ -1290,7 +1293,7 @@ impl Checkpoints {
         }
         let _owner = common::owner_guard(&self.owner)?;
         let file = common::open_owned(&self.state.join("replay-checkpoints.lock"), true, false)?;
-        lock(&file, true, Duration::ZERO)?;
+        lock(&file, true, LOCK_WAIT)?;
         let info = file.metadata().map_err(|_| "Invalid checkpoint lease")?;
         let current = std::fs::symlink_metadata(self.state.join("replay-checkpoints.lock"))
             .map_err(|_| "Checkpoint lease removed")?;
@@ -1709,6 +1712,49 @@ mod tests {
         assert!(saved.records.is_empty());
     }
     /// Clears the per-run cursor fields so a golden comparison is stable.
+    /// A process spawned from another thread holds a copy of every open file
+    /// description until it calls exec, including the checkpoint lock's, so a
+    /// zero-wait lock fails spuriously while siblings spawn.
+    #[test]
+    fn checkpoint_lock_waits_out_concurrent_process_spawns() {
+        struct Spawner(
+            std::sync::Arc<std::sync::atomic::AtomicBool>,
+            Option<std::thread::JoinHandle<()>>,
+        );
+        impl Drop for Spawner {
+            fn drop(&mut self) {
+                self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+                if let Some(join) = self.1.take() {
+                    let _ = join.join();
+                }
+            }
+        }
+        let fixture = Fixture::new();
+        let owner = fixture.root.join(".herdr-observatory-install");
+        std::fs::write(&owner, b"herdr.observatory\n").unwrap();
+        let state = fixture.root.join("state");
+        std::fs::create_dir(&state).unwrap();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = stop.clone();
+        let _spawner = Spawner(
+            stop,
+            Some(std::thread::spawn(move || {
+                while !flag.load(std::sync::atomic::Ordering::Relaxed) {
+                    let _ = std::process::Command::new("true").status();
+                }
+            })),
+        );
+        let empty = BTreeMap::new();
+        let mut failures = 0;
+        for _ in 0..300 {
+            let result = Checkpoints::new(&state, &owner).and_then(|mut cache| {
+                cache.update(&empty, true)?;
+                cache.reconcile(&empty)
+            });
+            failures += usize::from(result.is_err());
+        }
+        assert_eq!(failures, 0);
+    }
     fn normalised(cursors: &Value) -> Value {
         let mut value = cursors.clone();
         for cursor in value.as_object_mut().unwrap().values_mut() {
