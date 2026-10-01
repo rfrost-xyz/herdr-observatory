@@ -63,7 +63,7 @@ async function run(label, baseline) {
   const socket_path = path.join(base, 'herdr.sock');
   write(path.join(root, '.config.json'), JSON.stringify({ interval: 2, hosts: [{ id: 'local', socket_path }, { id: 'remote', transport: 'ssh', target: 'fixture', socket_path }] }));
   write(path.join(peer, '.config.json'), JSON.stringify({ hosts: [{ id: 'remote', socket_path }] }));
-  write(path.join(dir, 'bin/ssh'), '#!/bin/sh\nfor arg do last=$arg; done\ncase "$last" in\n "python3 -") exec /usr/bin/python3 -;;\n *--probe) exec "$ANTON_TEST_PEER/anton-runtime" --root "$ANTON_TEST_PEER" --probe;;\n *) exit 99;;\nesac\n', 0o755);
+  write(path.join(dir, 'bin/ssh'), '#!/bin/sh\nfor arg do last=$arg; done\ncase "$last" in\n "python3 -") exec /usr/bin/python3 -;;\n *--probe*) exec "$ANTON_TEST_PEER/anton-runtime" --root "$ANTON_TEST_PEER" --probe;;\n *) exit 99;;\nesac\n', 0o755);
   const env = { ...process.env, HOME: path.join(dir, 'home'), CODEX_HOME: path.join(dir, 'home/.codex'), PATH: `${path.join(dir, 'bin')}:/usr/bin:/bin`, XDG_STATE_HOME: path.join(dir, 'state'), ANTON_TEST_PEER: peer };
   delete env.OBSERVATORY_SSH_CONFIG;
   const timefile = path.join(dir, 'time.txt');
