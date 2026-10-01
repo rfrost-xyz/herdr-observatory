@@ -686,3 +686,30 @@ fn codex_rows_are_charged_before_claude_rows_in_cursor_and_checkpoint_bounds() {
         );
     }
 }
+
+#[test]
+fn claude_deadline_skip_reemits_the_retained_sample_of_a_current_binding() {
+    let fixture = Fixture::new();
+    fixture.write(&session());
+    let mut follower = NativeTelemetry::default();
+    let (first, _, cursors) = enrich(&mut follower, &json!({}));
+    // The shared deadline has passed before this pane is reached.
+    let skipped = |follower: &mut NativeTelemetry, cursors: &Value| {
+        let mut rows = validate_cursors(cursors);
+        let mut active = BTreeSet::new();
+        let mut agent = agent();
+        follower.enrich_claude(&mut agent, &mut rows, &mut active, now(), Instant::now());
+        assert!(active.contains(&key()));
+        (
+            agent["_native_telemetry"].clone(),
+            rows.contains_key(&key()),
+        )
+    };
+    assert_eq!(skipped(&mut follower, &cursors), (retained(&first), true));
+    // Without a cursor row the retained sample is not re-emitted.
+    assert_eq!(skipped(&mut follower, &json!({})), (Value::Null, false));
+    assert!(follower.claude[&key()].retained.is_some());
+    // A binding due for rediscovery is unverified, so nothing is re-emitted.
+    age(&mut follower);
+    assert_eq!(skipped(&mut follower, &cursors), (Value::Null, true));
+}

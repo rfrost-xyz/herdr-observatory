@@ -879,6 +879,17 @@ impl NativeTelemetry {
         let key = sha256(format!("anton-native-session-v1:claude:{session}").as_bytes());
         active.insert(key.clone());
         if Instant::now() >= deadline {
+            // Skipped by the shared deadline: a current binding with its cursor
+            // row re-emits the retained sample, as an incomplete replay does.
+            let current = self.claude.get(&key).filter(|v| {
+                !v.rescan && v.path.is_some() && v.at.elapsed() < Duration::from_secs(60)
+            });
+            if let Some((subset, seq)) = current
+                .and_then(|v| v.retained.as_ref())
+                .filter(|_| cursors.get(&key).is_some_and(Cursor::is_claude))
+            {
+                publish_claude(agent, subset, None, *seq, time);
+            }
             return;
         }
         // A peer follower is fresh on every probe, so a bind or verification
@@ -943,6 +954,9 @@ impl NativeTelemetry {
             } else if restarted {
                 unknown(agent);
             }
+        } else if let Some((subset, seq)) = &self.claude[&key].retained {
+            // The deadline passed after binding, before any replay pass.
+            publish_claude(agent, subset, None, *seq, time);
         }
         cursors.insert(key, Cursor::from_row(row));
     }
