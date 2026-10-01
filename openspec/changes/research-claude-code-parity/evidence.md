@@ -65,6 +65,18 @@ Round 2, on `e05f901`, found 9 blocking and 17 other findings. It added:
 
 Line references were also corrected.
 
+Round 3, on `edd2383`, found 4 blocking and 17 other findings, all addressed:
+
+- D7: classify by origin before `isMeta` (peer turns), let synthetic records confirm a pending start, carry the `queued_since_start` state, accept any queue operation, ignore compaction records, and set `supported`;
+- D6: take the maximum `subagent_status_seq`;
+- D3: add `last_valid` and in-memory retention of the last sample;
+- D4: source last-response values from the selected usage object;
+- D9: cite `State::sample`;
+- D10: define the wire values, wrapper exit and detachment, event-driven cadence, model match, exact-match ownership and consent flag;
+- D11: resolve the config file, handle account switches, define the merge order, and handle a missing `seven_day` window.
+
+A structure-only simulation of D7 with the round 3 fixes kept valid accumulated coverage in 18 of 18 main files: 109 turns, 0 orphan ends and 0 overlaps (reviewer's measurement).
+
 ## User decisions (2026-10-01)
 
 - `~/.claude.json` is accepted as provider-owned state, not an authentication file, for Claude identity and usage data.
