@@ -1,8 +1,9 @@
 //! Bounded incremental classifier for Claude Code records over 64 KiB. It
 //! extracts only the consumed paths in `NODES` and converts each through the
 //! same `Record::set` as the parsed path. Persisted state holds grammar state,
-//! schema key names and converted fields; value bytes are buffered only in
-//! memory and a capture cut by a pass boundary is lost, never saved.
+//! prefixes of schema key names and converted fields; value bytes are
+//! buffered only in memory and a capture cut by a pass boundary is lost,
+//! never saved.
 use super::text::{LIMIT, Text, WIDE};
 use super::{
     ATTACHMENT, BLOCK, Blocks, CONTENT, FRAMES, ITEM, ITERATIONS_NODE, Iterations, MESSAGE, NODES,
@@ -66,8 +67,11 @@ pub struct Classifier {
     hi: u8,
     started: u8,
     done: u8,
-    /// Raw bytes of a key being read in a consumed object: schema names only.
+    /// Raw bytes of a key being read in a consumed object, kept only while
+    /// they can still spell a consumed key at that parent (`viable`).
     name: Vec<u8>,
+    /// The key being read can no longer match: its bytes were dropped.
+    miss: bool,
     /// Consumed node of the value being read, or `NONE`.
     capture: u8,
     /// Nodes already seen in this record (iteration fields per element).
@@ -107,6 +111,7 @@ impl Default for Classifier {
             started: 0,
             done: 0,
             name: vec![],
+            miss: false,
             capture: NONE,
             seen: 0,
             lost: 0,
@@ -216,6 +221,10 @@ impl Classifier {
             self.pending[last] = NONE;
             return;
         }
+        if std::mem::take(&mut self.miss) {
+            self.pending[last] = NONE;
+            return;
+        }
         let mut raw = Vec::with_capacity(self.name.len() + 2);
         raw.push(b'"');
         raw.extend_from_slice(&self.name);
@@ -272,8 +281,14 @@ impl Classifier {
     }
     fn record_byte(&mut self, ch: u8) {
         if self.key != 0 {
-            if self.nodes.last().is_some_and(|node| *node != NONE) && self.name.len() < NAME {
+            let parent = self.nodes.last().copied().unwrap_or(NONE);
+            if parent != NONE && !self.miss {
                 self.name.push(ch);
+                if !viable(parent, &self.name) {
+                    // No raw bytes of a key outside the schema are kept.
+                    self.name.clear();
+                    self.miss = true;
+                }
             }
         } else if self.capture != NONE
             && !TEXT_NODES.contains(&self.capture)
@@ -282,6 +297,41 @@ impl Classifier {
             self.value.push(ch);
         }
     }
+}
+/// Whether `raw`, the bytes of a key read so far, can still spell a consumed
+/// key at `parent`, so that only schema prefixes are ever persisted.
+fn viable(parent: u8, raw: &[u8]) -> bool {
+    NODES
+        .iter()
+        .any(|(owner, key)| *owner == parent && !key.is_empty() && spells(key.as_bytes(), raw))
+}
+/// Plain bytes and complete `\uXXXX` escapes must decode to a prefix of
+/// `key`; a trailing partial escape must agree with its next character.
+fn spells(key: &[u8], raw: &[u8]) -> bool {
+    let (mut at, mut index) = (0, 0);
+    while index < raw.len() {
+        let Some(&want) = key.get(at) else {
+            return false;
+        };
+        if raw[index] != b'\\' {
+            if raw[index] != want {
+                return false;
+            }
+            index += 1;
+        } else {
+            let escape = format!("u{want:04x}");
+            let rest = &raw[index + 1..];
+            let length = rest.len().min(5);
+            if rest.first().is_some_and(|c| *c != b'u')
+                || !rest[..length].eq_ignore_ascii_case(&escape.as_bytes()[..length])
+            {
+                return false;
+            }
+            index += 1 + length;
+        }
+        at += 1;
+    }
+    true
 }
 /// Seen bits of the fields of one `iterations` element.
 const ITEM_FIELDS: u64 = 0b1_1111 << 20;
@@ -475,6 +525,7 @@ impl Classifier {
                     self.lex = 1;
                     self.key = 1;
                     self.name.clear();
+                    self.miss = false;
                 } else {
                     return Err(());
                 }
@@ -628,6 +679,10 @@ impl Classifier {
             && self.started <= 1
             && self.done <= 1
             && self.name.len() <= NAME
+            && (self.key == 1 || self.name.is_empty() && !self.miss)
+            && (!self.miss || self.name.is_empty())
+            && (self.name.is_empty()
+                || self.nodes.last().is_some_and(|parent| viable(*parent, &self.name)))
             // Only a literal keeps its node across a pass: it holds no bytes.
             && (self.capture == NONE || self.lex == 3 && self.capture < count)
             && self.value.is_empty()
@@ -999,6 +1054,44 @@ mod tests {
         assert_eq!(classify(&parts, true), expected(user));
     }
 
+    /// The persisted key bytes after feeding `head` and suspending.
+    fn persisted_name(head: &[u8]) -> Vec<u8> {
+        let mut classifier = Classifier::default();
+        assert!(classifier.feed(head, ID, now()));
+        classifier.suspend();
+        assert!(classifier.validate());
+        let state = serde_json::to_value(&classifier).unwrap();
+        serde_json::from_value(state["name"].clone()).unwrap()
+    }
+
+    #[test]
+    fn classifier_never_persists_key_bytes_outside_the_schema() {
+        let line = user(
+            "\"toolUseResult\":{\"stat_secret_value\":1,\"st\\u0061tus\":\"async_launched\",\"agentId\":\"agent-a\"},\"message\":{\"role\":\"user\",\"content\":\"x\"}",
+        );
+        // A schema prefix may persist; the divergent rest never does.
+        assert_eq!(persisted_name(split(&line, "stat_", 4)[0]), b"stat");
+        for into in [5, 10, 18] {
+            let name = persisted_name(split(&line, "stat_", into)[0]);
+            assert!(name.is_empty(), "{into}: {name:?}");
+            let parts = split(&line, "stat_", into);
+            assert_eq!(classify(&parts, true), expected(&line), "{into}");
+        }
+        // An escaped schema key cut inside its escape still matches.
+        for into in [3, 5, 7, 8] {
+            let parts = split(&line, "st\\u0061tus", into);
+            assert!(!persisted_name(parts[0]).is_empty(), "{into}");
+            assert_eq!(classify(&parts, true), expected(&line), "{into}");
+        }
+        let Outcome::Record(record) = expected(&line) else {
+            panic!("record expected");
+        };
+        assert!(record.launch && record.agent.is_some());
+        // A non-schema key under a consumed parent never persists either.
+        let private = line.replace("agentId", "private");
+        assert!(persisted_name(split(&private, "private", 4)[0]).is_empty());
+    }
+
     fn whole(line: &[u8]) -> Outcome {
         classify(&[line], false)
     }
@@ -1106,6 +1199,8 @@ mod tests {
             ("index", json!(4)),
             ("seen", json!(u64::MAX)),
             ("name", json!(vec![b'a'; NAME + 1])),
+            ("name", json!(b"type")),
+            ("miss", json!(true)),
         ];
         for (field, value) in tampered {
             let mut state = state.clone();
@@ -1113,6 +1208,22 @@ mod tests {
             let restored: Classifier = serde_json::from_value(state).unwrap();
             assert!(!restored.validate(), "{field}");
         }
+        // Inside a key, only a viable schema prefix is valid.
+        let mut classifier = Classifier::default();
+        assert!(classifier.feed(b"{\"ty", ID, now()));
+        let state = serde_json::to_value(&classifier).unwrap();
+        assert!(
+            serde_json::from_value::<Classifier>(state.clone())
+                .unwrap()
+                .validate()
+        );
+        let mut tampered = state.clone();
+        tampered["name"] = json!(b"tz");
+        assert!(
+            !serde_json::from_value::<Classifier>(tampered)
+                .unwrap()
+                .validate()
+        );
         let mut missing = state.clone();
         missing.as_object_mut().unwrap().remove("record");
         assert!(serde_json::from_value::<Classifier>(missing).is_err());
