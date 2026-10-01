@@ -739,3 +739,21 @@ fn turns_block_inconsistent_with_turns_is_rejected() {
     pending.claude.pending_start = Some((turn_key(ID, "user-20"), second(20)));
     assert!(!pending.turn_state());
 }
+
+#[test]
+fn turns_trigger_at_unix_second_zero_is_a_missing_stamp() {
+    let epoch = user(10, "hello", "").replace(&stamp(10), "1970-01-01T00:00:00.500Z");
+    let mut row = Row::new([1, 2], 0, now());
+    let value: Value = serde_json::from_str(&epoch).unwrap();
+    let record = Record::from_value(&value, ID, now()).unwrap();
+    assert_eq!(record.stamp, Some(500_000));
+    row.apply(&record);
+    assert_eq!(row.claude.pending_start, None);
+    assert!(!row.turns.valid && row.turns.supported);
+    assert!(row.claude.validate(now()) && row.turn_state());
+    // The same trigger during an active turn also fails closed.
+    let mut lines = vec![user(1, "hello", ""), assistant(2, "msg_a", "\"tool_use\"")];
+    lines.push(epoch);
+    let row = run(&lines);
+    assert!(!row.turns.valid && row.claude.pending_start.is_none());
+}

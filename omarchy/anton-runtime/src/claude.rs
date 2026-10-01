@@ -1177,7 +1177,9 @@ impl Row {
             Turn::Trigger => {
                 block.abort_adjacent = false;
                 self.turns.supported = true;
-                let (Some(key), Some(second)) = (record.uuid.clone(), second) else {
+                // Second 0 is no valid start (`Turns::begin`): a missing stamp.
+                let (Some(key), Some(second)) = (record.uuid.clone(), second.filter(|s| *s > 0))
+                else {
                     return self.turns_unknown();
                 };
                 if active && block.queued_since_start {
