@@ -29,6 +29,6 @@ test, installed plugin or peer changes.
 
 ## 4. Review and delivery
 
-- [ ] 4.1 Strict OpenSpec validation and a privacy scan of the staged artefacts.
-- [ ] 4.2 Independent adversarial review of the artefacts until clean.
+- [x] 4.1 Strict OpenSpec validation and a privacy scan of the staged artefacts.
+- [x] 4.2 Independent adversarial review of the artefacts until clean.
 - [ ] 4.3 Archive without spec sync, publish, and merge with a merge commit.

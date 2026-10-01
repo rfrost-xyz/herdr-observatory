@@ -121,12 +121,14 @@ Round 8, on `4ea41ee`, found 3 blocking and 5 other findings, all addressed:
 - D10: a POSIX sh wrapper, a mandatory new session, the shell-prefix and managed-policy limits, and the render triggers;
 - D11: deltas for reporter account reads and inferred account authority.
 
+The final bounded review, on `bb5ba89`, checked fact labels, privacy, consistency and compliance only, following the scope-of-authority pivot. It found 2 minor wording findings and 2 change 2 inputs, all applied. It verified every repository reference, the binary strings, the corpus structure and the privacy scan.
+
 ## User decisions (2026-10-01)
 
 - `~/.claude.json` is accepted as provider-owned state, not an authentication file, for Claude identity and usage data.
-- The context window needs hook equivalence with Codex and Pi. After reviewing how hooks are created today, the equivalent is an installer-owned Claude statusLine reporter, the counterpart of Anton's Pi extension. It becomes programme change 3 (design D10). Herdr environment variables
-are present in agent shells, so any Claude Code probe from a pane would rebind
-that pane through the Herdr SessionStart hook. No such probe was run.
+- The context window needs hook equivalence with Codex and Pi. After reviewing how hooks are created today, the equivalent is an installer-owned Claude reporter, the counterpart of Anton's Pi extension. It becomes programme change 3 (design D10). Round 6 found a second surface, plugin function hooks, so the choice of surface (statusLine A or function hook B) moved to the change 3 gate.
+
+Herdr environment variables are present in agent shells, so any Claude Code probe from a pane would rebind that pane through the Herdr SessionStart hook. No such probe was run.
 
 ## Key measurements behind decisions
 

@@ -94,7 +94,7 @@ the shapes below.
   - It runs on each render.
   - It is a single settings slot. Plugins cannot provide one: the plugin customisation table disables `statusLine` [bin]. The slot is occupied on this host [obs].
 - **Hooks** [bin]: 33 events.
-  - SessionStart carries `source` (`startup|resume|clear|compact|fork`), `model` and, on resume or fork, `context_tokens`.
+  - SessionStart carries `source` (`startup|resume|clear|compact|fork`), `model` and, on resume or fork, `context_tokens`. That sum includes output tokens, so it is not D4 occupancy.
   - PostModelSwitch carries `from_model`, `to_model` and `context_tokens`.
   - SubagentStop carries `agent_transcript_path`.
   - PostCompact carries `trigger`.
@@ -181,12 +181,12 @@ Anton fields are `technical.telemetry.*` and `technical.turn_timing.*` (`model.r
 **Lookup.**
 - Look for `<root>/<entry>/<id>.jsonl` at depth exactly two, within the Codex discovery entry and time budgets.
 - Require exactly one match. Zero or several matches leave telemetry unknown, and so does a scan truncated by the entry or time budget (`native.rs:651-670`).
-- **Predecessor after `/clear`.** If Herdr reports an id whose file has ended because a successor exists, the binding would show a stale session. Change 2 first settles from the binary which id SessionStart(clear) delivers. Until that is proven, the fallback is fail-closed. Within the discovery budget, files in the same directory that are newer than the bound file's last record are scanned to their first record carrying `session_id`, bounded at 256 KiB and 512 records. In observed successors it first appears at record 16 to 19, after about 60 KiB. There are three outcomes:
+- **Predecessor after `/clear`.** If Herdr reports an id whose file has ended because a successor exists, the binding would show a stale session. Change 2 first settles from the binary which id SessionStart(clear) delivers. Until that is proven, the fallback is fail-closed. Within the discovery budget, files in the same directory that are newer than the bound file's last record are scanned to their first record carrying `session_id`, bounded at 256 KiB and 512 records. In observed successors it first appears at 0-based record 16 to 19, in a record ending 69 to 76 KiB into the file. There are three outcomes:
   1. End of file within the bound with no `session_id`: not a successor.
   2. Bound exhausted first: unknown (fail closed).
   3. First `session_id` equals the bound id: unknown.
 
-  A negative result is not cached while the candidate is still growing. The fixture's first `session_id` appears after more than 16 records and 64 KiB. Change 2 adds a synthetic fixture.
+  A negative result is not cached while the candidate is still growing. The fixture's first `session_id` record starts after 16 records and more than 64 KiB. Change 2 adds a synthetic fixture.
 - Positive bindings are re-scanned every 60 seconds too, unlike today's cache, which re-discovers only missing paths (`native.rs:698-711`). A second match reverts the session to unknown.
 - Never derive the slug, and never use `cwd` or pids.
 
@@ -207,7 +207,7 @@ Anton fields are `technical.telemetry.*` and `technical.turn_timing.*` (`model.r
 - Any later record that carries a `sessionId` different from the bound id makes the session's telemetry unknown.
 - Fork and branch paths copy the parent's records into the new file and rewrite `sessionId`, adding `forkedFrom` [bin]. A record carrying `forkedFrom` is inherited history and feeds no total, last-response value, turn, child or compaction. Only its presence is read, never the nested id. Change 2 adds a synthetic fork fixture. So a response is never counted in both sessions.
 - Records without `sessionId` (`file-history-snapshot`, `file-history-delta`) are ignored for identity and feed no metric.
-- The snake-case `session_id` is not an identity check for the bound file, because it names the predecessor in post-`/clear` files (5 of 18). It is used only by the D1 predecessor check.
+- The snake-case `session_id` is not an identity check for the bound file, because it differs from the stem in 5 of 18 files (4 name a predecessor after `/clear`). It is used only by the D1 predecessor check.
 - Thread replay never reads `<id>/subagents/**`, `tool-results/**`, `memory/**` or `~/.claude.json`.
 
 ### D3. Deduplicated usage replay

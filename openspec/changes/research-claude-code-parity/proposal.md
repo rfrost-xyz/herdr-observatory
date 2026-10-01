@@ -39,8 +39,9 @@ The programme sequence, each change merged before the next starts:
 1. `research-claude-code-parity` (this change): research and decisions.
 2. `add-claude-thread-telemetry`: native Claude transcript replay for local and
    peer threads, under the same contracts as Codex.
-3. `add-claude-status-reporter`: an installer-owned Claude statusLine reporter,
-   the equivalent of the Pi extension, for the context window.
+3. `add-claude-status-reporter`: an installer-owned Claude reporter, the
+   equivalent of the Pi extension, for the context window. The surface
+   (statusLine wrapper or plugin function hook) is chosen at the change 3 gate.
 4. `add-claude-allowances-identity`: Claude allowance rows from the reporter's
    live rate limits, and verified identity from `~/.claude.json`.
 
@@ -65,5 +66,5 @@ changes:
 
 - After change 2 the Claude context dial stays unknown until change 3 adds the
   reporter, because transcripts carry no window size (design D4 and D10).
-- Change 3 edits the user's Claude settings through an owned, reversible
-  installer entry.
+- Change 3 edits user-level Claude configuration only if the user consents at
+  its gate; otherwise it records a blocker.
