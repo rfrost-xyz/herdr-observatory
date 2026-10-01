@@ -2,6 +2,7 @@
 //! typed counters and grammar state only. Native paths stay in process memory.
 use crate::{
     Result,
+    claude::{self, ClaudeCursor},
     common::{self, hex_id, now, number, safe_id, sha256},
     envelope::Envelope,
     telemetry,
@@ -107,6 +108,10 @@ pub struct Cursor {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     fingerprint: Option<Fingerprint>,
     at: f64,
+    /// D8: Claude parser state. Absent on Codex rows, so they serialise
+    /// unchanged; required on Claude rows.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    claude: Option<ClaudeCursor>,
 }
 impl Cursor {
     fn validate(&self, time: f64) -> bool {
@@ -125,17 +130,61 @@ impl Cursor {
             || self.children.len() > 128
             || self.children.iter().any(|(key, status)| {
                 !hex_id(key, 64)
-                    || !["running", "completed", "interrupted", "errored"]
+                    || !["running", "completed", "interrupted", "errored", "unknown"]
                         .contains(&status.as_str())
             })
             || self.turns.as_ref().is_some_and(|turns| !turns.validate())
             || self.fingerprint.as_ref().is_some_and(|f| {
                 f.size > max || f.mtime_us > max || !hex_id(&f.header, 64) || !hex_id(&f.tail, 64)
             })
+            || self.claude.as_ref().is_some_and(|block| {
+                !block.validate(time)
+                    || self.turns.is_none()
+                    || self.envelope.is_some()
+                    || self.compaction_markers != 0
+                    || self.compaction_summaries != 0
+                    || !self.skipping && block.classifier.is_some()
+            })
         {
             return false;
         }
         true
+    }
+    fn from_row(row: claude::Row) -> Self {
+        Self {
+            file: row.file,
+            offset: row.offset,
+            children: row.children,
+            seq: row.seq,
+            valid: row.valid,
+            compactions_valid: row.compactions_valid,
+            compaction_markers: 0,
+            compaction_summaries: 0,
+            caught_up: row.caught_up,
+            skipping: row.skipping,
+            envelope: None,
+            turns: Some(row.turns),
+            fingerprint: row.fingerprint,
+            at: row.at,
+            claude: Some(row.claude),
+        }
+    }
+    /// A Claude-keyed row without its block is never resumed (D8).
+    fn into_row(self) -> Option<claude::Row> {
+        Some(claude::Row {
+            file: self.file,
+            offset: self.offset,
+            children: self.children,
+            seq: self.seq,
+            valid: self.valid,
+            compactions_valid: self.compactions_valid,
+            caught_up: self.caught_up,
+            skipping: self.skipping,
+            turns: self.turns?,
+            fingerprint: self.fingerprint,
+            at: self.at,
+            claude: self.claude?,
+        })
     }
     fn invalid(&mut self) {
         self.valid = false;
@@ -261,6 +310,7 @@ fn replay(
             turns: Some(Turns::default()),
             fingerprint: None,
             at: time,
+            claude: None,
         }
     };
     stream
@@ -629,10 +679,86 @@ pub fn read_usage(path: &Path, session: &str, time: f64) -> Value {
 }
 
 type FileSignature = (u64, u64, u64, i64, i64, i64, i64);
+/// A Claude session binding (D1) and its last published numeric sample (D3).
+struct Binding {
+    at: Instant,
+    /// Rediscover on the next pass: a truncated scan or a growing candidate.
+    rescan: bool,
+    path: Option<PathBuf>,
+    /// The usage subset and `seq` of the last caught-up sample, re-emitted only
+    /// for an incomplete replay that resumed this bound, identity-checked file.
+    retained: Option<(Value, u64)>,
+}
 #[derive(Default)]
 pub struct NativeTelemetry {
     discovery: BTreeMap<String, (Instant, Option<PathBuf>)>,
     usage: BTreeMap<String, (FileSignature, Value)>,
+    claude: BTreeMap<String, Binding>,
+}
+fn turn_timing(turns: &Turns, time: f64) -> Value {
+    json!({"active":if turns.current_known{Some(turns.active.is_some())}else{None},"started_at_s":if turns.current_known{turns.start}else{None},"observed_at_s":time,"last_duration_s":turns.last_duration,"last_outcome":turns.last_outcome,"total_finished_duration_s":if turns.valid&&turns.supported{Some(turns.total)}else{None},"complete":turns.valid&&turns.supported})
+}
+/// Merges a Claude replay object into the agent's metadata telemetry as Codex
+/// usage is merged, adds children from a caught-up `row`, then stamps it with
+/// the largest of the metadata, usage, child and replay `seq` times (D6, D8).
+fn publish_claude(
+    agent: &mut Value,
+    usage: &Value,
+    row: Option<&claude::Row>,
+    seq: u64,
+    time: f64,
+) {
+    let previous = telemetry::telemetry_from_agent(agent).unwrap_or_else(|| json!({}));
+    let mut value = previous.clone();
+    if number(&previous["usage_seq"]).is_none()
+        || number(&usage["usage_seq"]) >= number(&previous["usage_seq"])
+    {
+        if let Some(usage) = usage.as_object() {
+            value.as_object_mut().unwrap().extend(usage.clone());
+        }
+    }
+    if let Some(row) = row.filter(|v| v.valid) {
+        let count = |status: &str| row.children.values().filter(|v| *v == status).count();
+        let done = count("completed");
+        value["subagent_total"] = json!(row.children.len());
+        value["subagent_done"] = json!(done);
+        value["subagent_status_seq"] = json!(row.status_seq());
+        for (key, count) in [
+            ("subagent_running", count("running")),
+            ("subagent_completed", done),
+            ("subagent_interrupted", count("interrupted")),
+            ("subagent_failed", count("errored")),
+            ("subagent_unknown", count("unknown")),
+        ] {
+            value[key] = json!(count);
+        }
+    } else {
+        for key in ["subagent_total", "subagent_done", "subagent_status_seq"]
+            .iter()
+            .chain(telemetry::OUTCOMES)
+        {
+            value[*key] = Value::Null;
+        }
+    }
+    if let Some(stamp) = [
+        number(&value["seq"]),
+        number(&value["usage_seq"]),
+        number(&value["subagent_status_seq"]),
+        Some(seq),
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|v| *v > 0 && *v as f64 <= time * 1e6)
+    .max()
+    {
+        value["seq"] = json!(stamp);
+        if value.get("event").is_none() {
+            value["event"] = json!("session");
+            value["phase"] = json!("ready");
+        }
+        agent["_native_telemetry"] =
+            telemetry::telemetry_view_at(&value, time).unwrap_or(Value::Null);
+    }
 }
 impl NativeTelemetry {
     fn discover(session: &str, deadline: Instant) -> Option<PathBuf> {
@@ -671,12 +797,132 @@ impl NativeTelemetry {
         }
         None
     }
+    /// D1: positive and negative bindings are both rediscovered every 60 s. A
+    /// truncated scan or a growing predecessor candidate is not cached. Any
+    /// result other than the same bound path drops the retained sample.
+    fn bind(
+        &mut self,
+        root: &Path,
+        session: &str,
+        key: &str,
+        deadline: Instant,
+    ) -> Option<PathBuf> {
+        if let Some(binding) = self
+            .claude
+            .get(key)
+            .filter(|v| !v.rescan && v.at.elapsed() < Duration::from_secs(60))
+        {
+            return binding.path.clone();
+        }
+        let mut budget =
+            claude::Budget::new(deadline.min(Instant::now() + Duration::from_millis(100)));
+        let (path, rescan) = match claude::discover(root, session, &mut budget) {
+            claude::Discovery::Found(path) => {
+                match claude::predecessor(&path, session, &mut budget) {
+                    claude::Predecessor::Clear { growing } => (Some(path), growing),
+                    claude::Predecessor::Unknown => (None, false),
+                }
+            }
+            claude::Discovery::Truncated => (None, true),
+            claude::Discovery::None | claude::Discovery::Ambiguous => (None, false),
+        };
+        let binding = self.claude.entry(key.to_owned()).or_insert(Binding {
+            at: Instant::now(),
+            rescan,
+            path: None,
+            retained: None,
+        });
+        if path.is_none() || binding.path != path {
+            binding.retained = None;
+        }
+        binding.at = Instant::now();
+        binding.rescan = rescan;
+        binding.path = path.clone();
+        path
+    }
+    /// One Claude pane: bind, replay up to 16 bounded passes, then publish the
+    /// caught-up sample, or re-emit the retained one for an incomplete replay.
+    fn enrich_claude(
+        &mut self,
+        agent: &mut Value,
+        cursors: &mut BTreeMap<String, Cursor>,
+        active: &mut BTreeSet<String>,
+        time: f64,
+        deadline: Instant,
+    ) {
+        if telemetry::session_binding(agent).is_none() || agent["agent_session"]["kind"] != "id" {
+            return;
+        }
+        let Some(session) = agent["agent_session"]["value"]
+            .as_str()
+            .filter(|v| safe_id(v, 128))
+            .map(str::to_owned)
+        else {
+            return;
+        };
+        let key = sha256(format!("anton-native-session-v1:claude:{session}").as_bytes());
+        active.insert(key.clone());
+        if Instant::now() >= deadline {
+            return;
+        }
+        let root = claude::projects_root();
+        let Some(path) = self.bind(&root, &session, &key, deadline) else {
+            return;
+        };
+        let mut row = cursors.remove(&key).and_then(Cursor::into_row);
+        let (mut ran, mut restarted) = (false, false);
+        for _ in 0..16 {
+            if Instant::now() >= deadline {
+                break;
+            }
+            let offset = row.as_ref().map(|v| v.offset);
+            let pass = deadline.min(Instant::now() + Duration::from_millis(600));
+            let Ok((next, resumed)) =
+                claude::resume(&root, &path, &session, row.take(), time, pass)
+            else {
+                self.claude.remove(&key);
+                return;
+            };
+            ran = true;
+            restarted |= !resumed;
+            let done = next.caught_up || Some(next.offset) == offset;
+            row = Some(next);
+            if done {
+                break;
+            }
+        }
+        let Some(row) = row else {
+            return;
+        };
+        if ran {
+            let binding = self.claude.get_mut(&key).unwrap();
+            if restarted {
+                binding.retained = None;
+            }
+            if row.caught_up && !row.skipping {
+                agent["_native_turn_timing"] = turn_timing(&row.turns, time);
+                let usage = row.usage();
+                let seq = row.claude.coverage_seq;
+                publish_claude(agent, &usage, Some(&row), seq, time);
+                let mut subset = usage;
+                subset.as_object_mut().unwrap().remove("compactions");
+                binding.retained = Some((subset, seq));
+            } else if let Some((subset, seq)) = &binding.retained {
+                publish_claude(agent, subset, None, *seq, time);
+            }
+        }
+        cursors.insert(key, Cursor::from_row(row));
+    }
     pub fn enrich(&mut self, agents: &mut [Value], raw_cursors: &Value) -> Value {
         let time = now();
         let mut cursors = validate_cursors(raw_cursors);
         let mut active = BTreeSet::new();
         let deadline = Instant::now() + Duration::from_millis(750);
         for agent in agents.iter_mut().take(32) {
+            if agent["agent"] == "claude" {
+                self.enrich_claude(agent, &mut cursors, &mut active, time, deadline);
+                continue;
+            }
             if agent["agent"] != "codex"
                 || telemetry::session_binding(agent).is_none()
                 || agent["agent_session"]["kind"] != "id"
@@ -739,7 +985,7 @@ impl NativeTelemetry {
                 self.discovery.remove(&key);
                 json!({})
             };
-            let mut native = cursors.remove(&key);
+            let mut native = cursors.remove(&key).filter(|v| v.claude.is_none());
             for _ in 0..16 {
                 if Instant::now() >= deadline {
                     break;
@@ -763,7 +1009,7 @@ impl NativeTelemetry {
             if let Some(state) = &native {
                 if state.caught_up && !state.skipping {
                     if let Some(turns) = &state.turns {
-                        agent["_native_turn_timing"] = json!({"active":if turns.current_known{Some(turns.active.is_some())}else{None},"started_at_s":if turns.current_known{turns.start}else{None},"observed_at_s":time,"last_duration_s":turns.last_duration,"last_outcome":turns.last_outcome,"total_finished_duration_s":if turns.valid&&turns.supported{Some(turns.total)}else{None},"complete":turns.valid&&turns.supported});
+                        agent["_native_turn_timing"] = turn_timing(turns, time);
                     }
                 }
             }
@@ -838,6 +1084,7 @@ impl NativeTelemetry {
         cursors.retain(|key, _| active.contains(key));
         self.discovery.retain(|key, _| active.contains(key));
         self.usage.retain(|key, _| active.contains(key));
+        self.claude.retain(|key, _| active.contains(key));
         let result = serde_json::to_value(cursors).unwrap_or_else(|_| json!({}));
         serde_json::to_value(validate_cursors(&result)).unwrap_or_else(|_| json!({}))
     }
@@ -1119,6 +1366,8 @@ pub fn retire(state: &Path, owner: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
+mod claude_tests;
 #[cfg(test)]
 mod tests {
     use super::*;

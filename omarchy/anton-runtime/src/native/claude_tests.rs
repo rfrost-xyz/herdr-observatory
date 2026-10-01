@@ -1,0 +1,505 @@
+//! Claude dispatch through `NativeTelemetry::enrich`, all synthetic.
+use super::*;
+use std::io::Write;
+
+const ID: &str = "fixture-session-a";
+const BASE: u64 = 1_767_225_600;
+
+struct Fixture {
+    root: PathBuf,
+    projects: PathBuf,
+}
+impl Fixture {
+    fn new() -> Self {
+        static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "anton-native-claude-{}-{}-{}",
+            std::process::id(),
+            now().to_bits(),
+            SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        ));
+        let projects = root.join("projects");
+        std::fs::create_dir_all(&projects).unwrap();
+        claude::TEST_ROOT.with(|value| *value.borrow_mut() = Some(projects.clone()));
+        Self { root, projects }
+    }
+    fn path(&self, entry: &str, id: &str) -> PathBuf {
+        let directory = self.projects.join(entry);
+        std::fs::create_dir_all(&directory).unwrap();
+        directory.join(format!("{id}.jsonl"))
+    }
+    /// Writes the header and `lines` to a new file, replacing any old inode.
+    fn write(&self, lines: &[String]) -> PathBuf {
+        let path = self.path("entry-a", ID);
+        let _ = std::fs::remove_file(&path);
+        std::fs::write(&path, body(lines)).unwrap();
+        path
+    }
+    fn append(&self, text: &str) {
+        self.append_to(&self.path("entry-a", ID), text);
+    }
+    fn append_to(&self, path: &Path, text: &str) {
+        let mut file = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+        file.write_all(text.as_bytes()).unwrap();
+    }
+}
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        claude::TEST_ROOT.with(|value| *value.borrow_mut() = None);
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+fn body(lines: &[String]) -> String {
+    let mut text = format!("{{\"type\":\"permission-mode\",\"sessionId\":\"{ID}\"}}\n");
+    for line in lines {
+        text.push_str(line);
+        text.push('\n');
+    }
+    text
+}
+fn stamp(second: u64) -> String {
+    format!(
+        "2026-01-01T{:02}:{:02}:{:02}.250Z",
+        second / 3600,
+        second / 60 % 60,
+        second % 60
+    )
+}
+fn micros(second: u64) -> u64 {
+    (BASE + second) * 1_000_000 + 250_000
+}
+fn record(kind: &str, second: u64, fields: &str) -> String {
+    format!(
+        "{{\"type\":\"{kind}\",\"sessionId\":\"{ID}\",\"uuid\":\"{kind}-{second}\",\"timestamp\":\"{}\",{fields}}}",
+        stamp(second)
+    )
+}
+fn prompt(second: u64) -> String {
+    record(
+        "user",
+        second,
+        "\"message\":{\"role\":\"user\",\"content\":\"synthetic\"}",
+    )
+}
+fn launch(second: u64, agent: &str) -> String {
+    record(
+        "user",
+        second,
+        &format!(
+            "\"toolUseResult\":{{\"status\":\"async_launched\",\"agentId\":\"{agent}\"}},\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"content\":\"done\"}}]}}"
+        ),
+    )
+}
+fn notified(second: u64, agent: &str, status: &str) -> String {
+    let text = format!(
+        "<task-notification>\n<task-id>{agent}</task-id>\n<status>{status}</status>\n</task-notification>"
+    );
+    record(
+        "user",
+        second,
+        &format!(
+            "\"origin\":{{\"kind\":\"task-notification\"}},\"message\":{{\"role\":\"user\",\"content\":{}}}",
+            serde_json::to_string(&text).unwrap()
+        ),
+    )
+}
+fn assistant(second: u64, message: &str, stop: &str, usage: [u64; 4]) -> String {
+    record(
+        "assistant",
+        second,
+        &format!(
+            "\"message\":{{\"id\":\"{message}\",\"model\":\"claude-fixture-1\",\"stop_reason\":{stop},\"usage\":{{\"input_tokens\":{},\"output_tokens\":{},\"cache_read_input_tokens\":{},\"cache_creation_input_tokens\":{}}},\"content\":[]}}",
+            usage[0], usage[1], usage[2], usage[3]
+        ),
+    )
+}
+fn system(subtype: &str, second: u64) -> String {
+    record("system", second, &format!("\"subtype\":\"{subtype}\""))
+}
+fn agent() -> Value {
+    json!({"agent":"claude","agent_session":{"agent":"claude","source":"herdr:claude","kind":"id","value":ID}})
+}
+fn key() -> String {
+    sha256(format!("anton-native-session-v1:claude:{ID}").as_bytes())
+}
+/// One turn with two counted groups, a completed and a blocked child.
+fn session() -> Vec<String> {
+    vec![
+        prompt(10),
+        launch(11, "agent-a"),
+        launch(12, "agent-b"),
+        assistant(13, "msg-1", "\"tool_use\"", [100, 20, 1000, 50]),
+        assistant(14, "msg-2", "\"end_turn\"", [10, 5, 1100, 0]),
+        system("turn_duration", 15),
+        system("compact_boundary", 16),
+        notified(20, "agent-a", "completed"),
+        notified(21, "agent-b", "blocked"),
+        assistant(22, "msg-3", "\"end_turn\"", [1, 1, 1200, 0]),
+        system("turn_duration", 23),
+    ]
+}
+/// Enriches one Claude pane and returns its telemetry, timing and cursors.
+fn enrich(follower: &mut NativeTelemetry, cursors: &Value) -> (Value, Value, Value) {
+    let mut agents = vec![agent()];
+    let cursors = follower.enrich(&mut agents, cursors);
+    let agent = agents.pop().unwrap();
+    (
+        agent["_native_telemetry"].clone(),
+        agent["_native_turn_timing"].clone(),
+        cursors,
+    )
+}
+fn totals(telemetry: &Value) -> Value {
+    json!([
+        telemetry["total_input"],
+        telemetry["total_uncached_input"],
+        telemetry["total_cache_read"],
+        telemetry["total_cache_write"],
+        telemetry["total_output"]
+    ])
+}
+
+#[test]
+fn claude_pane_enrich_publishes_caught_up_sample_and_block_row() {
+    let fixture = Fixture::new();
+    fixture.write(&session());
+    let mut follower = NativeTelemetry::default();
+    let (telemetry, timing, cursors) = enrich(&mut follower, &json!({}));
+    let row = &cursors[key()];
+    assert_eq!(cursors.as_object().unwrap().len(), 1);
+    assert_eq!(row["caught_up"], true);
+    assert_eq!(row["claude"]["coverage_seq"], json!(micros(23)));
+    assert!(row.get("envelope").is_none());
+    assert_eq!(row["compaction_markers"], 0);
+    assert_eq!(row["seq"], json!(micros(21)));
+    assert_eq!(row["claude"]["usage_seq"], json!(micros(22)));
+    assert_eq!(
+        telemetry,
+        json!({
+            "cache_read": 1200, "cache_write": 0, "compactions": 1, "context": 1201,
+            "context_percent": null, "event": "session", "input": 1201,
+            "model": "claude-fixture-1", "output_tokens": 1, "phase": "ready", "result": null,
+            "seq": micros(23), "subagent_completed": 1, "subagent_done": 1,
+            "subagent_failed": 0, "subagent_interrupted": 0, "subagent_running": 0,
+            "subagent_seq": null, "subagent_starts": null, "subagent_status_seq": micros(21),
+            "subagent_stops": null, "subagent_total": 2, "subagent_unknown": 1, "tool": null,
+            "total_cache_read": 3300, "total_cache_write": 50, "total_input": 3461,
+            "total_output": 26, "total_uncached_input": 111, "usage_seq": micros(22),
+            "usage_source": "claude-transcript", "window": null
+        })
+    );
+    let mut timing = timing;
+    timing["observed_at_s"] = json!(0);
+    assert_eq!(
+        timing,
+        json!({"active": false, "complete": true, "last_duration_s": 2,
+            "last_outcome": "completed", "observed_at_s": 0, "started_at_s": null,
+            "total_finished_duration_s": 7})
+    );
+    // A warm pass resumes the block and publishes the same sample.
+    let (again, _, warm) = enrich(&mut follower, &cursors);
+    assert_eq!(again, telemetry);
+    assert_eq!(warm[key()]["claude"], row["claude"]);
+    // A Codex pane with the same id has its own key and is not given the block.
+    let mut agents = vec![
+        agent(),
+        json!({"agent":"codex","agent_session":{"agent":"codex","source":"herdr:codex","kind":"id","value":ID}}),
+    ];
+    let mixed = follower.enrich(&mut agents, &cursors);
+    assert_eq!(mixed.as_object().unwrap().len(), 1);
+    assert!(agents[1].get("_native_telemetry").is_none());
+}
+
+#[test]
+fn claude_caught_up_pass_publishes_an_all_null_sample_at_coverage_seq() {
+    let fixture = Fixture::new();
+    // No counted group and no child: every value is unknown or zero children.
+    fixture.write(&[prompt(10), system("stop_hook_summary", 12)]);
+    let (telemetry, _, cursors) = enrich(&mut NativeTelemetry::default(), &json!({}));
+    assert_eq!(cursors[key()]["claude"]["coverage_seq"], json!(micros(12)));
+    assert_eq!(telemetry["seq"], json!(micros(12)));
+    assert_eq!(telemetry["event"], "session");
+    assert_eq!(telemetry["phase"], "ready");
+    assert_eq!(telemetry["subagent_total"], 0);
+    assert_eq!(telemetry["subagent_status_seq"], json!(micros(12)));
+    for key in [
+        "total_input",
+        "input",
+        "context",
+        "model",
+        "usage_seq",
+        "usage_source",
+        "compactions",
+    ] {
+        assert!(telemetry[key].is_null(), "{key}");
+    }
+    // Without any source time there is nothing honest to stamp.
+    fixture.write(&[]);
+    let (telemetry, _, cursors) = enrich(&mut NativeTelemetry::default(), &json!({}));
+    assert_eq!(cursors[key()]["caught_up"], true);
+    assert!(telemetry.is_null());
+}
+
+/// The retained numeric subset as a re-emitted sample shows it.
+fn retained(telemetry: &Value) -> Value {
+    let mut value = telemetry.clone();
+    for key in [
+        "subagent_total",
+        "subagent_done",
+        "subagent_status_seq",
+        "compactions",
+    ]
+    .iter()
+    .chain(telemetry::OUTCOMES)
+    {
+        value[*key] = Value::Null;
+    }
+    value
+}
+
+#[test]
+fn claude_incomplete_replay_reemits_the_retained_sample_until_replacement() {
+    let fixture = Fixture::new();
+    fixture.write(&session());
+    let mut follower = NativeTelemetry::default();
+    let (first, _, cursors) = enrich(&mut follower, &json!({}));
+    // A partial trailing line leaves the resumed replay incomplete.
+    let partial = assistant(30, "msg-4", "\"end_turn\"", [7, 7, 7, 7]);
+    fixture.append(&partial[..40]);
+    let (telemetry, timing, cursors) = enrich(&mut follower, &cursors);
+    assert_eq!(cursors[key()]["caught_up"], false);
+    assert_eq!(telemetry, retained(&first));
+    assert!(timing.is_null());
+    // Growth keeps it.
+    fixture.append(&partial[40..60]);
+    let (telemetry, _, cursors) = enrich(&mut follower, &cursors);
+    assert_eq!(telemetry, retained(&first));
+    // Replacement by a new inode with the same bytes restarts and drops it.
+    let bytes = std::fs::read(fixture.path("entry-a", ID)).unwrap();
+    std::fs::remove_file(fixture.path("entry-a", ID)).unwrap();
+    std::fs::write(fixture.path("entry-a", ID), &bytes).unwrap();
+    let (telemetry, _, cursors) = enrich(&mut follower, &cursors);
+    assert!(telemetry.is_null());
+    // It stays dropped on the next resumed incomplete pass.
+    let (telemetry, _, cursors) = enrich(&mut follower, &cursors);
+    assert!(telemetry.is_null());
+    // Completing the line catches up and publishes, which retains again.
+    fixture.append(&format!("{}\n", &partial[60..]));
+    let (caught, _, cursors) = enrich(&mut follower, &cursors);
+    assert_eq!(caught["total_output"], 33);
+    assert_eq!(caught["seq"], json!(micros(30)));
+    fixture.append(&partial[..10]);
+    let (telemetry, _, _) = enrich(&mut follower, &cursors);
+    assert_eq!(telemetry, retained(&caught));
+    // A pass with no incoming cursor row restarts and does not re-emit.
+    let (telemetry, _, _) = enrich(&mut follower, &json!({}));
+    assert!(telemetry.is_null());
+}
+
+/// Saves `cursors` for one host through a real checkpoint file and loads it.
+fn checkpointed(fixture: &Fixture, cursors: &Value) -> Value {
+    let owner = fixture.root.join(".herdr-observatory-install");
+    std::fs::write(&owner, b"herdr.observatory\n").unwrap();
+    let state = fixture.root.join("state");
+    let _ = std::fs::create_dir(&state);
+    let mut cache = Checkpoints::new(&state, &owner).unwrap();
+    cache
+        .update(
+            &BTreeMap::from([("test".to_owned(), cursors.clone())]),
+            true,
+        )
+        .unwrap();
+    let saved = std::fs::read_to_string(state.join("replay-checkpoints.json")).unwrap();
+    assert!(!saved.contains(ID) && !saved.contains("entry-a"));
+    drop(cache);
+    Checkpoints::new(&state, &owner).unwrap().for_host("test")
+}
+
+#[test]
+fn claude_checkpoint_round_trip_resumes_the_block_and_adds_new_groups() {
+    let fixture = Fixture::new();
+    fixture.write(&session());
+    let (first, _, cursors) = enrich(&mut NativeTelemetry::default(), &json!({}));
+    let loaded = checkpointed(&fixture, &cursors);
+    assert_eq!(loaded, cursors);
+    let offset = cursors[key()]["offset"].as_u64().unwrap();
+    fixture.append(&format!(
+        "{}\n",
+        assistant(30, "msg-4", "\"end_turn\"", [5, 6, 7, 8])
+    ));
+    // A fresh process: no binding, no retained sample, only the checkpoint.
+    let (telemetry, _, resumed) = enrich(&mut NativeTelemetry::default(), &loaded);
+    assert!(resumed[key()]["offset"].as_u64().unwrap() > offset);
+    assert_eq!(totals(&first), json!([3461, 111, 3300, 50, 26]));
+    assert_eq!(totals(&telemetry), json!([3481, 116, 3307, 58, 32]));
+    assert_eq!(telemetry["seq"], json!(micros(30)));
+    // A marked closed sum shows the block was resumed, not replayed.
+    let mut marked = loaded.clone();
+    marked[key()]["claude"]["output"] =
+        json!(1000 + loaded[key()]["claude"]["output"].as_u64().unwrap());
+    let (telemetry, _, _) = enrich(&mut NativeTelemetry::default(), &marked);
+    assert_eq!(telemetry["total_output"], 1032);
+}
+
+#[test]
+fn claude_rows_without_a_valid_block_replay_fresh_from_the_header() {
+    let fixture = Fixture::new();
+    fixture.write(&session());
+    let (_, _, cursors) = enrich(&mut NativeTelemetry::default(), &json!({}));
+    fixture.append(&format!(
+        "{}\n",
+        assistant(30, "msg-4", "\"end_turn\"", [5, 6, 7, 8])
+    ));
+    // An old binary re-serialises the row through a `Cursor` without the
+    // block. The row stays valid and survives a checkpoint, but is not resumed.
+    let mut stripped = cursors.clone();
+    stripped[key()].as_object_mut().unwrap().remove("claude");
+    assert_eq!(validate_cursors(&stripped).len(), 1);
+    let stripped = checkpointed(&fixture, &stripped);
+    assert!(stripped[key()].get("claude").is_none());
+    let (telemetry, _, again) = enrich(&mut NativeTelemetry::default(), &stripped);
+    assert_eq!(totals(&telemetry), json!([3481, 116, 3307, 58, 32]));
+    assert_eq!(again[key()]["claude"]["coverage_seq"], json!(micros(30)));
+    // An invalid block drops the whole row before replay.
+    let future = (now() as u64 + 60) * 1_000_000;
+    for (field, value) in [
+        ("coverage_seq", json!(future)),
+        ("closed", json!(["not-a-hash"])),
+        ("output", json!(1u64 << 60)),
+    ] {
+        let mut tampered = cursors.clone();
+        tampered[key()]["claude"][field] = value;
+        assert!(validate_cursors(&tampered).is_empty(), "{field}");
+        let (telemetry, _, _) = enrich(&mut NativeTelemetry::default(), &tampered);
+        assert_eq!(
+            totals(&telemetry),
+            json!([3481, 116, 3307, 58, 32]),
+            "{field}"
+        );
+    }
+    // A Claude block on a row that breaks the Claude row invariants is invalid.
+    for (field, value) in [("compaction_markers", json!(1)), ("turns", Value::Null)] {
+        let mut tampered = cursors.clone();
+        tampered[key()][field] = value;
+        assert!(validate_cursors(&tampered).is_empty(), "{field}");
+    }
+}
+
+/// Lets the next pass rediscover the binding, as after 60 s.
+fn age(follower: &mut NativeTelemetry) {
+    follower.claude.get_mut(&key()).unwrap().at =
+        Instant::now().checked_sub(Duration::from_secs(61)).unwrap();
+}
+
+#[test]
+fn claude_positive_binding_is_rediscovered_and_ambiguity_is_unknown() {
+    let fixture = Fixture::new();
+    fixture.write(&session());
+    let mut follower = NativeTelemetry::default();
+    let (first, _, cursors) = enrich(&mut follower, &json!({}));
+    assert!(first.is_object());
+    // A second match within 60 s is not seen; the binding is cached.
+    let other = fixture.path("entry-b", ID);
+    std::fs::write(&other, body(&session())).unwrap();
+    let (telemetry, _, cursors) = enrich(&mut follower, &cursors);
+    assert_eq!(telemetry, first);
+    // The re-scan finds two matches: unknown, and the retained sample is gone.
+    age(&mut follower);
+    let (telemetry, timing, cursors) = enrich(&mut follower, &cursors);
+    assert!(telemetry.is_null() && timing.is_null());
+    assert!(follower.claude[&key()].retained.is_none());
+    // Back to one match with an incomplete replay: nothing is re-emitted.
+    std::fs::remove_file(&other).unwrap();
+    fixture.append("{\"type\":");
+    age(&mut follower);
+    let (telemetry, _, cursors) = enrich(&mut follower, &cursors);
+    assert_eq!(cursors[key()]["caught_up"], false);
+    assert!(telemetry.is_null());
+    // A file moved to another entry is rebound at the next re-scan. It keeps
+    // its inode, header and tail, so the row resumes (a marked closed sum
+    // survives) and catches up.
+    std::fs::rename(fixture.path("entry-a", ID), &other).unwrap();
+    fixture.append_to(&other, "\"system\"}\n");
+    age(&mut follower);
+    let mut marked = cursors.clone();
+    let output = cursors[key()]["claude"]["output"].as_u64().unwrap();
+    marked[key()]["claude"]["output"] = json!(output + 1000);
+    let (telemetry, _, cursors) = enrich(&mut follower, &marked);
+    assert_eq!(cursors[key()]["caught_up"], true);
+    assert_eq!(
+        follower.claude[&key()].path.as_deref(),
+        Some(other.as_path())
+    );
+    assert_eq!(
+        telemetry["total_output"],
+        json!(first["total_output"].as_u64().unwrap() + 1000)
+    );
+}
+
+#[test]
+fn claude_zero_matches_and_identity_failures_publish_nothing() {
+    let fixture = Fixture::new();
+    let mut follower = NativeTelemetry::default();
+    let (telemetry, _, cursors) = enrich(&mut follower, &json!({}));
+    assert!(telemetry.is_null());
+    assert_eq!(cursors, json!({}));
+    // A header naming another session fails identity: no sample, no row.
+    let path = fixture.path("entry-a", ID);
+    std::fs::write(
+        &path,
+        format!(
+            "{{\"type\":\"permission-mode\",\"sessionId\":\"fixture-other\"}}\n{}\n",
+            prompt(10)
+        ),
+    )
+    .unwrap();
+    age(&mut follower);
+    let (telemetry, _, cursors) = enrich(&mut follower, &json!({}));
+    assert!(telemetry.is_null());
+    assert_eq!(cursors, json!({}));
+    // A non-Claude source or a path binding is not a Claude pane.
+    let mut agents = vec![
+        json!({"agent":"claude","agent_session":{"agent":"claude","source":"herdr:codex","kind":"id","value":ID}}),
+        json!({"agent":"claude","agent_session":{"agent":"claude","source":"herdr:claude","kind":"path","value":ID}}),
+    ];
+    fixture.write(&session());
+    assert_eq!(follower.enrich(&mut agents, &json!({})), json!({}));
+    assert!(agents.iter().all(|v| v.get("_native_telemetry").is_none()));
+}
+
+#[test]
+fn claude_rows_share_the_32_row_checkpoint_bound_with_hashed_keys() {
+    let fixture = Fixture::new();
+    fixture.write(&session());
+    let (_, _, cursors) = enrich(&mut NativeTelemetry::default(), &json!({}));
+    let row = cursors[key()].clone();
+    // Each host sends at most 32 rows; the file keeps the newest 32 overall.
+    let mut hosts = BTreeMap::new();
+    for host in ["host-a", "host-b"] {
+        let mut rows = serde_json::Map::new();
+        for index in 0..17 {
+            let mut cursor = row.clone();
+            let order = if host == "host-a" { index } else { 17 + index };
+            cursor["at"] = json!(now() - 100.0 + order as f64);
+            rows.insert(sha256(format!("{host}-{index}").as_bytes()), cursor);
+        }
+        hosts.insert(host.to_owned(), Value::Object(rows));
+    }
+    let owner = fixture.root.join(".herdr-observatory-install");
+    std::fs::write(&owner, b"herdr.observatory\n").unwrap();
+    let state = fixture.root.join("state");
+    std::fs::create_dir(&state).unwrap();
+    Checkpoints::new(&state, &owner)
+        .unwrap()
+        .update(&hosts, true)
+        .unwrap();
+    let loaded = Checkpoints::new(&state, &owner).unwrap();
+    let (a, b) = (loaded.for_host("host-a"), loaded.for_host("host-b"));
+    assert_eq!(
+        a.as_object().unwrap().len() + b.as_object().unwrap().len(),
+        32
+    );
+    assert!(a.get(sha256(b"host-a-0")).is_none() && a.get(sha256(b"host-a-1")).is_none());
+    assert_eq!(a[sha256(b"host-a-2")]["claude"], row["claude"]);
+    assert_eq!(b.as_object().unwrap().len(), 17);
+}
