@@ -51,6 +51,20 @@ blocking and 13 other findings. Each is addressed in design.md:
 - D11: freshness, and duration by window name.
 - Evidence counts and labels.
 
+Round 2, on `e05f901`, found 9 blocking and 17 other findings. It added:
+
+- D3: group closing by assistant records only, sample gating and the classifier state;
+- D2: records without `sessionId`;
+- D8: the full block allowlist, with Claude turn state kept out of `Turns`;
+- D1: positive-binding re-scans and truncated scans;
+- D6: `unknown` status, resumes and notifications for unknown children, `subagent_status_seq`;
+- D7: triggers, queued input, aborts while pending, and floor conversion;
+- D9: the spec list;
+- D10: wire channels, a self-contained wrapper, the managed-file gate and deltas;
+- D11: account binding at report time, source time, key prefix and deltas.
+
+Line references were also corrected.
+
 ## User decisions (2026-10-01)
 
 - `~/.claude.json` is accepted as provider-owned state, not an authentication file, for Claude identity and usage data.
@@ -62,9 +76,9 @@ that pane through the Herdr SessionStart hook. No such probe was run.
 
 | Claim | Evidence |
 |---|---|
-| Session id equals file stem and every main-file `sessionId` | 18 of 18 files, 0 mismatching records |
+| Session id equals file stem and every main-file `sessionId` | 18 of 18 files, 0 mismatching records among records that carry `sessionId`. `file-history-snapshot` and `file-history-delta` carry none |
 | `isSidechain` separates parent and child files | All main-file records false, all subagent records true |
-| Split responses share `message.id` | 740 main-file multi-line groups, all contiguous with identical usage. Subagent files: 1,311 multi-line groups (first pass), 1,287 with streaming partials, 6 non-contiguous ids |
+| Split responses share `message.id` | 740 main-file multi-line groups, all contiguous among assistant records (user and attachment records interleave 142 times), with identical usage. Subagent files: 1,311 multi-line groups (first pass), 1,287 with streaming partials, 6 non-contiguous ids |
 | Summing every line overcounts | Main files: input 2.53×, output 3.04× |
 | Last line of a group is the maximum | All multi-line groups in both passes (2,190 of 2,190 in the second pass) |
 | Advisor iterations | Second pass: 51 deduplicated responses (94 lines) across main and subagent files. Top-level usage equals the sum of `message` iterations in 51 of 51 |

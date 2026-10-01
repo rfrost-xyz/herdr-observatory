@@ -32,7 +32,7 @@ the shapes below.
 - **Header** [obs 18/18]: the first line of every main file is `{"type":"mode","mode":…,"sessionId":<id>}`.
   - Mode records also recur mid-file.
   - The header carries identity only, with no version or cwd.
-- **Record identity** [obs 18/18, 0 mismatches]: every record's `sessionId` in a main file equals the file stem.
+- **Record identity** [obs 18/18, 0 mismatches]: every main-file record that carries `sessionId` equals the file stem. `file-history-snapshot` and `file-history-delta` records carry none (16 of 18 files contain them).
 - **Parent and child separation** [obs]: `isSidechain` is false on every main-file record and true on every subagent record, so children are never interleaved into the parent.
 - **Session ids across resume, fork and clear**:
   - `--resume` and `--continue` reuse the original session id; only `--fork-session` creates a new one [doc, `claude --help`].
@@ -50,7 +50,7 @@ the shapes below.
   - `usage` always has `input_tokens`, `output_tokens`, `cache_read_input_tokens` and `cache_creation_input_tokens`.
   - Complete records add `iterations[]`, `output_tokens_details`, `server_tool_use` and `speed`.
 - **Split responses** [obs]: one API response is written as one line per content block, sharing `message.id` and `requestId`.
-  - Main files: all 740 multi-line groups were contiguous with identical usage.
+  - Main files: all 740 multi-line groups were contiguous among assistant records, with identical usage. User and attachment records often sit between lines of one group.
   - Subagent files: earlier lines are streaming partials, and 6 ids reappeared after another id had started.
   - Every multi-line group's last line had the maximum `output_tokens`.
   - Summing every main-file line overcounts input 2.5× and output 3×.
@@ -88,10 +88,10 @@ the shapes below.
 
 ### Non-transcript surfaces
 
-- **statusLine** [bin, doc]:
+- **statusLine** [bin, doc]: a subprocess spawned by Claude Code that inherits its environment.
   - Input JSON includes `session_id`, `transcript_path`, `model` and `context_window.{context_window_size, used_percentage, current_usage, total_input_tokens, total_output_tokens}`. Both totals are last-response values [bin].
   - For Pro and Max, after the first response, it also includes `rate_limits.{five_hour, seven_day}.{used_percentage, resets_at}`.
-  - It runs inside the Claude process on each render.
+  - It runs on each render.
   - It is a single settings slot. Plugins cannot provide one: the plugin customisation table disables `statusLine` [bin]. The slot is occupied on this host [obs].
 - **Hooks** [bin]: 33 events.
   - SessionStart carries `source` (`startup|resume|clear|compact|fork`), `model` and, on resume or fork, `context_tokens`.
@@ -120,7 +120,8 @@ the shapes below.
 
 **Goals:**
 
-- Fix every decision that changes 2 to 4 need, so implementation does not improvise.
+- Fix every decision change 2 needs, so implementation does not improvise.
+- Fix the direction, constraints, user gates and spec deltas for changes 3 and 4. Each of those changes still carries its own design and review.
 - Give each Codex metric a Claude source, or a reasoned "unavailable".
 
 **Non-Goals:**
@@ -168,7 +169,8 @@ Anton fields are `technical.telemetry.*` and `technical.turn_timing.*` (`model.r
 
 **Lookup.**
 - Look for `<root>/<entry>/<id>.jsonl` at depth exactly two, within the Codex discovery entry and time budgets.
-- Require exactly one match. Zero or several matches leave telemetry unknown.
+- Require exactly one match. Zero or several matches leave telemetry unknown, and so does a scan truncated by the entry or time budget (`native.rs:651-670`).
+- Positive bindings are re-scanned every 60 seconds too, unlike today's cache, which re-discovers only missing paths (`native.rs:698-711`). A second match reverts the session to unknown.
 - Never derive the slug, and never use `cwd` or pids.
 
 **Root.**
@@ -185,15 +187,15 @@ Anton fields are `technical.telemetry.*` and `technical.turn_timing.*` (`model.r
 
 - Open with `common::open_owned`: per-component no-follow, regular file, owner uid. A symlink anywhere fails closed.
 - The header is the first line: at most 64 KiB, newline-terminated, with `sessionId == id`. Any first-record type is tolerated.
-- Any later record whose `sessionId` differs from the bound id makes the session's telemetry unknown. A fork that copied history therefore never counts a response in two sessions.
+- Any later record that carries a `sessionId` different from the bound id makes the session's telemetry unknown. Records without `sessionId` (`file-history-snapshot`, `file-history-delta`) are ignored for identity and feed no metric. A fork that copied history therefore never counts a response in two sessions.
 - Thread replay never reads `<id>/subagents/**`, `tool-results/**`, `memory/**` or `~/.claude.json`.
 
 ### D3. Deduplicated usage replay
 
 **Groups.**
-- A group is the contiguous run of assistant records with the same `message.id`.
+- A group is the run of assistant records sharing one `message.id`. Only an assistant record with a different `message.id` closes the open group. User, attachment, system, queue and other records never close or reset it, and skipped `<synthetic>` lines are neutral. (Tool results routinely sit between lines of one response: 142 interleavings across 8 of 18 files, 0 reopenings among assistant records.)
 - The cursor keeps the open group's id hash and its counted contribution. A later line of the same group replaces that contribution; it is never added. This holds across replay passes.
-- A record whose `message.id` matches an already closed group makes totals unknown. Main files never did this. Subagent files did, which is one reason subagent files stay out of totals.
+- The cursor also keeps a ring of the last 32 closed group id hashes. An assistant record whose id matches one of them makes totals unknown. Main files never did this. Subagent files did, which is one reason they stay out of totals.
 
 **Counted groups.**
 - `<synthetic>` records are skipped.
@@ -202,19 +204,28 @@ Anton fields are `technical.telemetry.*` and `technical.turn_timing.*` (`model.r
 - Totals use the top-level usage, which equals the sum of the `message` iterations. Advisor iterations are excluded, matching Claude Code's own accounting.
 
 **Replay and coverage.**
-- Totals come from the replay cursor, not from a tail read. Codex reads provider-cumulative totals from a 512 KiB tail (`native.rs:504-580`); Claude has no cumulative record. So Claude totals follow the `caught_up` gating that Codex applies to turns, children and compactions (`native.rs:764, 783, 815`).
-- Each pass reads at most `TAIL` bytes and resumes from the checkpoint, so a cold multi-megabyte transcript takes several passes before totals are known.
+- Totals come from the replay cursor, not a tail read. Codex reads provider-cumulative totals from a 512 KiB tail (`native.rs:504-580`), but Claude has no cumulative record.
+- The whole Claude numeric sample is published only when the cursor has `caught_up && !skipping`. That sample is the totals, last-response values, `context`, `model` and `usage_seq`. This follows the gating Codex applies to turns, children and compactions (`native.rs:764, 783, 815`).
+- Each pass reads at most `TAIL` bytes and resumes from the checkpoint, so a cold multi-megabyte transcript takes several passes before values are known.
+- An unparseable line of 64 KiB or less calls `invalid()`, which for Claude rows also clears `totals_valid`.
 
 **`usage_seq`.**
 - `usage_seq` is the largest validated group timestamp seen so far, in microseconds.
-- It is non-decreasing despite non-monotonic file order. This keeps the `usage_seq >= previous` merge (`native.rs:782-791`) from rejecting newer totals.
+- It is non-decreasing despite non-monotonic file order, so the `usage_seq >= previous` merge (`native.rs:772-779`) never rejects newer totals.
 
 **Oversized lines.**
-- An oversized line (over 64 KiB) goes through a bounded envelope classifier. The classifier extracts only the fields D3, D5, D6 and D7 consume: `type`, `subtype`, `sessionId`, `uuid`, `timestamp`, `isMeta`, `origin.kind`, `commandMode`, `message.id`, `stop_reason`, `model`, `usage`, `toolUseResult.{status, agentId, resumedAgentId, success, totalDurationMs}`, `interruptedMessageId`, `isAbortedMidStream`, and the bounded `task-id` and `status` tags.
+- An oversized line (over 64 KiB) goes through a new bounded Claude envelope classifier. The Codex `Envelope` (`envelope.rs`) cannot extract these fields.
+- The classifier extracts only the fields D3, D5, D6 and D7 consume: `type`, `subtype`, `sessionId`, `uuid`, `timestamp`, `isMeta`, `origin.kind`, `commandMode`, `message.id`, `stop_reason`, `model`, `usage`, `toolUseResult.{status, agentId, resumedAgentId, success, totalDurationMs}`, `interruptedMessageId`, `isAbortedMidStream`, the bounded `task-id` and `status` tags, and the leading wrapper tag of user text.
+- Its state persists across pass boundaries in the `claude` block, because lines larger than `TAIL` exist.
 - An oversized record of a relevant type that cannot be classified makes the dependent coverage unknown:
-  - assistant: totals;
-  - system: compactions and turns;
-  - user or attachment: children and turns.
+
+  | Record type | Coverage made unknown |
+  |---|---|
+  | assistant | totals |
+  | system | compactions and turns |
+  | user or attachment | children and turns |
+
+  Large `prompt_snapshot` attachments and tool results are common (10 of 18 files) and are classified, not dropped.
 
 ### D4. Context occupancy
 
@@ -234,16 +245,16 @@ Anton fields are `technical.telemetry.*` and `technical.turn_timing.*` (`model.r
 
 **Source and keys.**
 - Children come from the main file only.
-- Associations are keyed by `sha256(agentId)` and capped at 128, as for Codex.
+- Associations use the existing row-level `children` map and `valid` flag, keyed by `sha256(agentId)` and capped at 128, as for Codex.
+- `Cursor::validate` additionally accepts the status `unknown`. An older binary rejects such a row and replays it fresh, which is the same cost as D9.
 
 **Records.**
 - **Launch.** A `toolUseResult` with `status: "async_launched"` and an `agentId` starts a child as running. A synchronous Agent result with `agentId` and `totalDurationMs` records it as completed.
-- **Launch without `agentId`.** An `async_launched` result with no `agentId` is a workflow or teammate launch. It is ignored.
-- **Resume.** A `toolUseResult` with `resumedAgentId` naming a known child, and `success: true`, returns that child to running. This is the Claude form of "resumed work invalidates old completion". A repeat launch of a known child does the same.
+- **Launch without `agentId`.** An `async_launched` result with no `agentId` is a workflow or teammate launch, and is ignored.
+- **Resume.** A `toolUseResult` with `resumedAgentId` naming a known child and `success: true` returns that child to running. This is the Claude form of "resumed work invalidates old completion". A repeat launch of a known child does the same. A resume naming a child that was not launched in this file is ignored (observed 2 of 5 times; the child belongs to another session).
 - **Completion.** Completion is a user record whose `origin.kind` is `task-notification`, or a `queued_command` attachment with `commandMode: "task-notification"`.
-  - A bounded tag grammar extracts only `task-id` and `status`.
-  - Nothing else in the block is read.
-  - Notifications whose task id matches no known Agent child are ignored. These come from shell tasks, workflows and teammates.
+  - A bounded tag grammar extracts only `task-id` and `status`. Nothing else in the block is read.
+  - A notification whose task id matches no known Agent child is ignored. These come from shell tasks, workflows and teammates.
 
 **Status mapping.**
 
@@ -256,38 +267,39 @@ Anton fields are `technical.telemetry.*` and `technical.turn_timing.*` (`model.r
 
 `subagent_unknown` keeps the partition summing to `subagent_total`.
 
-**Invalidation.** Any of the following makes children unknown, as Codex's `valid = false` does:
-- a recognised record with a malformed `agentId`;
-- a notification that names a known child before its launch;
-- exceeding the cap.
+**Invalidation.** A recognised record with a malformed `agentId`, or exceeding the cap, sets `valid = false`, as for Codex.
+
+**`subagent_status_seq`.** This is the validated timestamp of the latest accepted launch, resume or notification record, in microseconds.
 
 **AGENTS.md amendment.** Change 2 amends AGENTS.md so that "typed native child lifecycle evidence" covers these structured Claude records. A start/stop hook ratio remains forbidden.
 
 ### D7. Turn timing
 
-**Classification.** Classify records in this order of precedence:
+**Classification.** Records are classified in this order of precedence:
 
 1. **Abort:** the interrupt marker text, a record carrying `interruptedMessageId`, or an assistant record with `isAbortedMidStream`.
-2. **Non-turn:** `isMeta`, `toolUseResult`, `origin.kind` other than `human`, a `commandMode`, or text wrapped as a slash-command echo, local-command output or bash-mode record.
-3. **Human prompt:** text content with `origin.kind` absent or `human`.
+2. **Ignored:** `isMeta`, `toolUseResult`, local-command output and bash-mode records. These never start or end turns.
+3. **Turn trigger:** a human prompt (text with `origin.kind` absent or `human`), a task notification (user `origin.kind` or attachment `commandMode` of `task-notification`), a slash-command echo, or a `peer` or `coordinator` origin.
 
-**Starting a turn.**
-- A human prompt opens a pending turn. The start becomes final only when an assistant record follows before the next prompt candidate.
-- The turn key is `sha256("anton-turn-v1:" + session + ":" + uuid)[..24]`, satisfying `Turns::validate`.
+**Turn triggers.**
+- With no active turn, a trigger opens a pending start. It becomes the turn start only when an assistant record follows before the next trigger. Otherwise the newer trigger replaces it.
+- With an active turn, a trigger joins that turn only when a `queue-operation` record has appeared since the turn started. That record shows Claude Code queued the input into the running turn [obs shape, inf semantics]. Without it, accumulated coverage becomes unknown, because a turn that ended without a record (for example, a killed process) must not absorb the idle gap.
+- An abort while a start is pending discards the pending start without affecting coverage.
+- The turn key is `sha256("anton-turn-v1:" + session + ":" + uuid)[..24]` of the record that opened the turn, which satisfies `Turns::validate`.
 
 **Ending a turn.**
 - `system/turn_duration` completes the active turn at its own timestamp.
 - An abort ends the active turn as aborted at the abort record's timestamp.
+- A `turn_duration` with no active turn is ignored when it directly follows an abort. Otherwise it makes accumulated coverage unknown.
 
-**Unknown coverage.** Each of these makes accumulated coverage unknown through `Turns::unknown`, so it never fabricates or merges intervals:
-- a human prompt while a turn is active, unless a `queue-operation` record proves it was queued into that turn;
-- a `turn_duration` with no active turn, unless it directly follows an abort of the same turn;
-- turns opened by task notifications, peers or coordinators;
-- a start earlier than the previous end, or any end earlier than its start.
-
-The current or last valid interval stays available, as the spec allows.
+**Timestamps.**
+- Timestamps convert to Unix seconds by floor, for both bounds.
+- A start earlier than the previous end, or an end earlier than its start, makes accumulated coverage unknown through `Turns::unknown`.
+- The current or last valid interval stays available, as the spec allows.
 
 **Durations.** `turn_duration.durationMs` is never substituted. It is used only as a test cross-check.
+
+**State.** The finished intervals and total stay in the unchanged row-level `Turns` struct. Pending-start state lives in the `claude` block (D8), so `Turns` keeps its schema for older binaries.
 
 ### D8. Checkpoints
 
@@ -297,27 +309,29 @@ The current or last valid interval stays available, as the spec allows.
 - Keys are `sha256("anton-native-session-v1:claude:" + id)`, so no raw id is stored. The Codex key (`native.rs:693`) has no harness.
 - Offsets are bytes, never timestamps.
 
-**The `claude` block.**
-- Claude parser state lives in one required `claude: ClaudeCursor` block with `deny_unknown_fields`.
-- `Cursor` itself does not deny unknown fields (`native.rs:88-110`), so an older binary would silently drop loose fields.
-- A Claude-keyed row whose block is absent or invalid is discarded and replayed fresh. It is never resumed with zeroed sums.
+**Row-level fields.**
+- `Cursor::children`, `valid`, `compactions_valid`, `turns`, `fingerprint`, `seq` and `offset` keep their existing meaning for Claude rows. `turns` and `fingerprint` remain required, so checkpoint v1 is kept.
 
-**Block contents.** Every field below is required and bounded, and is revalidated on reuse:
+**The `claude` block.** All other Claude parser state lives in one required `claude: ClaudeCursor` block with `deny_unknown_fields`. `Cursor` itself does not deny unknown fields (`native.rs:88-110`), so an older binary would silently drop loose fields. A Claude-keyed row whose block is absent or invalid is discarded and replayed fresh, never resumed with zeroed sums.
 
-- the four cumulative sums (`input`, `output`, `cache_read`, `cache_creation`) as `u64` within 2^53;
+Every block field is required, bounded and revalidated on reuse:
+
+- the four cumulative sums (`input`, `output`, `cache_read`, `cache_creation`) as `u64` within 2^53, plus `totals_valid`;
 - the last-response partition and `context`;
-- `model`, as an allowlisted string of at most 80 characters;
+- `model`: at most 64 characters, using the `telemetry_view_at` character allowlist;
 - `usage_seq`;
 - the open group's id hash, counted contribution and stop state;
-- the validity flags `totals_valid`, `children_valid` and `compactions_valid`;
-- the compaction-iteration flag;
-- the boundary count.
+- the ring of at most 32 closed group id hashes;
+- the compaction boundary count and the compaction-iteration flag;
+- the pending turn start: key hash and Unix second, or none;
+- the abort-adjacency flag;
+- the Claude envelope classifier state (D3), or none.
 
-`turns` and `fingerprint` remain required at row level, so checkpoint v1 is kept.
+**Rediscovery.** D1 re-scans positive bindings too (D1 "Lookup").
 
 **Resume and replacement.**
-- A resume that appends to the same file keeps the binding, and dev/inode, header hash, tail hash and size or mtime still detect replacement.
-- A resume that writes a new file elsewhere produces two matches (D1), so the session is unknown.
+- A resume that appends to the same file keeps the binding. Dev/inode, header hash, tail hash and size or mtime still detect replacement.
+- A resume that writes a new file elsewhere produces two matches at the next re-scan, so the session becomes unknown.
 
 ### D9. Peers and compatibility
 
@@ -340,6 +354,7 @@ The current or last valid interval stays available, as the spec allows.
 
 - `harness-telemetry` "Hook-time structured usage enrichment" (the native Codex reader);
 - "Plugin-owned native enrichment" (Codex records; Codex collection without hooks);
+- "Scoped cumulative harness metrics" (the native Codex sample retention sentence and the "Intermittent Codex usage read" scenario; the context sentence is assigned to change 3);
 - "Bounded native outcome summaries";
 - "Native turn wall-clock summaries" (Codex event names);
 - "Private native replay checkpoints" (Claude block and key);
@@ -347,50 +362,89 @@ The current or last valid interval stays available, as the spec allows.
 
 ### D10. Claude reporter for window and rate limits (change 3)
 
-Codex needs no hook because its transcript carries the window. Pi has the installer-owned extension. For Claude, the only surface with `context_window_size`, `used_percentage` and live `rate_limits` is the statusLine input. Plugins cannot provide a statusLine. So change 3 adds an installer-owned reporter.
+**Why a reporter.**
+- Codex needs no hook because its transcript carries the window. Pi has the installer-owned extension.
+- For Claude, the only surface with `context_window_size` and live `rate_limits` is the statusLine input.
+- Plugins cannot provide a statusLine.
+- So change 3 adds an installer-owned reporter, run by `anton-runtime --install-hooks` beside the Pi extension.
+- The statusLine command is a subprocess that inherits Claude's environment, including `HERDR_*` and `CLAUDE_CONFIG_DIR`.
 
-**Installation.**
-- `anton-runtime --install-hooks` replaces the `statusLine` command in `~/.claude/settings.json` with a marker-owned wrapper.
-- A receipt records the user's original command verbatim.
-- The installer refuses symlinks and conflicts, and keeps every other key, hook and file.
-- Uninstall restores the original command only when the current value is still the marker-owned wrapper.
+**Settings value.** The `statusLine.command` in `~/.claude/settings.json` becomes a self-contained, marker-owned shell wrapper that embeds the user's original command, quoted with the existing `shell_quote`. The wrapper:
 
-**Wrapper behaviour.**
-- The wrapper passes stdin to the original command unchanged and prints its output unchanged.
-- It extracts only `context_window.{context_window_size, used_percentage}`, `rate_limits.{five_hour, seven_day}.{used_percentage, resets_at}` and `session_id`.
-- It reports them through `anton-runtime --report claude <pane>` and `pane.report_metadata`, as Pi does.
-- It reports only when a value changes, with a bounded rate.
-- Without `HERDR_ENV` and a pane it only runs the original command.
+1. reads stdin once;
+2. pipes it to the original command;
+3. writes and flushes the original command's output unchanged;
+4. only then, if the runtime path exists and is executable, hands the same bytes to `anton-runtime --report claude` in the background, with a total deadline and all errors ignored.
 
-**Collection.**
-- The collector accepts the reported window only when its `session_id` equals the bound Herdr id.
-- It then computes `context_percent` without the Codex reserve.
+A machine without the plugin, including another host receiving the dotfile, therefore still shows the user's statusLine.
 
-**Change 3 must also decide:**
-- the owned-installation contract for a mise-tracked file. Live files are authoritative, so the installer edits in place. It refuses only chezmoi-managed paths, as today.
-- the metadata v2 key budget;
-- the failure mode if the runtime is missing, where the original command must still run.
+**Installer and receipt.**
+- The receipt records the original command only so that uninstall can restore it.
+- Uninstall restores the original only while the value is still the marker-owned wrapper.
+- With no existing statusLine, the installer adds no wrapper.
+- Other keys and hooks are preserved.
+
+**Reporter.**
+- The reporter runs only with `HERDR_ENV` and a pane.
+- A private per-pane state file lets it return in microseconds when nothing changed.
+- Otherwise it sends at most one report per 30 seconds per pane.
+
+**Window channel.**
+- The window uses v2 pane metadata through the existing `window` slot in `telemetry.rs` `GROUPS`.
+- The report is bound by kind `id`, comparing the statusLine `session_id` with Herdr's `agent_session.value`. `reporter.rs` currently requires kind `path` and `harness == "pi"`.
+- It sends no `usage_seq`, totals, `event` lifecycle or `display_agent`.
+- The window is a session attribute, so it is refreshed at most every 60 seconds while rendering. This keeps it within the two-minute last-known rule.
+- The collector takes `window` only from a bound reporter sample and `context` only from replay (D4), and computes `context_percent` once, without the Codex reserve. `context_window.used_percentage` is not used.
+
+**Rate-limit channel.** Rate limits belong to an account, not a pane, and v2 pane metadata has no free keys (16 of 16 used, `reporter.rs`). So the reporter writes them to a private, owner-checked, atomic, bounded state file under the plugin state directory, keyed by the hashed account (D11). Change 4 consumes it. `spend_limit` is ignored.
+
+**Scope limits.**
+- Remote hosts have no plugin state. Remote Claude window and allowances are unavailable in this programme.
+- Sessions with a project or local `statusLine` override, or whose `CLAUDE_CONFIG_DIR` differs from the installed settings, stay without a window.
+
+**Change 3 gate.** `~/.claude/settings.json` is tracked in place by the user's dotfiles. AGENTS.md says installers refuse managed configuration. Change 3 starts by asking the user whether Anton may edit this tracked file, given that the wrapper then propagates to other hosts and degrades to the original command there. If the user declines, change 3 records a blocker and the dial stays unknown.
+
+**Change 3 deltas.**
+- `harness-telemetry` "Supplementary harness reports" (Pi-only and local-only wording).
+- "Scoped cumulative harness metrics": the Pi context API and Codex reserve sentences; context wording assigned here from D9.
+- "Minimal adapter lifecycle": one owned integration per harness.
+- AGENTS.md: the "Required Pi reporters" line and line 53.
 
 ### D11. Allowances and identity (change 4)
 
-The user accepted `~/.claude.json` as provider-owned state, not an authentication file, for identity and usage data. AGENTS.md is amended accordingly.
+The user accepted `~/.claude.json` as provider-owned state, not an authentication file, for identity and usage data. Change 4 amends AGENTS.md accordingly.
+
+**Account binding at report time.**
+- The reporter reads `oauthAccount.accountUuid` from its own config directory's `.claude.json`: `$CLAUDE_CONFIG_DIR/.claude.json`, or `~/.claude.json`. The read is bounded, owner-checked and no-follow.
+- It hashes the id with the prefix `observatory-claude-account-v1:`, so Claude keys cannot collide with Codex keys (`allowances.rs:63-66`), and stores only the hash.
+- The reporter refuses to attribute rate limits when its own environment names a non-subscription auth mode. It checks variable names only: `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`.
+- The collector accepts an observation only when its hash matches an explicit Claude account mapping. The mapping gains a provider field, and the user obtains the key from diagnostics, as for Codex.
 
 **Identity.**
-- Read only `oauthAccount.{accountUuid, emailAddress, organizationUuid}`, bounded, with owner and no-follow checks.
-- Show the email only after the existing hashed mapping check.
-- The account key is derived from a hash of `accountUuid`.
+- Collection reads `oauthAccount.{accountUuid, emailAddress}` only. `organizationUuid` is not needed.
+- The email is shown only after the existing hashed mapping check.
 
-**Windows.**
-- Use live `rate_limits` from the reporter (D10), bound to the account of the reporting process's config directory.
-- `cachedUsageUtilization` is a fallback only when its `accountUuid` matches. Its `fetchedAtMs` is the observation time, so the existing ten-minute freshness rule usually rejects it. That is honest, but means rows mostly come from the reporter.
-- Neither source carries a duration. Change 4 adds an `account-allowances` delta mapping the provider window names `five_hour` (18,000 s) and `seven_day` (604,800 s) to durations. The seven-day window is the single pacing window.
-- Scoped weekly limits are optional and are never pacing.
+**Source time.**
+- The statusLine payload has no sample time.
+- The reporter stamps `sampled_at` with render time only when `context_window.current_usage` or `rate_limits` differs from its previous report for that session. Otherwise it keeps the previous stamp.
+- So the existing ten-minute rule ages out idle accounts honestly.
+- `cachedUsageUtilization` is a fallback only when its `accountUuid` matches, with `fetchedAtMs` as its source time. It usually fails the ten-minute rule.
+
+**Durations and pacing.**
+- Neither source carries a duration. Change 4 maps the provider window names `five_hour` (18,000 s) and `seven_day` (604,800 s) to durations.
+- The seven-day window is the single pacing window.
+- Scoped weekly limits come only from the cache fallback, and are never pacing.
+
+**Change 4 deltas.** `account-allowances`:
+- "Account-bound allowance observation" (source type: reporter observation or provider state file, not only an RPC; fallback freshness);
+- "Fleet-bound account sources" (Claude is local-only);
+- "Provider-neutral allowance rows" (duration by window name for Claude, single pacing window);
+- any Codex-specific pacing wording.
 
 **Forbidden sources.**
-- the credential file and the OAuth usage endpoint;
-- `claude auth status`;
-- headless `/usage`;
-- transcript `credential_org` and `session_context`.
+- The credential file and the OAuth usage endpoint.
+- `claude auth status` and headless `/usage`.
+- Transcript `credential_org` and `session_context`.
 
 ## Risks / Trade-offs
 
