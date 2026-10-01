@@ -2,8 +2,8 @@
 //! interpreter, web feed, independent service or background observer installation.
 use anton_runtime::{
     Result, allowances, collection, common, config, fleet, hooks_install, identity,
-    model::{Agent, AllowanceRow},
-    native, navigation, packaging, reporter,
+    model::{Agent, AllowanceRow, Telemetry},
+    native, navigation, packaging, reporter, telemetry,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -154,6 +154,10 @@ struct State {
     allowances: Vec<AllowanceRow>,
     revision: u64,
     discovery: String,
+    /// D3: the last caught-up Claude sample of each peer agent, by host and
+    /// agent id, with its `session_generation`. Filled only from live peer
+    /// samples in this owner run and never checkpointed.
+    retained: BTreeMap<String, BTreeMap<String, (u64, Telemetry)>>,
 }
 impl State {
     fn new(config: Value) -> Self {
@@ -183,6 +187,7 @@ impl State {
             allowances: vec![],
             revision: 0,
             discovery: "disabled".into(),
+            retained: BTreeMap::new(),
         }
     }
     fn snapshot(&self) -> Value {
@@ -207,12 +212,12 @@ impl State {
                     return self.sample(id, Err("Invalid peer sample".into()));
                 }
                 let host = &self.config["hosts"][index];
-                let interval = if host
+                let local = host
                     .get("transport")
                     .and_then(Value::as_str)
                     .unwrap_or("local")
-                    == "local"
-                {
+                    == "local";
+                let interval = if local {
                     2.0
                 } else {
                     self.config
@@ -222,6 +227,9 @@ impl State {
                 };
                 for agent in &mut sample.agents {
                     agent.navigation = state.navigation.clone();
+                    if !local {
+                        revalidate(agent);
+                    }
                     let previous = if state.online {
                         state.agents.iter().find(|old| {
                             old.id == agent.id
@@ -251,13 +259,18 @@ impl State {
                     .error
                     .map(|_| "Herdr unavailable or incompatible".into());
                 state.sampled_at = Some(sample.sampled_at);
+                let rows = native::validate_cursors(&sample.cursors);
+                if local || !state.online {
+                    self.retained.remove(id);
+                } else {
+                    let claude = rows.values().filter(|v| v.is_claude()).count();
+                    let retained = self.retained.entry(id.to_owned()).or_default();
+                    retain_claude(retained, &mut sample.agents, claude);
+                }
                 state.agents = if state.online { sample.agents } else { vec![] };
                 state.protocol = Some(sample.protocol);
                 state.version = Some(sample.version);
-                cursors = Some(
-                    serde_json::to_value(native::validate_cursors(&sample.cursors))
-                        .unwrap_or_else(|_| json!({})),
-                );
+                cursors = Some(serde_json::to_value(rows).unwrap_or_else(|_| json!({})));
             }
             Err(error) => {
                 state.online = false;
@@ -272,6 +285,7 @@ impl State {
                     .into(),
                 );
                 state.agents.clear();
+                self.retained.remove(id);
             }
         }
         before.sampled_at = state.sampled_at;
@@ -280,6 +294,73 @@ impl State {
         }
         cursors
     }
+}
+/// Peer agents come from another binary, so their telemetry and turn timing
+/// pass the local views again; an invalid value becomes unknown (D9).
+fn revalidate(agent: &mut Agent) {
+    fn view<T: Serialize + serde::de::DeserializeOwned>(
+        value: Option<T>,
+        check: fn(&Value) -> Option<Value>,
+    ) -> Option<T> {
+        let value = serde_json::to_value(value?).ok()?;
+        serde_json::from_value(check(&value)?).ok()
+    }
+    let technical = &mut agent.technical;
+    technical.telemetry = view(technical.telemetry.take(), telemetry::telemetry_view);
+    technical.turn_timing = view(technical.turn_timing.take(), telemetry::turn_timing_view);
+}
+/// D3 local retention of one peer's Claude samples. A caught-up sample with
+/// known usage replaces the retained numeric subset; any other sample drops it.
+/// A sample without telemetry re-emits it for the same `session_generation`
+/// only while every bound Claude pane can still have a cursor row: `rows`
+/// counts the validated rows with a Claude block, and rows exist only for
+/// current panes, so a shortfall means a row may have been evicted.
+fn retain_claude(
+    retained: &mut BTreeMap<String, (u64, Telemetry)>,
+    agents: &mut [Agent],
+    rows: usize,
+) {
+    let bound =
+        |agent: &Agent| agent.harness == "claude" && agent.technical.session_generation.is_some();
+    let panes = agents.iter().filter(|v| bound(v)).count();
+    let mut next = BTreeMap::new();
+    for agent in agents.iter_mut().filter(|v| bound(v)) {
+        let generation = agent.technical.session_generation.unwrap();
+        match &agent.technical.telemetry {
+            Some(sample) => {
+                if sample.usage_source.as_deref() == Some("claude-transcript")
+                    && sample.usage_seq.is_some()
+                {
+                    let mut subset = sample.clone();
+                    subset.compactions = None;
+                    for field in [
+                        &mut subset.subagent_total,
+                        &mut subset.subagent_done,
+                        &mut subset.subagent_status_seq,
+                        &mut subset.subagent_running,
+                        &mut subset.subagent_completed,
+                        &mut subset.subagent_interrupted,
+                        &mut subset.subagent_failed,
+                        &mut subset.subagent_unknown,
+                    ] {
+                        *field = None;
+                    }
+                    next.insert(agent.id.clone(), (generation, subset));
+                }
+            }
+            None if rows >= panes => {
+                if let Some((generation, subset)) = retained
+                    .remove(&agent.id)
+                    .filter(|(old, _)| *old == generation)
+                {
+                    agent.technical.telemetry = Some(subset.clone());
+                    next.insert(agent.id.clone(), (generation, subset));
+                }
+            }
+            None => {}
+        }
+    }
+    *retained = next;
 }
 fn send(sender: &mpsc::SyncSender<Event>, mut event: Event, cancellation: &Cancellation) {
     loop {
@@ -509,6 +590,7 @@ fn reconcile(
     for id in &retired {
         hosts.remove(id).unwrap().stop();
         cursors.lock().unwrap().remove(id);
+        state.retained.remove(id);
     }
     let mut next = State::new(config.clone());
     for host in &mut next.hosts {
@@ -1246,6 +1328,134 @@ mod tests {
         state.sample("test", Ok(sample("working", common::now())));
         assert_eq!(state.hosts[0].agents[0].since, since);
         assert_eq!(state.revision, revision);
+    }
+    /// A caught-up peer Claude sample: totals, last response and children.
+    fn caught_up(seq: u64) -> Value {
+        json!({"seq":seq,"event":"session","phase":"ready","model":"claude-fixture-1","input":1201,"output_tokens":1,"cache_read":1200,"cache_write":0,"context":1201,"usage_seq":seq - 1,"total_input":3461,"total_output":26,"total_cache_read":3300,"total_cache_write":50,"total_uncached_input":111,"compactions":1,"subagent_total":2,"subagent_done":1,"subagent_status_seq":seq - 2,"subagent_running":0,"subagent_completed":1,"subagent_interrupted":0,"subagent_failed":0,"subagent_unknown":1,"usage_source":"claude-transcript"})
+    }
+    fn claude(generation: u64, telemetry: Value) -> Agent {
+        serde_json::from_value(json!({"id":"test:pane","host":"test","harness":"claude","status":"working","technical":{"session_generation":generation,"telemetry":telemetry}})).unwrap()
+    }
+    fn peer() -> State {
+        State::new(json!({"hosts":[{"id":"test","transport":"ssh","target":"fixture"}]}))
+    }
+    #[test]
+    fn peer_telemetry_and_turn_timing_are_revalidated() {
+        let mut state = peer();
+        let now = common::now();
+        let mut value = sample("working", now);
+        value.agents[0] = claude(7, caught_up((now as u64 + 60) * 1_000_000));
+        value.agents[0].technical.turn_timing = serde_json::from_value(json!({"active":true,"started_at_s":null,"observed_at_s":now,"complete":false,"last_duration_s":null,"total_finished_duration_s":null,"last_outcome":null,"freshness_seconds":12.0})).unwrap();
+        state.sample("test", Ok(value));
+        let technical = &state.hosts[0].agents[0].technical;
+        assert!(technical.telemetry.is_none() && technical.turn_timing.is_none());
+        // Valid values survive, and freshness is still set by the owner.
+        let mut value = sample("working", now);
+        value.agents[0] = claude(7, caught_up((now as u64 - 60) * 1_000_000));
+        value.agents[0].technical.turn_timing = serde_json::from_value(json!({"active":false,"started_at_s":null,"observed_at_s":now,"complete":true,"last_duration_s":2,"total_finished_duration_s":7,"last_outcome":"completed","freshness_seconds":12.0})).unwrap();
+        state.sample("test", Ok(value));
+        let technical = &state.hosts[0].agents[0].technical;
+        assert_eq!(
+            technical.telemetry.as_ref().unwrap().total_input,
+            Some(3461)
+        );
+        let timing = technical.turn_timing.as_ref().unwrap();
+        assert_eq!(
+            (timing.total_finished_duration_s, timing.freshness_seconds),
+            (Some(7), 15.0)
+        );
+    }
+    #[test]
+    fn claude_retention_replaces_reemits_and_drops() {
+        let seq = 1_767_225_623_250_000;
+        let telemetry = |agents: &[Agent]| agents[0].technical.telemetry.clone();
+        let mut retained = BTreeMap::new();
+        let mut agents = vec![claude(7, caught_up(seq))];
+        retain_claude(&mut retained, &mut agents, 1);
+        let mut subset = telemetry(&agents).unwrap();
+        subset.compactions = None;
+        (
+            subset.subagent_total,
+            subset.subagent_done,
+            subset.subagent_status_seq,
+        ) = (None, None, None);
+        (subset.subagent_running, subset.subagent_completed) = (None, None);
+        (
+            subset.subagent_interrupted,
+            subset.subagent_failed,
+            subset.subagent_unknown,
+        ) = (None, None, None);
+        // An incomplete pass: no telemetry, a cursor row for every pane.
+        for _ in 0..2 {
+            let mut agents = vec![claude(7, Value::Null)];
+            retain_claude(&mut retained, &mut agents, 1);
+            assert_eq!(telemetry(&agents).as_ref(), Some(&subset));
+        }
+        // Fewer Claude rows than bound panes: a row may be evicted, so drop.
+        let mut agents = vec![claude(7, Value::Null), claude(8, Value::Null)];
+        agents[1].id = "test:other".into();
+        retain_claude(&mut retained, &mut agents, 1);
+        assert!(agents.iter().all(|v| v.technical.telemetry.is_none()) && retained.is_empty());
+        // A generation change, a missing pane, unknown totals, another source.
+        let caught = |retained: &mut BTreeMap<_, _>| {
+            let mut agents = vec![claude(7, caught_up(seq))];
+            retain_claude(retained, &mut agents, 1);
+            assert_eq!(retained.len(), 1);
+        };
+        caught(&mut retained);
+        let mut agents = vec![claude(8, Value::Null)];
+        retain_claude(&mut retained, &mut agents, 1);
+        assert!(telemetry(&agents).is_none() && retained.is_empty());
+        caught(&mut retained);
+        retain_claude(&mut retained, &mut [], 0);
+        assert!(retained.is_empty());
+        for (field, value) in [
+            ("usage_seq", Value::Null),
+            ("usage_source", json!("pi-extension")),
+        ] {
+            caught(&mut retained);
+            let mut sample = caught_up(seq);
+            sample[field] = value;
+            let mut agents = vec![claude(7, sample)];
+            retain_claude(&mut retained, &mut agents, 1);
+            assert!(retained.is_empty(), "{field}");
+            let mut agents = vec![claude(7, Value::Null)];
+            retain_claude(&mut retained, &mut agents, 1);
+            assert!(telemetry(&agents).is_none(), "{field}");
+        }
+        // A harness that is not Claude is never retained.
+        let mut agents = vec![claude(7, caught_up(seq))];
+        agents[0].harness = "codex".into();
+        retain_claude(&mut retained, &mut agents, 1);
+        assert!(retained.is_empty());
+    }
+    #[test]
+    fn peer_retention_is_dropped_without_rows_on_failure_and_for_local_hosts() {
+        let seq = (common::now() as u64 - 60) * 1_000_000;
+        let with = |telemetry: Value| {
+            let mut value = sample("working", common::now());
+            value.agents[0] = claude(7, telemetry);
+            value
+        };
+        let mut state = peer();
+        state.sample("test", Ok(with(caught_up(seq))));
+        assert_eq!(state.retained["test"].len(), 1);
+        // No cursor row came back: drop instead of re-emitting.
+        state.sample("test", Ok(with(Value::Null)));
+        assert!(state.hosts[0].agents[0].technical.telemetry.is_none());
+        assert!(state.retained["test"].is_empty());
+        state.sample("test", Ok(with(caught_up(seq))));
+        state.sample("test", Err("unavailable".into()));
+        assert!(!state.retained.contains_key("test"));
+        state.sample("test", Ok(with(caught_up(seq))));
+        let mut offline = with(Value::Null);
+        offline.error = Some("down".into());
+        state.sample("test", Ok(offline));
+        assert!(!state.retained.contains_key("test"));
+        // Local hosts keep their own follower retention.
+        let mut local = self::state();
+        local.sample("test", Ok(with(caught_up(seq))));
+        assert!(local.retained.is_empty());
     }
     #[test]
     fn failed_collection_removes_old_agents() {

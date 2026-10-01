@@ -186,6 +186,10 @@ impl Cursor {
             claude: self.claude?,
         })
     }
+    /// Whether this is a Claude row. A validated Claude row always has its block.
+    pub fn is_claude(&self) -> bool {
+        self.claude.is_some()
+    }
     fn invalid(&mut self) {
         self.valid = false;
         self.compactions_valid = false;
