@@ -38,7 +38,7 @@ fn open_session(path: &Path) -> Result<File> {
     }
     common::open_owned(path, false, false)
 }
-fn line<R: BufRead>(stream: &mut R, limit: usize) -> std::io::Result<Vec<u8>> {
+pub(crate) fn line<R: BufRead>(stream: &mut R, limit: usize) -> std::io::Result<Vec<u8>> {
     let mut result = Vec::new();
     while result.len() < limit {
         let chunk = stream.fill_buf()?;
