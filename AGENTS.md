@@ -69,7 +69,7 @@ not add features or compatibility work to the retired web application.
 - Turn timing uses validated saved Unix-second starts/completions/aborts, includes
   waits inside turns, excludes idle gaps and counts each interval once. Never
   substitute `duration_ms` or `durationMs`. Claude Code joins queued input to a
-  turn only with queue evidence; silent turn ends make coverage unknown.
+  turn only with dequeue or remove evidence; silent turn ends make coverage unknown.
   Incomplete accumulated coverage stays unknown.
 - Native metadata v2 uses immutable four numeric groups plus named provenance,
   child/completion/outcome fields within 16 report keys and 80 characters/value.
