@@ -127,13 +127,13 @@ the shapes below.
 **Goals:**
 
 - Record the evidence, the direction for each change, and the user gates.
+- Give each Codex metric a Claude source, or a reasoned "unavailable".
 - Give change 2 a starting design (D1 to D9) and a fixture inventory built from eight review rounds.
 - Fix the direction, constraints, user gates and spec deltas for changes 3 and 4.
 
 **Scope of authority.**
 - D1 to D9 are change 2's starting design. Change 2's own design restates and refines them, and its synthetic fixtures and implementation review are authoritative where they differ.
 - D10 and D11 are direction only and depend on the change 3 and change 4 gates. The option-A wrapper detail in D10 is provisional.
-- Give each Codex metric a Claude source, or a reasoned "unavailable".
 
 **Non-Goals:**
 
@@ -146,8 +146,8 @@ Each change is merged before the next starts.
 
 1. `research-claude-code-parity`: this change.
 2. `add-claude-thread-telemetry`: Codex-equivalent native transcript replay for local and peer Claude threads (D1 to D9).
-3. `add-claude-status-reporter`: Pi-equivalent installer-owned Claude reporter for the context window and live rate limits (D10).
-4. `add-claude-allowances-identity`: Claude allowance rows and verified identity (D11).
+3. `add-claude-status-reporter`: Pi-equivalent installer-owned Claude reporter for the context window (D10).
+4. `add-claude-allowances-identity`: extends the reporter with live rate limits, plus allowance rows and verified identity (D11).
 
 ## Metric mapping
 
@@ -185,6 +185,7 @@ Anton fields are `technical.telemetry.*` and `technical.turn_timing.*` (`model.r
   1. End of file within the bound with no `session_id`: not a successor.
   2. Bound exhausted first: unknown (fail closed).
   3. First `session_id` equals the bound id: unknown.
+  4. First `session_id` is any other id: not a successor.
 
   A negative result is not cached while the candidate is still growing. The fixture's first `session_id` record starts after 16 records and more than 64 KiB. Change 2 adds a synthetic fixture.
 - Positive bindings are re-scanned every 60 seconds too, unlike today's cache, which re-discovers only missing paths (`native.rs:698-711`). A second match reverts the session to unknown.
@@ -408,7 +409,7 @@ Every block field is required, bounded and revalidated on reuse:
 - "Private native replay checkpoints" (the Claude block and key, explicitly permitting the bounded allowlisted `model` string);
 - AGENTS.md lines 18, 46 and 57.
 
-### D10. Claude reporter for window and rate limits (change 3)
+### D10. Claude reporter for the context window (change 3; rate limits in change 4)
 
 **Why a reporter.**
 - Codex needs no hook, because its transcript carries the window. Pi has the installer-owned extension.
@@ -460,7 +461,7 @@ A machine without the plugin, including another host receiving the dotfile, ther
 - Remote hosts have no plugin state. Remote Claude window and allowances are unavailable in this programme.
 - These sessions stay without a window: `CLAUDE_CODE_SHELL_PREFIX` set (the reporter exits, because `$PPID` would be the prefix process), a managed-policy `statusLine`, a project or local `statusLine` override, a `CLAUDE_CONFIG_DIR` that differs from the installed settings, an untrusted workspace, or `disableAllHooks`.
 
-**Change 3 gate.** The user first chooses surface A or B. `~/.claude/settings.json` is tracked in place by the user's dotfiles, and AGENTS.md says installers refuse managed configuration. `managed()` detects only chezmoi.
+**Change 3 gate.** The user first confirms the installer-owned reporter direction itself. Today's harness hooks are set up by hand, not by an installer. The user then chooses surface A or B. `~/.claude/settings.json` is tracked in place by the user's dotfiles, and AGENTS.md says installers refuse managed configuration. `managed()` detects only chezmoi.
 
 Change 3 starts by asking the user whether Anton may edit this tracked file, given that the wrapper then propagates to other hosts and degrades to the original command there. The answer is enforced in code by an explicit recorded consent flag, not left as a procedural step. If the user declines, change 3 records a blocker and the dial stays unknown.
 
@@ -521,6 +522,7 @@ The user accepted `~/.claude.json` as provider-owned state, not an authenticatio
 - any Codex-specific pacing wording, and the Codex-only Purpose;
 - `omarchy-companion`: "Native read-only identity RPCs SHALL be matched against existing account mappings" gains the Claude provider-state source, and "Account refresh independent of agents" gains the Claude exception;
 - AGENTS.md: "Allowances use explicit account mappings and source identity, independent of thread activity" gains the Claude exception;
+- AGENTS.md line 22 ("Account observations use native read-only Codex account RPCs") gains the Claude provider-state and reporter sources;
 - AGENTS.md line 16 and `harness-telemetry` "Supplementary harness reports": the Claude reporter may read the allowlisted `~/.claude.json` paths and write its private account state file;
 - the source-identity clause of "Account-bound allowance observation" and AGENTS.md line 73. For Claude, the account authority is attribution inferred from `~/.claude.json` at report time. The change 4 user gate accepts this explicitly.
 
