@@ -1856,3 +1856,46 @@ fn claude_peer_retention_follows_invalid_totals_unknown_samples_and_missing_rows
     assert!(step("row-returns", &incomplete, &rows).is_null());
     stream.close();
 }
+
+#[test]
+fn claude_peer_sample_is_not_reemitted_after_a_request_without_its_row() {
+    let f = Fixture::new();
+    f.claude(&claude_transcript());
+    let probe = f.probe(&json!({}));
+    let caught = probe["result"]["agents"][0]["technical"]["telemetry"].clone();
+    // A partial trailing line: a peer replaying from the header does not catch
+    // up, publishes nothing and returns a fresh row.
+    let mut file = fs::OpenOptions::new()
+        .append(true)
+        .open(f.transcript("entry-a"))
+        .unwrap();
+    file.write_all(b"{\"type\":").unwrap();
+    let restarted = f.probe(&json!({}));
+    assert!(restarted["result"]["agents"][0]["technical"]["telemetry"].is_null());
+    let rows = restarted["result"]["cursors"].as_object().unwrap();
+    assert!(rows.len() == 1 && rows.values().all(|v| v["caught_up"] == false));
+    // SSH answers from a stub while `stub-peer` exists, then from the real peer.
+    // The stub's caught-up sample comes without its row, as after eviction, so
+    // the next request carries no row.
+    let mut evicted = probe.clone();
+    evicted["result"]["sampled_at"] = json!(common::now());
+    evicted["result"]["agents"][0]["title"] = json!("evicted");
+    evicted["result"]["cursors"] = json!({});
+    write(
+        &f.dir.join("remote-sample.json"),
+        evicted.to_string(),
+        0o600,
+    );
+    let flag = f.dir.join("stub-peer");
+    write(&flag, "", 0o600);
+    write(&f.dir.join("bin/ssh"),b"#!/bin/sh\nfor arg do last=$arg; done\nbase=\"$ANTON_TEST_PEER/..\"\nif [ -e \"$base/stub-peer\" ]; then\n case $last in\n  *--allowances-probe*) cat > /dev/null; printf '[]\\n';;\n  *--probe*) cat > /dev/null; cat \"$base/remote-sample.json\";;\n  *) exit 91;;\n esac\n exit\nfi\ncase $last in\n *--allowances-probe) mode=--allowances-probe;;\n *--identity-probe) mode=--identity-probe;;\n *--probe*) mode=--probe;;\n *) exit 99;;\nesac\nexec \"$ANTON_TEST_BINARY\" --root \"$ANTON_TEST_PEER\" --state \"$ANTON_TEST_PEER_STATE\" \"$mode\"\n",0o755);
+    let mut stream = Stream::new(&f);
+    let stubbed = stream.until(|v| v["hosts"][1]["agents"][0]["title"] == "evicted");
+    assert_eq!(*telemetry(&stubbed, 1), caught);
+    fs::remove_file(&flag).unwrap();
+    // The real peer restarts without catching up; nothing proves the file is
+    // the one the retained sample measured, so it is not re-emitted.
+    let real = stream.until(|v| pane(v, 1) && v["hosts"][1]["agents"][0]["title"] != "evicted");
+    assert!(telemetry(&real, 1).is_null(), "{}", telemetry(&real, 1));
+    stream.close();
+}

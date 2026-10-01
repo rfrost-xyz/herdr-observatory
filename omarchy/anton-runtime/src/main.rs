@@ -140,6 +140,10 @@ struct Sample {
     protocol: Option<u64>,
     version: String,
     cursors: Value,
+    /// The validated Claude cursor rows the request for this sample carried,
+    /// set by the host worker; unknown counts as none.
+    #[serde(skip)]
+    requested: Option<usize>,
 }
 enum Event {
     Stop,
@@ -264,8 +268,9 @@ impl State {
                     self.retained.remove(id);
                 } else {
                     let claude = rows.values().filter(|v| v.is_claude()).count();
+                    let requested = sample.requested.unwrap_or(0);
                     let retained = self.retained.entry(id.to_owned()).or_default();
-                    retain_claude(retained, &mut sample.agents, claude);
+                    retain_claude(retained, &mut sample.agents, claude, requested);
                 }
                 state.agents = if state.online { sample.agents } else { vec![] };
                 state.protocol = Some(sample.protocol);
@@ -309,16 +314,20 @@ fn revalidate(agent: &mut Agent) {
     technical.telemetry = view(technical.telemetry.take(), telemetry::telemetry_view);
     technical.turn_timing = view(technical.turn_timing.take(), telemetry::turn_timing_view);
 }
-/// D3 local retention of one peer's Claude samples. A caught-up sample with
-/// known usage replaces the retained numeric subset; any other sample drops it.
-/// A sample without telemetry re-emits it for the same `session_generation`
-/// only while every bound Claude pane can still have a cursor row: `rows`
-/// counts the validated rows with a Claude block, and rows exist only for
-/// current panes, so a shortfall means a row may have been evicted.
+/// D3 local retention of one peer's Claude samples. `rows` counts the
+/// validated rows with a Claude block in the response and `requested` those in
+/// the request; rows exist only for current panes, so a shortfall means a row
+/// may have been evicted. A caught-up sample with known usage replaces the
+/// retained numeric subset only when the response has a row for every bound
+/// pane; any other sample drops it. A sample without telemetry re-emits it for
+/// the same `session_generation` only when the request and the response both
+/// had a row for every bound pane: without the request row the peer replayed
+/// from the header and could not detect a replaced file.
 fn retain_claude(
     retained: &mut BTreeMap<String, (u64, Telemetry)>,
     agents: &mut [Agent],
     rows: usize,
+    requested: usize,
 ) {
     let bound =
         |agent: &Agent| agent.harness == "claude" && agent.technical.session_generation.is_some();
@@ -330,6 +339,7 @@ fn retain_claude(
             Some(sample) => {
                 if sample.usage_source.as_deref() == Some("claude-transcript")
                     && sample.usage_seq.is_some()
+                    && rows >= panes
                 {
                     let mut subset = sample.clone();
                     subset.compactions = None;
@@ -348,7 +358,7 @@ fn retain_claude(
                     next.insert(agent.id.clone(), (generation, subset));
                 }
             }
-            None if rows >= panes => {
+            None if rows.min(requested) >= panes => {
                 if let Some((generation, subset)) = retained
                     .remove(&agent.id)
                     .filter(|(old, _)| *old == generation)
@@ -487,12 +497,20 @@ fn host_worker(
                 .get(&id)
                 .cloned()
                 .unwrap_or(json!({}));
+            let requested = native::validate_cursors(&previous)
+                .values()
+                .filter(|v| v.is_claude())
+                .count();
             let result = if spec["transport"] == "ssh" {
                 collection::remote(&spec, &previous, Some(&stop.flag))
             } else {
                 collection::local(&spec, &previous, &mut follower, Some(&stop.flag))
             }
-            .and_then(|v| serde_json::from_value(v).map_err(|_| "Invalid native sample".into()));
+            .and_then(|v| serde_json::from_value(v).map_err(|_| "Invalid native sample".into()))
+            .map(|mut sample: Sample| {
+                sample.requested = Some(requested);
+                sample
+            });
             send(&sender, Event::Host(id.clone(), generation, result), &stop);
             stop.wait(Duration::from_secs_f64(interval));
         }
@@ -1371,7 +1389,7 @@ mod tests {
         let telemetry = |agents: &[Agent]| agents[0].technical.telemetry.clone();
         let mut retained = BTreeMap::new();
         let mut agents = vec![claude(7, caught_up(seq))];
-        retain_claude(&mut retained, &mut agents, 1);
+        retain_claude(&mut retained, &mut agents, 1, 1);
         let mut subset = telemetry(&agents).unwrap();
         subset.compactions = None;
         (
@@ -1388,26 +1406,26 @@ mod tests {
         // An incomplete pass: no telemetry, a cursor row for every pane.
         for _ in 0..2 {
             let mut agents = vec![claude(7, Value::Null)];
-            retain_claude(&mut retained, &mut agents, 1);
+            retain_claude(&mut retained, &mut agents, 1, 1);
             assert_eq!(telemetry(&agents).as_ref(), Some(&subset));
         }
         // Fewer Claude rows than bound panes: a row may be evicted, so drop.
         let mut agents = vec![claude(7, Value::Null), claude(8, Value::Null)];
         agents[1].id = "test:other".into();
-        retain_claude(&mut retained, &mut agents, 1);
+        retain_claude(&mut retained, &mut agents, 1, 1);
         assert!(agents.iter().all(|v| v.technical.telemetry.is_none()) && retained.is_empty());
         // A generation change, a missing pane, unknown totals, another source.
         let caught = |retained: &mut BTreeMap<_, _>| {
             let mut agents = vec![claude(7, caught_up(seq))];
-            retain_claude(retained, &mut agents, 1);
+            retain_claude(retained, &mut agents, 1, 1);
             assert_eq!(retained.len(), 1);
         };
         caught(&mut retained);
         let mut agents = vec![claude(8, Value::Null)];
-        retain_claude(&mut retained, &mut agents, 1);
+        retain_claude(&mut retained, &mut agents, 1, 1);
         assert!(telemetry(&agents).is_none() && retained.is_empty());
         caught(&mut retained);
-        retain_claude(&mut retained, &mut [], 0);
+        retain_claude(&mut retained, &mut [], 0, 0);
         assert!(retained.is_empty());
         for (field, value) in [
             ("usage_seq", Value::Null),
@@ -1417,17 +1435,41 @@ mod tests {
             let mut sample = caught_up(seq);
             sample[field] = value;
             let mut agents = vec![claude(7, sample)];
-            retain_claude(&mut retained, &mut agents, 1);
+            retain_claude(&mut retained, &mut agents, 1, 1);
             assert!(retained.is_empty(), "{field}");
             let mut agents = vec![claude(7, Value::Null)];
-            retain_claude(&mut retained, &mut agents, 1);
+            retain_claude(&mut retained, &mut agents, 1, 1);
             assert!(telemetry(&agents).is_none(), "{field}");
         }
         // A harness that is not Claude is never retained.
         let mut agents = vec![claude(7, caught_up(seq))];
         agents[0].harness = "codex".into();
-        retain_claude(&mut retained, &mut agents, 1);
+        retain_claude(&mut retained, &mut agents, 1, 1);
         assert!(retained.is_empty());
+    }
+    #[test]
+    fn claude_retention_needs_a_row_for_every_pane_in_response_and_request() {
+        let seq = 1_767_225_623_250_000;
+        let mut retained = BTreeMap::new();
+        // A caught-up sample is shown, but a response short of rows is not
+        // stored: its row may have been evicted.
+        let mut agents = vec![claude(7, caught_up(seq))];
+        retain_claude(&mut retained, &mut agents, 0, 1);
+        assert!(agents[0].technical.telemetry.is_some() && retained.is_empty());
+        // A caught-up replay after a request without the row is a measurement.
+        retain_claude(&mut retained, &mut [claude(7, caught_up(seq))], 1, 0);
+        assert_eq!(retained.len(), 1);
+        // A request without the row made the peer replay from the header, so
+        // an incomplete pass is not covered by the retained sample: dropped.
+        let mut agents = vec![claude(7, Value::Null)];
+        retain_claude(&mut retained, &mut agents, 1, 0);
+        assert!(agents[0].technical.telemetry.is_none() && retained.is_empty());
+    }
+    /// A synthetic caught-up Claude cursor row, as a peer returns it.
+    fn claude_row() -> Value {
+        let mut row: Value = serde_json::from_str(r#"{"caught_up":true,"children":{},"claude":{"abort_adjacent":false,"ambiguous":false,"cache_creation":0,"cache_read":0,"classifier":null,"closed":[],"compaction_iteration":false,"compactions":0,"coverage_seq":1767225612250000,"input":0,"last":null,"last_valid":true,"open":{"id":"3a0de37932e8b197","response":{"model":"claude-fixture-1","usage":[1,1,1,1]},"stop":2,"tainted":false,"usage":[1,1,1,1]},"output":0,"pending_start":null,"queued_since_start":false,"totals_valid":true,"usage_seq":1767225611250000},"compaction_markers":0,"compaction_summaries":0,"compactions_valid":true,"file":[1,2],"fingerprint":{"header":"47b6f0a22fd24b24fe54e82f5ba3bb0b310819634f922c08a6c6e72ba5e132c5","mtime_us":1,"size":654,"tail":"ffc6d285d1377c43ed044721bbe51bdbb916ee8891654de6362a784d098d80e5"},"offset":654,"seq":0,"skipping":false,"turns":{"active":null,"current_known":true,"finished":{"4c318c012df919977122e3ca":[1767225610,1767225612,"completed"]},"last":"4c318c012df919977122e3ca","last_duration":2,"last_end":1767225612,"last_outcome":"completed","start":null,"supported":true,"total":2,"valid":true},"valid":true}"#).unwrap();
+        row["at"] = json!(common::now());
+        json!({ common::sha256(b"claude-row"): row })
     }
     #[test]
     fn peer_retention_is_dropped_without_rows_on_failure_and_for_local_hosts() {
@@ -1435,13 +1477,19 @@ mod tests {
         let with = |telemetry: Value| {
             let mut value = sample("working", common::now());
             value.agents[0] = claude(7, telemetry);
+            value.cursors = claude_row();
+            value
+        };
+        let rowless = |telemetry: Value| {
+            let mut value = with(telemetry);
+            value.cursors = json!({});
             value
         };
         let mut state = peer();
         state.sample("test", Ok(with(caught_up(seq))));
         assert_eq!(state.retained["test"].len(), 1);
         // No cursor row came back: drop instead of re-emitting.
-        state.sample("test", Ok(with(Value::Null)));
+        state.sample("test", Ok(rowless(Value::Null)));
         assert!(state.hosts[0].agents[0].technical.telemetry.is_none());
         assert!(state.retained["test"].is_empty());
         state.sample("test", Ok(with(caught_up(seq))));
