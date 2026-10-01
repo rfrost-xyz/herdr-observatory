@@ -96,6 +96,13 @@ Round 5, on `4f2b02d`, found 3 blocking and 9 other findings, all addressed:
 
 The reviewer's D7 replay kept valid coverage in 18 of 18 files (114 turns, 0 orphans, 0 overlaps, 37 queued triggers joined). Discovery used 84 entries of the 8,192 budget.
 
+Round 6, on `8b5c5dc`, found 1 blocking and 5 other findings, all addressed:
+
+- **Plugin function hooks.** The blocking finding was that plugin function hooks (`session.measure`) are a second surface carrying the window and rate limits. It is verified in the binary: `context` is `{tokens, window, percent}` and `rateLimits` lists `{kind, percentUsed, resetsAt}`. It is recorded, and the A/B choice moves to the change 3 gate.
+- **D3:** a precise peer re-emit trigger and subset.
+- **D7:** the wrapper tag table.
+- **D10:** process identity and expiry in the change key, plus mode preservation and compare-before-rename for the settings edit.
+
 ## User decisions (2026-10-01)
 
 - `~/.claude.json` is accepted as provider-owned state, not an authentication file, for Claude identity and usage data.

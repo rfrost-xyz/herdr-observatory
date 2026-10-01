@@ -98,8 +98,14 @@ the shapes below.
   - PostModelSwitch carries `from_model`, `to_model` and `context_tokens`.
   - SubagentStop carries `agent_transcript_path`.
   - PostCompact carries `trigger`.
-  - **No hook payload carries a context window size or rate limits.**
+  - **No command-hook payload carries a context window size or rate limits.**
   - Hooks can come from settings files or plugins.
+- **Plugin function hooks** [bin, early access, not run]: installed plugins can ship hooks modules subscribing to typed events.
+  - `session.measure` carries `{context, rateLimits, cost, changed}`.
+  - `context` is `{tokens, window, percent}`.
+  - `rateLimits` is a list of `{kind, percentUsed, resetsAt}` for `five_hour` and `seven_day`, plus `spend_limit` in gateway mode.
+  - `changed` names which of these changed. The event fires after a turn that changed something, or when rate limits change.
+  - Loading is gated. Plugin hooks modules load only with `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` in the Claude process environment or a server-side rollout. The API is internal and liable to change.
 - **Current hook ownership** [obs, repo]:
   - **Herdr integration**: Herdr's integration (`herdr integration status`) owns its SessionStart hook for Claude, Codex and Pi. The hook reports the session id.
   - **User badge hooks**: Claude `settings.json` and Codex `notify` also run a user-owned status badge script that no installer manages.
@@ -211,7 +217,7 @@ Anton fields are `technical.telemetry.*` and `technical.turn_timing.*` (`model.r
 - The whole Claude numeric sample is published only when the cursor has `caught_up && !skipping`. That sample is the totals, last-response values, `context`, `model` and `usage_seq`. This follows the gating Codex applies to turns, children and compactions (`native.rs:764, 783, 815`).
 - Each pass reads at most `TAIL` bytes and resumes from the checkpoint, so a cold multi-megabyte transcript takes several passes before values are known.
 - `NativeTelemetry` keeps the last published Claude sample in memory per key. A pass that is not caught up re-emits it unchanged, with its original `usage_seq`. A binding change or file replacement (dev/inode, header or tail mismatch) drops it. Growth does not. This is the retention the spec requires for an intermittent read on local hosts.
-- Peers start a fresh `NativeTelemetry` on every probe (`main.rs:1026`), so peer threads are retained locally. `State::sample` keeps the last validated Claude telemetry per agent id and `session_generation`, filled only from live peer samples in this owner run. It is re-emitted only when a peer sample for the same binding carries no numeric telemetry, and dropped when the generation changes or the pane disappears. It is never stored in the checkpoint, because a loaded checkpoint is never a current measurement. Change 2 adds a peer fixture for a pass that does not catch up.
+- Peers start a fresh `NativeTelemetry` on every probe (`main.rs:1026`), so peer threads are retained locally. `State::sample` keeps the last validated Claude telemetry per agent id and `session_generation`, filled only from live peer samples in this owner run. It is re-emitted only when the peer agent's `technical.telemetry` is absent, which is the not-caught-up case, and dropped when the generation changes or the pane disappears. It retains the same numeric subset as the local rule (totals, last-response values, `context`, `model`, `usage_seq`), with child fields null. A caught-up peer sample with null totals replaces it, as on a local host. It is never stored in the checkpoint, because a loaded checkpoint is never a current measurement. Change 2 adds peer fixtures for a pass that does not catch up and for a caught-up pass with invalid totals.
 - An unparseable line of 64 KiB or less calls `invalid()`, which for Claude rows also clears `totals_valid`.
 
 **`usage_seq`.**
@@ -287,6 +293,16 @@ Anton fields are `technical.telemetry.*` and `technical.turn_timing.*` (`model.r
 2. **Turn trigger by origin:** a user record whose `origin.kind` is `human`, `task-notification`, `peer` or `coordinator`, regardless of `isMeta`; or a `queued_command` attachment with `commandMode: "task-notification"`.
 3. **Ignored:** `isMeta`, `toolUseResult`, `isCompactSummary`, `queued_command` attachments with `commandMode: "prompt"` (queued human input, observed only inside turns), local-command output, bash-mode records, and `system/compact_boundary` and `microcompact_boundary`. These never start or end turns.
 4. **Turn trigger by shape:** a remaining user text record without `origin`, or a slash-command echo.
+
+Wrapper tags are matched on the leading tag of user text:
+
+| Role | Tags |
+|---|---|
+| Slash-command echo (rule 4) | `command-name` |
+| Local-command output (rule 3) | `local-command-stdout`, `local-command-stderr` |
+| Bash mode (rule 3) | `bash-input`, `bash-stdout`, `bash-stderr` |
+
+`local-command-caveat` is ignored through `isMeta`. Any other leading tag falls to rule 4. Change 2 adds a synthetic fixture for each tag.
 
 **Turn triggers.**
 - With no active turn, a trigger opens a pending start. It becomes the turn start only when an assistant record follows before the next trigger, including a `<synthetic>` error record, which confirms a start although D3 ignores its usage. Otherwise the newer trigger replaces it.
@@ -374,11 +390,13 @@ Every block field is required, bounded and revalidated on reuse:
 ### D10. Claude reporter for window and rate limits (change 3)
 
 **Why a reporter.**
-- Codex needs no hook because its transcript carries the window. Pi has the installer-owned extension.
-- For Claude, the only surface with `context_window_size` and live `rate_limits` is the statusLine input.
-- Plugins cannot provide a statusLine.
-- So change 3 adds an installer-owned reporter, run by `anton-runtime --install-hooks` beside the Pi extension.
-- The statusLine command is a subprocess that inherits Claude's environment, including `HERDR_*` and `CLAUDE_CONFIG_DIR`.
+- Codex needs no hook, because its transcript carries the window. Pi has the installer-owned extension.
+- For Claude, two surfaces carry the window and live rate limits:
+  - **A. The statusLine input.** It is stable and documented, but it is a single settings slot, which plugins cannot provide.
+  - **B. The plugin function-hook event `session.measure`.** It is plugin-owned, with no statusLine edit, and has change semantics built in. However, it is early access and an internal API. It needs `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` in the Claude environment (a shell profile, or the settings `env` key), and the plugin must be installed and enabled, which Claude Code records in settings `enabledPlugins`.
+- Both surfaces touch user-level configuration. Change 3 puts this choice to the user at its gate (below).
+- The rest of this section details A, because it is the stable surface. If the user picks B, change 3 keeps the same reporter wire, binding, model-match and consent rules, replacing only the trigger and installation.
+- The statusLine command is a subprocess that inherits Claude's environment, including `HERDR_*` and `CLAUDE_CONFIG_DIR`. A function hook runs in-process with the same environment.
 
 **Settings value.** The `statusLine.command` in `~/.claude/settings.json` becomes a self-contained, marker-owned shell wrapper that embeds the user's original command, quoted with the existing `shell_quote`. The wrapper:
 
@@ -398,11 +416,13 @@ A machine without the plugin, including another host receiving the dotfile, ther
 - Reinstall over Anton's own wrapper leaves it alone and never wraps twice.
 - A marker wrapper with no local receipt (for example, one arriving by dotfiles) is a conflict, and so is any other statusLine conflict. The installer skips only the Claude reporter, so the dial stays unknown, and leaves the Pi extension and plugin install unaffected.
 - With no existing statusLine, the installer adds no wrapper.
-- Other keys and hooks are preserved byte for byte. The edit targets only the `statusLine.command` value. Re-serialising through `serde_json::Value` would sort keys, because `preserve_order` is unavailable offline. A fixture compares every byte outside that value across install and uninstall.
+- Other keys and hooks are preserved byte for byte, so the edit targets only the `statusLine.command` value. Re-serialising would rewrite whitespace and formatting whatever the key order.
+- A fixture compares every byte outside that value, and the file mode, across install and uninstall.
+- The write re-reads and compares the file just before the rename, and aborts if Claude Code changed it in between.
 
 **Reporter.**
 - The reporter runs only with `HERDR_ENV` and a pane.
-- A private per-pane state file holds the change key `(session_id, canonical model, window)`. When the key is unchanged the reporter exits without any RPC. State is persisted only after `pane.report_metadata` succeeds for a matching `agent_session.value`, so a render that arrives before Herdr's SessionStart hook is retried on the next render. There is no throttle: the key changes rarely.
+- A private per-pane state file holds the change key `(session_id, canonical model, window, Claude process identity)`. The identity is the parent pid plus its start time, so a restart with `--resume` re-reports. The state also expires below any metadata TTL change 3 sets. Whether Herdr clears metadata on agent restart is unverified, and is a change 3 risk with a fixture. When the key is unchanged the reporter exits without any RPC. State is persisted only after `pane.report_metadata` succeeds for a matching `agent_session.value`, so a render that arrives before Herdr's SessionStart hook is retried on the next render. There is no throttle: the key changes rarely.
 - The reporter exits unless the local receipt records the user's consent and the exact wrapper value. A wrapper that arrived by dotfiles on a host where the user never consented therefore reports nothing.
 
 **Window channel.**
@@ -419,7 +439,7 @@ A machine without the plugin, including another host receiving the dotfile, ther
 - Remote hosts have no plugin state. Remote Claude window and allowances are unavailable in this programme.
 - These sessions stay without a window: a project or local `statusLine` override, a `CLAUDE_CONFIG_DIR` that differs from the installed settings, an untrusted workspace, or `disableAllHooks`.
 
-**Change 3 gate.** `~/.claude/settings.json` is tracked in place by the user's dotfiles, and AGENTS.md says installers refuse managed configuration. `managed()` detects only chezmoi.
+**Change 3 gate.** The user first chooses surface A or B. `~/.claude/settings.json` is tracked in place by the user's dotfiles, and AGENTS.md says installers refuse managed configuration. `managed()` detects only chezmoi.
 
 Change 3 starts by asking the user whether Anton may edit this tracked file, given that the wrapper then propagates to other hosts and degrades to the original command there. The answer is enforced in code by an explicit recorded consent flag, not left as a procedural step. If the user declines, change 3 records a blocker and the dial stays unknown.
 
