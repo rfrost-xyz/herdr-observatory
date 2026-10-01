@@ -85,6 +85,17 @@ Round 4, on `6e01c99`, found 6 blocking and 9 other findings, all addressed:
 - D10: canonical `[1m]` model comparison, throttle on the RPC only, receipt consent at report time, and byte-preserving settings edits;
 - D10 and D11: the rate-limit channel moved to change 4 with its account amendments, per-window stamping that ignores expiry renders, the full provider switch list, `spend_limit` refusal, and `omarchy-companion` deltas.
 
+Round 5, on `4f2b02d`, found 3 blocking and 9 other findings, all addressed:
+
+- D3: local retention of peer samples, `usage_seq` taken from counted lines, the compaction-summary classifier, and the assistant coverage row;
+- D8: `coverage_seq`;
+- D7: the trigger after unknown, and queued prompt attachments;
+- D9: the old-local peer bound;
+- D10: the change key with binding, persist after success, no throttle, uninstall that tolerates drift, and conflicts that skip only the Claude reporter;
+- D11: the no-session behaviour with thread-independence deltas, and refusal under `CLAUDE_CONFIG_DIR`.
+
+The reviewer's D7 replay kept valid coverage in 18 of 18 files (114 turns, 0 orphans, 0 overlaps, 37 queued triggers joined). Discovery used 84 entries of the 8,192 budget.
+
 ## User decisions (2026-10-01)
 
 - `~/.claude.json` is accepted as provider-owned state, not an authentication file, for Claude identity and usage data.
