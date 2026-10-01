@@ -1372,19 +1372,24 @@ impl Row {
             record.usage[2],
             record.usage[3],
         ];
-        let complete = counters.iter().all(Option::is_some);
+        // The group's usage counts only when all four counters are present,
+        // sum within 2^53 and its response passes `Response::validate`, the
+        // bounds a resumed block is revalidated against.
         let usage = counters.map(|v| v.unwrap_or(0));
+        let response = (record.stop != STOP_NULL).then(|| Response {
+            usage: record.selected.unwrap_or(usage),
+            model: record.model.clone(),
+        });
+        let complete = counters.iter().all(Option::is_some)
+            && sum(&usage).is_some()
+            && response.as_ref().is_none_or(Response::validate);
         let block = &mut self.claude;
         block.usage_seq = block.usage_seq.max(stamp);
         block.compaction_iteration |= record.compaction_iteration;
         let group = block.open.as_mut().unwrap();
         group.usage = usage;
         group.stop = record.stop;
-        group.response =
-            (complete && record.stop != STOP_NULL && !group.tainted).then(|| Response {
-                usage: record.selected.unwrap_or(usage),
-                model: record.model.clone(),
-            });
+        group.response = response.filter(|_| complete && !group.tainted);
         if !complete || block.totals().is_none() {
             // Totals stay unknown; a zero contribution keeps the sums bounded.
             if let Some(group) = &mut block.open {
@@ -2397,6 +2402,41 @@ mod replay_tests {
     }
     fn body(lines: &[String]) -> String {
         lines.iter().map(|line| format!("{line}\n")).collect()
+    }
+    #[test]
+    fn usage_whose_four_counters_exceed_2_pow_53_is_unknown_and_resumable() {
+        let fixture = tests::Fixture::new();
+        // Each counter is within 2^53 and so is the input partition; the
+        // sum of all four is not.
+        let big = 5_000_000_000_000_000;
+        let lines = [
+            assistant("msg_a", 1, "\"end_turn\"", [1, 2, 3, 4]),
+            assistant("msg_b", 2, "\"end_turn\"", [big, big, 0, 0]),
+        ];
+        let text = header() + &body(&lines);
+        let path = fixture.file("slug", &format!("{ID}.jsonl"), &text);
+        let (row, _) = passes(&fixture, &path, None);
+        let usage = row.usage();
+        for key in ["total_input", "total_output", "input", "context", "model"] {
+            assert!(usage[key].is_null(), "{key}: {usage}");
+        }
+        assert!(row.gate(now()));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (row, resumed) =
+            resume(&fixture.projects, &path, ID, Some(row), now(), deadline).unwrap();
+        assert!(resumed && row.caught_up);
+        // A later complete group restores the last response, not the totals.
+        let later = assistant("msg_c", 3, "\"end_turn\"", [3, 3, 3, 3]);
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        std::io::Write::write_all(&mut file, format!("{later}\n").as_bytes()).unwrap();
+        let (row, resumed) =
+            resume(&fixture.projects, &path, ID, Some(row), now(), deadline).unwrap();
+        assert!(resumed && row.caught_up);
+        assert_eq!(get(&row, "context"), json!(9));
+        assert_eq!(get(&row, "total_output"), Value::Null);
     }
     #[test]
     fn block_with_a_full_ring_stays_compact() {
