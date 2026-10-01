@@ -240,6 +240,17 @@ fn claude_caught_up_pass_publishes_an_all_null_sample_at_coverage_seq() {
     assert!(telemetry.is_null());
 }
 
+/// The all-null sample a pane publishes when its bound file cannot be bound
+/// or verified, stamped with the incoming row's `coverage_seq` (D3).
+fn unknown(telemetry: &Value, seq: u64) {
+    assert_eq!(telemetry["seq"], json!(seq));
+    assert_eq!(telemetry["event"], "session");
+    for (key, value) in telemetry.as_object().unwrap() {
+        if !["seq", "event", "phase"].contains(&key.as_str()) {
+            assert!(value.is_null(), "{key}");
+        }
+    }
+}
 /// The retained numeric subset as a re-emitted sample shows it.
 fn retained(telemetry: &Value) -> Value {
     let mut value = telemetry.clone();
@@ -279,7 +290,7 @@ fn claude_incomplete_replay_reemits_the_retained_sample_until_replacement() {
     std::fs::remove_file(fixture.path("entry-a", ID)).unwrap();
     std::fs::write(fixture.path("entry-a", ID), &bytes).unwrap();
     let (telemetry, _, cursors) = enrich(&mut follower, &cursors);
-    assert!(telemetry.is_null());
+    unknown(&telemetry, micros(23));
     // It stays dropped on the next resumed incomplete pass.
     let (telemetry, _, cursors) = enrich(&mut follower, &cursors);
     assert!(telemetry.is_null());
@@ -406,7 +417,8 @@ fn claude_positive_binding_is_rediscovered_and_ambiguity_is_unknown() {
     // The re-scan finds two matches: unknown, and the retained sample is gone.
     age(&mut follower);
     let (telemetry, timing, cursors) = enrich(&mut follower, &cursors);
-    assert!(telemetry.is_null() && timing.is_null());
+    unknown(&telemetry, micros(23));
+    assert!(timing.is_null());
     assert!(follower.claude[&key()].retained.is_none());
     // Back to one match with an incomplete replay: nothing is re-emitted.
     std::fs::remove_file(&other).unwrap();
@@ -434,6 +446,23 @@ fn claude_positive_binding_is_rediscovered_and_ambiguity_is_unknown() {
         telemetry["total_output"],
         json!(first["total_output"].as_u64().unwrap() + 1000)
     );
+}
+
+#[test]
+fn claude_lost_binding_with_a_cursor_row_publishes_an_all_null_sample() {
+    let fixture = Fixture::new();
+    let path = fixture.write(&session());
+    let (_, _, cursors) = enrich(&mut NativeTelemetry::default(), &json!({}));
+    std::fs::remove_file(&path).unwrap();
+    // A fresh follower, as on a peer, with the row the local sent back.
+    let (telemetry, timing, kept) = enrich(&mut NativeTelemetry::default(), &cursors);
+    unknown(&telemetry, micros(23));
+    assert!(timing.is_null());
+    assert_eq!(kept, cursors);
+    // Without a row there is no source time to stamp.
+    let (telemetry, _, rows) = enrich(&mut NativeTelemetry::default(), &json!({}));
+    assert!(telemetry.is_null());
+    assert_eq!(rows, json!({}));
 }
 
 #[test]

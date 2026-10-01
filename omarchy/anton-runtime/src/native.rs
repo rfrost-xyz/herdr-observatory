@@ -865,8 +865,23 @@ impl NativeTelemetry {
         if Instant::now() >= deadline {
             return;
         }
+        // A peer follower is fresh on every probe, so a bind or verification
+        // failure for a session with a cursor row publishes an all-null sample
+        // at that row's original source time. It replaces the copy the local
+        // retains for the peer (D3).
+        let incoming = cursors
+            .get(&key)
+            .and_then(|v| v.claude.as_ref())
+            .map(|v| v.coverage_seq);
+        let unknown = |agent: &mut Value| {
+            if let Some(seq) = incoming {
+                let usage = claude::Row::new([0, 0], 0, time).usage();
+                publish_claude(agent, &usage, None, seq, time);
+            }
+        };
         let root = claude::projects_root();
         let Some(path) = self.bind(&root, &session, &key, deadline) else {
+            unknown(agent);
             return;
         };
         let mut row = cursors.remove(&key).and_then(Cursor::into_row);
@@ -909,6 +924,8 @@ impl NativeTelemetry {
                 binding.retained = Some((subset, seq));
             } else if let Some((subset, seq)) = &binding.retained {
                 publish_claude(agent, subset, None, *seq, time);
+            } else if restarted {
+                unknown(agent);
             }
         }
         cursors.insert(key, Cursor::from_row(row));
