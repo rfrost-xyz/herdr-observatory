@@ -1139,7 +1139,7 @@ fn turns_fuzzed_replay_states_stay_resumable() {
                 };
                 message += u64::from(random.below(5) == 0);
                 let id = format!("msg_{message}");
-                let line = match random.below(22) {
+                let line = match random.below(23) {
                     0..=2 => user(at, "prompt", ""),
                     3 => user(at, "[Request interrupted by user]", ""),
                     4 => assistant(at, &id, "\"tool_use\""),
@@ -1163,6 +1163,9 @@ fn turns_fuzzed_replay_states_stay_resumable() {
                         1,
                     ),
                     20 => String::new(),
+                    22 if random.below(4) == 0 => {
+                        user(at, "other", "").replace(ID, "fixture-session-b")
+                    }
                     _ => user(at, "peer", "\"isMeta\":true,\"origin\":{\"kind\":\"peer\"}"),
                 };
                 // Unique uuids except an occasional repeat.

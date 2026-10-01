@@ -713,3 +713,37 @@ fn claude_deadline_skip_reemits_the_retained_sample_of_a_current_binding() {
     age(&mut follower);
     assert_eq!(skipped(&mut follower, &cursors), (Value::Null, true));
 }
+
+#[test]
+fn claude_record_naming_another_session_keeps_the_binding_unknown() {
+    let fixture = Fixture::new();
+    fixture.write(&session());
+    let mut follower = NativeTelemetry::default();
+    let (first, _, cursors) = enrich(&mut follower, &json!({}));
+    assert_eq!(first["total_output"], 26);
+    // A foreign record in an incomplete pass drops the retained sample.
+    let other = prompt(24).replace(ID, "fixture-session-b");
+    let later = [
+        prompt(30),
+        launch(31, "agent-c"),
+        assistant(32, "msg-4", "\"end_turn\"", [1, 1, 1, 1]),
+        system("compact_boundary", 33),
+        system("turn_duration", 34),
+    ];
+    let partial = &later[0][..30];
+    fixture.append(&format!("{other}\n{partial}"));
+    let (telemetry, timing, cursors) = enrich(&mut follower, &cursors);
+    assert_eq!(cursors[key()]["caught_up"], false);
+    assert!(telemetry.is_null() && timing.is_null(), "{telemetry}");
+    // Later complete groups, children, compactions and turns stay unknown.
+    let rest = body(&later).split_once('\n').unwrap().1.to_owned();
+    fixture.append(&format!("{}\n{rest}", &later[0][30..]));
+    let (telemetry, timing, cursors) = enrich(&mut follower, &cursors);
+    assert_eq!(cursors[key()]["caught_up"], true);
+    unknown(&telemetry, micros(34));
+    assert!(timing.is_null());
+    // A fresh replay of the same file finds the record again.
+    let (telemetry, timing, _) = enrich(&mut NativeTelemetry::default(), &json!({}));
+    unknown(&telemetry, micros(34));
+    assert!(timing.is_null());
+}

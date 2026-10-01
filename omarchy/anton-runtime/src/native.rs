@@ -938,14 +938,19 @@ impl NativeTelemetry {
         };
         if ran {
             let binding = self.claude.get_mut(&key).unwrap();
-            if restarted {
+            // A record naming another session is a D2 identity failure.
+            let foreign = row.claude.foreign;
+            if restarted || foreign {
                 binding.retained = None;
             }
             if row.caught_up && !row.skipping {
-                agent["_native_turn_timing"] = turn_timing(&row.turns, time);
+                if !foreign {
+                    agent["_native_turn_timing"] = turn_timing(&row.turns, time);
+                }
                 let usage = row.usage();
                 let seq = row.claude.coverage_seq;
-                publish_claude(agent, &usage, Some(&row), seq, time);
+                let children = Some(&row).filter(|_| !foreign);
+                publish_claude(agent, &usage, children, seq, time);
                 let mut subset = usage;
                 subset.as_object_mut().unwrap().remove("compactions");
                 binding.retained = Some((subset, seq));

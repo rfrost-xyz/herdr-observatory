@@ -367,6 +367,9 @@ pub struct ClaudeCursor {
     /// stamp or key, a rejected start, or a failed record during a turn): no
     /// turn opens until `turn_duration` or an abort proves an end.
     pub ambiguous: bool,
+    /// A record named another session (D2): every value of this binding
+    /// stays unknown, and later records feed nothing, until a fresh replay.
+    pub foreign: bool,
     /// The oversized-record classifier while a line over `LINE` is being read.
     #[serde(deserialize_with = "Option::deserialize")]
     pub classifier: Option<Classifier>,
@@ -391,6 +394,7 @@ impl Default for ClaudeCursor {
             abort_adjacent: false,
             queued_since_start: false,
             ambiguous: false,
+            foreign: false,
             classifier: None,
         }
     }
@@ -442,6 +446,10 @@ impl ClaudeCursor {
                 .as_ref()
                 .is_none_or(|(key, second)| hex_id(key, 24) && (1..=SAFE).contains(second))
             && self.classifier.as_ref().is_none_or(Classifier::validate)
+            && (!self.foreign
+                || !self.totals_valid
+                    && !self.last_valid
+                    && self.open.as_ref().is_none_or(|group| group.tainted))
     }
 }
 
@@ -1122,8 +1130,14 @@ impl Row {
         }
         let relevant =
             [KIND_ASSISTANT, KIND_USER, KIND_ATTACHMENT, KIND_SYSTEM].contains(&record.kind);
+        if self.claude.foreign {
+            return;
+        }
         match record.identity {
-            IDENTITY_MISMATCH => return self.invalid(),
+            IDENTITY_MISMATCH => {
+                self.claude.foreign = true;
+                return self.invalid();
+            }
             IDENTITY_ABSENT => return self.unclassified(record.kind),
             _ => {}
         }
@@ -1385,7 +1399,7 @@ impl Row {
     /// metadata values (D4). Publishing it only when caught up is the caller's.
     pub fn usage(&self) -> Value {
         let block = &self.claude;
-        let known = block.usage_seq > 0;
+        let known = block.usage_seq > 0 && !block.foreign;
         let totals = block.totals().filter(|_| known && block.totals_valid);
         let response = block
             .open
@@ -1427,7 +1441,14 @@ impl Row {
     }
     /// The replay state every pass boundary must leave resumable.
     fn gate(&self, time: f64) -> bool {
-        self.turns.validate() && self.claude.validate(time) && self.turn_state()
+        self.turns.validate()
+            && self.claude.validate(time)
+            && self.turn_state()
+            && (!self.claude.foreign
+                || !self.valid
+                    && !self.compactions_valid
+                    && !self.turns.valid
+                    && !self.turns.current_known)
     }
     /// Whether a checkpointed row may resume this file: same dev/inode, header
     /// and tail hashes, an offset within the file, and every bound revalidated.
@@ -2259,6 +2280,41 @@ mod replay_tests {
         let row = run(&[anonymous]);
         assert_eq!(get(&row, "total_input"), Value::Null);
         assert!(row.valid && row.compactions_valid && !row.turns.valid);
+    }
+    #[test]
+    fn identity_mismatch_keeps_every_value_unknown_for_the_binding() {
+        let other = user(5).replace(ID, "fixture-session-b");
+        let lines = [
+            user(1),
+            assistant("msg_a", 2, "\"end_turn\"", [1, 2, 3, 4]),
+            system("turn_duration", 3),
+            other,
+            user(10),
+            assistant("msg_b", 11, "\"end_turn\"", [5, 6, 7, 8]),
+            system("compact_boundary", 12),
+            system("turn_duration", 13),
+        ];
+        let row = run(&lines);
+        let usage = row.usage();
+        for (key, value) in usage.as_object().unwrap() {
+            assert!(value.is_null(), "{key}: {usage}");
+        }
+        assert!(row.claude.foreign && !row.valid && !row.turns.current_known);
+        // No later turn is recorded; native publishes no timing at all.
+        assert_eq!(row.turns.last, Some(turn_key(ID, "u-1")));
+        assert!(row.turns.active.is_none() && row.turns.finished.len() == 1);
+        // Only a record naming another session sets it, and it round-trips.
+        assert!(row.gate(now()));
+        let block: ClaudeCursor =
+            serde_json::from_value(serde_json::to_value(&row.claude).unwrap()).unwrap();
+        assert_eq!(block, row.claude);
+        let mut row = run(&lines[..3]);
+        row.invalid();
+        assert!(!row.claude.foreign);
+        // A block claiming foreign with publishable values is rejected.
+        let mut forged = run(&lines[..3]).claude;
+        forged.foreign = true;
+        assert!(!forged.validate(now()));
     }
     #[test]
     fn compactions_count_boundaries_only() {
