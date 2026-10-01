@@ -92,7 +92,7 @@ the shapes below.
   - Input JSON includes `session_id`, `transcript_path`, `model` and `context_window.{context_window_size, used_percentage, current_usage, total_input_tokens, total_output_tokens}`. Both totals are last-response values [bin].
   - For Pro and Max, after the first response, it also includes `rate_limits.{five_hour, seven_day}.{used_percentage, resets_at}`.
   - It runs on each render.
-  - It is a single settings slot. Plugins cannot provide one: the plugin customisation table disables `statusLine` [bin]. The slot is occupied on this host [obs].
+  - It is a single settings slot. It is read only from merged settings, or from policy settings when managed-only applies. No plugin manifest or plugin source supplies it [bin, by absence]. The slot is occupied on this host [obs].
 - **Hooks** [bin]: 33 events.
   - SessionStart carries `source` (`startup|resume|clear|compact|fork`), `model` and, on resume or fork, `context_tokens`. That sum includes output tokens, so it is not D4 occupancy.
   - PostModelSwitch carries `from_model`, `to_model` and `context_tokens`.
@@ -105,7 +105,7 @@ the shapes below.
   - `context` is `{tokens, window, percent}`.
   - `rateLimits` is a list of `{kind, percentUsed, resetsAt}` for `five_hour` and `seven_day`, plus `spend_limit` in gateway mode.
   - `changed` names which of these changed. The event fires after a turn that changed something, or when rate limits change.
-  - Loading is gated. Plugin hooks modules load only with `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` in the Claude process environment or a server-side rollout. The API is internal and liable to change.
+  - Loading is gated by a feature flag. The flag resolves from `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS` whenever that variable is set, in either direction. Otherwise it comes from GrowthBook (a local override, the session payload or the disk cache) or the flag's default. The API is internal and liable to change.
 - **Current hook ownership** [obs, repo]:
   - **Herdr integration**: Herdr's integration (`herdr integration status`) owns its SessionStart hook for Claude, Codex and Pi. The hook reports the session id.
   - **User badge hooks**: Claude `settings.json` and Codex `notify` also run a user-owned status badge script that no installer manages.
@@ -226,7 +226,7 @@ Anton fields are `technical.telemetry.*` and `technical.turn_timing.*` (`model.r
 - Totals use the top-level usage, which equals the sum of the `message` iterations. Advisor iterations are excluded, matching Claude Code's own accounting.
 
 **Replay and coverage.**
-- Totals come from the replay cursor, not a tail read. Codex reads provider-cumulative totals from a 512 KiB tail (`native.rs:504-633`), but Claude has no cumulative record.
+- Totals come from the replay cursor, not a tail read. Codex reads provider-cumulative totals from a 512 KiB tail (`native.rs:504-629`), but Claude has no cumulative record.
 - The whole Claude numeric sample is published only when the cursor has `caught_up && !skipping`. That sample is the totals, last-response values, `context`, `model` and `usage_seq`. This follows the gating Codex applies to turns, children and compactions (`native.rs:764, 783, 815`).
 - Each pass reads at most `TAIL` bytes and resumes from the checkpoint, so a cold multi-megabyte transcript takes several passes before values are known.
 - `NativeTelemetry` keeps the last published Claude sample in memory per key. A pass that is not caught up re-emits it unchanged, with its original `usage_seq`. Retention covers only an incomplete replay of a bound, identity-checked file. Any of these drops it:
@@ -415,7 +415,7 @@ Every block field is required, bounded and revalidated on reuse:
 - Codex needs no hook, because its transcript carries the window. Pi has the installer-owned extension.
 - For Claude, two surfaces carry the window and live rate limits:
   - **A. The statusLine input.** It is stable and documented, but it is a single settings slot, which plugins cannot provide.
-  - **B. The plugin function-hook event `session.measure`.** It is plugin-owned, with no statusLine edit, and has change semantics built in. However, it is early access and an internal API. It loads with `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` in the Claude environment, or through a server-side rollout that the installer cannot control. Setting the variable means editing a shell profile or the settings `env` key. The plugin must be installed and enabled, which Claude Code records in settings `enabledPlugins`.
+  - **B. The plugin function-hook event `session.measure`.** It is plugin-owned, with no statusLine edit, and has change semantics built in. However, it is early access and an internal API. It loads with `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` in the Claude environment, or through the GrowthBook flag that the installer cannot control. The variable overrides the flag in either direction. Setting the variable means editing a shell profile or the settings `env` key. The plugin must be installed and enabled, which Claude Code records in settings `enabledPlugins`.
 - Both surfaces touch user-level configuration. Change 3 puts this choice to the user at its gate (below).
 - The rest of this section details A, because it is the stable surface. That detail is provisional until the gate. If the user picks B, change 3 keeps the same reporter wire, binding, model-match and consent rules, replacing only the trigger and installation.
 - The statusLine command is a subprocess that inherits Claude's environment, including `HERDR_*` and `CLAUDE_CONFIG_DIR`. A function hook runs in-process with the same environment.

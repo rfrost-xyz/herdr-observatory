@@ -121,7 +121,7 @@ Round 8, on `4ea41ee`, found 3 blocking and 5 other findings, all addressed:
 - D10: a POSIX sh wrapper, a mandatory new session, the shell-prefix and managed-policy limits, and the render triggers;
 - D11: deltas for reporter account reads and inferred account authority.
 
-The final bounded review, on `bb5ba89`, checked fact labels, privacy, consistency and compliance only, following the scope-of-authority pivot. It found 2 minor wording findings and 2 change 2 inputs, all applied. It verified every repository reference, the binary strings, the corpus structure and the privacy scan. A re-run on `bb34de9` found 2 wording contradictions (rate limits placed in change 3; PostModelSwitch fields) and 3 change 2 inputs. All were applied. A further re-run on `0af3c23` found an outcome-count contradiction and a missing rollout path for function hooks. Both are fixed.
+The final bounded review, on `bb5ba89`, checked fact labels, privacy, consistency and compliance only, following the scope-of-authority pivot. It found 2 minor wording findings and 2 change 2 inputs, all applied. It verified every repository reference, the binary strings, the corpus structure and the privacy scan. A re-run on `bb34de9` found 2 wording contradictions (rate limits placed in change 3; PostModelSwitch fields) and 3 change 2 inputs. All were applied. A further re-run on `0af3c23` found an outcome-count contradiction and a missing rollout path for function hooks. Both are fixed. The re-run on `d9f109f` found that the plugin-statusLine mechanism had been mislabelled and that the function-hook flag sources were incomplete. Both are corrected.
 
 ## User decisions (2026-10-01)
 
@@ -148,7 +148,7 @@ Herdr environment variables are present in agent shells, so any Claude Code prob
 | Child resume | 8 `SendMessage` uses. 5 results carry `resumedAgentId` and `success` |
 | Prompt-shaped non-turns (second pass) | Records without `origin` that match a naive prompt predicate: 19 slash-command echoes, 12 local-command outputs, 2 bash-mode records, 3 interrupt markers |
 | Hook payloads | 33 hook event schemas in the binary. No command-hook payload carries a context window size or rate limits. SessionStart carries `model` and, on resume or fork, `context_tokens`. PostModelSwitch carries `from_model`, `to_model` and `context_tokens` |
-| Plugin statusLine | The plugin customisation table disables `statusLine` [bin] |
+| Plugin statusLine | statusLine is read only from merged or policy settings. No plugin source supplies it [bin, by absence]. An earlier reading of a feature-disable table (`--bare` and safe mode) as a plugin table was wrong and has been corrected |
 | Hook ownership on this host | Herdr integration current for Claude (v10), Codex (v8) and Pi (v9). The user badge script is wired into Claude settings and Codex `notify`. Anton's installer owns only the Pi extension and the retired Codex shim |
 | Herdr Claude binding | Every live Claude pane had `agent_session` with keys `{agent, kind, source, value}`, kind `id`. Each id resolved to exactly one transcript |
 | Line sizes | p50 1.6 KB, p99 42.7 KB, max 832 KB. 5 lines over 256 KiB. Last assistant line within 73 KB of end of file |
