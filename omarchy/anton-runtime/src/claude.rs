@@ -18,10 +18,9 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 mod classifier;
-// Wired into record extraction by the next commit.
-#[allow(dead_code)]
 mod text;
 pub use classifier::{Classifier, Outcome};
+pub use text::Text;
 
 const LINE: usize = 65536;
 const ENTRIES: usize = 8192;
@@ -467,6 +466,35 @@ pub struct Record {
     pub compaction_iteration: bool,
     /// A consumed field is present with a value replay cannot represent.
     pub bad: bool,
+    /// D6 and D7 user fields: `origin.kind` (0 absent, `ORIGIN_OTHER` any
+    /// other value) and the presence and child fields of `toolUseResult`.
+    pub origin: u8,
+    pub tool: bool,
+    /// `toolUseResult.status` is `async_launched`.
+    pub launch: bool,
+    /// sha256 of a valid `agentId` or `resumedAgentId`; `*_bad` marks one
+    /// present with any other value.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub agent: Option<String>,
+    pub agent_bad: bool,
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub resumed: Option<String>,
+    pub resumed_bad: bool,
+    pub success: bool,
+    /// `totalDurationMs` is a valid number.
+    pub duration: bool,
+    /// `interruptedMessageId` is present, on any record type.
+    pub interrupted: bool,
+    /// An assistant record's `isAbortedMidStream` is true.
+    pub aborted: bool,
+    /// An attachment is a `queued_command`, with its `commandMode` index.
+    pub queued: bool,
+    pub mode: u8,
+    /// The first text of a user record or queued command, and whether any
+    /// user text is an interrupt marker. Derived by `finish`.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub text: Option<Text>,
+    pub interrupt: bool,
 }
 pub const IDENTITY_ABSENT: u8 = 0;
 pub const IDENTITY_MATCH: u8 = 1;
@@ -476,6 +504,14 @@ fn index(names: &[&str], value: Option<&str>) -> u8 {
     value
         .and_then(|value| names.iter().position(|name| *name == value))
         .map_or(0, |position| position as u8 + 1)
+}
+/// A child id: absent when null, hashed when valid, otherwise malformed.
+fn agent(value: &Value) -> (Option<String>, bool) {
+    match value {
+        Value::Null => (None, false),
+        Value::String(id) if safe_id(id, 128) => (Some(common::sha256(id.as_bytes())), false),
+        _ => (None, true),
+    }
 }
 fn horizon(time: f64) -> u64 {
     ((time + 1.0) * 1e6).clamp(0.0, SAFE as f64) as u64
@@ -526,11 +562,133 @@ pub(crate) const NODES: &[(u8, &str)] = &[
     (ITEM, "output_tokens"),
     (ITEM, "cache_read_input_tokens"),
     (ITEM, "cache_creation_input_tokens"),
+    (0, "origin"),
+    (ORIGIN, "kind"),
+    (0, "toolUseResult"),
+    (TOOL, "status"),
+    (TOOL, "agentId"),
+    (TOOL, "resumedAgentId"),
+    (TOOL, "success"),
+    (TOOL, "totalDurationMs"),
+    (0, "interruptedMessageId"),
+    (0, "isAbortedMidStream"),
+    (0, "attachment"),
+    (ATTACHMENT, "type"),
+    (ATTACHMENT, "commandMode"),
+    (ATTACHMENT, "prompt"),
+    (MESSAGE, "content"),
+    (CONTENT, ""),
+    (BLOCK, "type"),
+    (BLOCK, "text"),
 ];
 pub(crate) const MESSAGE: u8 = 9;
 pub(crate) const USAGE: u8 = 13;
 pub(crate) const ITERATIONS_NODE: u8 = 18;
 pub(crate) const ITEM: u8 = 19;
+pub(crate) const ORIGIN: u8 = 25;
+pub(crate) const TOOL: u8 = 27;
+pub(crate) const INTERRUPTED: u8 = 33;
+pub(crate) const ABORTED: u8 = 34;
+pub(crate) const ATTACHMENT: u8 = 35;
+pub(crate) const PROMPT: u8 = 38;
+pub(crate) const CONTENT: u8 = 39;
+/// Each element of `message.content` or `attachment.prompt`.
+pub(crate) const BLOCK: u8 = 40;
+pub(crate) const BLOCK_TEXT: u8 = 42;
+/// Nodes whose string values go to the text analyser, never a capture.
+pub(crate) const TEXT_NODES: [u8; 3] = [PROMPT, CONTENT, BLOCK_TEXT];
+/// Nodes that only frame consumed fields; their own scalars carry nothing.
+pub(crate) const FRAMES: [u8; 5] = [MESSAGE, USAGE, ITEM, ATTACHMENT, BLOCK];
+
+const fn bits(from: u8, to: u8) -> u64 {
+    (u64::MAX >> (63 - to)) & (u64::MAX << from)
+}
+/// The nodes a record of `kind` consumes; a field lost elsewhere is ignored.
+pub(crate) const fn consumed(kind: u8) -> u64 {
+    let common = bits(0, 8) | 1 << INTERRUPTED;
+    common
+        | match kind {
+            KIND_ASSISTANT => bits(MESSAGE, 24) | 1 << ABORTED,
+            KIND_USER => 1 << MESSAGE | bits(ORIGIN, 32) | bits(CONTENT, BLOCK_TEXT),
+            KIND_ATTACHMENT => bits(ATTACHMENT, PROMPT) | bits(BLOCK, BLOCK_TEXT),
+            _ => 0,
+        }
+}
+const ORIGINS: &[&str] = &["human", "task-notification", "peer", "coordinator"];
+pub const ORIGIN_OTHER: u8 = ORIGINS.len() as u8 + 1;
+pub const ORIGIN_NOTIFICATION: u8 = 2;
+const MODES: &[&str] = &["prompt", "task-notification"];
+pub const MODE_PROMPT: u8 = 1;
+pub const MODE_NOTIFICATION: u8 = 2;
+
+/// Text facts of `message.content` or `attachment.prompt`: the first text
+/// value and whether any text value is an interrupt marker.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Texts {
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub first: Option<Text>,
+    pub interrupt: bool,
+}
+impl Texts {
+    fn fold(&mut self, text: Text) {
+        self.interrupt |= text.interrupt;
+        if self.first.is_none() {
+            self.first = Some(text);
+        }
+    }
+}
+/// The running fold of text values: a string value directly, or each block
+/// whose `type` is `text`, in array order.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Blocks {
+    pub content: Texts,
+    pub prompt: Texts,
+    /// The block being read: whether its `type` is `text`, and its text.
+    pub text: bool,
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub value: Option<Text>,
+}
+impl Blocks {
+    fn texts(&mut self, node: u8) -> &mut Texts {
+        if node == PROMPT {
+            &mut self.prompt
+        } else {
+            &mut self.content
+        }
+    }
+    /// Sets one field from its JSON value; only strings carry text.
+    pub(crate) fn set(&mut self, node: u8, value: &Value) {
+        match (node, value) {
+            (41, _) => self.text = value == "text",
+            (_, Value::String(text)) => self.text_value(node, Text::of(text)),
+            _ => {}
+        }
+    }
+    /// Records the analysed text of a text node.
+    pub(crate) fn text_value(&mut self, node: u8, text: Text) {
+        match node {
+            BLOCK_TEXT => self.value = Some(text),
+            PROMPT | CONTENT => self.texts(node).fold(text),
+            _ => {}
+        }
+    }
+    /// Folds the block just read in the array of `node`.
+    pub(crate) fn push(&mut self, node: u8) {
+        if let Some(text) = self.value.take().filter(|_| self.text) {
+            self.texts(node).fold(text);
+        }
+        self.text = false;
+    }
+    pub(crate) fn validate(&self) -> bool {
+        [&self.content, &self.prompt]
+            .iter()
+            .flat_map(|texts| &texts.first)
+            .chain(&self.value)
+            .all(Text::validate)
+    }
+}
 
 /// The running D4 iteration fold: the compaction flag and the latest element
 /// that is neither advisor nor compaction, as its kind and counters.
@@ -621,24 +779,64 @@ impl Record {
                 }
             }
             14..=17 => self.usage[(node - 14) as usize] = common::number(value),
+            ORIGIN => self.origin = if value.is_null() { 0 } else { ORIGIN_OTHER },
+            26 => {
+                self.origin = match index(ORIGINS, value.as_str()) {
+                    0 => ORIGIN_OTHER,
+                    kind => kind,
+                }
+            }
+            TOOL => self.tool = !value.is_null(),
+            28 => self.launch = value == "async_launched",
+            29 => (self.agent, self.agent_bad) = agent(value),
+            30 => (self.resumed, self.resumed_bad) = agent(value),
+            31 => self.success = *value == true,
+            32 => self.duration = common::number(value).is_some(),
+            INTERRUPTED => self.interrupted = !value.is_null(),
+            ABORTED => self.aborted = *value == true,
+            36 => self.queued = value == "queued_command",
+            37 => self.mode = index(MODES, value.as_str()),
             _ => {}
         }
     }
-    /// Completes a record once every field is set: assistant-only fields are
-    /// cleared on other types and the D4 selection and `bad` flag are derived.
-    pub(crate) fn finish(&mut self, message_object: bool, iterations: &Iterations) {
+    /// Completes a record once every field is set: fields of other record
+    /// types are cleared, and the D4 selection, text and `bad` are derived.
+    pub(crate) fn finish(
+        &mut self,
+        message_object: bool,
+        iterations: &Iterations,
+        blocks: &Blocks,
+    ) {
+        let user = self.kind == KIND_USER;
+        let attachment = self.kind == KIND_ATTACHMENT;
+        if !user {
+            self.origin = 0;
+            self.tool = false;
+            self.launch = false;
+            (self.agent, self.agent_bad) = (None, false);
+            (self.resumed, self.resumed_bad) = (None, false);
+            self.success = false;
+            self.duration = false;
+        }
+        if !attachment {
+            self.queued = false;
+            self.mode = 0;
+        }
+        self.text = if user {
+            blocks.content.first.clone()
+        } else if attachment && self.queued {
+            blocks.prompt.first.clone()
+        } else {
+            None
+        };
+        self.interrupt = user && blocks.content.interrupt;
         if self.kind != KIND_ASSISTANT {
-            *self = Self {
-                kind: self.kind,
-                subtype: self.subtype,
-                identity: self.identity,
-                forked: self.forked,
-                compact_summary: self.compact_summary,
-                meta: self.meta,
-                stamp: self.stamp,
-                uuid: self.uuid.take(),
-                ..Self::default()
-            };
+            self.message = None;
+            self.synthetic = false;
+            self.model = None;
+            self.stop = 0;
+            self.usage = [None; 4];
+            self.aborted = false;
             return;
         }
         self.compaction_iteration = iterations.compaction;
@@ -651,20 +849,49 @@ impl Record {
             || self.stamp.is_none()
             || iterations.shape == 2;
     }
+    /// Sets one consumed field of a parsed line, as the classifier does.
+    fn field(&mut self, node: u8, value: &Value, blocks: &mut Blocks, id: &str, time: f64) {
+        match node {
+            PROMPT | CONTENT | 41 | BLOCK_TEXT => blocks.set(node, value),
+            _ => self.set(node, value, id, time),
+        }
+    }
     /// Extracts a parsed line; `None` when the line is not a JSON object.
     pub fn from_value(value: &Value, id: &str, time: f64) -> Option<Self> {
         value.as_object()?;
         let mut record = Self::default();
         let mut iterations = Iterations::default();
+        let mut blocks = Blocks::default();
         for (node, (parent, key)) in NODES.iter().enumerate() {
             let parent = match *parent {
                 0 => value,
                 MESSAGE => &value["message"],
                 USAGE => &value["message"]["usage"],
+                ORIGIN => &value["origin"],
+                TOOL => &value["toolUseResult"],
+                ATTACHMENT => &value["attachment"],
                 _ => continue,
             };
             if let Some(field) = parent.as_object().and_then(|object| object.get(*key)) {
-                record.set(node as u8, field, id, time);
+                record.field(node as u8, field, &mut blocks, id, time);
+            }
+        }
+        for (node, pointer) in [
+            (PROMPT, "/attachment/prompt"),
+            (CONTENT, "/message/content"),
+        ] {
+            let Some(Value::Array(list)) = value.pointer(pointer) else {
+                continue;
+            };
+            for item in list {
+                for (child, (parent, key)) in NODES.iter().enumerate() {
+                    if *parent == BLOCK
+                        && let Some(field) = item.as_object().and_then(|object| object.get(*key))
+                    {
+                        blocks.set(child as u8, field);
+                    }
+                }
+                blocks.push(node);
             }
         }
         match value.pointer("/message/usage/iterations") {
@@ -685,7 +912,7 @@ impl Record {
             }
             Some(_) => iterations.shape = 2,
         }
-        record.finish(value["message"].is_object(), &iterations);
+        record.finish(value["message"].is_object(), &iterations, &blocks);
         Some(record)
     }
 }

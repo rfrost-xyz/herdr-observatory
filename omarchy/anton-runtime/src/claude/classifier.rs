@@ -3,7 +3,11 @@
 //! same `Record::set` as the parsed path. Persisted state holds grammar state,
 //! schema key names and converted fields; value bytes are buffered only in
 //! memory and a capture cut by a pass boundary is lost, never saved.
-use super::{ITEM, ITERATIONS_NODE, Iterations, MESSAGE, NODES, Record, USAGE};
+use super::text::{LIMIT, Text, WIDE};
+use super::{
+    ATTACHMENT, BLOCK, Blocks, CONTENT, FRAMES, ITEM, ITERATIONS_NODE, Iterations, MESSAGE, NODES,
+    ORIGIN, PROMPT, Record, TEXT_NODES, TOOL, USAGE,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -73,9 +77,16 @@ pub struct Classifier {
     message_object: bool,
     record: Record,
     iterations: Iterations,
+    blocks: Blocks,
     /// Raw bytes of the value being captured, never persisted.
     #[serde(skip)]
     value: Vec<u8>,
+    /// Text units of the text value being analysed, never persisted.
+    #[serde(skip)]
+    scan: Vec<u8>,
+    /// The `\uXXXX` escape being decoded in a text value.
+    #[serde(skip)]
+    code: u16,
 }
 impl Default for Classifier {
     fn default() -> Self {
@@ -102,7 +113,10 @@ impl Default for Classifier {
             message_object: false,
             record: Record::default(),
             iterations: Iterations::default(),
+            blocks: Blocks::default(),
             value: vec![],
+            scan: vec![],
+            code: 0,
         }
     }
 }
@@ -126,6 +140,7 @@ impl Classifier {
         match (self.stack.last(), self.nodes.last(), self.pending.last()) {
             (Some(3), _, Some(node)) => *node,
             (Some(5 | 6), Some(&ITERATIONS_NODE), _) => ITEM,
+            (Some(5 | 6), Some(&(CONTENT | PROMPT)), _) => BLOCK,
             _ => NONE,
         }
     }
@@ -144,6 +159,9 @@ impl Classifier {
             if self.nodes[last] == ITERATIONS_NODE {
                 self.iterations.push();
                 self.seen &= !ITEM_FIELDS;
+            } else if [CONTENT, PROMPT].contains(&self.nodes[last]) {
+                self.blocks.push(self.nodes[last]);
+                self.seen &= !BLOCK_FIELDS;
             }
         }
     }
@@ -152,7 +170,9 @@ impl Classifier {
         match node {
             ITERATIONS_NODE => self.iterations.shape = if value.is_null() { 0 } else { 2 },
             20..=24 => self.iterations.set(node, value),
-            MESSAGE | USAGE | ITEM | NONE => {}
+            PROMPT | CONTENT | 41 | super::BLOCK_TEXT => self.blocks.set(node, value),
+            NONE => {}
+            _ if FRAMES.contains(&node) => {}
             _ => self.record.set(node, value, id, time),
         }
     }
@@ -163,7 +183,11 @@ impl Classifier {
                 self.message_object = true;
                 MESSAGE
             }
-            (USAGE, true) | (ITEM, true) => node,
+            (USAGE | ITEM | ATTACHMENT | BLOCK, true) | (CONTENT | PROMPT, false) => node,
+            (ORIGIN | TOOL, true) => {
+                self.scalar(node, &json!({}), id, time);
+                node
+            }
             (ITERATIONS_NODE, false) => {
                 self.iterations.shape = 1;
                 ITERATIONS_NODE
@@ -172,7 +196,8 @@ impl Classifier {
                 self.iterations.shape = 2;
                 NONE
             }
-            (MESSAGE | USAGE | ITEM | NONE, _) => NONE,
+            (NONE, _) => NONE,
+            _ if FRAMES.contains(&node) => NONE,
             _ => {
                 let stand_in = if object { json!({}) } else { json!([]) };
                 self.scalar(node, &stand_in, id, time);
@@ -217,6 +242,15 @@ impl Classifier {
         if node == NONE {
             return;
         }
+        if TEXT_NODES.contains(&node) {
+            // Only a string carries text; a number at a text node is ignored.
+            if self.lex == 1 {
+                self.text_done(node);
+            }
+            self.scan.clear();
+            self.value.clear();
+            return;
+        }
         let raw = std::mem::take(&mut self.value);
         if raw.len() > CAP {
             self.lost |= 1 << node;
@@ -241,13 +275,18 @@ impl Classifier {
             if self.nodes.last().is_some_and(|node| *node != NONE) && self.name.len() < NAME {
                 self.name.push(ch);
             }
-        } else if self.capture != NONE && self.value.len() <= CAP {
+        } else if self.capture != NONE
+            && !TEXT_NODES.contains(&self.capture)
+            && self.value.len() <= CAP
+        {
             self.value.push(ch);
         }
     }
 }
 /// Seen bits of the fields of one `iterations` element.
 const ITEM_FIELDS: u64 = 0b1_1111 << 20;
+/// Seen bits of the fields of one content or prompt block.
+const BLOCK_FIELDS: u64 = 0b11 << 41;
 // `seen` and `lost` hold one bit per node.
 const _: () = assert!(NODES.len() < 64);
 impl Classifier {
@@ -276,6 +315,7 @@ impl Classifier {
         Ok(())
     }
     fn string_byte(&mut self, ch: u8, id: &str, time: f64) -> Result<(), ()> {
+        let mut unit = None;
         if self.utf != 0 {
             if !(self.lo..=self.hi).contains(&ch) {
                 return Err(());
@@ -284,20 +324,26 @@ impl Classifier {
             self.lo = 128;
             self.hi = 191;
         } else if self.escape == 2 {
-            if !ch.is_ascii_hexdigit() {
-                return Err(());
-            }
+            let digit = (ch as char).to_digit(16).ok_or(())?;
+            self.code = self.code << 4 | digit as u16;
             self.hex += 1;
             if self.hex == 4 {
                 self.hex = 0;
                 self.escape = 0;
+                unit = match self.code {
+                    0..=0x7f => Some(self.code as u8),
+                    0xdc00..=0xdfff => None,
+                    _ => Some(WIDE),
+                };
             }
         } else if self.escape != 0 {
             if ch == b'u' {
                 self.escape = 2;
                 self.hex = 0;
-            } else if b"\"\\/bfnrt".contains(&ch) {
+                self.code = 0;
+            } else if let Some(at) = b"\"\\/bfnrt".iter().position(|c| *c == ch) {
                 self.escape = 0;
+                unit = Some(b"\"\\/\x08\x0c\n\r\t"[at]);
             } else {
                 return Err(());
             }
@@ -318,6 +364,7 @@ impl Classifier {
         } else if ch < 32 {
             return Err(());
         } else if ch >= 128 {
+            unit = Some(WIDE);
             self.utf = match ch {
                 194..=223 => 1,
                 224..=239 => 2,
@@ -334,9 +381,32 @@ impl Classifier {
                 244 => 143,
                 _ => 191,
             };
+        } else {
+            unit = Some(ch);
+        }
+        if let Some(unit) = unit.filter(|_| self.key == 0) {
+            self.unit(unit);
         }
         self.record_byte(ch);
         Ok(())
+    }
+    /// One text unit of a text value. Once the prefix is complete it is
+    /// analysed and the rest of the value is skipped unread.
+    fn unit(&mut self, unit: u8) {
+        if !TEXT_NODES.contains(&self.capture) {
+            return;
+        }
+        if self.scan.len() < LIMIT {
+            self.scan.push(unit);
+            return;
+        }
+        let node = std::mem::replace(&mut self.capture, NONE);
+        self.text_done(node);
+    }
+    fn text_done(&mut self, node: u8) {
+        let text = Text::analyse(&self.scan);
+        self.scan.clear();
+        self.blocks.text_value(node, text);
     }
     fn literal_byte(&mut self, ch: u8, id: &str, time: f64) -> Result<(), ()> {
         let word = WORDS.get(self.literal as usize).ok_or(())?;
@@ -432,12 +502,15 @@ impl Classifier {
                     return Ok(());
                 }
                 let node = self.target();
+                // A frame's own scalar carries nothing, so it is never captured.
+                let capture = if FRAMES.contains(&node) { NONE } else { node };
                 match ch {
                     b'"' => {
                         self.lex = 1;
                         self.key = 0;
-                        self.capture = node;
+                        self.capture = capture;
                         self.value.clear();
+                        self.scan.clear();
                     }
                     b'{' | b'[' => {
                         let child = self.open(node, ch == b'{', id, time);
@@ -451,7 +524,7 @@ impl Classifier {
                             _ => 2,
                         };
                         self.index = 1;
-                        self.capture = node;
+                        self.capture = capture;
                     }
                     b'-' | b'0'..=b'9' => {
                         self.lex = 2;
@@ -460,7 +533,7 @@ impl Classifier {
                             b'0' => 1,
                             _ => 2,
                         };
-                        self.capture = node;
+                        self.capture = capture;
                         self.value.clear();
                         self.record_byte(ch);
                     }
@@ -479,21 +552,17 @@ impl Classifier {
             self.capture = NONE;
         }
         self.value.clear();
+        self.scan.clear();
     }
     /// Classifies the complete record once its terminating newline is fed.
     pub fn finish(mut self) -> Outcome {
         if self.done == 0 || !self.stack.is_empty() || self.lex != 0 || self.lost & 0b10 != 0 {
             return Outcome::Invalid;
         }
-        self.record.finish(self.message_object, &self.iterations);
-        if self.record.kind != super::KIND_ASSISTANT {
-            // Only record-level fields apply to other types.
-            self.lost &= NODES
-                .iter()
-                .enumerate()
-                .filter(|(node, (parent, _))| *parent == 0 && *node != MESSAGE as usize)
-                .fold(0, |bits, (node, _)| bits | 1 << node);
-        }
+        self.record
+            .finish(self.message_object, &self.iterations, &self.blocks);
+        // Only the fields this record type consumes count when lost.
+        self.lost &= super::consumed(self.record.kind);
         // A mismatched identity fails the session whatever else was lost; a
         // forked record feeds nothing either way.
         let decided = self.record.identity == super::IDENTITY_MISMATCH || self.record.forked;
@@ -521,7 +590,20 @@ impl Classifier {
     pub fn validate(&self) -> bool {
         let count = NODES.len() as u8;
         let all = (1u64 << count) - 1;
-        let containers = [0, MESSAGE, USAGE, ITERATIONS_NODE, ITEM, NONE];
+        let containers = [
+            0,
+            MESSAGE,
+            USAGE,
+            ITERATIONS_NODE,
+            ITEM,
+            ORIGIN,
+            TOOL,
+            ATTACHMENT,
+            CONTENT,
+            PROMPT,
+            BLOCK,
+            NONE,
+        ];
         let depth = self.stack.len();
         let shape = depth <= DEPTH
             && self.nodes.len() == depth
@@ -580,13 +662,23 @@ impl Classifier {
                 .all(|value| *value <= super::SAFE)
             && record.selected.is_none()
             && !record.compaction_iteration
-            && !record.bad;
+            && !record.bad
+            && record.origin <= super::ORIGIN_OTHER
+            && record.mode as usize <= super::MODES.len()
+            && [&record.agent, &record.resumed]
+                .iter()
+                .all(|key| key.as_deref().is_none_or(|key| crate::common::hex_id(key, 64)))
+            // Text facts are derived only when the record finishes.
+            && record.text.is_none()
+            && !record.interrupt;
         shape
             && lexical
             && fields
             && self.seen & !all == 0
             && self.lost & !all == 0
             && self.iterations.validate()
+            && self.blocks.validate()
+            && self.scan.is_empty()
     }
 }
 
@@ -688,6 +780,161 @@ mod tests {
                 );
             }
         }
+    }
+
+    fn user(fields: &str) -> String {
+        format!(
+            "{{\"type\":\"user\",\"sessionId\":\"{ID}\",\"uuid\":\"u-2\",\"timestamp\":\"{STAMP}\",{fields}}}"
+        )
+    }
+    fn content(content: &str) -> String {
+        user(&format!(
+            "\"message\":{{\"role\":\"user\",\"content\":{content}}}"
+        ))
+    }
+    fn queued(mode: &str, prompt: &str) -> String {
+        format!(
+            "{{\"type\":\"attachment\",\"sessionId\":\"{ID}\",\"timestamp\":\"{STAMP}\",\"attachment\":{{\"type\":\"queued_command\",\"commandMode\":{mode},\"prompt\":{prompt}}}}}"
+        )
+    }
+    /// Synthetic D6 and D7 records covering every child and turn field.
+    fn turn_lines() -> Vec<String> {
+        let notice = "\"<task-notification>\\n<task-id>agent-1</task-id>\\n<status>failed</status>\\n<summary>x</summary>\\n</task-notification>\"";
+        let mut lines = vec![];
+        for origin in [
+            "null",
+            "{}",
+            "{\"kind\":\"human\"}",
+            "{\"kind\":\"task-notification\"}",
+            "{\"kind\":\"peer\"}",
+            "{\"kind\":\"coordinator\"}",
+            "{\"kind\":\"other\"}",
+            "{\"kind\":7}",
+            "\"human\"",
+        ] {
+            lines.push(
+                content(&format!("\"plain\",\"origin\":{origin}"))
+                    .replace("\"message\"", &format!("\"origin\":{origin},\"message\"")),
+            );
+        }
+        lines.retain(|line| serde_json::from_str::<Value>(line).is_ok());
+        for result in [
+            "{\"status\":\"async_launched\",\"agentId\":\"agent-1\",\"prompt\":\"p\"}",
+            "{\"status\":\"async_launched\"}",
+            "{\"status\":\"async_launched\",\"agentId\":\"bad id\"}",
+            "{\"status\":\"async_launched\",\"agentId\":7}",
+            "{\"status\":\"async_launched\",\"agentId\":null}",
+            "{\"agentId\":\"agent-2\",\"totalDurationMs\":1200,\"totalTokens\":5}",
+            "{\"agentId\":\"agent-2\",\"totalDurationMs\":\"x\"}",
+            "{\"resumedAgentId\":\"agent-1\",\"success\":true}",
+            "{\"resumedAgentId\":\"agent-1\",\"success\":\"true\"}",
+            "{\"resumedAgentId\":[],\"success\":false}",
+            "\"Error: plain string result\"",
+            "null",
+        ] {
+            lines.push(user(&format!(
+                "\"toolUseResult\":{result},\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"content\":[{{\"type\":\"text\",\"text\":\"<command-name>x\"}}]}}]}}"
+            )));
+        }
+        for text in [
+            notice,
+            "\"<command-name>/x</command-name>\"",
+            "\"<local-command-stdout>x</local-command-stdout>\"",
+            "\"<bash-input>ls</bash-input>\"",
+            "\"<other-tag>x\"",
+            "\"[Request interrupted by user]\"",
+            "\"[Request interrupted by user for tool use]\"",
+            "\"\\u005bRequest interrupted by user\\u005d\"",
+            "\"\\u003ccommand-name\\u003e\"",
+            "\"\\ud83d\\ude00<command-name>\"",
+            "\"\u{e9}\u{1f600} wide\"",
+            "\"tab\\t\\\"quote\\\\ \\/\"",
+            "7",
+            "null",
+        ] {
+            lines.push(content(text));
+            lines.push(content(&format!(
+                "[{{\"type\":\"image\",\"text\":\"<command-name>\"}},{{\"type\":\"tool_result\"}},{{\"text\":{text},\"type\":\"text\"}},{{\"type\":\"text\",\"text\":\"[Request interrupted by user]\"}},\"loose\",[{{\"type\":\"text\",\"text\":\"<bash-input>\"}}]]"
+            )));
+            lines.push(queued("\"task-notification\"", text));
+            lines.push(queued(
+                "\"prompt\"",
+                &format!("[{{\"type\":\"text\",\"text\":{text}}}]"),
+            ));
+        }
+        lines.push(content("[]"));
+        lines.push(content("{\"type\":\"text\",\"text\":\"<command-name>\"}"));
+        lines.push(queued("\"other\"", notice));
+        lines.push(queued("null", "null"));
+        lines.push(
+            queued("\"task-notification\"", notice).replace("queued_command", "edited_text_file"),
+        );
+        lines.push(content(notice).replace("\"type\":\"user\"", "\"type\":\"system\""));
+        lines.push(user("\"interruptedMessageId\":\"msg_a\",\"isMeta\":true"));
+        lines.push(user("\"interruptedMessageId\":null"));
+        lines.push(
+            assistant(
+                "\"isAbortedMidStream\":true,\"interruptedMessageId\":\"msg_a\",",
+                "",
+            )
+            .replace("\"end_turn\"", "null"),
+        );
+        lines.push(assistant("\"isAbortedMidStream\":\"yes\",", ""));
+        lines.push(assistant("\"origin\":{\"kind\":\"human\"},\"toolUseResult\":{\"agentId\":\"agent-1\",\"totalDurationMs\":1},", ""));
+        lines.push(
+            format!(
+                "{{\"type\":\"system\",\"subtype\":\"stop_hook_summary\",\"sessionId\":\"{ID}\",\"timestamp\":\"{STAMP}\",\"isAbortedMidStream\":true}}"
+            ),
+        );
+        lines
+    }
+
+    #[test]
+    fn classifier_matches_parsed_path_for_child_and_turn_fields() {
+        let lines = turn_lines();
+        assert!(lines.len() > 70);
+        for line in &lines {
+            let bytes = line.as_bytes();
+            for size in [1, 2, 7, 64, bytes.len()] {
+                let chunks: Vec<&[u8]> = bytes.chunks(size).collect();
+                assert_eq!(
+                    classify(&chunks, false),
+                    expected(line),
+                    "{size}: {line:.160}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn classifier_text_cut_by_a_pass_boundary_is_never_read_as_a_prefix() {
+        let marker = "[Request interrupted by user]";
+        let echo = content(&format!("\"xx{marker}\""));
+        let tagged =
+            content("[{\"type\":\"text\",\"text\":\"xx<command-name>/x</command-name>\"}]");
+        let prompt = queued("\"prompt\"", "\"xx<bash-input>ls</bash-input>\"");
+        for (line, kind) in [(&echo, 2), (&tagged, 2), (&prompt, 3)] {
+            // Cut after "xx": the suffix alone would read as a marker or tag.
+            let parts = split(line, "xx", 2);
+            assert_eq!(
+                classify(&parts, true),
+                Outcome::Unclassified(kind),
+                "{line}"
+            );
+            assert_eq!(classify(&parts, false), expected(line));
+        }
+        // Once `LIMIT` units are read the prefix is complete and survives.
+        let long = content(&format!("\"<bash-stdout>{}\"", "y".repeat(LIMIT + 100)));
+        let parts = split(&long, "yyyy", LIMIT);
+        let Outcome::Record(record) = classify(&parts, true) else {
+            panic!("a complete prefix must survive the boundary");
+        };
+        assert_eq!(Outcome::Record(record.clone()), expected(&long));
+        assert_eq!(record.text.map(|text| text.lead), Some(5));
+        // Text of an assistant record is never consumed, so a cut is harmless.
+        let lines = lines();
+        let parts = split(&lines[1], "yyyy", 2);
+        assert_eq!(classify(&parts, true), expected(&lines[1]));
     }
 
     /// Splits `line` just after the first `marker` plus `into` bytes.
