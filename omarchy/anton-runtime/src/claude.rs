@@ -342,6 +342,9 @@ pub struct ClaudeCursor {
     pub pending_start: Option<(String, u64)>,
     pub abort_adjacent: bool,
     pub queued_since_start: bool,
+    /// An unjoined trigger arrived during an active turn, which may still be
+    /// running: no turn opens until `turn_duration` or an abort proves an end.
+    pub ambiguous: bool,
     /// The oversized-record classifier while a line over `LINE` is being read.
     #[serde(deserialize_with = "Option::deserialize")]
     pub classifier: Option<Classifier>,
@@ -365,6 +368,7 @@ impl Default for ClaudeCursor {
             pending_start: None,
             abort_adjacent: false,
             queued_since_start: false,
+            ambiguous: false,
             classifier: None,
         }
     }
@@ -1205,12 +1209,18 @@ impl Row {
                     return;
                 }
                 if active {
-                    // The turn may have ended without a record: never absorb the gap.
+                    // The turn may have ended without a record, or the input
+                    // joined it: never absorb the gap, and never publish an
+                    // interval whose start is a guess.
                     self.turns_unknown();
+                    self.claude.ambiguous = true;
                 }
-                self.claude.pending_start = Some((key, second));
+                if !self.claude.ambiguous {
+                    self.claude.pending_start = Some((key, second));
+                }
             }
             Turn::Abort => {
+                self.claude.ambiguous = false;
                 self.confirm();
                 self.claude.abort_adjacent = true;
                 self.end(second, Turns::abort);
@@ -1218,6 +1228,7 @@ impl Row {
             Turn::End => {
                 self.turns.supported = true;
                 let adjacent = std::mem::take(&mut block.abort_adjacent);
+                block.ambiguous = false;
                 if active {
                     self.end(second, Turns::finish);
                 } else if !adjacent || block.pending_start.is_some() {
@@ -1368,6 +1379,8 @@ impl Row {
     fn turn_state(&self) -> bool {
         let active = self.turns.active.is_some();
         (!self.claude.queued_since_start || active || self.claude.pending_start.is_some())
+            && (!self.claude.ambiguous
+                || !active && self.claude.pending_start.is_none() && !self.turns.valid)
             && (self.claude.pending_start.is_none() || !active)
     }
     /// Whether a checkpointed row may resume this file: same dev/inode, header

@@ -580,17 +580,14 @@ fn turns_queued_input_joins_only_after_a_queue_operation() {
         Some((second(10), second(20), "completed".into()))
     );
     // Without one the gap is never absorbed: coverage becomes unknown, and
-    // the trigger opens a pending start that the next assistant confirms.
+    // the ambiguous trigger opens no pending start.
     let row = run(&[
         user(10, "hello", ""),
         assistant(11, "msg_a", "\"tool_use\""),
         user(13, "also this", ""),
     ]);
     assert!(!row.turns.valid && row.turns.active.is_none());
-    assert_eq!(
-        row.claude.pending_start,
-        Some((turn_key(ID, "user-13"), second(13)))
-    );
+    assert!(row.claude.ambiguous && row.claude.pending_start.is_none());
     let row = run(&[
         user(10, "hello", ""),
         assistant(11, "msg_a", "\"tool_use\""),
@@ -598,12 +595,9 @@ fn turns_queued_input_joins_only_after_a_queue_operation() {
         assistant(14, "msg_b", "\"end_turn\""),
         system("turn_duration", 20),
     ]);
-    assert!(!row.turns.valid && row.turns.current_known);
-    assert_eq!(
-        row.turns.last.as_deref(),
-        Some(turn_key(ID, "user-13").as_str())
-    );
-    assert_eq!(row.turns.last_duration, Some(7));
+    // Its interval is never published: the start at 13 is a guess.
+    assert!(!row.turns.valid && !row.turns.current_known);
+    assert!(row.turns.last.is_none() && !row.claude.ambiguous);
     // A queue operation outside a turn, or before the turn started, is stale.
     for early in [
         vec![queue(5)],
@@ -636,10 +630,7 @@ fn turns_silent_end_followed_by_queued_input_is_unknown() {
         ]);
         assert!(!row.turns.valid, "{silent}");
         assert!(row.turns.active.is_none() && row.turns.finished.is_empty());
-        assert_eq!(
-            row.claude.pending_start,
-            Some((turn_key(ID, "user-500"), second(500)))
-        );
+        assert!(row.claude.ambiguous && row.claude.pending_start.is_none());
     }
     // A tool-use stop is not a silent end: the queued input still joins.
     let row = run(&[
@@ -756,6 +747,17 @@ fn turns_block_inconsistent_with_turns_is_rejected() {
     ]);
     pending.claude.pending_start = Some((turn_key(ID, "user-20"), second(20)));
     assert!(!pending.turn_state());
+    // Ambiguity holds no active turn or pending start, with coverage unknown.
+    let mut ambiguous = run(&[
+        user(10, "hello", ""),
+        assistant(11, "msg_a", "\"tool_use\""),
+    ]);
+    ambiguous.claude.ambiguous = true;
+    assert!(!ambiguous.turn_state());
+    ambiguous.turns.unknown();
+    assert!(ambiguous.turn_state());
+    ambiguous.claude.pending_start = Some((turn_key(ID, "user-20"), second(20)));
+    assert!(!ambiguous.turn_state());
 }
 
 #[test]
@@ -835,4 +837,60 @@ fn turns_join_needs_a_dequeue_or_remove_and_each_join_consumes_it() {
         user(13, "queued", ""),
     ]);
     assert!(!row.turns.valid);
+}
+
+#[test]
+fn turns_after_an_unjoined_trigger_publish_nothing_until_a_proven_end() {
+    let earlier = [
+        user(10, "hello", ""),
+        assistant(11, "msg_a", "\"end_turn\""),
+        system("turn_duration", 20),
+        user(31, "next", ""),
+        assistant(32, "msg_b", "\"tool_use\""),
+        // Input injected into the running turn without queue evidence.
+        notified(33, "agent-x", "completed"),
+        assistant(36, "msg_c", "\"end_turn\""),
+    ];
+    let row = run(&earlier);
+    assert!(!row.turns.valid && !row.turns.current_known);
+    assert!(row.turns.active.is_none() && row.claude.pending_start.is_none());
+    let mut lines = earlier.to_vec();
+    lines.push(system("turn_duration", 38));
+    let row = run(&lines);
+    // The truncated 33..38 interval is never current or last.
+    assert!(!row.turns.current_known);
+    assert_eq!(
+        row.turns.last.as_deref(),
+        Some(turn_key(ID, "user-10").as_str())
+    );
+    assert_eq!(row.turns.last_duration, Some(10));
+    // A trigger after that proven end publishes again.
+    lines.extend([
+        user(40, "again", ""),
+        assistant(41, "msg_d", "\"end_turn\""),
+        system("turn_duration", 45),
+    ]);
+    let row = run(&lines);
+    assert!(row.turns.current_known && !row.turns.valid);
+    assert_eq!(
+        row.turns.last.as_deref(),
+        Some(turn_key(ID, "user-40").as_str())
+    );
+    assert_eq!(row.turns.last_duration, Some(5));
+    // An abort is a proven end too; a later trigger alone is not.
+    let mut lines = earlier[..6].to_vec();
+    lines.extend([
+        user(34, "more", ""),
+        assistant(35, "msg_c", "\"tool_use\""),
+        user(36, "[Request interrupted by user]", ""),
+        user(40, "again", ""),
+        assistant(41, "msg_d", "\"tool_use\""),
+    ]);
+    let row = run(&lines);
+    assert!(row.turns.current_known);
+    assert_eq!(
+        row.turns.active.as_deref(),
+        Some(turn_key(ID, "user-40").as_str())
+    );
+    assert_eq!(row.turns.last_duration, Some(10));
 }
