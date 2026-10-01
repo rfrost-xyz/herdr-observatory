@@ -705,7 +705,7 @@ impl Classifier {
             && record
                 .message
                 .as_deref()
-                .is_none_or(|key| crate::common::hex_id(key, 64))
+                .is_none_or(|key| crate::common::hex_id(key, super::GROUP))
             && record
                 .model
                 .as_deref()

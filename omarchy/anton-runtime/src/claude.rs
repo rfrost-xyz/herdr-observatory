@@ -269,6 +269,9 @@ pub fn forked(record: &Value) -> bool {
 
 const SAFE: u64 = 9_007_199_254_740_991;
 const RING: usize = 32;
+/// Hex characters kept of a `message.id` hash: 64 bits, so a collision
+/// within the ring and the open group is negligible.
+pub(crate) const GROUP: usize = 16;
 const CHILDREN: usize = 128;
 
 /// Usage counters in source order: input, output, cache read, cache creation.
@@ -402,7 +405,7 @@ impl ClaudeCursor {
             && self.usage_seq <= self.coverage_seq
             && self.coverage_seq <= horizon
             && self.open.as_ref().is_none_or(|group| {
-                hex_id(&group.id, 64)
+                hex_id(&group.id, GROUP)
                     && (STOP_NULL..=STOP_OTHER).contains(&group.stop)
                     && (group.stop != STOP_NULL || group.response.is_none())
                     && (!group.tainted || group.response.is_none())
@@ -413,7 +416,7 @@ impl ClaudeCursor {
             && self
                 .closed
                 .iter()
-                .all(|id| hex_id(id, 64) && ids.insert(id.as_str()))
+                .all(|id| hex_id(id, GROUP) && ids.insert(id.as_str()))
             && self.compactions <= SAFE
             && self
                 .pending_start
@@ -465,7 +468,7 @@ pub struct Record {
     /// The D7 turn key of `uuid`.
     #[serde(deserialize_with = "Option::deserialize")]
     pub uuid: Option<String>,
-    /// sha256 of `message.id`.
+    /// The first `GROUP` hex characters of sha256 of `message.id`.
     #[serde(deserialize_with = "Option::deserialize")]
     pub message: Option<String>,
     pub synthetic: bool,
@@ -780,7 +783,7 @@ impl Record {
                 self.message = value
                     .as_str()
                     .filter(|id| safe_id(id, 128))
-                    .map(|id| common::sha256(id.as_bytes()))
+                    .map(|id| common::sha256(id.as_bytes())[..GROUP].to_owned())
             }
             11 => {
                 self.synthetic = value == "<synthetic>";
@@ -2295,6 +2298,19 @@ mod replay_tests {
     }
     fn body(lines: &[String]) -> String {
         lines.iter().map(|line| format!("{line}\n")).collect()
+    }
+    #[test]
+    fn block_with_a_full_ring_stays_compact() {
+        let lines: Vec<String> = (0..40)
+            .map(|n| assistant(&format!("msg_{n:04}"), n, "\"end_turn\"", [1, 1, 1, 1]))
+            .collect();
+        let row = run(&lines);
+        assert_eq!(row.claude.closed.len(), 32);
+        assert!(row.claude.validate(now()));
+        let size = serde_json::to_vec(&row.claude).unwrap().len();
+        println!("claude block bytes with a full ring: {size}");
+        // 2702 bytes with full 64-hex group hashes; 1118 with 16.
+        assert!(size <= 1200, "{size}");
     }
     #[test]
     fn replay_applies_a_counted_header_once_on_a_fresh_pass_only() {
