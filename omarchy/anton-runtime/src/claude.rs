@@ -17,6 +17,9 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+mod classifier;
+pub use classifier::{Classifier, Outcome};
+
 const LINE: usize = 65536;
 const ENTRIES: usize = 8192;
 const SUCCESSOR_BYTES: usize = 262144;
@@ -272,6 +275,7 @@ fn sum(counters: &[u64]) -> Option<u64> {
 #[serde(deny_unknown_fields)]
 pub struct Response {
     pub usage: Counters,
+    #[serde(deserialize_with = "Option::deserialize")]
     pub model: Option<String>,
 }
 impl Response {
@@ -288,6 +292,7 @@ pub struct Group {
     pub id: String,
     pub usage: Counters,
     pub stop: u8,
+    #[serde(deserialize_with = "Option::deserialize")]
     pub response: Option<Response>,
     /// Set when coverage failed while the group was open: it cannot restore
     /// `last_valid`, because it is not a complete group after the failure.
@@ -301,6 +306,8 @@ pub const STOP_TOOL_USE: u8 = 3;
 pub const STOP_OTHER: u8 = 4;
 
 /// D8: every Claude parser field beyond the shared row-level cursor fields.
+/// Every field is required, including each `Option`, so a block written by
+/// another version never resumes with defaulted state.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ClaudeCursor {
@@ -310,17 +317,23 @@ pub struct ClaudeCursor {
     pub cache_read: u64,
     pub cache_creation: u64,
     pub totals_valid: bool,
+    #[serde(deserialize_with = "Option::deserialize")]
     pub last: Option<Response>,
     pub last_valid: bool,
     pub usage_seq: u64,
     pub coverage_seq: u64,
+    #[serde(deserialize_with = "Option::deserialize")]
     pub open: Option<Group>,
     pub closed: Vec<String>,
     pub compactions: u64,
     pub compaction_iteration: bool,
+    #[serde(deserialize_with = "Option::deserialize")]
     pub pending_start: Option<(String, u64)>,
     pub abort_adjacent: bool,
     pub queued_since_start: bool,
+    /// The oversized-record classifier while a line over `LINE` is being read.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub classifier: Option<Classifier>,
 }
 impl Default for ClaudeCursor {
     fn default() -> Self {
@@ -341,6 +354,7 @@ impl Default for ClaudeCursor {
             pending_start: None,
             abort_adjacent: false,
             queued_since_start: false,
+            classifier: None,
         }
     }
 }
@@ -390,6 +404,7 @@ impl ClaudeCursor {
                 .pending_start
                 .as_ref()
                 .is_none_or(|(key, second)| hex_id(key, 24) && (1..=SAFE).contains(second))
+            && self.classifier.as_ref().is_none_or(Classifier::validate)
     }
 }
 
@@ -430,16 +445,21 @@ pub struct Record {
     pub compact_summary: bool,
     pub meta: bool,
     /// Validated timestamp in microseconds, at most now plus 1 s.
+    #[serde(deserialize_with = "Option::deserialize")]
     pub stamp: Option<u64>,
     /// The D7 turn key of `uuid`.
+    #[serde(deserialize_with = "Option::deserialize")]
     pub uuid: Option<String>,
     /// sha256 of `message.id`.
+    #[serde(deserialize_with = "Option::deserialize")]
     pub message: Option<String>,
     pub synthetic: bool,
+    #[serde(deserialize_with = "Option::deserialize")]
     pub model: Option<String>,
     pub stop: u8,
     pub usage: [Option<u64>; 4],
     /// The D4 iteration, when Claude Code's rule selects one over top level.
+    #[serde(deserialize_with = "Option::deserialize")]
     pub selected: Option<Counters>,
     pub compaction_iteration: bool,
     /// A consumed field is present with a value replay cannot represent.
@@ -517,6 +537,7 @@ pub struct Iterations {
     /// 0 absent or null, 1 an array, 2 any other value.
     pub shape: u8,
     pub compaction: bool,
+    #[serde(deserialize_with = "Option::deserialize")]
     pub candidate: Option<(u8, [Option<u64>; 4])>,
     /// The element being read.
     pub kind: u8,
@@ -775,6 +796,29 @@ impl Row {
             self.assistant(record);
         }
     }
+    /// Feeds one chunk of a line over `LINE` to the classifier. Malformed JSON
+    /// fails closed at once and the rest of the line is skipped unread.
+    fn oversized(&mut self, bytes: &[u8], terminated: bool, id: &str, time: f64) {
+        let fresh = !self.skipping;
+        self.skipping = !terminated;
+        let mut classifier = match self.claude.classifier.take() {
+            Some(classifier) => classifier,
+            None if fresh => Classifier::default(),
+            None => return,
+        };
+        if !classifier.feed(bytes, id, time) {
+            return self.invalid();
+        }
+        if !terminated {
+            self.claude.classifier = Some(classifier);
+            return;
+        }
+        match classifier.finish() {
+            Outcome::Invalid => self.invalid(),
+            Outcome::Unclassified(kind) => self.unclassified(kind),
+            Outcome::Record(record) => self.apply(&record),
+        }
+    }
     /// D3 grouping: a different `message.id` closes the open group, a later line
     /// of the open group replaces its contribution, and a closed id reopening
     /// makes totals unknown.
@@ -872,6 +916,7 @@ impl Row {
     ) -> bool {
         let mtime = mtime_us(info);
         let matches = self.file == [info.dev(), info.ino()]
+            && (self.skipping || self.claude.classifier.is_none())
             && head.len() as u64 <= self.offset
             && self.offset <= info.len()
             && self.turns.validate()
@@ -941,12 +986,8 @@ pub fn replay(
             .map_err(|_| "Claude session read failed")?;
         let terminated = bytes.last() == Some(&b'\n');
         if row.skipping || bytes.len() > LINE {
-            // Oversized records fail closed until the classifier handles them.
-            if !row.skipping {
-                row.invalid();
-            }
+            row.oversized(&bytes, terminated, id, time);
             row.offset = position(&mut stream)?;
-            row.skipping = !terminated;
             continue;
         }
         if !terminated {
@@ -960,6 +1001,9 @@ pub fn replay(
             Some(record) => row.apply(&record),
             None => row.invalid(),
         }
+    }
+    if let Some(classifier) = &mut row.claude.classifier {
+        classifier.suspend();
     }
     row.caught_up = row.offset == info.len() && !row.skipping;
     row.at = time;
@@ -1826,10 +1870,20 @@ mod replay_tests {
         assert!(!row.caught_up);
         assert_eq!(row.offset, header().len() as u64);
         assert_eq!(get(&row, "usage_seq"), Value::Null);
+        // An oversized well-formed record is classified, not dropped.
         let big = padded_user(2, LINE + 10);
-        std::fs::write(&path, header() + &first + "\n" + &big + "\n").unwrap();
+        let text = header() + &first + "\n" + &big + "\n";
+        std::fs::write(&path, &text).unwrap();
         let (row, _) = passes(&fixture, &path, Some(row));
-        assert!(!row.valid && !row.skipping);
+        assert!(row.valid && !row.skipping && row.claude.classifier.is_none());
+        assert_eq!(get(&row, "total_input"), json!(8));
+        // Malformed JSON in an oversized line fails closed and is skipped.
+        let broken = big.replacen("\"uuid\"", "\"uuid\" \"", 1);
+        let later = assistant("msg_b", 3, "\"end_turn\"", [1, 0, 0, 0]);
+        std::fs::write(&path, text + &broken + "\n" + &later + "\n").unwrap();
+        let (row, _) = passes(&fixture, &path, Some(row));
+        assert!(!row.valid && !row.skipping && row.claude.classifier.is_none());
         assert_eq!(get(&row, "total_input"), Value::Null);
+        assert_eq!(get(&row, "context"), json!(1));
     }
 }
