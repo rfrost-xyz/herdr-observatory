@@ -18,6 +18,8 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 mod classifier;
+#[cfg(test)]
+mod lifecycle_tests;
 mod text;
 pub use classifier::{Classifier, Outcome};
 pub use text::Text;
@@ -261,6 +263,7 @@ pub fn forked(record: &Value) -> bool {
 
 const SAFE: u64 = 9_007_199_254_740_991;
 const RING: usize = 32;
+const CHILDREN: usize = 128;
 
 /// Usage counters in source order: input, output, cache read, cache creation.
 pub type Counters = [u64; 4];
@@ -1024,6 +1027,76 @@ impl Row {
         }
         if record.kind == KIND_ASSISTANT {
             self.assistant(record);
+        }
+        self.children(record);
+    }
+    /// D6: inserts or updates one child, failing closed at the cap or
+    /// without a validated timestamp. `seq` is the largest accepted stamp.
+    fn child(&mut self, key: &str, status: &str, launch: bool, stamp: Option<u64>) {
+        let known = self.children.contains_key(key);
+        let Some(stamp) = stamp.filter(|_| known || launch && self.children.len() < CHILDREN)
+        else {
+            self.valid = false;
+            return;
+        };
+        self.children.insert(key.to_owned(), status.to_owned());
+        self.seq = self.seq.max(stamp);
+    }
+    /// D6 launches, synchronous results, resumes and task notifications.
+    fn children(&mut self, record: &Record) {
+        let user = record.kind == KIND_USER;
+        if user && record.tool {
+            let sync = !record.launch && record.duration;
+            if record.agent_bad && (record.launch || sync) || record.resumed_bad {
+                self.valid = false;
+                return;
+            }
+            if let Some(agent) = record.agent.as_deref() {
+                if record.launch {
+                    self.child(agent, "running", true, record.stamp);
+                } else if sync {
+                    self.child(agent, "completed", true, record.stamp);
+                }
+            }
+            if let Some(resumed) = record.resumed.as_deref()
+                && record.success
+                && self.children.contains_key(resumed)
+            {
+                self.child(resumed, "running", false, record.stamp);
+            }
+        }
+        let notification = user && record.origin == ORIGIN_NOTIFICATION
+            || record.kind == KIND_ATTACHMENT && record.queued && record.mode == MODE_NOTIFICATION;
+        if !notification {
+            return;
+        }
+        // A notification whose task id cannot be read may name a known child.
+        let Some(task) = record
+            .text
+            .as_ref()
+            .filter(|text| text.lead == text::LEAD_NOTIFICATION)
+            .and_then(|text| text.task.as_deref())
+        else {
+            self.valid = false;
+            return;
+        };
+        if self.children.contains_key(task) {
+            let status = match record.text.as_ref().map_or(0, |text| text.status) {
+                1 => "completed",
+                2 => "errored",
+                3 => "interrupted",
+                _ => "unknown",
+            };
+            self.child(task, status, false, record.stamp);
+        }
+    }
+    /// The D6 `subagent_status_seq`: the largest accepted child record stamp,
+    /// or `coverage_seq` while no child record has been accepted.
+    pub fn status_seq(&self) -> u64 {
+        if self.seq > 0 {
+            self.seq
+        } else {
+            self.claude.coverage_seq
         }
     }
     /// Feeds one chunk of a line over `LINE` to the classifier. Malformed JSON
