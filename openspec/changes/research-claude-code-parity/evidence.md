@@ -123,6 +123,8 @@ Round 8, on `4ea41ee`, found 3 blocking and 5 other findings, all addressed:
 
 The final bounded review, on `bb5ba89`, checked fact labels, privacy, consistency and compliance only, following the scope-of-authority pivot. It found 2 minor wording findings and 2 change 2 inputs, all applied. It verified every repository reference, the binary strings, the corpus structure and the privacy scan. A re-run on `bb34de9` found 2 wording contradictions (rate limits placed in change 3; PostModelSwitch fields) and 3 change 2 inputs. All were applied. A further re-run on `0af3c23` found an outcome-count contradiction and a missing rollout path for function hooks. Both are fixed. The re-run on `d9f109f` found that the plugin-statusLine mechanism had been mislabelled and that the function-hook flag sources were incomplete. Both are corrected.
 
+The final bounded review on `9d8a6a3` was **CLEAN**. Its one forward input belongs to change 3: `session.measure` sends `context` as `{window}` alone when there are no tokens yet.
+
 ## User decisions (2026-10-01)
 
 - `~/.claude.json` is accepted as provider-owned state, not an authentication file, for Claude identity and usage data.

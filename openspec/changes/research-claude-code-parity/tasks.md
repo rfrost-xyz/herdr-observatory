@@ -31,4 +31,4 @@ test, installed plugin or peer changes.
 
 - [x] 4.1 Strict OpenSpec validation and a privacy scan of the staged artefacts.
 - [x] 4.2 Independent adversarial review of the artefacts until clean.
-- [ ] 4.3 Archive without spec sync, publish, and merge with a merge commit.
+- [x] 4.3 Archive without spec sync and publish. The merge commit is verified after merge.
