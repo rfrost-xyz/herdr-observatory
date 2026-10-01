@@ -77,6 +77,14 @@ Round 3, on `edd2383`, found 4 blocking and 17 other findings, all addressed:
 
 A structure-only simulation of D7 with the round 3 fixes kept valid accumulated coverage in 18 of 18 main files: 109 turns, 0 orphan ends and 0 overlaps (reviewer's measurement).
 
+Round 4, on `6e01c99`, found 6 blocking and 9 other findings, all addressed:
+
+- D2: fork records copy history under the new id and are now inherited history;
+- D6: Claude `seq` starts at 0, with coverage time when there are no children;
+- D7: aborts confirm a pending start, plus the abort-adjacency reset;
+- D10: canonical `[1m]` model comparison, throttle on the RPC only, receipt consent at report time, and byte-preserving settings edits;
+- D10 and D11: the rate-limit channel moved to change 4 with its account amendments, per-window stamping that ignores expiry renders, the full provider switch list, `spend_limit` refusal, and `omarchy-companion` deltas.
+
 ## User decisions (2026-10-01)
 
 - `~/.claude.json` is accepted as provider-owned state, not an authentication file, for Claude identity and usage data.

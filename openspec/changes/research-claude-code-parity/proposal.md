@@ -40,10 +40,9 @@ The programme sequence, each change merged before the next starts:
 2. `add-claude-thread-telemetry`: native Claude transcript replay for local and
    peer threads, under the same contracts as Codex.
 3. `add-claude-status-reporter`: an installer-owned Claude statusLine reporter,
-   the equivalent of the Pi extension, for the context window and live rate
-   limits.
-4. `add-claude-allowances-identity`: Claude allowance rows and verified identity
-   from the reporter and `~/.claude.json`.
+   the equivalent of the Pi extension, for the context window.
+4. `add-claude-allowances-identity`: Claude allowance rows from the reporter's
+   live rate limits, and verified identity from `~/.claude.json`.
 
 ## Capabilities
 
@@ -55,7 +54,8 @@ None.
 
 None. This change records research and design decisions only.
 `skip_specs: true` avoids claiming behaviour that is not implemented. Changes 2
-to 4 carry the `harness-telemetry` and `account-allowances` deltas.
+to 4 carry the `harness-telemetry`, `account-allowances` and `omarchy-companion`
+deltas.
 
 ## Impact
 

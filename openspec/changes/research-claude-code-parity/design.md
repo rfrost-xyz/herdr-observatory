@@ -187,7 +187,8 @@ Anton fields are `technical.telemetry.*` and `technical.turn_timing.*` (`model.r
 
 - Open with `common::open_owned`: per-component no-follow, regular file, owner uid. A symlink anywhere fails closed.
 - The header is the first line: at most 64 KiB, newline-terminated, with `sessionId == id`. Any first-record type is tolerated.
-- Any later record that carries a `sessionId` different from the bound id makes the session's telemetry unknown. Records without `sessionId` (`file-history-snapshot`, `file-history-delta`) are ignored for identity and feed no metric. A fork that copied history therefore never counts a response in two sessions.
+- Any later record that carries a `sessionId` different from the bound id makes the session's telemetry unknown.
+- Fork and branch paths copy the parent's records into the new file and rewrite `sessionId`, adding `forkedFrom` [bin]. A record carrying `forkedFrom` is inherited history and feeds no total, last-response value, turn, child or compaction. Only its presence is read, never the nested id. Change 2 adds a synthetic fork fixture. Records without `sessionId` (`file-history-snapshot`, `file-history-delta`) are ignored for identity and feed no metric. A fork that copied history therefore never counts a response in two sessions.
 - Thread replay never reads `<id>/subagents/**`, `tool-results/**`, `memory/**` or `~/.claude.json`.
 
 ### D3. Deduplicated usage replay
@@ -201,14 +202,14 @@ Anton fields are `technical.telemetry.*` and `technical.turn_timing.*` (`model.r
 - `<synthetic>` records are skipped.
 - A group whose last line has `stop_reason: null` (aborted) still counts towards totals, because the request was billed. It is never the last-response or context source.
 - A missing or non-numeric counter in a counted group makes totals unknown. It never becomes zero.
-- Each condition that makes totals unknown also nulls the last-response values, `context` and `model` (the block's `last_valid` flag) until the next complete counted group. These conditions are the D2 mismatch, a ring match, an unclassifiable assistant record and a missing counter.
+- Each condition that makes totals unknown also nulls the last-response values, `context` and `model` (the block's `last_valid` flag) until the next complete counted group. These conditions are the D2 mismatch, a ring match, an unclassifiable assistant record, an unparseable line and a missing counter.
 - Totals use the top-level usage, which equals the sum of the `message` iterations. Advisor iterations are excluded, matching Claude Code's own accounting.
 
 **Replay and coverage.**
 - Totals come from the replay cursor, not a tail read. Codex reads provider-cumulative totals from a 512 KiB tail (`native.rs:504-580`), but Claude has no cumulative record.
 - The whole Claude numeric sample is published only when the cursor has `caught_up && !skipping`. That sample is the totals, last-response values, `context`, `model` and `usage_seq`. This follows the gating Codex applies to turns, children and compactions (`native.rs:764, 783, 815`).
 - Each pass reads at most `TAIL` bytes and resumes from the checkpoint, so a cold multi-megabyte transcript takes several passes before values are known.
-- `NativeTelemetry` keeps the last published Claude sample in memory per key. A pass that is not caught up re-emits it unchanged, with its original `usage_seq`. A binding or file change drops it. This is the retention the spec requires for an intermittent read.
+- `NativeTelemetry` keeps the last published Claude sample in memory per key. A pass that is not caught up re-emits it unchanged, with its original `usage_seq`. A binding change or file replacement (dev/inode, header or tail mismatch) drops it. Growth does not. This is the retention the spec requires for an intermittent read.
 - An unparseable line of 64 KiB or less calls `invalid()`, which for Claude rows also clears `totals_valid`.
 
 **`usage_seq`.**
@@ -217,7 +218,7 @@ Anton fields are `technical.telemetry.*` and `technical.turn_timing.*` (`model.r
 
 **Oversized lines.**
 - An oversized line (over 64 KiB) goes through a new bounded Claude envelope classifier. The Codex `Envelope` (`envelope.rs`) cannot extract these fields.
-- The classifier extracts only the fields D3, D5, D6 and D7 consume: `type`, `subtype`, `sessionId`, `uuid`, `timestamp`, `isMeta`, `origin.kind`, `commandMode`, `message.id`, `stop_reason`, `model`, `usage`, `toolUseResult.{status, agentId, resumedAgentId, success, totalDurationMs}`, `interruptedMessageId`, `isAbortedMidStream`, the bounded `task-id` and `status` tags, and the leading wrapper tag of user text.
+- The classifier extracts only the fields D3, D5, D6 and D7 consume: `type`, `subtype`, `sessionId`, `uuid`, `timestamp`, `isMeta`, `origin.kind`, `commandMode`, `message.id`, `stop_reason`, `model`, `usage`, `toolUseResult.{status, agentId, resumedAgentId, success, totalDurationMs}`, `interruptedMessageId`, `isAbortedMidStream`, the presence of `forkedFrom`, the bounded `task-id` and `status` tags, and the leading wrapper tag of user text.
 - Its state persists across pass boundaries in the `claude` block, because lines larger than `TAIL` exist.
 - An oversized record of a relevant type that cannot be classified makes the dependent coverage unknown:
 
@@ -272,7 +273,7 @@ Anton fields are `technical.telemetry.*` and `technical.turn_timing.*` (`model.r
 
 **Invalidation.** A recognised record with a malformed `agentId`, or exceeding the cap, sets `valid = false`, as for Codex.
 
-**`subagent_status_seq`.** This is the largest validated timestamp among accepted launch, resume and notification records, in microseconds. It is never assigned directly, because file order is not time order.
+**`subagent_status_seq`.** For Claude rows, row-level `seq` starts at 0, overriding its Codex meaning (D8). It becomes the largest validated timestamp among accepted launch, resume and notification records, in microseconds, and is never assigned directly, because file order is not time order. While no child record has been accepted, the published stamp is the largest validated record timestamp replayed (coverage time), never the replay wall time. A thread with no children therefore shows 0 children with an honest source time.
 
 **AGENTS.md amendment.** Change 2 amends AGENTS.md so that "typed native child lifecycle evidence" covers these structured Claude records. A start/stop hook ratio remains forbidden.
 
@@ -289,7 +290,8 @@ Anton fields are `technical.telemetry.*` and `technical.turn_timing.*` (`model.r
 - With no active turn, a trigger opens a pending start. It becomes the turn start only when an assistant record follows before the next trigger, including a `<synthetic>` error record, which confirms a start although D3 ignores its usage. Otherwise the newer trigger replaces it.
 - The first classified trigger or turn end sets `Turns.supported`, so `complete` can be published.
 - With an active turn, a trigger joins that turn only when a `queue-operation` record of any operation (enqueue, dequeue or remove) has appeared since the turn started. That record shows Claude Code queued the input into the running turn [obs shape, inf semantics]. Without it, accumulated coverage becomes unknown, because a turn that ended without a record (for example, a killed process) must not absorb the idle gap.
-- An abort while a start is pending discards the pending start without affecting coverage.
+- An abort while a start is pending confirms that start and ends the turn as aborted at the abort timestamp. An `isAbortedMidStream` assistant record confirms a pending start before it is handled as an abort.
+- An abort with no active turn and no pending start is ignored, apart from setting the abort-adjacency flag. The next trigger, assistant record or `turn_duration` clears that flag.
 - The turn key is `sha256("anton-turn-v1:" + session + ":" + uuid)[..24]` of the record that opened the turn, which satisfies `Turns::validate`.
 
 **Ending a turn.**
@@ -315,7 +317,7 @@ Anton fields are `technical.telemetry.*` and `technical.turn_timing.*` (`model.r
 - Offsets are bytes, never timestamps.
 
 **Row-level fields.**
-- `Cursor::children`, `valid`, `compactions_valid`, `turns`, `fingerprint`, `seq` and `offset` keep their existing meaning for Claude rows. `turns` and `fingerprint` remain required, so checkpoint v1 is kept.
+- `Cursor::children`, `valid`, `compactions_valid`, `turns`, `fingerprint` and `offset` keep their existing meaning for Claude rows. `seq` follows D6. `turns` and `fingerprint` remain required, so checkpoint v1 is kept.
 
 **The `claude` block.** All other Claude parser state lives in one required `claude: ClaudeCursor` block with `deny_unknown_fields`. `Cursor` itself does not deny unknown fields (`native.rs:88-110`), so an older binary would silently drop loose fields. A Claude-keyed row whose block is absent or invalid is discarded and replayed fresh, never resumed with zeroed sums.
 
@@ -363,7 +365,7 @@ Every block field is required, bounded and revalidated on reuse:
 - "Scoped cumulative harness metrics" (the native Codex sample retention sentence and the "Intermittent Codex usage read" scenario; the context sentence is assigned to change 3);
 - "Bounded native outcome summaries";
 - "Native turn wall-clock summaries" (Codex event names);
-- "Private native replay checkpoints" (Claude block and key);
+- "Private native replay checkpoints" (the Claude block and key, explicitly permitting the bounded allowlisted `model` string);
 - AGENTS.md lines 18, 46 and 57.
 
 ### D10. Claude reporter for window and rate limits (change 3)
@@ -392,22 +394,23 @@ A machine without the plugin, including another host receiving the dotfile, ther
 - Reinstall over Anton's own wrapper leaves it alone and never wraps twice.
 - A marker wrapper with no local receipt (for example, one arriving by dotfiles) is a conflict: the installer refuses and does not adopt it.
 - With no existing statusLine, the installer adds no wrapper.
-- Other keys and hooks are preserved.
+- Other keys and hooks are preserved byte for byte. The edit targets only the `statusLine.command` value. Re-serialising through `serde_json::Value` would sort keys, because `preserve_order` is unavailable offline. A fixture compares every byte outside that value across install and uninstall.
 
 **Reporter.**
 - The reporter runs only with `HERDR_ENV` and a pane.
 - A private per-pane state file lets it exit without any RPC when nothing changed.
-- Otherwise it sends at most one report per 30 seconds per pane. A change of window size or model bypasses the throttle.
+- Otherwise it sends at most one `pane.report_metadata` RPC per 30 seconds per pane. A change of window size or model bypasses the throttle.
+- The reporter exits unless the local receipt records the user's consent and the exact wrapper value. A wrapper that arrived by dotfiles on a host where the user never consented therefore reports nothing.
 
 **Window channel.**
 - The window uses v2 pane metadata through the existing `window` slot in `telemetry.rs` `GROUPS`.
 - The report is bound by kind `id`, comparing the statusLine `session_id` with Herdr's `agent_session.value`. `reporter.rs` currently requires kind `path` and `harness == "pi"`.
-- Wire values: `event:"session"` and `phase:"ready"` (the values the collector already fills in, so nothing visible changes). `seq` is render time in microseconds, kept strictly increasing per pane in the reporter state. `obs_model` is the statusLine model id.
+- Wire values: `event:"session"` and `phase:"ready"` (the values the collector already fills in, so nothing visible changes). `seq` is render time in microseconds, kept strictly increasing per pane in the reporter state. `obs_model` is the statusLine model id canonicalised: a trailing `[1m]` or `[2m]` is stripped and the id lower-cased. The `[1m]` suffix that selects a 1M window never reaches transcripts, and the telemetry sanitiser rejects brackets.
 - It sends no `usage_seq`, totals or `display_agent`.
 - statusLine runs are event-driven: new messages, token usage, model or mode changes, rate-limit reset timers, and `refreshInterval` only when configured. Nothing runs while a session is idle.
-- The collector takes `window` only from a bound reporter sample whose model equals replay's last model, and `context` only from replay (D4). It computes `context_percent` once, without the Codex reserve. `context_window.used_percentage` is not used.
+- The collector takes `window` only from a bound reporter sample whose canonical model equals replay's last model, compared case-insensitively. A model alias rather than a full id is a change 3 risk, with a fixture, and `context` only from replay (D4). It computes `context_percent` once, without the Codex reserve. `context_window.used_percentage` is not used.
 
-**Rate-limit channel.** Rate limits belong to an account, not a pane, and v2 pane metadata has no free keys (16 of 16 used, `reporter.rs`). So the reporter writes them to a private, owner-checked, atomic, bounded state file under the plugin state directory, keyed by the hashed account (D11). Change 4 consumes it. `spend_limit` is ignored.
+**Rate limits are not part of change 3.** Rate limits belong to an account, not a pane, and v2 pane metadata has no free keys (16 of 16 used, `reporter.rs`). Change 4 extends the reporter with a private account channel (D11), together with the AGENTS.md and spec amendments that make an account read lawful. Change 3 reads no account data.
 
 **Scope limits.**
 - Remote hosts have no plugin state. Remote Claude window and allowances are unavailable in this programme.
@@ -427,12 +430,15 @@ Change 3 starts by asking the user whether Anton may edit this tracked file, giv
 
 The user accepted `~/.claude.json` as provider-owned state, not an authentication file, for identity and usage data. Change 4 amends AGENTS.md accordingly.
 
+**Rate-limit channel.** Change 4 extends the change 3 reporter. On a changed sample, the reporter writes rate limits to a private, owner-checked, atomic, bounded state file under the plugin state directory, keyed by the hashed account. The write is not throttled, because renders are event-driven and a throttled final sample would be lost.
+
 **Account binding at report time.**
 - The reporter reads `oauthAccount.accountUuid` from the global config file that Claude Code itself resolves: `($CLAUDE_CONFIG_DIR or $HOME)/.claude.json` [bin]. The read is bounded, owner-checked and no-follow.
 - It refuses to attribute when a legacy `.config.json` exists in the config directory, or when `CLAUDE_CODE_CUSTOM_OAUTH_URL` is set. Either changes the file name.
 - The collector resolves the identity file by the same rule.
 - It hashes the id with the prefix `observatory-claude-account-v1:`, so Claude keys cannot collide with Codex keys (`allowances.rs:63-66`), and stores only the hash.
-- The reporter refuses to attribute rate limits when its own environment names a non-subscription auth mode. It checks variable names only: `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`, `CLAUDE_CODE_CUSTOM_OAUTH_URL`.
+- The reporter refuses to attribute rate limits when its own environment names a non-subscription auth mode. It checks variable names only: `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CODE_CUSTOM_OAUTH_URL`, and every provider switch in the binary (`CLAUDE_CODE_USE_BEDROCK`, `_VERTEX`, `_FOUNDRY`, `_ANTHROPIC_AWS`, `_ANTHROPIC_GOOGLE_CLOUD`, `_MANTLE`, `_GATEWAY`).
+- It also refuses when the payload contains `rate_limits.spend_limit`, which only gateway mode emits. A gateway sign-in without `spend_limit` is a residual change 4 risk.
 - The reporter keeps, per session, the account hash each sample was attributed under. If the account read for a session changes (a `/login` elsewhere), it drops that session's samples until `rate_limits` or `current_usage` change afterwards. In-process limits carry no account id, so a residual risk remains and is recorded in change 4.
 - The collector accepts an observation only when its hash matches an explicit Claude account mapping. The mapping gains a provider field, and the user obtains the key from diagnostics, as for Codex.
 
@@ -442,9 +448,9 @@ The user accepted `~/.claude.json` as provider-owned state, not an authenticatio
 
 **Source time.**
 - The statusLine payload has no sample time.
-- The reporter stamps `sampled_at` with render time only when `context_window.current_usage` or `rate_limits` differs from its previous report for that session. Otherwise it keeps the previous stamp.
+- The reporter stamps each window separately. A window's `sampled_at` becomes render time only when that window gains a new `(used_percentage, resets_at)` value, or when `current_usage` changed on this render. A window that disappears because it expired is not a new sample: Claude Code schedules a render at each reset, with no API response behind it. Otherwise the previous stamp is kept. Change 4 adds a fixture for the reset-timer render.
 - A session's first report after state loss is not stamped fresh until `current_usage` changes on a later render.
-- In the per-account file, the newest `sampled_at` wins. A write with an older stamp is ignored.
+- In the per-account file, the newest `sampled_at` per window wins. A write with an older stamp is ignored.
 - So the existing ten-minute rule ages out idle accounts honestly.
 - `cachedUsageUtilization` is a fallback only when its `accountUuid` matches, with `fetchedAtMs` as its source time. It usually fails the ten-minute rule.
 
@@ -457,7 +463,8 @@ The user accepted `~/.claude.json` as provider-owned state, not an authenticatio
 - "Account-bound allowance observation" (source type: reporter observation or provider state file, not only an RPC; fallback freshness);
 - "Fleet-bound account sources" (Claude is local-only);
 - "Provider-neutral allowance rows" (duration by window name for Claude, single pacing window);
-- any Codex-specific pacing wording.
+- any Codex-specific pacing wording, and the Codex-only Purpose;
+- `omarchy-companion`: "Native read-only identity RPCs SHALL be matched against existing account mappings" gains the Claude provider-state source.
 
 **Forbidden sources.**
 - The credential file and the OAuth usage endpoint.
