@@ -1782,7 +1782,6 @@ mod tests {
         let saved: CheckpointFile = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert!(saved.records.is_empty());
     }
-    /// Clears the per-run cursor fields so a golden comparison is stable.
     /// A process spawned from another thread holds a copy of every open file
     /// description until it calls exec, including the checkpoint lock's, so a
     /// zero-wait lock fails spuriously while siblings spawn.
@@ -1826,6 +1825,7 @@ mod tests {
         }
         assert_eq!(failures, 0);
     }
+    /// Clears the per-run cursor fields so a golden comparison is stable.
     fn normalised(cursors: &Value) -> Value {
         let mut value = cursors.clone();
         for cursor in value.as_object_mut().unwrap().values_mut() {
