@@ -19,8 +19,8 @@ or private paths appear here.
 | This repository at `2d2be90` | Source and specs, with `file:line` references in design.md re-checked by the critique pass. |
 
 Research ran as a read-only workflow: five researchers, a synthesis and an
-adversarial critique. The critique re-verified the load-bearing claims and
-produced 13 corrections, all applied in design.md:
+adversarial critique. The critique re-verified the load-bearing claims. Its 13
+numbered points held 10 corrections, all applied in design.md:
 
 - the context rule excludes `compaction` iterations and applies a validity fallback;
 - a second compaction path exists;
@@ -33,7 +33,28 @@ produced 13 corrections, all applied in design.md:
 - the SDK child status enum;
 - the date of the counts.
 
-The critique found no private data in the synthesis. Herdr environment variables
+The critique found no private data in the synthesis.
+
+## Review rounds
+
+Round 1, an independent review of `0bfce30` through two lenses (factual accuracy,
+and decision completeness against AGENTS.md and the canonical specs), found 7
+blocking and 13 other findings. Each is addressed in design.md:
+
+- D3: coverage citation, totals from the cursor, `usage_seq`, the oversized-field allowlist and missing counters.
+- D6: `commandMode`, launches without `agentId`, resume via `resumedAgentId`, the unknown bucket, `blocked`, and notification before launch.
+- D7: classification precedence, pending starts, queued prompts, orphan ends and overlap.
+- D8: a required `claude` block that denies unknown fields, the full allowlist, and hashed keys.
+- D9: the old-local cost, and the list of spec requirements to modify.
+- D1: the configured root, which is local only.
+- D4: explicit formulas, and the `lastModelUsage` rejection.
+- D11: freshness, and duration by window name.
+- Evidence counts and labels.
+
+## User decisions (2026-10-01)
+
+- `~/.claude.json` is accepted as provider-owned state, not an authentication file, for Claude identity and usage data.
+- The context window needs hook equivalence with Codex and Pi. After reviewing how hooks are created today, the equivalent is an installer-owned Claude statusLine reporter, the counterpart of Anton's Pi extension. It becomes programme change 3 (design D10). Herdr environment variables
 are present in agent shells, so any Claude Code probe from a pane would rebind
 that pane through the Herdr SessionStart hook. No such probe was run.
 
@@ -43,15 +64,20 @@ that pane through the Herdr SessionStart hook. No such probe was run.
 |---|---|
 | Session id equals file stem and every main-file `sessionId` | 18 of 18 files, 0 mismatching records |
 | `isSidechain` separates parent and child files | All main-file records false, all subagent records true |
-| Split responses share `message.id` | 740 main-file groups, all contiguous with identical usage. Subagent files: 1,311 groups, 1,287 with streaming partials, 6 non-contiguous ids |
+| Split responses share `message.id` | 740 main-file multi-line groups, all contiguous with identical usage. Subagent files: 1,311 multi-line groups (first pass), 1,287 with streaming partials, 6 non-contiguous ids |
 | Summing every line overcounts | Main files: input 2.53×, output 3.04× |
-| Last line of a group is the maximum | 2,059 of 2,059 multi-line groups |
-| Advisor iterations | 86 responses. Top-level usage equals the sum of `message` iterations in 86 of 86 |
+| Last line of a group is the maximum | All multi-line groups in both passes (2,190 of 2,190 in the second pass) |
+| Advisor iterations | Second pass: 51 deduplicated responses (94 lines) across main and subagent files. Top-level usage equals the sum of `message` iterations in 51 of 51 |
 | No window size in transcripts | 0 window fields. `[1m]` in 0 of about 5,800 model strings |
 | Compaction records | 0 observed. Shape from the binary |
 | Turn ends | 103 `turn_duration` records. `durationMs` matches the prompt-to-record gap (median difference 0.011 s, 98 turns) |
 | Non-monotonic timestamps | 23 negative gaps in file order |
-| Async children | 17 launches, 17 matching child files. 49 task notifications, statuses `completed` 47 and `failed` 2 |
+| Async children | 23 `async_launched` results: 17 with `agentId` (17 matching child files), 6 without. 49 task notifications, statuses `completed` 47 and `failed` 2. 20 notification task ids matched a known child, 32 did not. 4 of 13 `queued_command` notifications had no `origin` but all had `commandMode: "task-notification"` |
+| Child resume | 8 `SendMessage` uses. 5 results carry `resumedAgentId` and `success` |
+| Prompt-shaped non-turns (second pass) | Records without `origin` that match a naive prompt predicate: 19 slash-command echoes, 12 local-command outputs, 2 bash-mode records, 3 interrupt markers |
+| Hook payloads | 33 hook event schemas in the binary. None carries a context window size or rate limits. SessionStart and PostModelSwitch carry `model` and `context_tokens` |
+| Plugin statusLine | The plugin customisation table disables `statusLine` [bin] |
+| Hook ownership on this host | Herdr integration current for Claude (v10), Codex (v8) and Pi (v9). The user badge script is wired into Claude settings and Codex `notify`. Anton's installer owns only the Pi extension and the retired Codex shim |
 | Herdr Claude binding | Every live Claude pane had `agent_session` with keys `{agent, kind, source, value}`, kind `id`. Each id resolved to exactly one transcript |
 | Line sizes | p50 1.6 KB, p99 42.7 KB, max 832 KB. 5 lines over 256 KiB. Last assistant line within 73 KB of end of file |
 

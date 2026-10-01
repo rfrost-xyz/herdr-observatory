@@ -16,7 +16,7 @@ responses two or three times, or reach for an authentication file.
 
 ## What Changes
 
-This is change 1 of 3 in the Claude Code parity programme. It is planning only
+This is change 1 of 4 in the Claude Code parity programme. It is planning only
 and changes no runtime, test or presentation code.
 
 - Record the Claude Code local data surfaces: transcript format, subagent
@@ -27,8 +27,10 @@ and changes no runtime, test or presentation code.
   unavailable with the reason.
 - Decide session binding, deduplication, turn, completion, compaction and
   checkpoint rules for change 2, so that implementation does not improvise them.
+- Review how harness hooks are created today (Herdr integration, user scripts,
+  Anton's installer) and decide the Claude equivalent of the Pi reporter.
 - Assess allowance and identity sources against "never parse authentication
-  files", and define the evidence gate that starts change 3.
+  files", with the user's decision on `~/.claude.json`.
 - Record the unchanged baseline: test suites, the measurement harness and the
   release binary hash.
 
@@ -37,8 +39,11 @@ The programme sequence, each change merged before the next starts:
 1. `research-claude-code-parity` (this change): research and decisions.
 2. `add-claude-thread-telemetry`: native Claude transcript replay for local and
    peer threads, under the same contracts as Codex.
-3. `add-claude-allowances-identity`: Claude allowances and identity from a
-   compliant provider-owned source, or a recorded source blocker.
+3. `add-claude-status-reporter`: an installer-owned Claude statusLine reporter,
+   the equivalent of the Pi extension, for the context window and live rate
+   limits.
+4. `add-claude-allowances-identity`: Claude allowance rows and verified identity
+   from the reporter and `~/.claude.json`.
 
 ## Capabilities
 
@@ -50,11 +55,15 @@ None.
 
 None. This change records research and design decisions only.
 `skip_specs: true` avoids claiming behaviour that is not implemented. Changes 2
-and 3 carry the `harness-telemetry` and `account-allowances` deltas.
+to 4 carry the `harness-telemetry` and `account-allowances` deltas.
 
 ## Impact
 
 Planning artefacts under `openspec/changes/research-claude-code-parity` only. No
-source, test, installed plugin or peer changes. The visible consequence for later
-changes: the Claude context dial stays unknown, because no compliant source for
-the context window size was found (design D4).
+source, test, installed plugin or peer changes. Consequences for later
+changes:
+
+- After change 2 the Claude context dial stays unknown until change 3 adds the
+  reporter, because transcripts carry no window size (design D4 and D10).
+- Change 3 edits the user's Claude settings through an owned, reversible
+  installer entry.

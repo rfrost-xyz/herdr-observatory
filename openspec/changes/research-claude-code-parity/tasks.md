@@ -1,6 +1,6 @@
 # Tasks
 
-Change 1 of 3 in the Claude Code parity programme. Planning only: no source,
+Change 1 of 4 in the Claude Code parity programme. Planning only: no source,
 test, installed plugin or peer changes.
 
 ## 1. Research
@@ -12,6 +12,8 @@ test, installed plugin or peer changes.
 - [x] 1.5 Read the Omarchy Claude usage collector for format knowledge only.
 - [x] 1.6 Classify `~/.claude.json` by key names and types only, and check that its usage cache binds to the account profile.
 - [x] 1.7 Run an independent adversarial critique of the synthesis and fold every correction into design.md.
+- [x] 1.8 Review how harness hooks are created today (Herdr integration, user scripts, Anton's installer) and which hook payloads carry the context window or rate limits.
+- [x] 1.9 Record the user's decisions on `~/.claude.json` and on the Claude reporter.
 
 ## 2. Decisions
 
