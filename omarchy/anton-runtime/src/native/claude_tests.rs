@@ -731,7 +731,13 @@ fn claude_deadline_skip_reemits_the_retained_sample_of_a_current_binding() {
         let mut rows = validate_cursors(cursors);
         let mut active = BTreeSet::new();
         let mut agent = agent();
-        follower.enrich_claude(&mut agent, &mut rows, &mut active, now(), Instant::now());
+        follower.enrich_claude(
+            &mut agent,
+            &mut rows,
+            &mut active,
+            now(),
+            [Instant::now(); 2],
+        );
         assert!(active.contains(&key()));
         (
             agent["_native_telemetry"].clone(),
@@ -769,7 +775,13 @@ fn claude_deadline_inside_rediscovery_is_a_skip_not_a_drop() {
         let mut rows = validate_cursors(&cursors);
         let mut agent = agent();
         let deadline = Instant::now() + Duration::from_micros(300);
-        follower.enrich_claude(&mut agent, &mut rows, &mut BTreeSet::new(), now(), deadline);
+        follower.enrich_claude(
+            &mut agent,
+            &mut rows,
+            &mut BTreeSet::new(),
+            now(),
+            [deadline; 2],
+        );
         (
             agent["_native_telemetry"].clone(),
             rows.contains_key(&key()),
@@ -815,7 +827,7 @@ fn claude_peer_deadline_skip_never_returns_an_unverified_row() {
             &mut rows,
             &mut BTreeSet::new(),
             time,
-            Instant::now(),
+            [Instant::now(); 2],
         );
         assert!(peer.claude.is_empty());
         (
@@ -834,6 +846,12 @@ fn claude_peer_deadline_skip_never_returns_an_unverified_row() {
     unknown(&telemetry, micros(23));
 }
 
+/// The deadline passes after `bind` and before any replay pass, so the file
+/// is not opened in this call. `bind` has just made a peer's fresh binding
+/// current, so only a sample retained from an earlier verified pass may be
+/// re-emitted; the incoming row otherwise takes the all-null sample or is
+/// withheld (D1, D3). Bind gets a far deadline and the passes an expired one,
+/// so this reaches the skip at that call site in `enrich_claude`.
 #[test]
 fn claude_deadline_after_bind_never_returns_an_unverified_row() {
     let fixture = Fixture::new();
@@ -841,28 +859,32 @@ fn claude_deadline_after_bind_never_returns_an_unverified_row() {
     let mut local = NativeTelemetry::default();
     let (first, _, cursors) = enrich(&mut local, &json!({}));
     assert_eq!(first["total_output"], 26);
-    let root = claude::projects_root();
-    let far = Instant::now() + Duration::from_secs(5);
-    // A peer's fresh follower binds in this call, then its deadline passes
-    // before any pass: nothing verified the file, so the row takes the
-    // all-null sample.
-    let mut peer = NativeTelemetry::default();
-    assert!(matches!(peer.bind(&root, ID, &key(), far), Some(Some(_))));
-    let mut rows = validate_cursors(&cursors);
-    let mut pane = agent();
-    peer.skip_after_bind(&mut pane, &key(), &mut rows, now());
-    unknown(&pane["_native_telemetry"], micros(23));
-    assert_eq!(serde_json::to_value(&rows[&key()]).unwrap(), cursors[key()]);
+    let after_bind = |follower: &mut NativeTelemetry, time: f64| {
+        let mut rows = validate_cursors(&cursors);
+        let mut pane = agent();
+        let far = Instant::now() + Duration::from_secs(5);
+        follower.enrich_claude(
+            &mut pane,
+            &mut rows,
+            &mut BTreeSet::new(),
+            time,
+            [far, Instant::now()],
+        );
+        assert!(follower.claude[&key()].path.is_some());
+        (pane["_native_telemetry"].clone(), rows.get(&key()).cloned())
+    };
+    // A peer's fresh follower binds in this call: nothing verified the file,
+    // so the row takes the all-null sample.
+    let (telemetry, row) = after_bind(&mut NativeTelemetry::default(), now());
+    unknown(&telemetry, micros(23));
+    assert_eq!(serde_json::to_value(row).unwrap(), cursors[key()]);
     // Before any of the row's times nothing can be stamped: it is withheld.
-    let mut rows = validate_cursors(&cursors);
-    let mut pane = agent();
-    peer.skip_after_bind(&mut pane, &key(), &mut rows, (BASE + 20) as f64);
-    assert!(pane["_native_telemetry"].is_null() && !rows.contains_key(&key()));
+    let (telemetry, row) = after_bind(&mut NativeTelemetry::default(), (BASE + 20) as f64);
+    assert!(telemetry.is_null() && row.is_none());
     // A local follower with a sample retained from a verified pass re-emits it.
-    let mut rows = validate_cursors(&cursors);
-    let mut pane = agent();
-    local.skip_after_bind(&mut pane, &key(), &mut rows, now());
-    assert_eq!(pane["_native_telemetry"]["total_output"], 26);
+    let (telemetry, row) = after_bind(&mut local, now());
+    assert_eq!(telemetry, retained(&first));
+    assert!(row.is_some());
 }
 
 #[test]

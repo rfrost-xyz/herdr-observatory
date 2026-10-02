@@ -1002,13 +1002,15 @@ impl NativeTelemetry {
     }
     /// One Claude pane: bind, replay up to 16 bounded passes, then publish the
     /// caught-up sample, or re-emit the retained one for an incomplete replay.
+    /// `deadline` bounds the bind and `passes` the replay; both are the shared
+    /// deadline outside tests, which split them to reach each skip.
     fn enrich_claude(
         &mut self,
         agent: &mut Value,
         cursors: &mut BTreeMap<String, Cursor>,
         active: &mut BTreeSet<String>,
         time: f64,
-        deadline: Instant,
+        [deadline, passes]: [Instant; 2],
     ) {
         let Some((session, key)) = claude_session(agent) else {
             return;
@@ -1039,11 +1041,11 @@ impl NativeTelemetry {
         let mut row = incoming_row.clone().and_then(Cursor::into_row);
         let (mut ran, mut restarted, mut withhold) = (false, false, false);
         for _ in 0..16 {
-            if Instant::now() >= deadline {
+            if Instant::now() >= passes {
                 break;
             }
             let offset = row.as_ref().map(|v| v.offset);
-            let pass = deadline.min(Instant::now() + Duration::from_millis(600));
+            let pass = passes.min(Instant::now() + Duration::from_millis(600));
             let (next, resumed) =
                 match claude::resume(&root, &path, &session, row.take(), time, pass) {
                     Ok(value) => value,
@@ -1308,7 +1310,7 @@ impl NativeTelemetry {
         }
         for agent in agents.iter_mut().take(32) {
             if agent["agent"] == "claude" {
-                self.enrich_claude(agent, &mut cursors, &mut active, time, deadline);
+                self.enrich_claude(agent, &mut cursors, &mut active, time, [deadline; 2]);
             }
         }
         cursors.retain(|key, _| active.contains(key));
