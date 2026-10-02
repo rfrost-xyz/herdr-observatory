@@ -820,3 +820,5 @@ The spec now promises a mask only for work the transcript records in a structure
 - Current turn known: 12 of 20 files.
 
 **Gates:** fmt and clippy are clean. The full suite passes: lib 223, main 19, native_navigation 6, native_process 32.
+
+**Round 19.** Lenses 1 to 3 were CLEAN. Lens 4 found no blocking or non-blocking issues and two design.md wording nits, both fixed: the unreadable task-id case makes children invalid and does not clear `clean`, and the residual list now has three bullets.
