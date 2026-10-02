@@ -355,6 +355,15 @@ fn retain_claude(
         .filter_map(|v| v.technical.session_generation)
         .collect::<BTreeSet<_>>()
         .len();
+    // A peer enriches each session once per probe and gives every pane on it
+    // the same outcome. A pane with telemetry therefore speaks for its
+    // generation, and a pane without it beside one is no incomplete pass.
+    let carried = agents
+        .iter()
+        .take(32)
+        .filter(|v| bound(v) && v.technical.telemetry.is_some())
+        .filter_map(|v| v.technical.session_generation)
+        .collect::<BTreeSet<_>>();
     let mut next = BTreeMap::new();
     for agent in agents.iter_mut().take(32).filter(|v| bound(v)) {
         let generation = agent.technical.session_generation.unwrap();
@@ -381,7 +390,10 @@ fn retain_claude(
                     next.insert(agent.id.clone(), (generation, subset));
                 }
             }
-            None if rows.min(requested) >= panes && !rejected.contains(&agent.id) => {
+            None if rows.min(requested) >= panes
+                && !rejected.contains(&agent.id)
+                && !carried.contains(&generation) =>
+            {
                 if let Some((generation, subset)) = retained
                     .remove(&agent.id)
                     .filter(|(old, _)| *old == generation)
@@ -1693,6 +1705,49 @@ mod tests {
         retain_claude(&mut retained, &mut agents, 1, 1, &BTreeSet::new());
         assert!(shown(&agents, 1) && !shown(&agents, 33));
         assert_eq!(retained.keys().collect::<Vec<_>>(), ["test:b"]);
+    }
+    /// Two panes on one session share a generation. When the peer sends
+    /// telemetry for one and none for the other, the first carries the
+    /// session's outcome, so the second never re-emits its retained copy:
+    /// after a file replacement that copy belongs to the replaced file (D3).
+    #[test]
+    fn claude_retention_never_reemits_beside_telemetry_in_the_same_generation() {
+        let seq = (common::now() as u64 - 60) * 1_000_000;
+        let two = |one: Value, other: Value| {
+            let mut value = sample("working", common::now());
+            value.agents[0] = claude(7, one);
+            let mut second = claude(7, other);
+            second.id = "test:pane-2".into();
+            value.agents.push(second);
+            value.cursors = claude_row();
+            value.requested = Some(1);
+            value
+        };
+        let mut state = peer();
+        state.sample("test", Ok(two(caught_up(seq), caught_up(seq))));
+        assert_eq!(state.retained["test"].len(), 2);
+        let all_null = json!({"seq":seq,"event":"session","phase":"ready"});
+        state.sample("test", Ok(two(all_null, Value::Null)));
+        let shown = |state: &State, i: usize| {
+            state.hosts[0].agents[i]
+                .technical
+                .telemetry
+                .as_ref()
+                .map(|v| v.total_input)
+        };
+        assert_eq!((shown(&state, 0), shown(&state, 1)), (Some(None), None));
+        assert!(state.retained["test"].is_empty());
+        // Both panes without telemetry is an incomplete pass: both re-emit.
+        state.sample("test", Ok(two(caught_up(seq), caught_up(seq))));
+        state.sample("test", Ok(two(Value::Null, Value::Null)));
+        assert_eq!(shown(&state, 0), Some(Some(3461)));
+        assert_eq!(shown(&state, 1), Some(Some(3461)));
+        // Another generation's telemetry does not stop a re-emission.
+        let mut agents = vec![claude(7, Value::Null), claude(8, caught_up(seq))];
+        agents[1].id = "test:other".into();
+        let mut retained = state.retained["test"].clone();
+        retain_claude(&mut retained, &mut agents, 2, 2, &BTreeSet::new());
+        assert!(agents[0].technical.telemetry.is_some());
     }
     /// A synthetic caught-up Claude cursor row, as a peer returns it.
     fn claude_row() -> Value {
