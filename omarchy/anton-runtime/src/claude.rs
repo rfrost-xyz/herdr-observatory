@@ -183,13 +183,22 @@ enum Successor {
 
 /// Cases 2 (bound exhausted) and 3 (first `session_id` is the bound id), and an
 /// unsafe candidate or unparseable record, return `Unknown`. The time budget
-/// running out or a read error returns `Truncated`.
+/// running out, or an open or read error, returns `Truncated`.
 fn first_session_id(
     path: &Path,
     id: &str,
     budget: &Budget,
 ) -> std::result::Result<Successor, Predecessor> {
-    let file = common::open_owned(path, false, false).map_err(|_| Predecessor::Unknown)?;
+    let file = common::open_owned(path, false, false).map_err(|_| {
+        // Only a symlink, a non-file or another owner is unsafe; any other
+        // failure (permissions, a file removed since listing) is an IO error.
+        match std::fs::symlink_metadata(path) {
+            Ok(info) if !info.is_file() || info.uid() != unsafe { libc::getuid() } => {
+                Predecessor::Unknown
+            }
+            _ => Predecessor::Truncated,
+        }
+    })?;
     let mut stream = BufReader::new(file);
     let mut consumed = 0;
     for _ in 0..SUCCESSOR_RECORDS {
@@ -1947,6 +1956,33 @@ mod tests {
         assert!(first > LINE && text[..first].matches('\n').count() > 16);
         std::fs::write(&next, &text).unwrap();
         aged(&next, 120);
+        assert_eq!(
+            predecessor(&bound, ID, &mut budget()),
+            Predecessor::Clear { growing: false }
+        );
+    }
+    /// A candidate that cannot be opened for a reason other than a symlink, a
+    /// non-file or another owner is an IO error: truncated, so not cached.
+    #[test]
+    fn predecessor_candidate_open_error_is_truncated_not_cached() {
+        use std::os::unix::fs::PermissionsExt;
+        if unsafe { libc::getuid() } == 0 {
+            return;
+        }
+        let fixture = Fixture::new();
+        let bound = fixture.file("slug-a", &format!("{ID}.jsonl"), &header_line(ID));
+        aged(&bound, 60);
+        let next = fixture.file(
+            "slug-a",
+            "fixture-session-c.jsonl",
+            &successor(0, 0, "x", ID),
+        );
+        std::fs::set_permissions(&next, std::fs::Permissions::from_mode(0o000)).unwrap();
+        assert_eq!(
+            predecessor(&bound, ID, &mut budget()),
+            Predecessor::Truncated
+        );
+        std::fs::set_permissions(&next, std::fs::Permissions::from_mode(0o600)).unwrap();
         assert_eq!(
             predecessor(&bound, ID, &mut budget()),
             Predecessor::Clear { growing: false }
