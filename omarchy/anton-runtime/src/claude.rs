@@ -645,6 +645,15 @@ pub struct ClaudeCursor {
     /// a human-origin or shape prompt opens a pending start normally. Only
     /// set while idle and not ambiguous.
     pub local_idle: bool,
+    /// The current turn, or the idle state, is provably dated (D7): the
+    /// last end was a `turn_duration` that passed the gate with no
+    /// background agent or workflow pending and no child running, and any
+    /// turn since was opened by a human-origin or shape prompt. Cleared by
+    /// every other end, an injected trigger, a child launch or resume,
+    /// local output, a silent end and unknown turn coverage. The current
+    /// turn is published only while it is set. Never set while ambiguous,
+    /// `lost_idle`, `local_idle` or `silent_end`.
+    pub clean: bool,
     /// A record named another session (D2): every value of this binding
     /// stays unknown, and later records feed nothing, until a fresh replay.
     pub foreign: bool,
@@ -682,6 +691,7 @@ impl Default for ClaudeCursor {
             ambiguous: false,
             lost_idle: false,
             local_idle: false,
+            clean: true,
             foreign: false,
             end_floor: 0,
             classifier: None,
@@ -1467,6 +1477,7 @@ impl Row {
     /// Accumulated turn coverage becomes unknown, with the D8 turn state.
     fn turns_unknown(&mut self) {
         self.turns.unknown();
+        self.claude.clean = false;
         self.claude.pending_start = None;
         self.claude.pending_command = false;
         self.claude.queued_since_start = None;
@@ -1551,6 +1562,7 @@ impl Row {
             }
             if let Some(agent) = record.agent.as_deref() {
                 if record.launch {
+                    self.claude.clean = false;
                     self.child(agent, "running", true, record.stamp);
                 } else if sync {
                     self.child(agent, "completed", true, record.stamp);
@@ -1560,6 +1572,7 @@ impl Row {
                 && record.success
                 && self.children.contains_key(resumed)
             {
+                self.claude.clean = false;
                 self.child(resumed, "running", false, record.stamp);
             }
         }
@@ -1631,6 +1644,7 @@ impl Row {
                     block.pending_start = None;
                     block.queued_since_start = None;
                     block.local_idle = true;
+                    block.clean = false;
                 }
             }
             // An unrecognised origin may be a trigger, or input to a turn.
@@ -1675,6 +1689,7 @@ impl Row {
             Turn::Silent => {
                 block.queued_since_start = None;
                 block.silent_end = active;
+                block.clean &= !active;
             }
             // An assistant record with no turn running and no pending start
             // shows a turn whose trigger was not seen (a record lost while
@@ -1695,6 +1710,7 @@ impl Row {
                 if [STOP_END_TURN, STOP_OTHER].contains(&record.stop) {
                     self.claude.queued_since_start = None;
                     self.claude.silent_end = self.turns.active.is_some();
+                    self.claude.clean &= !self.claude.silent_end;
                 }
             }
             Turn::Trigger => {
@@ -1711,6 +1727,9 @@ impl Row {
                 if local && injected {
                     return self.ambiguous();
                 }
+                // Injected input may enter a turn deferred while background
+                // agents ran, so a turn it opens is never dated (D7).
+                block.clean &= !injected;
                 // Second 0 is no valid start (`Turns::begin`): a missing stamp.
                 let (Some(key), Some(second)) = (record.uuid.clone(), second.filter(|s| *s > 0))
                 else {
@@ -1763,6 +1782,7 @@ impl Row {
                 self.claude.lost_idle = false;
                 self.claude.local_idle = false;
                 self.claude.abort_adjacent = true;
+                self.claude.clean = false;
                 // An aborted interval has no `durationMs` to check its saved
                 // bounds against: it is still the last interval, but
                 // accumulated coverage becomes unknown.
@@ -1785,6 +1805,11 @@ impl Row {
                 block.local_idle = false;
                 if active && agrees {
                     self.end(second, Turns::finish);
+                    // A gated end with nothing left running is a dated idle
+                    // point; `end` leaves the current state known only then.
+                    let ended = self.turns.active.is_none() && self.turns.current_known;
+                    self.claude.clean =
+                        ended && !record.background && self.valid && !self.running();
                 } else if active {
                     // Its saved bounds disagree with Claude Code's own
                     // duration: it may be a deferred `turn_duration` of an
@@ -1801,12 +1826,17 @@ impl Row {
                     // a later turn: an injected trigger may enter that turn
                     // with no queue record, as after local output (D7).
                     self.claude.local_idle = true;
+                    self.claude.clean = false;
                 }
                 if unstamped {
                     self.unknown_time();
                 }
             }
         }
+    }
+    /// A launched or resumed child has not been reported finished.
+    fn running(&self) -> bool {
+        self.children.values().any(|status| status == "running")
     }
     /// D7 gate: `turn_duration` may end the active turn only when its record
     /// stamp less `durationMs` floors to within `SKEW` seconds of the saved
@@ -1957,7 +1987,14 @@ impl Row {
         if block.silent_end {
             turns.valid = false;
         }
-        if block.silent_end || block.pending_start.is_some() || block.lost_idle || block.local_idle
+        // The current turn is dated only from a clean state with no child
+        // that may still defer a `turn_duration` (D7).
+        let undated = !block.clean || !self.valid || self.running();
+        if block.silent_end
+            || block.pending_start.is_some()
+            || block.lost_idle
+            || block.local_idle
+            || undated
         {
             turns.current_known = false;
         }
@@ -2015,6 +2052,11 @@ impl Row {
             && (self.claude.pending_start.is_none() || !active)
             && (!self.claude.lost_idle || idle && !self.claude.ambiguous)
             && (!self.claude.local_idle || idle && !self.claude.ambiguous)
+            && (!self.claude.clean
+                || !self.claude.ambiguous
+                    && !self.claude.lost_idle
+                    && !self.claude.local_idle
+                    && !self.claude.silent_end)
     }
     /// The replay state every pass boundary must leave resumable.
     fn gate(&self, time: f64) -> bool {

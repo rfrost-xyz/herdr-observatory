@@ -924,8 +924,9 @@ fn turns_assistant_record_with_no_turn_running_is_ambiguous() {
     assert!(row.claude.ambiguous && !row.turns.valid);
     let published = row.published_turns();
     assert!(!published.current_known && published.last_duration == Some(2));
-    // Its end clears the ambiguity, and the next turn is published again,
-    // never the total.
+    // Its end clears the ambiguity, and the next turn is recorded again,
+    // never the total. Its end ended no turn, so the next turn's start is
+    // published only after a gated end (D7).
     lines.extend([
         assistant(40, "msg_c", "\"end_turn\""),
         system("turn_duration", 41),
@@ -935,8 +936,17 @@ fn turns_assistant_record_with_no_turn_running_is_ambiguous() {
     assert_eq!(row.turns.last, Some(turn_key(ID, "user-1")));
     lines.extend([user(50, "next", ""), assistant(51, "msg_d", "\"tool_use\"")]);
     let row = run(&lines);
-    assert!(row.published_turns().current_known && !row.turns.valid);
+    assert!(row.turns.current_known && !row.turns.valid);
+    assert!(!row.published_turns().current_known);
     assert_eq!(row.turns.start, Some(second(50)));
+    lines.extend([
+        assistant(52, "msg_e", "\"end_turn\""),
+        system("turn_duration", 55),
+        user(60, "then", ""),
+        assistant(61, "msg_f", "\"tool_use\""),
+    ]);
+    let published = run(&lines).published_turns();
+    assert!(published.current_known && published.start == Some(second(60)));
     // A slash command that writes local output and then runs the model, with
     // input joined to it: neither its interval nor the total is published.
     let mut lines = ended.to_vec();
@@ -1239,6 +1249,106 @@ fn turns_duration_ms_rejects_an_interval_whose_saved_bounds_disagree() {
 
 /// An aborted interval has no `durationMs` to check: it is published as the
 /// last interval, but accumulated coverage becomes unknown.
+/// D7 mask: the current turn is published only when it was opened by a
+/// human-origin or shape prompt after a gated `turn_duration` with nothing
+/// pending, and no child launched since is still running.
+#[test]
+fn turns_current_turn_is_published_only_from_a_clean_state() {
+    let human = "\"origin\":{\"kind\":\"human\"}";
+    let current = |lines: &[String]| {
+        let turns = run_exact(lines).published_turns();
+        turns.current_known.then_some(turns.start)
+    };
+    let head = || {
+        vec![
+            user(1, "hello", human),
+            assistant(2, "msg_a", "\"end_turn\""),
+            ended(3, 1),
+        ]
+    };
+    let next = |lines: &mut Vec<String>, at: u64, trigger: String| {
+        lines.extend([
+            trigger,
+            assistant(at + 1, &format!("msg_{at}"), "\"tool_use\""),
+        ]);
+    };
+    // A human prompt or a shape prompt after a gated end.
+    for trigger in [user(10, "next", human), user(10, "next", "")] {
+        let mut lines = head();
+        next(&mut lines, 10, trigger);
+        assert_eq!(current(&lines), Some(Some(second(10))));
+    }
+    // A first turn of the session.
+    assert_eq!(
+        current(&[
+            user(1, "hello", human),
+            assistant(2, "msg_a", "\"tool_use\"")
+        ]),
+        Some(Some(second(1)))
+    );
+    // A `turn_duration` reporting a background agent or workflow pending,
+    // or with a malformed count.
+    for pending in [
+        "\"pendingBackgroundAgentCount\":1",
+        "\"pendingWorkflowCount\":2",
+        "\"pendingWorkflowCount\":\"0\"",
+    ] {
+        let mut lines = head();
+        lines[2] = ended(3, 1).replace("\"durationMs\"", &format!("{pending},\"durationMs\""));
+        next(&mut lines, 10, user(10, "next", human));
+        assert_eq!(current(&lines), None, "{pending}");
+        // The next gated end with nothing pending dates the turn after it.
+        lines.extend([assistant(12, "msg_b", "\"end_turn\""), ended(13, 10)]);
+        next(&mut lines, 20, user(20, "then", human));
+        assert_eq!(current(&lines), Some(Some(second(20))), "{pending}");
+    }
+    let zero = ended(3, 1).replace(
+        "\"durationMs\"",
+        "\"pendingBackgroundAgentCount\":0,\"pendingWorkflowCount\":0,\"durationMs\"",
+    );
+    let mut lines = head();
+    lines[2] = zero;
+    next(&mut lines, 10, user(10, "next", human));
+    assert_eq!(current(&lines), Some(Some(second(10))));
+    // A turn opened by an injected trigger, after an abort or after local
+    // output; and a turn while a launched child is still running.
+    let mut injected = head();
+    next(&mut injected, 10, notified(10, "agent-x", "completed"));
+    let mut aborted = head();
+    next(&mut aborted, 10, user(10, "next", human));
+    aborted.extend([user(15, "[Request interrupted by user]", "")]);
+    next(&mut aborted, 20, user(20, "then", human));
+    let mut local = head();
+    local.extend([
+        user(5, "<command-name>/model</command-name>", ""),
+        system("local_command", 6),
+    ]);
+    next(&mut local, 10, user(10, "next", human));
+    let mut child = head();
+    next(&mut child, 10, user(10, "next", human));
+    child.push(launch(12, "agent-a"));
+    for (name, lines) in [
+        ("injected", &injected),
+        ("aborted", &aborted),
+        ("local", &local),
+        ("child", &child),
+    ] {
+        let row = run_exact(lines);
+        assert!(row.turns.current_known, "{name}");
+        assert_eq!(current(lines), None, "{name}");
+    }
+    // The child's notification, taken into the turn, and a gated end with
+    // nothing pending.
+    child.extend([
+        dequeue(14),
+        queued(14, "task-notification", &notice("agent-a", "completed")),
+        assistant(15, "msg_c", "\"end_turn\""),
+        ended(16, 10),
+    ]);
+    next(&mut child, 20, user(20, "then", human));
+    assert_eq!(current(&child), Some(Some(second(20))));
+}
+
 #[test]
 fn turns_aborted_interval_is_last_but_makes_the_total_unknown() {
     let row = run(&[
@@ -1415,6 +1525,9 @@ fn turns_block_inconsistent_with_turns_is_rejected() {
     ambiguous.claude.ambiguous = true;
     assert!(!ambiguous.turn_state());
     ambiguous.turns.unknown();
+    // A clean state is never ambiguous.
+    assert!(ambiguous.claude.clean && !ambiguous.turn_state());
+    ambiguous.claude.clean = false;
     assert!(ambiguous.turn_state());
     ambiguous.claude.pending_start = Some((turn_key(ID, "user-20"), second(20)));
     assert!(!ambiguous.turn_state());
