@@ -379,15 +379,18 @@ fn header(stream: &mut BufReader<File>, id: &str) -> Result<Vec<u8>> {
         Some(value) => session_identity(&value, id) == Identity::Match,
         // serde rejects an unpaired surrogate escape, which the classifier
         // reads, and a repeated key, which it loses, so the header is
-        // verified as the body would classify it.
+        // verified as the body would classify it. A record that loses a
+        // field other than its identity still binds on a matching
+        // `sessionId`; replay then reads it as unclassified, as in the body.
         None => {
             let mut classifier = Classifier::default();
             if !classifier.feed(&bytes, id, common::now()) {
                 return Err("Invalid Claude session header".into());
             }
+            let identity = classifier.identity();
             match classifier.finish() {
                 Outcome::Invalid => return Err("Invalid Claude session header".into()),
-                Outcome::Unclassified(_) => false,
+                Outcome::Unclassified(_) => identity == IDENTITY_MATCH,
                 Outcome::Record(record) => record.identity == IDENTITY_MATCH,
             }
         }
@@ -2925,6 +2928,56 @@ mod replay_tests {
             user(1).replace("synthetic", r"hi \ud83d").replace('}', ""),
         ] {
             let path = fixture.file("entry", &format!("{ID}.jsonl"), &format!("{text}\n{rest}"));
+            assert!(
+                open_session(&fixture.projects, &path, ID).is_err(),
+                "{text}"
+            );
+        }
+    }
+    /// A header serde rejects for a repeated key binds when the classifier
+    /// finds the bound `sessionId`, and a fresh pass reads it as the same
+    /// line in the body: unclassified. Identity is still required.
+    #[test]
+    fn header_with_a_repeated_key_and_the_bound_session_binds_as_unclassified() {
+        let fixture = tests::Fixture::new();
+        let deadline = || Instant::now() + Duration::from_secs(5);
+        let repeated = |line: String| line.replacen("\"uuid\"", "\"uuid\":\"u-x\",\"uuid\"", 1);
+        let first = repeated(user(1));
+        assert!(parse_line(first.as_bytes()).is_none());
+        let rest = body(&[
+            assistant("msg_a", 2, "\"end_turn\"", [5, 1, 7, 3]),
+            system("turn_duration", 3),
+        ]);
+        let replayed = |entry: &str, text: String| {
+            let path = fixture.file(entry, &format!("{ID}.jsonl"), &text);
+            resume(&fixture.projects, &path, ID, None, now(), deadline())
+        };
+        let (head, resumed) = replayed("head", format!("{first}\n{rest}")).unwrap();
+        let (inner, _) = replayed("inner", format!("{}{first}\n{rest}", header())).unwrap();
+        assert!(!resumed && head.caught_up && inner.caught_up);
+        assert_eq!(head.usage(), inner.usage());
+        assert_eq!(
+            serde_json::to_value(&head.turns).unwrap(),
+            serde_json::to_value(&inner.turns).unwrap()
+        );
+        assert_eq!(
+            (head.valid, head.turns.valid),
+            (inner.valid, inner.turns.valid)
+        );
+        assert_eq!(get(&head, "total_input"), json!(15));
+        assert!(!head.turns.valid);
+        // Another session, no session, or a repeated `sessionId` is refused.
+        for text in [
+            first.replace(ID, "fixture-session-b"),
+            first.replace(&format!("\"sessionId\":\"{ID}\","), ""),
+            first.replacen(
+                "\"sessionId\"",
+                &format!("\"sessionId\":\"{ID}\",\"sessionId\""),
+                1,
+            ),
+        ] {
+            assert!(parse_line(text.as_bytes()).is_none(), "{text}");
+            let path = fixture.file("bad", &format!("{ID}.jsonl"), &format!("{text}\n{rest}"));
             assert!(
                 open_session(&fixture.projects, &path, ID).is_err(),
                 "{text}"

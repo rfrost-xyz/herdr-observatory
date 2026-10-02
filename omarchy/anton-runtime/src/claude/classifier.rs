@@ -633,6 +633,11 @@ impl Classifier {
         self.scan.clear();
         self.high = false;
     }
+    /// The record's `sessionId` reading so far. It is meaningful only when
+    /// `finish` does not return `Outcome::Invalid`.
+    pub fn identity(&self) -> u8 {
+        self.record.identity
+    }
     /// Classifies the complete record once its terminating newline is fed.
     /// A lost `type` or `sessionId` (one cut by a pass boundary) is invalid
     /// for every kind: the record may name another session, so its identity
