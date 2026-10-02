@@ -624,3 +624,46 @@ The four-lens review of `a97f2ac` found **no blocking findings**: 4 non-blocking
 **Gates:** fmt and clippy are clean. The full suite passes: lib 215, main 19, native_navigation 6, native_process 32.
 
 **Commit signing:** these five commits were made unsigned by the fix agent, because 1Password SSH signing failed ("agent returned an error"). They were re-signed once signing worked again.
+
+## Review round 13 and the turn-timing gate (user decision)
+
+The round 13 review of `5a2fb76` found three blocking findings. Lens 3 was CLEAN.
+1. **Compaction iteration on a reopened group.** It was ignored. Fixed in `8e1b875`.
+2. **Final stops other than `end_turn`.** With no `turn_duration`, `max_tokens`, `refusal` and `<synthetic>` stops merged two turns into one.
+3. **Deferred `turn_duration`.** Claude Code defers a turn's `turn_duration` while background agents run, and may write it during a later turn. This was established by reading the Claude Code 2.1.287 bundle (`[bin]`).
+
+**Turn timing on real transcripts** (counts-only corpus measurement):
+- 13 of 260 finished intervals (5%) had a published start differing from the start implied by `durationMs` by more than 2 s. 12 of those differed by more than 10 s.
+- 11 of the 13 showed signs of background agents.
+- 10 of the 13 implied a start before the previous recorded end, which means the replay split one Claude turn into two.
+
+**User decision: gate and mask.** Given the measurement and 13 rounds that kept reopening D7, the user chose "Gate + mask, then ship". Implemented in these commits:
+- `097908b`: the `durationMs` gate. It only rejects intervals and never replaces a bound.
+- `aac7db3` and `2d2e71e`: the current turn is shown only from a dated, clean state.
+- `a7befd3`: an aborted interval is shown only from a dated turn, and every abort makes accumulated coverage unknown.
+- `e36d6c2`: any final stop other than tool use is a silent end.
+- `109b3cd`: an orphan `turn_duration` keeps injected triggers ambiguous.
+- `0991c86` and `4b98a19`: fuzzer shapes and corpus counters.
+
+All commits are signed. Each new unit test failed before its fix.
+
+**Fuzzer:** 326,541 records, 0 violations, 0 restarts. Removing a rule brings violations back:
+
+| Rule removed | Violations |
+|---|---|
+| final-stop rule | 86 |
+| orphan rule | 532 |
+| orphan rule and gate | 7,233 |
+
+**Corpus, before and after the gate.** Same snapshot, run back to back:
+
+| Measure | Before | After |
+|---|---|---|
+| Gate | | 203 kept, 18 rejected |
+| Files with valid coverage | 13 | 12 |
+| Finished intervals | 283 | 204 |
+| Running turns with a published start | 7,500 of 8,441 records | 2,722 of 7,393 records |
+
+The drop in finished intervals is mostly a cascade: after a rejected `turn_duration`, `local_idle` makes later injected triggers ambiguous. A lever would keep 262 intervals, but it was declined, because a rejected `turn_duration` is usually the deferred flush and a turn is then still running.
+
+**Gates:** fmt and clippy are clean. The full suite passes: lib 221, main 19, native_navigation 6, native_process 32.

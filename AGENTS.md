@@ -68,8 +68,11 @@ not add features or compatibility work to the retired web application.
   names, prompts or results enter popover/peer telemetry.
 - Turn timing uses validated saved Unix-second starts/completions/aborts, includes
   waits inside turns, excludes idle gaps and counts each interval once. Never
-  substitute `duration_ms` or `durationMs`. Claude Code joins queued input to a
-  turn only with dequeue or remove evidence; silent turn ends make coverage unknown.
+  substitute `duration_ms` or `durationMs`; Claude Code `durationMs` may only
+  reject an interval whose saved bounds disagree by over 2 s or that lacks it.
+  Claude Code joins queued input to a turn only with dequeue or remove evidence;
+  silent turn ends and aborts make coverage unknown, and its current turn is
+  shown only after a checked end with no background agent pending.
   Incomplete accumulated coverage stays unknown.
 - Native metadata v2 uses immutable four numeric groups plus named provenance,
   child/completion/outcome fields within 16 report keys and 80 characters/value.

@@ -126,7 +126,7 @@ Existing Codex behaviour, output and checkpoints must not change.
 
 **Oversized lines.**
 - An oversized line (over 64 KiB) goes through a new bounded Claude envelope classifier. The Codex `Envelope` (`envelope.rs`) cannot extract these fields.
-- The classifier extracts only the fields D3, D5, D6 and D7 consume: `type`, `subtype`, `sessionId`, `uuid`, `timestamp`, `isMeta`, `origin.kind`, `commandMode`, `message.id`, `stop_reason`, `model`, `usage`, `toolUseResult.{status, agentId, resumedAgentId, success, totalDurationMs}`, `interruptedMessageId`, `isAbortedMidStream`, the presence of `forkedFrom` and `isCompactSummary`, the bounded `task-id` and `status` tags, the leading wrapper tag of user text, and `operation` (queue-operation records).
+- The classifier extracts only the fields D3, D5, D6 and D7 consume: `type`, `subtype`, `sessionId`, `uuid`, `timestamp`, `isMeta`, `origin.kind`, `commandMode`, `message.id`, `stop_reason`, `model`, `usage`, `toolUseResult.{status, agentId, resumedAgentId, success, totalDurationMs}`, `interruptedMessageId`, `isAbortedMidStream`, the presence of `forkedFrom` and `isCompactSummary`, `durationMs`, `pendingBackgroundAgentCount` and `pendingWorkflowCount` (system `turn_duration` records only), the bounded `task-id` and `status` tags, the leading wrapper tag of user text, and `operation` (queue-operation records).
 - `forkedFrom`, `isCompactSummary`, `origin`, `toolUseResult` and `interruptedMessageId` are presence-only: a string value is recorded at its first byte, never buffered, and survives a pass boundary.
 - Known fail-closed difference: any other consumed string value longer than the 1 KiB capture bound (`type`, `model`, `stop_reason` and similar) is lost on the oversized path, while the parsed path reads it as an unrecognised value. Only hostile input produces such values, and the oversized path then makes the dependent coverage unknown, never a different number.
 - Nesting deeper than the classifier's 128-container bound is not malformed. No consumed field lies that deep, so the classifier keeps only a count of the open containers past the bound (at most 2^20; deeper is malformed), reads their strings in full, requires every other byte to be whitespace or a JSON token character, and requires the count to return to zero at a bracket; the structure outside that region is fully validated. Bracket kinds and separators inside the region are not checked, so such a record finishes as unclassified for its `type` and follows the coverage table below (and D7 for a queue record). The count and a flag recording that the bound was passed are persisted classifier state.
@@ -222,11 +222,11 @@ Wrapper tags are matched on the leading tag of user text:
 - An abort with no active turn and no pending start is ignored, except that after local-command output (`local_idle`) it makes accumulated coverage unknown; a `<synthetic>` or other assistant record directly after an abort consumes the abort-adjacency flag and is neutral. Otherwise it is ignored, apart from setting the abort-adjacency flag. The next trigger, assistant record, `turn_duration`, or `dequeue` or `remove` with no turn running or pending clears that flag.
 - The turn key is `sha256("anton-turn-v1:" + session + ":" + uuid)[..24]` of the record that opened the turn, which satisfies `Turns::validate`.
 
-**Publication.** `native.rs` publishes Claude turn timing through `Row::published_turns()`, a masked copy; `Turns` and the block are unchanged. While a start is pending, or while `lost_idle` or `local_idle` is set, the published current turn is unknown. While `silent_end` is set, the current turn, accumulated total and `complete` are unknown.
+**Publication.** `native.rs` publishes Claude turn timing through `Row::published_turns()`, a masked copy; `Turns` and the block are unchanged. The current turn, or the idle state, is published only when it is dated: `clean` is set, `valid` holds and no launched or resumed child is `running`. `clean` holds on a fresh replay and after a gated `turn_duration` whose `pendingBackgroundAgentCount` and `pendingWorkflowCount` are absent or the integer 0 while no child runs; a human-origin or shape trigger keeps it, and so does input joined with queue evidence; it is cleared by an injected trigger that opens a turn, an async launch or resume, local-command output, a silent end, an abort, an orphan or rejected `turn_duration`, and any loss of turn coverage. While a start is pending, or while `lost_idle` or `local_idle` is set, the published current turn is unknown. While `silent_end` is set, the current turn, accumulated total and `complete` are unknown.
 
 **Ending a turn.**
 - `system/turn_duration` completes the active turn at its own timestamp.
-- A silent end clears `queued_since_start`. A silent end is `system/stop_hook_summary`, or an assistant line with `stop_reason: end_turn` and no pending tool use, while a turn is active. A later trigger with no `turn_duration` then takes the unknown path rather than joining the stale turn and absorbing the idle gap. In a reviewer's replay, the older-version file becomes honestly unknown, and the largest remaining joined gap fell from 66,701 s to 764 s. Change 2 adds a fixture for a silent end followed by queued input. Until a trigger, `turn_duration`, an abort or unknown coverage, a later `dequeue` or `remove` is no join evidence. While `silent_end` is set, the published current turn, accumulated total and `complete` are unknown; a later `turn_duration` restores them.
+- A silent end clears `queued_since_start`. A silent end is `system/stop_hook_summary`, or an assistant line (including a `<synthetic>` record) whose `stop_reason` is neither null nor `tool_use`, for example `end_turn`, `max_tokens`, `refusal` or `stop_sequence`, while a turn is active. A later trigger with no `turn_duration` then takes the unknown path rather than joining the stale turn and absorbing the idle gap. In a reviewer's replay, the older-version file becomes honestly unknown, and the largest remaining joined gap fell from 66,701 s to 764 s. Change 2 adds a fixture for a silent end followed by queued input. Until a trigger, `turn_duration`, an abort or unknown coverage, a later `dequeue` or `remove` is no join evidence. While `silent_end` is set, the published current turn, accumulated total and `complete` are unknown; a later `turn_duration` restores them.
 - An abort ends the active turn as aborted at the abort record's timestamp.
 - A `turn_duration` with no active turn is ignored when it directly follows an abort. Otherwise it makes accumulated coverage unknown.
 
@@ -235,7 +235,7 @@ Wrapper tags are matched on the leading tag of user text:
 - A start earlier than the previous end, or an end earlier than its start, makes accumulated coverage unknown through `Turns::unknown`.
 - The current or last valid interval stays available, as the spec allows.
 
-**Durations.** `turn_duration.durationMs` is never substituted. It is used only as a test cross-check with an explicit tolerance, because the spec includes permission waits.
+**Durations.** `durationMs` is never substituted for a bound; it may only reject. When a `turn_duration` would end the active turn, its implied start is floor((record stamp in µs − durationMs × 1000) / 10^6), where `durationMs` is a non-negative integer within 2^53. If `durationMs` is missing or invalid, the stamp is unusable, the subtraction underflows, the implied start differs from the saved start by more than 2 s, or it precedes the previous published end by more than 2 s, then no interval is recorded: it is neither last nor totalled, accumulated coverage becomes unknown, the previous valid interval stays last, and `local_idle` is set as for an orphan `turn_duration`. A kept interval is published from its saved bounds. The 2 s tolerance admits a start off by up to 2 s. Claude Code defers a turn's `turn_duration` while background agents run and may write it during a later turn; a deferred `turn_duration` with no trigger since its turn's final response ends that turn at its own stamp, so the published interval includes the wait for the turn's background agents (a wait inside the turn, as Claude Code's own `durationMs` counts it). A `turn_duration` with no active turn ends nothing, makes accumulated coverage unknown unless it directly follows an abort, and in every case sets `local_idle`, so a task-notification, peer or coordinator trigger after it is ambiguous. An abort ends the active turn as aborted at its stamp; an aborted interval has nothing to check it against, so it is recorded and published as last only when the turn was dated, and either way accumulated coverage becomes unknown.
 
 **State.** The finished intervals and total stay in the unchanged row-level `Turns` struct; a row shrunk at the byte bound keeps only its last finished interval (D8). Pending-start state lives in the `claude` block (D8), so `Turns` keeps its schema for older binaries.
 
@@ -274,7 +274,8 @@ Every block field is required, bounded and revalidated on reuse:
 - `silent_end`: set by a silent end (D7) while a turn is active; reset by a trigger, `turn_duration`, an abort and unknown turn coverage; only set while a turn is active and `queued_since_start` is false;
 - `lost_idle`: set when a record is lost with no active turn, no pending start and no ambiguity, or by a `turn_duration`, an abort, or a `dequeue` or `remove` with no turn running, that has no usable second (or a queue record lost then); cleared by a `turn_duration` or abort with a usable second, or ambiguity (including any trigger); only set while idle and not ambiguous;
 - `pending_command`: set when a slash-command echo opens a pending start; cleared when that start is confirmed or made unknown, or by local output, which sets `local_idle` unless input was taken while it was pending, which makes the turn ambiguous instead; only set while a start is pending;
-- `local_idle`: set when local-command output clears a pending slash-command start with no input taken while it was pending; cleared by a trigger (a task-notification, peer or coordinator trigger clears it by making the turn ambiguous), `turn_duration`, an abort or ambiguity; only set while idle and not ambiguous;
+- `local_idle`: set when local-command output clears a pending slash-command start with no input taken while it was pending; cleared by a trigger (a task-notification, peer or coordinator trigger clears it by making the turn ambiguous), `turn_duration`, an abort or ambiguity; only set while idle and not ambiguous, or set by a `turn_duration` that ended no active turn or was rejected by the gate;
+- `clean`: as in D7 Publication; required; never set while `ambiguous`, `lost_idle`, `local_idle` or `silent_end` is set; a block without it is replayed fresh. The classifier `Record` carries `elapsed` and `background`, so an in-flight classifier state from the previous build replays fresh once;
 - `end_floor`: the latest proven end (D7) in Unix seconds, or 0; at most `coverage_seq` in seconds, so within now plus 1 s; a block without it is replayed fresh;
 - `foreign`: set by a record whose `sessionId` differs, never cleared on resume; requires invalid totals and last-response, row `valid`, `compactions_valid` and turn coverage false, and `current_known` false;
 - the Claude envelope classifier state (D3), or none; it includes the count of containers past the depth bound and its flag as required fields, so an in-flight classifier state checkpointed by the previous build fails to load and the row replays fresh once.
@@ -551,6 +552,22 @@ Two model calibrations are explicit in the test:
   - the ground-truth fuzzer shapes `leftover-attachment` and leftover input after an abort.
 - **Peers:** `claude_restart_after_a_rejected_request_row_withholds_it`.
 - **Fixtures:** `fixture_sweep_removes_only_dead_pid_dirs_untouched_for_an_hour`.
+
+**Added after review round 13 (turn-timing gate and mask):**
+
+- **Silent ends and orphan durations:**
+  - `turns_final_stop_other_than_tool_use_is_a_silent_end`;
+  - `turns_injected_trigger_after_a_turn_duration_that_ended_no_turn_is_ambiguous`.
+- **Gate and mask:**
+  - `turns_duration_ms_rejects_an_interval_whose_saved_bounds_disagree`;
+  - `turns_aborted_interval_is_last_but_makes_the_total_unknown`;
+  - `turns_current_turn_is_published_only_from_a_clean_state`.
+- **Compactions:** `compaction_iteration_on_a_reopened_group_makes_compactions_unknown`.
+- **Fuzzer shapes:**
+  - background launches;
+  - deferred `turn_duration` flushed while idle or during a later turn;
+  - `max_tokens`, `refusal` and `<synthetic>` final stops;
+  - `durationMs` near the truth.
 
 **Corpus check.** As a verification step, this change also runs a local counts-only replay of the real transcript corpus through the implementation. It prints aggregates only, and nothing from it is committed. Prose review could not converge on these rules; replay can.
 
