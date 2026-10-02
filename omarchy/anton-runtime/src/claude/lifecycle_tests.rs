@@ -2893,6 +2893,12 @@ struct Story {
     oversized: bool,
     /// Input still queued when a turn ended starts the next turn.
     queued_left: bool,
+    /// A background agent launched and not yet reported finished, while
+    /// its turn's `turn_duration` is deferred (review round 13).
+    agent: Option<String>,
+    agents: u64,
+    /// A finished background agent whose notification opens the next turn.
+    notify: Option<String>,
     /// A kill ended the last turn and no trigger has followed it.
     unrecorded: bool,
     /// When the oldest input still in the queue was queued.
@@ -2914,6 +2920,9 @@ impl Story {
             targeted,
             oversized,
             queued_left: false,
+            agent: None,
+            agents: 0,
+            notify: None,
             unrecorded: false,
             enqueued: None,
         }
@@ -3186,6 +3195,8 @@ impl Story {
         self.end("killed");
         self.unrecorded = true;
         self.enqueued = None;
+        // Background agents die with the process.
+        self.agent = None;
         self.at += 2 + self.random.below(10);
         self.tick(true);
         if self.chance(500) {
@@ -3381,7 +3392,10 @@ impl Story {
         }
         let (mut line, tag) = self.trigger();
         let mut shape = tag;
-        if let Some(queued) = leftover {
+        if let Some(agent) = self.notify.take() {
+            line = self.notification(&agent);
+            shape = "agent-notification";
+        } else if let Some(queued) = leftover {
             // Sometimes written as a queued prompt attachment, which D7
             // rule 3 ignores inside a turn (review round 12).
             shape = "leftover";
@@ -3459,8 +3473,16 @@ impl Story {
                     let line = self.assistant("\"tool_use\"", true);
                     self.body(line, "tool-use");
                     self.tick(false);
-                    let result = "\"toolUseResult\":{\"stdout\":\"ok\"},\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"content\":\"done\"}]}";
-                    (self.record("user", result), "tool-result")
+                    if self.agent.is_none() && self.chance(150) {
+                        self.agents += 1;
+                        let agent = format!("bg-{}", self.agents);
+                        let result =
+                            format!("{{\"status\":\"async_launched\",\"agentId\":\"{agent}\"}}");
+                        self.agent = Some(agent);
+                        (self.result(&result), "launch")
+                    } else {
+                        (self.result("{\"stdout\":\"ok\"}"), "tool-result")
+                    }
                 }
                 2 => (self.assistant("null", true), "partial"),
                 3 => (
@@ -3520,9 +3542,10 @@ impl Story {
     fn finish(&mut self) {
         let queued = self.enqueued.is_some();
         match self.random.below(100) {
+            0..=54 if self.agent.is_some() && !queued => self.deferred(),
             0..=54 => {
                 self.tick(false);
-                let line = self.assistant("\"end_turn\"", true);
+                let line = self.final_line();
                 self.body(line, "end-turn");
                 if self.chance(500) {
                     let line = self.system("stop_hook_summary");
@@ -3541,9 +3564,16 @@ impl Story {
                 self.queued_left = queued;
             }
             55..=69 => {
-                // Without `turn_duration` the turn ends at its last record.
+                // Without `turn_duration` the turn ends at its last record,
+                // whatever its stop, and input queued before it is left
+                // over (review round 13).
+                if !queued && self.chance(300) {
+                    self.tick(false);
+                    self.enqueue();
+                }
+                let queued = self.enqueued.is_some();
                 self.tick(false);
-                let line = self.assistant("\"end_turn\"", true);
+                let line = self.final_line();
                 if self.chance(500) {
                     self.body(line, "old-end-turn");
                     self.tick(false);
@@ -3593,6 +3623,84 @@ impl Story {
         }
     }
 }
+impl Story {
+    /// A tool result line carrying `result` as its `toolUseResult`.
+    fn result(&mut self, result: &str) -> String {
+        let fields = format!(
+            "\"toolUseResult\":{result},\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"content\":\"done\"}}]}}"
+        );
+        self.record("user", &fields)
+    }
+    /// A finished background agent's notification, in either D6 form.
+    fn notification(&mut self, agent: &str) -> String {
+        let note = notice(agent, "completed");
+        if self.chance(500) {
+            self.queued("task-notification", &note)
+        } else {
+            self.user(&note, "\"origin\":{\"kind\":\"task-notification\"}")
+        }
+    }
+    /// The final response of a turn: mostly `end_turn`, sometimes a stop
+    /// for another reason or a `<synthetic>` error (review round 13).
+    fn final_line(&mut self) -> String {
+        match self.random.below(10) {
+            0 => self.assistant("\"max_tokens\"", true),
+            1 => self.assistant("\"refusal\"", true),
+            2 => self
+                .assistant("\"stop_sequence\"", true)
+                .replace("claude-fixture-1", "<synthetic>"),
+            _ => self.assistant("\"end_turn\"", true),
+        }
+    }
+    /// A turn that ends while a background agent runs: Claude Code defers
+    /// its `turn_duration` until no agent runs, measured from the turn's own
+    /// start, and nothing resets that when a new turn starts (review round
+    /// 13). Either the agent finishes while idle, the deferred record dates
+    /// the turn to then, and its notification opens the next turn; or a new
+    /// prompt starts a turn, the deferred record is written in it and the
+    /// notification enters it.
+    fn deferred(&mut self) {
+        let agent = self.agent.take().unwrap();
+        self.tick(false);
+        let line = self.final_line();
+        self.body(line, "deferred-end");
+        if self.chance(500) {
+            self.tick(true);
+            self.end("completed");
+            let line = self.duration();
+            self.push(line, "deferred-duration");
+            self.notify = Some(agent);
+            return;
+        }
+        self.end("completed");
+        self.tick(true);
+        let line = self.user("prompt", "\"origin\":{\"kind\":\"human\"}");
+        self.world.running = Some(self.at);
+        self.push(line, "deferred-next");
+        self.unrecorded = false;
+        self.tick(false);
+        let line = self.assistant("\"tool_use\"", true);
+        self.push(line, "deferred-next-assistant");
+        self.tick(false);
+        // The earlier turn's record, dated from that turn's start.
+        let line = self.duration();
+        self.push(line, "deferred-duration-mid");
+        self.tick(false);
+        let line = self.result("{\"stdout\":\"ok\"}");
+        self.body(line, "tool-result");
+        self.tick(false);
+        if self.chance(300) {
+            let line = self.operation("dequeue");
+            self.body(line, "deferred-take");
+        }
+        let line = self.notification(&agent);
+        self.push(line, "deferred-notification");
+        self.tick(false);
+        let line = self.assistant("\"tool_use\"", true);
+        self.body(line, "tool-use");
+        self.finish();
+    }
+}
 /// A generated session of 2 to 11 turns with idle records between them.
 fn story(seed: u64, faults: u64, oversized: bool, targeted: u64) -> Story {
     let mut story = Story::new(seed, faults, oversized, targeted);
@@ -3616,6 +3724,9 @@ fn round_trip(row: &mut Row) {
 struct Found {
     wrong: Vec<String>,
     allowed: [usize; 2],
+    /// Checks that published a total, a last interval and a running turn's
+    /// start, so a pass is never only unknown values.
+    known: [usize; 3],
 }
 impl Found {
     fn push(&mut self, wrong: String) {
@@ -3642,6 +3753,9 @@ fn check(
     let (mut wrong, allowed) = published.wrong(previous, &truth, killed, &story.truth[..lines]);
     found.allowed[0] += allowed[0];
     found.allowed[1] += allowed[1];
+    found.known[0] += usize::from(published.total.is_some());
+    found.known[1] += usize::from(published.last.is_some());
+    found.known[2] += usize::from(matches!(published.current, Some((true, Some(_)))));
     if !row.gate(now()) {
         wrong.push("gate");
     }
@@ -3784,9 +3898,21 @@ fn turns_ground_truth_fuzz_never_publishes_a_wrong_value() {
     }
     let wrong = &found.wrong;
     let [killed, last] = found.allowed;
+    let [totals, lasts, currents] = found.known;
+    let fields = ["current", "last", "total"].map(|field| {
+        (
+            field,
+            wrong
+                .iter()
+                .filter(|w| w.contains(&format!(": {field} after")))
+                .count(),
+        )
+    });
     eprintln!(
-        "ground-truth turn fuzz: {records} records, {} violations, {restarts} restarts, \
-         {killed} unchanged across a kill, {last} last valid intervals in {:?}",
+        "ground-truth turn fuzz: {records} records, {} violations {fields:?}, {restarts} restarts, \
+         {killed} unchanged across a kill, {last} last valid intervals, \
+         {totals} totals, {lasts} last intervals and {currents} running starts published \
+         in {:?}",
         wrong.len(),
         started.elapsed()
     );
