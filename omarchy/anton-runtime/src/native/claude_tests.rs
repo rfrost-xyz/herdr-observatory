@@ -1139,7 +1139,20 @@ fn claude_replay_listed_first_never_starves_a_codex_pane() {
         std::fs::write(directory.join(format!("{id}.jsonl")), text).unwrap();
     }
     let codex = json!({"agent":"codex","agent_session":{"agent":"codex","source":"herdr:codex","kind":"id","value":"fixture-codex"}});
-    let mut cursors = json!({});
+    let key = sha256(b"anton-native-session-v1:fixture-codex");
+    // The asserted rounds resume a warm Codex cursor. A fresh one stamps
+    // `seq` from the probe time, which float rounding can place just past
+    // that time in the view, a pre-existing Codex gap of one probe.
+    let mut cursors = {
+        let mut agents = vec![codex.clone()];
+        let mut follower = NativeTelemetry::default();
+        follower
+            .discovery
+            .insert(key.clone(), (Instant::now(), Some(rollout.clone())));
+        let deadline = Instant::now() + Duration::from_secs(30);
+        follower.enrich_until(&mut agents, &json!({}), deadline)
+    };
+    assert!(cursors.get(&key).is_some());
     for _ in 0..2 {
         let mut agents: Vec<Value> = ids
             .iter()
@@ -1153,10 +1166,9 @@ fn claude_replay_listed_first_never_starves_a_codex_pane() {
         ENRICHED.with(|order| order.borrow_mut().clear());
         let deadline = Instant::now() + Duration::from_secs(30);
         let mut follower = NativeTelemetry::default();
-        let key = sha256(b"anton-native-session-v1:fixture-codex");
         follower
             .discovery
-            .insert(key, (Instant::now(), Some(rollout.clone())));
+            .insert(key.clone(), (Instant::now(), Some(rollout.clone())));
         let next = follower.enrich_until(&mut agents, &cursors, deadline);
         let order = ENRICHED.with(|order| order.borrow().clone());
         assert_eq!(order, ["codex", "claude", "claude"]);
