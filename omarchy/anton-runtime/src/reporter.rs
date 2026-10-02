@@ -105,6 +105,7 @@ pub fn report(
         }
         std::thread::sleep(Duration::from_millis(10));
     }
+    let _unlock = common::Unlock(&lock);
     let response = common::rpc(
         socket,
         "pane.get",

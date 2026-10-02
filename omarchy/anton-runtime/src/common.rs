@@ -211,6 +211,18 @@ fn atomic_write(path: &Path, bytes: &[u8], checkpoint: bool) -> Result<()> {
 pub struct OwnerGuard {
     _file: File,
 }
+/// Releases a `flock` taken on the file when dropped. A process spawned by
+/// another thread holds the lock's open file description until it calls
+/// exec, so closing the descriptor alone can leave the lock held. Declare
+/// the guard after the file so it drops first.
+pub struct Unlock<'a>(pub &'a File);
+impl Drop for Unlock<'_> {
+    fn drop(&mut self) {
+        unsafe {
+            libc::flock(self.0.as_raw_fd(), libc::LOCK_UN);
+        }
+    }
+}
 pub fn owner_guard(path: &Path) -> Result<OwnerGuard> {
     let mut file = open_owned(path, false, false)?;
     if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) } < 0 {

@@ -1239,8 +1239,9 @@ struct CheckpointFile {
     version: u32,
     records: Vec<CheckpointRow>,
 }
-/// A process spawned by another thread briefly shares the lock's open file
-/// description until it calls exec, so the checkpoint lock waits this long.
+/// Each holder releases the checkpoint lock explicitly (`common::Unlock`),
+/// because a process spawned by another thread shares the lock's open file
+/// description until it calls exec. The wait covers genuine contention.
 const LOCK_WAIT: Duration = Duration::from_millis(250);
 pub struct Checkpoints {
     state: PathBuf,
@@ -1288,6 +1289,7 @@ impl Checkpoints {
         let lease = common::open_owned(&state.join("replay-checkpoints.lock"), true, true)
             .and_then(|file| {
                 lock(&file, true, LOCK_WAIT)?;
+                let _unlock = common::Unlock(&file);
                 let info = file
                     .metadata()
                     .map_err(|_| "Cannot inspect checkpoint lease")?;
@@ -1419,6 +1421,7 @@ impl Checkpoints {
         let _owner = common::owner_guard(&self.owner)?;
         let file = common::open_owned(&self.state.join("replay-checkpoints.lock"), true, false)?;
         lock(&file, true, LOCK_WAIT)?;
+        let _unlock = common::Unlock(&file);
         let info = file.metadata().map_err(|_| "Invalid checkpoint lease")?;
         let current = std::fs::symlink_metadata(self.state.join("replay-checkpoints.lock"))
             .map_err(|_| "Checkpoint lease removed")?;
@@ -1868,38 +1871,73 @@ mod tests {
         let saved: CheckpointFile = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert!(saved.records.is_empty());
     }
-    /// A process spawned from another thread holds a copy of every open file
-    /// description until it calls exec, including the checkpoint lock's, so a
-    /// zero-wait lock fails spuriously while siblings spawn.
-    #[test]
-    fn checkpoint_lock_waits_out_concurrent_process_spawns() {
-        struct Spawner(
-            std::sync::Arc<std::sync::atomic::AtomicBool>,
-            Option<std::thread::JoinHandle<()>>,
-        );
-        impl Drop for Spawner {
-            fn drop(&mut self) {
-                self.0.store(true, std::sync::atomic::Ordering::Relaxed);
-                if let Some(join) = self.1.take() {
-                    let _ = join.join();
-                }
+    /// A sibling thread spawning processes until dropped. Each child holds a
+    /// copy of every open file description until it calls exec, including
+    /// the checkpoint lock's.
+    struct Spawner(
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+        Option<std::thread::JoinHandle<()>>,
+    );
+    impl Spawner {
+        fn new() -> Self {
+            let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let flag = stop.clone();
+            Self(
+                stop,
+                Some(std::thread::spawn(move || {
+                    while !flag.load(std::sync::atomic::Ordering::Relaxed) {
+                        let _ = std::process::Command::new("true").status();
+                    }
+                })),
+            )
+        }
+    }
+    impl Drop for Spawner {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+            if let Some(join) = self.1.take() {
+                let _ = join.join();
             }
         }
+    }
+    /// Both checkpoint lock sites release the lock before closing it, so a
+    /// zero-wait lock taken straight after `new` or `persist` never finds it
+    /// held by a child that a sibling thread spawned in between.
+    #[test]
+    fn checkpoint_lock_is_free_at_once_after_each_holder_while_siblings_spawn() {
         let fixture = Fixture::new();
         let owner = fixture.root.join(".herdr-observatory-install");
         std::fs::write(&owner, b"herdr.observatory\n").unwrap();
         let state = fixture.root.join("state");
         std::fs::create_dir(&state).unwrap();
-        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let flag = stop.clone();
-        let _spawner = Spawner(
-            stop,
-            Some(std::thread::spawn(move || {
-                while !flag.load(std::sync::atomic::Ordering::Relaxed) {
-                    let _ = std::process::Command::new("true").status();
-                }
-            })),
-        );
+        let path = state.join("replay-checkpoints.lock");
+        let _spawner = Spawner::new();
+        let empty = BTreeMap::new();
+        let mut held = 0;
+        let free = |held: &mut usize| {
+            let file = common::open_owned(&path, true, false).unwrap();
+            if lock(&file, true, Duration::ZERO).is_ok() {
+                let _unlock = common::Unlock(&file);
+            } else {
+                *held += 1;
+            }
+        };
+        for _ in 0..300 {
+            let mut cache = Checkpoints::new(&state, &owner).unwrap();
+            free(&mut held);
+            cache.update(&empty, true).unwrap();
+            free(&mut held);
+        }
+        assert_eq!(held, 0);
+    }
+    #[test]
+    fn checkpoint_lock_waits_out_concurrent_process_spawns() {
+        let fixture = Fixture::new();
+        let owner = fixture.root.join(".herdr-observatory-install");
+        std::fs::write(&owner, b"herdr.observatory\n").unwrap();
+        let state = fixture.root.join("state");
+        std::fs::create_dir(&state).unwrap();
+        let _spawner = Spawner::new();
         let empty = BTreeMap::new();
         let mut failures = 0;
         for _ in 0..300 {

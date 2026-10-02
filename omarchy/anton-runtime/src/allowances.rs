@@ -377,6 +377,7 @@ pub fn receive(config: &Value, state: &Path, row: &Value, owner: Option<&Path>) 
     if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
         return Ok(false);
     }
+    let _unlock = common::Unlock(&lock);
     let mut rows = read_cache(state, now);
     if rows.iter().any(|v| {
         v["account_key"] == key
@@ -808,6 +809,38 @@ mod tests {
             join.join().unwrap();
         }
         assert_eq!(failures, 0);
+    }
+
+    /// Each receive releases the cache lock before closing it, so a process
+    /// spawned by a sibling thread, which holds the lock's open file
+    /// description until exec, never makes the next receive look busy.
+    #[test]
+    fn receive_is_never_busy_after_its_own_lock_while_siblings_spawn() {
+        let fixture = Fixture::new();
+        let key = "a".repeat(64);
+        let cfg = json!({"accounts":{key.clone():"Personal"}});
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let storm: Vec<_> = (0..2)
+            .map(|_| {
+                let stop = stop.clone();
+                std::thread::spawn(move || {
+                    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                        let _ = std::process::Command::new("true").status();
+                    }
+                })
+            })
+            .collect();
+        let now = common::now();
+        let mut busy = 0;
+        for index in 0..300 {
+            let row = json!({"account_key":key,"sampled_at":now - 1.0 + index as f64 * 1e-3,"weekly_remaining":0,"weekly_resets_at":now as u64+1000,"reset_count":0});
+            busy += usize::from(!receive(&cfg, &fixture.0, &row, None).unwrap());
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        for join in storm {
+            join.join().unwrap();
+        }
+        assert_eq!(busy, 0);
     }
 
     #[test]
