@@ -172,7 +172,7 @@ An assistant record that cannot be classified makes `compactions` unknown, becau
 - **Launch without `agentId`.** An `async_launched` result with no `agentId` is a workflow or teammate launch, and is ignored.
 - **Resume.** A `toolUseResult` with `resumedAgentId` naming a known child and `success: true` returns that child to running. This is the Claude form of "resumed work invalidates old completion". A repeat launch of a known child does the same. A resume naming a child that was not launched in this file is ignored (observed 2 of 5 times; the child belongs to another session).
 - **Completion.** Completion is a user record whose `origin.kind` is `task-notification`, or a `queued_command` attachment with `commandMode: "task-notification"`.
-  - A bounded tag grammar extracts only `task-id` and `status`. Nothing else in the block is read.
+  - A bounded tag grammar extracts only `task-id` and `status`. Nothing else in the block is read. Anything but whitespace after the first closing tag within the first 4,096 units, or a further text value in the record's content or prompt array, makes `valid` false; a closing tag beyond 4,096 units hides anything after it.
   - A notification whose task id matches no known Agent child is ignored. These come from shell tasks, workflows and teammates.
 
 **Status mapping.**
@@ -209,13 +209,13 @@ Wrapper tags are matched on the leading tag of user text:
 | Local-command output (rule 3) | `local-command-stdout`, `local-command-stderr`, and `system` records with subtype `local_command` |
 | Bash mode (rule 3) | `bash-input`, `bash-stdout`, `bash-stderr` |
 
-`local-command-caveat` is ignored through `isMeta`. Any other leading tag falls to rule 4. Local-command output while a start is pending clears that start only when it was opened by a slash-command echo (a user record whose text starts with `command-name`, whatever its origin). It sets no `lost_idle` and leaves coverage unchanged, on the documented assumption that a command whose echo is followed by local-command output ran locally, not the model. Because such a command may still run the model, it sets `local_idle`: the published current turn is unknown until a trigger, `turn_duration` or an abort. An assistant record before then makes coverage ambiguous, and an abort makes accumulated coverage unknown. Only a model-running command that is killed, or whose queued input is taken, before its first response stays undercounted, since neither can be told from a local command followed by the next prompt. A pending start opened by any other trigger is untouched, and local output during a turn stays ignored. Input taken (`dequeue` or `remove`) after a record lost while idle, a second record lost while idle, or a lost queue record makes the turn ambiguous. Change 2 adds a synthetic fixture for each tag.
+`local-command-caveat` is ignored through `isMeta`. Any other leading tag falls to rule 4. Local-command output while a start is pending clears that start only when it was opened by a slash-command echo (a user record whose text starts with `command-name`, whatever its origin). It sets no `lost_idle` and leaves coverage unchanged, on the documented assumption that a command whose echo is followed by local-command output ran locally, not the model. Because such a command may still run the model, it sets `local_idle`: the published current turn is unknown until a trigger, `turn_duration` or an abort. An assistant record before then makes coverage ambiguous, and an abort makes accumulated coverage unknown. Only a model-running command that is killed, or whose queued input stamped within the second of its take is taken, before its first response stays undercounted (input stamped earlier than its take is unknown), since neither can be told from a local command followed by the next prompt. A pending start opened by any other trigger is untouched, and local output during a turn stays ignored. Input taken (`dequeue` or `remove`) after a record lost while idle, a second record lost while idle, or a lost queue record makes the turn ambiguous. Change 2 adds a synthetic fixture for each tag.
 
 **Turn triggers.**
 - With no active turn, a trigger opens a pending start. A trigger that would replace an unconfirmed pending start is ambiguous instead, because the earlier prompt may have been killed or joined. It becomes the turn start only when an assistant record follows before the next trigger, including a `<synthetic>` error record, which confirms a start although D3 ignores its usage. Otherwise the newer trigger replaces it.
 - The first classified trigger or turn end sets `Turns.supported`, so `complete` can be published.
 - With an active turn, a trigger joins that turn only when a `queue-operation` record with operation `dequeue` or `remove` has appeared since the turn's trigger or the last join, while that turn was active or its start was pending [obs shape, inf semantics]. An `enqueue` alone never permits a join, so a killed turn whose queued input was never taken cannot absorb the idle gap. Every trigger consumes the evidence. With no active turn a trigger never joins; it replaces any pending start (joining a pending start added idle time in corpus replay). The joining trigger must also be stamped no later than that evidence, so input queued before a kill can never join a turn started after the restart.
-- Without the evidence, accumulated coverage becomes unknown. The same holds at every point where a turn may still be running: a trigger after a record lost while idle, an unjoined trigger during a turn, an unrecognised origin, a trigger with no stamp or key, a start that `Turns::begin` rejects (before the previous end, or a repeated key), and an unparseable, foreign or unclassifiable record while a turn is active or a start is pending. Because the input may instead have joined a still-running turn, no pending start opens and the current and last values stay unchanged (`current_known` false) until `system/turn_duration` or an abort proves an end; the next trigger after that opens a pending start normally. Silent ends do not clear this state; an abort clears it even when the start it confirms is rejected. A record lost while no turn is running (unparseable, unclassifiable, or a user record without `sessionId`) may itself have opened a turn: an assistant record that follows before any trigger makes coverage ambiguous until `turn_duration` or an abort; a trigger before that assistant record is ambiguous, as a trigger replacing a pending start is.
+- Without the evidence, accumulated coverage becomes unknown. The same holds at every point where a turn may still be running: a trigger after a record lost while idle, an unjoined trigger during a turn, an unrecognised origin, a trigger with no stamp or key, a start rejected before the latest proven end, or a repeated key, and an unparseable, foreign or unclassifiable record while a turn is active or a start is pending. Because the input may instead have joined a still-running turn, no pending start opens and the current and last values stay unchanged (`current_known` false) until `system/turn_duration` or an abort proves an end; the next trigger after that opens a pending start normally. Silent ends do not clear this state; an abort clears it even when the start it confirms is rejected. A record lost while no turn is running (unparseable, unclassifiable, or a user record without `sessionId`) may itself have opened a turn: an assistant record that follows before any trigger makes coverage ambiguous until `turn_duration` or an abort; a trigger before that assistant record is ambiguous, as a trigger replacing a pending start is.
 - An abort while a start is pending confirms that start and ends the turn as aborted at the abort timestamp. An `isAbortedMidStream` assistant record confirms a pending start before it is handled as an abort.
 - An assistant record with no active turn and no pending start, other than one directly after an abort, shows a turn whose trigger was not seen and makes coverage ambiguous until `turn_duration` or an abort.
 - An abort with no active turn and no pending start is ignored, except that after local-command output (`local_idle`) it makes accumulated coverage unknown; a `<synthetic>` or other assistant record directly after an abort consumes the abort-adjacency flag and is neutral. Otherwise it is ignored, apart from setting the abort-adjacency flag. The next trigger, assistant record or `turn_duration` clears that flag.
@@ -230,7 +230,7 @@ Wrapper tags are matched on the leading tag of user text:
 - A `turn_duration` with no active turn is ignored when it directly follows an abort. Otherwise it makes accumulated coverage unknown.
 
 **Timestamps.**
-- Timestamps convert to Unix seconds by floor, for both bounds. A trigger or queue operation whose timestamp floors to Unix second 0 is treated as missing its timestamp.
+- Timestamps convert to Unix seconds by floor, for both bounds. A start earlier than the latest proven end makes accumulated coverage unknown and is ambiguous. The latest proven end (`end_floor`) is the largest Unix second of any `turn_duration` or abort replayed, published or not, and of any `dequeue` or `remove` with no turn running or pending; it is checked when a pending start opens and when it is confirmed. A trigger or queue operation whose timestamp floors to Unix second 0 is treated as missing its timestamp.
 - A start earlier than the previous end, or an end earlier than its start, makes accumulated coverage unknown through `Turns::unknown`.
 - The current or last valid interval stays available, as the spec allows.
 
@@ -248,7 +248,7 @@ Wrapper tags are matched on the leading tag of user text:
 - Codex rows are charged against the 32-row and 256 KiB bounds before Claude rows, in cursor validation and checkpoint eviction, so Claude rows never displace Codex rows; checkpoint eviction removes the oldest Claude row first.
 - Checkpoint rows load individually, so a row this build cannot read never discards the others.
 - A Claude row that would exceed the 256 KiB bound is first shrunk: `turns.finished` keeps only the last interval, `total` matches it, and accumulated coverage becomes unknown for the rest of the binding. Offset, file, fingerprint, block and children are kept, so replay resumes. The sample measured before the shrink still publishes complete coverage. Rows are taken in key order; a row that still does not fit is dropped with every row after it. Checkpoint eviction across hosts still removes whole rows.
-- Each holder releases the checkpoint lock with `LOCK_UN` before closing it (`common::Unlock`), because a process spawned by another thread holds the lock's open file description until it calls exec. The lease and each write still wait up to 250 ms for genuine contention (`checkpoint_lease_and_write_wait_out_a_brief_holder`; release under spawns is `checkpoint_cycles_release_the_lock_while_siblings_spawn`). A lease failure at startup is kept and `persist` reports it. The allowances receive lock and the reporter hook lock release the same way.
+- Each holder releases the checkpoint lock with `LOCK_UN` before closing it (`common::Unlock`), because a process spawned by another thread holds the lock's open file description until it calls exec. The lease and each write still wait up to 250 ms for genuine contention (`checkpoint_lease_and_write_wait_out_a_brief_holder`; release under spawns is `checkpoint_lock_is_free_at_once_after_each_holder_while_siblings_spawn`). A lease failure at startup is kept and `persist` reports it. The allowances receive lock and the reporter hook lock release the same way.
 
 **Row-level fields.**
 - `Cursor::children`, `valid`, `compactions_valid`, `turns`, `fingerprint`, `offset`, `file`, `at`, `caught_up` and `skipping` keep their existing meaning for Claude rows. `seq` follows D6.
@@ -274,6 +274,7 @@ Every block field is required, bounded and revalidated on reuse:
 - `lost_idle`: set when a record is lost with no active turn, no pending start and no ambiguity; cleared by `turn_duration`, an abort or ambiguity (including any trigger); only set while idle and not ambiguous;
 - `pending_command`: set when a slash-command echo opens a pending start; cleared when that start is confirmed or made unknown, or by local output, which sets `local_idle`; only set while a start is pending;
 - `local_idle`: set when local-command output clears a pending slash-command start; cleared by a trigger, `turn_duration`, an abort or ambiguity; only set while idle and not ambiguous;
+- `end_floor`: the latest proven end (D7) in Unix seconds, or 0; at most `coverage_seq` in seconds, so within now plus 1 s; a block without it is replayed fresh;
 - `foreign`: set by a record whose `sessionId` differs, never cleared on resume; requires invalid totals and last-response, row `valid`, `compactions_valid` and turn coverage false, and `current_known` false;
 - the Claude envelope classifier state (D3), or none.
 
@@ -282,6 +283,11 @@ Every block field is required, bounded and revalidated on reuse:
 **Resume and replacement.**
 - A resume that appends to the same file keeps the binding. Dev/inode, header hash, tail hash and size or mtime still detect replacement.
 - A resume that writes a new file elsewhere produces two matches at the next re-scan, so the session becomes unknown.
+
+**Refinements after review round 8.**
+- **One enrichment per session.** A peer enriches each Claude session key once per probe. Later panes on the key receive the first pane's published telemetry and turn timing, or their absence, and share its row or its withholding.
+- **Re-emission.** The local re-emits a retained copy for a generation only when no pane in that sample sharing the generation carries telemetry.
+- **Deadlines.** `enrich_claude` takes separate bind and replay deadlines. They are equal outside tests.
 
 **Refinements after review round 4.**
 - **D1 predecessor scan.**
@@ -488,6 +494,19 @@ Two model calibrations are explicit in the test:
 - a user record with an unrecognised `origin` and `isMeta`, which is unknown;
 - the same record with a recognised `peer` origin, which is still a trigger;
 - a deadline after a fresh bind, on a peer and on a local follower.
+
+**Added after review round 8:**
+
+- **Turn timing:**
+  - `zz_trigger_before_a_proven_end_after_ambiguity_is_never_published`;
+  - a fuzzer shape: leftover queued input taken at once, with the trigger stamped at its queue time.
+- **Notifications:** `text_notification_with_content_after_its_closing_tag_is_unreadable`.
+- **Two panes on one session:**
+  - `claude_two_panes_on_one_session_share_a_restart_that_is_not_caught_up`;
+  - `claude_two_panes_on_one_session_share_a_withheld_row`;
+  - `claude_two_panes_on_one_session_share_a_lasting_failure_before_the_deadline`.
+- **Retention:** `claude_retention_never_reemits_beside_telemetry_in_the_same_generation`.
+- **Deadline call site:** the post-bind deadline call site is now tested through `enrich_claude`.
 
 **Corpus check.** As a verification step, this change also runs a local counts-only replay of the real transcript corpus through the implementation. It prints aggregates only, and nothing from it is committed. Prose review could not converge on these rules; replay can.
 

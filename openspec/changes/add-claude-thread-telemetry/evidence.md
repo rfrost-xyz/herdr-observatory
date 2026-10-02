@@ -488,7 +488,7 @@ The four-lens review of `461c716` found 2 blocking, 1 non-blocking and 2 nit fin
 
 **Blocking:**
 1. **Unrecognised origin with `isMeta` was ignored.** A user record with an unrecognised `origin` and `isMeta` was ignored instead of unknown, which turned unknown into a complete undercount. `8fb42b2` swaps the classification order. Its regression test failed before the fix.
-2. **`e0e6fc5` had no effect on peers.** When the deadline passed right after a fresh bind, `skip_claude` saw the binding `bind` had just made current, so a peer still returned an unverified row. `0abe129` adds `skip_after_bind`: it re-emits only a retained sample, and otherwise publishes all-null or withholds the row. A direct test after `bind` on a fresh follower failed under the old behaviour and passes now.
+2. **`e0e6fc5` had no effect on peers.** When the deadline passed right after a fresh bind, `skip_claude` saw the binding `bind` had just made current, so a peer still returned an unverified row. `0abe129` adds `skip_after_bind`: it re-emits only a retained sample, and otherwise publishes all-null or withholds the row. Round 8 found that the direct test reached only the helper. `15cb5d4` makes `claude_deadline_after_bind_never_returns_an_unverified_row` reach the call site through `enrich_claude` with an expired pass deadline. With `skip_claude` at the call site, both the all-null case and the withheld case fail.
 
 **Other:**
 - the checkpoint cycle test's doc comment and name now state what it checks (`4ab7901`);
@@ -496,3 +496,50 @@ The four-lens review of `461c716` found 2 blocking, 1 non-blocking and 2 nit fin
 - the over-bound consumed-string difference is documented in D3 as fail-closed.
 
 **Verification:** fmt and clippy are clean. The full Rust suite passes: lib 195, main 17, native_navigation 6, native_process 32.
+
+## Review round 8 and remediation
+
+The four-lens review of `ad1ddd0` found 3 blocking, 2 non-blocking and 2 nit findings.
+
+**Blocking:**
+1. **A trigger stamped before a proven end was published after an ambiguous turn.** `3571b3b` adds `end_floor`, the latest proven end. It also counts takes of queued input while idle, which the fuzzer showed was needed: violations went from 3,536 to 66 with ends only, and to 0 with idle takes.
+2. **Two panes on one Claude session could re-show a replaced file on a peer.** `e4302f4` enriches each session once per probe, and `eefaefd` stops retention from re-emitting beside telemetry in the same generation.
+3. **The round 7 test reached only the helper.** `15cb5d4` routes it through `enrich_claude`.
+
+**Other:**
+- `3fd22a9`: content after a notification block is unreadable.
+- `09498b0`: refactor.
+- `14c6684`: large bench transcripts end a minute in the past.
+- A stale test name is corrected.
+
+**In progress:** the lens 1 finding about lines between 64 KiB and `TAIL` cut at a pass end or mid-write is being fixed separately; see below.
+
+**Fuzzer:** 240,491 records, 0 violations, 0 restarts.
+
+**Corpus** (counts only, the current corpus of 20 files, identical before and after these commits):
+
+| Measure | Result |
+|---|---|
+| Coverage | 14 of 20 |
+| Published current turn | 14 of 20 |
+| Publishable | 12 of 20 |
+| Joins | 20 |
+| Shadow agreement | 20 of 20 |
+
+### Verification at `14c6684` (release sha256 `c9cf061d240de63a122972d5bb9fd80083f007bf68dd2f9ce9e91c3c085887d6`)
+
+| Gate | Result |
+|---|---|
+| fmt, clippy | clean |
+| `cargo test` (3 runs) | lib 200, main 18, native_navigation 6, native_process 32 |
+| `node --test` | 88 of 88 |
+| QML | 95 of 95 |
+| qmllint | clean |
+| Shell harness | 0 failures |
+| History | 131 commits, clean |
+
+| Measure | HEAD | Baseline |
+|---|---|---|
+| Runtime CPU | 0.033 s | 0.033 s |
+
+Peak RSS is the known two-valued process-overlap noise.
