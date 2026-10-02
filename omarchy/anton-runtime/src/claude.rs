@@ -1883,7 +1883,9 @@ fn position(stream: &mut BufReader<File>) -> Result<u64> {
 /// One bounded replay pass over a bound session file. It resumes `previous`
 /// only when the file is provably the same and has only grown; otherwise it
 /// starts after the header. A pass reads at most `TAIL` bytes and stops at
-/// `deadline`; a partial last line waits for the next pass.
+/// `deadline`. A line it cannot finish, at the `TAIL` bound, the end of the
+/// file or the deadline, waits for the next pass, which reads it whole; only
+/// a line that begins a pass and spans `TAIL` bytes is split across passes.
 pub fn replay(
     root: &Path,
     path: &Path,
@@ -1945,7 +1947,10 @@ pub fn resume(
     Ok((row, resumed))
 }
 
-/// Applies the lines from `row.offset` up to `end` until `deadline`.
+/// Applies the lines from `row.offset` up to `end` until `deadline`. A line
+/// over `LINE` this pass begins but cannot finish is rewound, so the next pass
+/// reads it whole, unless it began the pass and already spans `TAIL` bytes;
+/// only then does its classifier state cross the pass boundary (D3).
 fn advance(
     row: &mut Row,
     stream: &mut BufReader<File>,
@@ -1957,6 +1962,9 @@ fn advance(
     stream
         .seek(SeekFrom::Start(row.offset))
         .map_err(|_| "Claude session seek failed")?;
+    let first = row.offset;
+    // The start of the line over `LINE` that this pass began, while unfinished.
+    let mut open = None;
     while position(stream)? < end && Instant::now() < deadline {
         let offset = position(stream)?;
         let bytes = line(stream, (LINE + 1).min((end - offset) as usize))
@@ -1967,8 +1975,14 @@ fn advance(
         }
         let terminated = bytes.last() == Some(&b'\n');
         if row.skipping || bytes.len() > LINE {
+            if !row.skipping {
+                open = Some(offset);
+            }
             row.oversized(&bytes, terminated, id, time);
             row.offset = position(stream)?;
+            if terminated {
+                open = None;
+            }
             continue;
         }
         if !terminated {
@@ -1984,6 +1998,15 @@ fn advance(
             // reads, and `parse_line` a repeated key, which the classifier
             // loses, so a line rejected here is classified as an oversized one.
             None => row.oversized(&bytes, true, id, time),
+        }
+    }
+    // A malformed line has no classifier left: it was already made invalid and
+    // its rest is skipped unread, so only a capture in progress is rewound.
+    if let Some(start) = open.filter(|_| row.claude.classifier.is_some()) {
+        if start != first || row.offset - start < TAIL as u64 {
+            row.offset = start;
+            row.skipping = false;
+            row.claude.classifier = None;
         }
     }
     Ok(())
@@ -3255,11 +3278,14 @@ mod replay_tests {
         let good = assistant("msg_a", 1, "\"end_turn\"", [1, 2, 3, 4]);
         let next = assistant("msg_c", 9, "\"end_turn\"", [1, 0, 0, 0]);
         // A pass boundary inside the timestamp of an oversized assistant line.
+        // The line is longer than `TAIL` and begins the second pass, so it is
+        // split there; a shorter one would be read whole by the next pass.
         let late = assistant("msg_b", 2, "\"end_turn\"", [5, 5, 5, 5]);
         let at = lead_pad(&late, 0).find(&stamp(2)).unwrap();
-        let cut = lead_pad(&late, TAIL - good.len() - 1 - at - 5);
+        let cut = lead_pad(&late, TAIL - at - 5);
         let text = header() + &body(&[good.clone(), cut, next.clone()]);
-        assert_eq!(text.find(&stamp(2)).unwrap() + 5, header().len() + TAIL);
+        let start = header().len() + good.len() + 1;
+        assert_eq!(text.find(&stamp(2)).unwrap() + 5, start + TAIL);
         let path = fixture.file("slug", &format!("{ID}.jsonl"), &text);
         let (row, count) = passes(&fixture, &path, None);
         assert!(count >= 2);
@@ -3294,6 +3320,137 @@ mod replay_tests {
         }
     }
 
+    /// Neutral attachment lines of exactly `bytes` bytes, each at most `LINE`.
+    fn filler(bytes: usize) -> Vec<String> {
+        let base = attachment(0).len() + "\"pad\":\"\",".len() + 1;
+        let (mut lines, mut left) = (vec![], bytes);
+        while left > 0 {
+            let size = match left {
+                _ if left > 2 * LINE => LINE,
+                _ if left > LINE => left / 2,
+                _ => left,
+            };
+            assert!(size >= base);
+            lines.push(lead_pad(&attachment(0), size - base));
+            left -= size;
+        }
+        lines
+    }
+    /// `before`, filler, then `big` (which `after` follows), with the first
+    /// pass's `TAIL` bound five bytes into `marker` in `big`. Returns the
+    /// lines and the byte offset at which `big` starts.
+    fn cut_at_tail(
+        before: &[String],
+        big: &str,
+        marker: &str,
+        after: &[String],
+    ) -> (Vec<String>, usize) {
+        let at = big.find(marker).unwrap() + 5;
+        let used: usize = before.iter().map(|line| line.len() + 1).sum();
+        let mut lines = before.to_vec();
+        lines.extend(filler(TAIL - used - at));
+        let start = header().len() + lines.iter().map(|line| line.len() + 1).sum::<usize>();
+        assert_eq!(start + at, header().len() + TAIL);
+        assert!(LINE < big.len() && big.len() < TAIL - LINE);
+        lines.push(big.to_owned());
+        lines.extend_from_slice(after);
+        (lines, start)
+    }
+    fn coverage(row: &Row) -> Value {
+        json!([
+            row.usage(),
+            row.turns,
+            row.children,
+            row.valid,
+            row.compactions_valid,
+            row.claude.totals_valid
+        ])
+    }
+    fn pass(fixture: &tests::Fixture, path: &Path, row: Option<Row>) -> Row {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        replay(&fixture.projects, path, ID, row, now(), deadline).unwrap()
+    }
+
+    #[test]
+    fn oversized_line_shorter_than_tail_cut_by_a_pass_is_read_whole() {
+        let fixture = tests::Fixture::new();
+        let big = lead_pad(
+            &assistant("msg_b", 2, "\"end_turn\"", [5, 5, 5, 5]),
+            100_000,
+        );
+        let (lines, start) = cut_at_tail(
+            &[user(0), assistant("msg_a", 1, "\"end_turn\"", [1, 2, 3, 4])],
+            &big,
+            &stamp(2),
+            &[assistant("msg_c", 9, "\"end_turn\"", [1, 0, 0, 0])],
+        );
+        let path = fixture.file("slug", &format!("{ID}.jsonl"), &(header() + &body(&lines)));
+        let first = pass(&fixture, &path, None);
+        assert_eq!(first.offset, start as u64);
+        assert!(!first.skipping && first.claude.classifier.is_none() && !first.caught_up);
+        let (row, _) = passes(&fixture, &path, Some(first));
+        assert_eq!(get(&row, "total_input"), json!(8 + 15 + 1));
+        assert_eq!(coverage(&row), coverage(&run(&lines)));
+    }
+
+    #[test]
+    fn oversized_line_being_written_waits_until_it_is_whole() {
+        let fixture = tests::Fixture::new();
+        let good = assistant("msg_a", 1, "\"end_turn\"", [1, 2, 3, 4]);
+        let big = lead_pad(
+            &assistant("msg_b", 2, "\"end_turn\"", [5, 5, 5, 5]),
+            100_000,
+        );
+        let lines = [
+            user(0),
+            good,
+            big.clone(),
+            assistant("msg_c", 9, "\"end_turn\"", [1, 0, 0, 0]),
+        ];
+        let text = header() + &body(&lines);
+        let start = header().len() + body(&lines[..2]).len();
+        // Mid-write: the file ends inside the timestamp of the big line.
+        let partial = start + big.find(&stamp(2)).unwrap() + 5;
+        let path = fixture.file("slug", &format!("{ID}.jsonl"), &text[..partial]);
+        let mut row = pass(&fixture, &path, None);
+        // The pass that starts at the unfinished line waits without consuming.
+        for _ in 0..2 {
+            assert_eq!(row.offset, start as u64);
+            assert!(!row.skipping && row.claude.classifier.is_none() && !row.caught_up);
+            row = pass(&fixture, &path, Some(row));
+        }
+        std::fs::write(&path, &text).unwrap();
+        let (row, _) = passes(&fixture, &path, Some(row));
+        assert_eq!(get(&row, "total_input"), json!(8 + 15 + 1));
+        assert_eq!(coverage(&row), coverage(&run(&lines)));
+        assert_eq!(coverage(&row), coverage(&passes(&fixture, &path, None).0));
+    }
+
+    #[test]
+    fn oversized_user_record_cut_by_a_pass_keeps_children_and_turns() {
+        let fixture = tests::Fixture::new();
+        let launch = format!(
+            "{{\"type\":\"user\",\"sessionId\":\"{ID}\",\"uuid\":\"u-launch\",\"timestamp\":\"{}\",\"toolUseResult\":{{\"status\":\"async_launched\",\"agentId\":\"agent-a\"}},\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"content\":\"done\"}}]}}}}",
+            stamp(2)
+        );
+        let big = lead_pad(&launch, 100_000);
+        let (lines, start) = cut_at_tail(
+            &[user(0), assistant("msg_a", 1, "\"tool_use\"", [1, 2, 3, 4])],
+            &big,
+            &stamp(2),
+            &[
+                assistant("msg_b", 3, "\"end_turn\"", [1, 0, 0, 0]),
+                system("turn_duration", 3),
+            ],
+        );
+        let path = fixture.file("slug", &format!("{ID}.jsonl"), &(header() + &body(&lines)));
+        let first = pass(&fixture, &path, None);
+        assert_eq!(first.offset, start as u64);
+        let (row, _) = passes(&fixture, &path, Some(first));
+        assert!(row.valid && row.turns.valid && row.children.len() == 1);
+        assert_eq!(coverage(&row), coverage(&run(&lines)));
+    }
+
     #[test]
     fn oversized_assistant_cut_inside_an_iteration_type_makes_compactions_unknown() {
         let fixture = tests::Fixture::new();
@@ -3307,14 +3464,13 @@ mod replay_tests {
             &(counters([5, 5, 5, 5]) + &list),
             "",
         );
-        // A pass boundary five bytes into the `compaction` iteration type.
+        // A pass boundary five bytes into the `compaction` iteration type of a
+        // line longer than `TAIL` that begins the second pass.
         let at = lead_pad(&late, 0).find("\"compaction\"").unwrap() + 1;
-        let cut = lead_pad(&late, TAIL - good.len() - 1 - at - 5);
+        let cut = lead_pad(&late, TAIL - at - 5);
+        let start = header().len() + good.len() + 1;
         let text = header() + &body(&[good, cut, next]);
-        assert_eq!(
-            text.find("\"compaction\"").unwrap() + 6,
-            header().len() + TAIL
-        );
+        assert_eq!(text.find("\"compaction\"").unwrap() + 6, start + TAIL);
         let path = fixture.file("slug", &format!("{ID}.jsonl"), &text);
         let (row, count) = passes(&fixture, &path, None);
         assert!(count >= 2 && row.caught_up);
@@ -3469,12 +3625,14 @@ mod replay_tests {
     #[test]
     fn file_truncated_during_an_oversized_skip_ends_the_pass() {
         let fixture = tests::Fixture::new();
-        let partial = padded_user(2, LINE * 2);
-        let text = header() + &partial[..LINE + 100];
+        // Only a line that begins a pass and spans `TAIL` bytes is split.
+        let partial = padded_user(2, TAIL + LINE);
+        let text = header() + &partial[..TAIL + 100];
+        let split = (header().len() + TAIL) as u64;
         let path = fixture.file("slug", &format!("{ID}.jsonl"), &text);
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut row = replay(&fixture.projects, &path, ID, None, now(), deadline).unwrap();
-        assert!(row.skipping && row.offset == text.len() as u64);
+        assert!(row.skipping && row.offset == split);
         // The file shrinks after the pass took its length.
         let (mut stream, _) = open_session(&fixture.projects, &path, ID).unwrap();
         std::fs::write(&path, header()).unwrap();
@@ -3482,7 +3640,7 @@ mod replay_tests {
         let (deadline, end) = (start + Duration::from_secs(2), row.offset + 1000);
         advance(&mut row, &mut stream, end, ID, now(), deadline).unwrap();
         assert!(start.elapsed() < Duration::from_secs(1));
-        assert!(row.skipping && row.offset == text.len() as u64);
+        assert!(row.skipping && row.offset == split);
         let (_, resumed) =
             resume(&fixture.projects, &path, ID, Some(row), now(), deadline).unwrap();
         assert!(!resumed);
