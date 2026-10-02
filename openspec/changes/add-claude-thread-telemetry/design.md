@@ -171,7 +171,7 @@ An assistant record that cannot be classified makes `compactions` unknown, becau
 **Records.**
 - **Launch.** A `toolUseResult` with `status: "async_launched"` and an `agentId` starts a child as running. A synchronous Agent result with `agentId` and `totalDurationMs` records it as completed.
 - **Launch without `agentId`.** An `async_launched` result with no `agentId` is a workflow launch, and a `teammate_spawned` or `remote_launched` result is a teammate or remote launch. None of these is a child, but each masks the current turn (D7). Background shell tasks (`backgroundTaskId`) are not launches: they do not change `durationMs`.
-- **Resume.** A `toolUseResult` with `resumedAgentId` naming a known child and `success: true` returns that child to running. This is the Claude form of "resumed work invalidates old completion". A repeat launch of a known child does the same. A resume naming a child that was not launched in this file is ignored (observed 2 of 5 times; the child belongs to another session).
+- **Resume.** A `toolUseResult` with `resumedAgentId` naming a known child and `success: true` returns that child to running. This is the Claude form of "resumed work invalidates old completion". A repeat launch of a known child does the same. A resume naming a child that was not launched in this file is ignored for child counts (observed 2 of 5 times; the child belongs to another session), but it still masks the current turn (D7), since Claude Code writes `resumedAgentId` only when the agent runs in the background.
 - **Completion.** Completion is a user record whose `origin.kind` is `task-notification`, or a `queued_command` attachment with `commandMode: "task-notification"`.
   - A bounded tag grammar extracts only `task-id` and `status`. Nothing else in the block is read. Anything but whitespace after the first closing tag within the first 4,096 units, or a further text value in the record's content or prompt array, makes `valid` false; a closing tag beyond 4,096 units hides anything after it.
   - A notification whose task id matches no known Agent child is ignored. These come from shell tasks, workflows and teammates.
@@ -222,7 +222,7 @@ Wrapper tags are matched on the leading tag of user text:
 - An abort with no active turn and no pending start is ignored, except that after local-command output (`local_idle`) it makes accumulated coverage unknown; a `<synthetic>` or other assistant record directly after an abort consumes the abort-adjacency flag and is neutral. Otherwise it is ignored, apart from setting the abort-adjacency flag. The next trigger, assistant record, `turn_duration`, or `dequeue` or `remove` with no turn running or pending clears that flag.
 - The turn key is `sha256("anton-turn-v1:" + session + ":" + uuid)[..24]` of the record that opened the turn, which satisfies `Turns::validate`.
 
-**Publication.** `native.rs` publishes Claude turn timing through `Row::published_turns()`, a masked copy; `Turns` and the block are unchanged. The current turn, or the idle state, is published only when it is dated: `clean` is set, `valid` holds and no launched or resumed child is `running`. `clean` holds on a fresh replay and after a gated `turn_duration` whose `pendingBackgroundAgentCount` and `pendingWorkflowCount` are absent or the integer 0 while no child runs; a human-origin or shape trigger keeps it, and so does input joined with queue evidence; it is cleared by an injected trigger that opens a turn, a background launch (`async_launched` with or without an `agentId`, `teammate_spawned` or `remote_launched`) or resume, local-command output that clears a pending slash-command start, a silent end, an abort, an orphan or rejected `turn_duration`, and any loss of turn coverage. While a start is pending, or while `lost_idle` or `local_idle` is set, the published current turn is unknown. While `silent_end` is set, the current turn, accumulated total and `complete` are unknown.
+**Publication.** `native.rs` publishes Claude turn timing through `Row::published_turns()`, a masked copy; `Turns` and the block are unchanged. The current turn, or the idle state, is published only when it is dated: `clean` is set, `valid` holds and no launched or resumed child is `running`. `clean` holds on a fresh replay and after a gated `turn_duration` whose `pendingBackgroundAgentCount` and `pendingWorkflowCount` are absent or the integer 0 while no child runs; a human-origin or shape trigger keeps it, and so does input joined with queue evidence; it is cleared by an injected trigger that opens a turn, a background launch (`async_launched` with or without an `agentId`, `teammate_spawned` or `remote_launched`), a successful resume of any agent, a task notification without a final status (such as a resume by the user or another agent) or with an unreadable task id, local-command output that clears a pending slash-command start, a silent end, an abort, an orphan or rejected `turn_duration`, and any loss of turn coverage. While a start is pending, or while `lost_idle` or `local_idle` is set, the published current turn is unknown. While `silent_end` is set, the current turn, accumulated total and `complete` are unknown.
 
 **Ending a turn.**
 - `system/turn_duration` completes the active turn at its own timestamp.
@@ -581,3 +581,32 @@ Two model calibrations are explicit in the test:
 - **[Unobserved shapes]** Compaction, synchronous children and resume to a new file come from binary strings. Unrecognised variants become unknown, and fixtures cover each.
 - **[Peer cost with an old local]** An old local forces full replay on every probe, bounded by the 750 ms deadline. It is measured with `node tests/measure_anton_popover.mjs --claude-old-local <old binary>` (see evidence.md). Remote Claude values need the local upgraded first.
 - **[Format drift]** Validation fails closed. The corpus check is re-runnable after Claude Code upgrades.
+
+## Review round 17 and remediation
+
+The four-lens review of `857fbe0` produced:
+- lenses 1 and 3: CLEAN;
+- lens 4: no blocking findings;
+- lens 2: 2 blocking findings in the current-turn mask.
+
+Neither finding published a wrong number: the start shown is Claude Code's own, and the next turn end reports the work as pending. In each, though, the current turn stayed published while background work ran.
+
+1. **Resume of an agent not launched in this file.**
+   - Claude Code writes `resumedAgentId` only when it resumes on the background path.
+   - Corpus (counts only): 2 such resumes, against 3 of known children.
+2. **Task notification without a final status.**
+   - A resume by the user or by another agent is written as a notification with no `<status>`, which says the agent is running again. For a known child it set the status `unknown`, which `running()` does not count.
+   - The corpus has none of these (counts only).
+
+**Fix.** The rule is now conservative for every child-related signal. `clean` is cleared by:
+- any successful resume, known child or not;
+- any task notification that does not report a final status;
+- a task notification whose task id cannot be read.
+
+The next gated end with nothing pending restores `clean`. Three cases were added to `turns_current_turn_is_published_only_from_a_clean_state`, which failed before the fix.
+
+**Corpus impact:** none. Published running records stay at 2703, the gate kept 267 and rejected 19, coverage is valid in 12 of 20 and the current turn is known in 12 of 20.
+
+**Lens 4, non-blocking.** This repeats the round 15 finding about the fixture sweep's liveness check: pid plus age is unreliable across pid namespaces and clock jumps. The `flock` liveness check stays a follow-up. The review workflow now runs every cargo test with a private `TMPDIR`, which removes cross-run sharing.
+
+**Gates:** fmt and clippy are clean. The full suite passes: lib 223, main 19, native_navigation 6, native_process 32.
