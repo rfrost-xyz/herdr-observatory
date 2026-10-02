@@ -44,12 +44,13 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
-        let dir = std::env::temp_dir().join(format!(
-            "anton-native-{}-{}-{}",
-            std::process::id(),
-            common::now().to_bits(),
-            FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-        ));
+        // Fixtures of runs before the prefix changed are swept too.
+        support::remove_stale_fixtures("anton-native-");
+        support::remove_stale_fixtures("anton-native-exec-");
+        let dir = support::fixture_dir(
+            "anton-process-native-",
+            FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed),
+        );
         fs::create_dir(&dir).unwrap();
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
         let root = dir.join("plugin");
@@ -1975,12 +1976,10 @@ fn claude_peer_sample_is_not_reemitted_after_a_request_without_its_row() {
 
 #[test]
 fn executable_fixtures_run_while_sibling_threads_spawn() {
-    let dir = std::env::temp_dir().join(format!(
-        "anton-native-exec-{}-{}-{}",
-        std::process::id(),
-        common::now().to_bits(),
-        FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-    ));
+    let dir = support::fixture_dir(
+        "anton-process-native-exec-",
+        FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed),
+    );
     fs::create_dir(&dir).unwrap();
     let stop = Arc::new(AtomicBool::new(false));
     let storm: Vec<_> = (0..2)

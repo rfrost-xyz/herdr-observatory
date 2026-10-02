@@ -12,12 +12,10 @@ struct Fixture {
 impl Fixture {
     fn new() -> Self {
         static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let root = std::env::temp_dir().join(format!(
-            "anton-unit-native-claude-{}-{}-{}",
-            std::process::id(),
-            now().to_bits(),
+        let root = common::fixture_dir(
+            "anton-unit-native-claude-",
             SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-        ));
+        );
         let projects = root.join("projects");
         std::fs::create_dir_all(&projects).unwrap();
         claude::TEST_ROOT.with(|value| *value.borrow_mut() = Some(projects.clone()));

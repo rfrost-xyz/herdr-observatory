@@ -523,3 +523,39 @@ pub fn ensure_private_directory(path: &Path) -> Result<()> {
     }
     Ok(())
 }
+/// A unique fixture directory name under the temporary directory, after
+/// removing siblings with `prefix` whose embedded process id is dead.
+/// Fixtures clean up on drop, which a killed test process never reaches; this
+/// removes only directories the current user owns whose creating process no
+/// longer exists, so nobody needs to sweep the prefix by hand.
+#[cfg(test)]
+pub(crate) fn fixture_dir(prefix: &str, sequence: u64) -> PathBuf {
+    let temp = std::env::temp_dir();
+    if let Ok(entries) = std::fs::read_dir(&temp) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(pid) = name
+                .to_str()
+                .and_then(|name| name.strip_prefix(prefix))
+                .and_then(|rest| rest.split('-').next())
+                .and_then(|pid| pid.parse::<libc::pid_t>().ok())
+                .filter(|pid| *pid > 0 && *pid as u32 != std::process::id())
+            else {
+                continue;
+            };
+            let owned = std::fs::symlink_metadata(entry.path())
+                .is_ok_and(|info| info.is_dir() && info.uid() == unsafe { libc::geteuid() });
+            // SAFETY: signal 0 only checks whether the process exists.
+            let dead = unsafe { libc::kill(pid, 0) } == -1
+                && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+            if owned && dead {
+                let _ = std::fs::remove_dir_all(entry.path());
+            }
+        }
+    }
+    temp.join(format!(
+        "{prefix}{}-{}-{sequence}",
+        std::process::id(),
+        now().to_bits()
+    ))
+}

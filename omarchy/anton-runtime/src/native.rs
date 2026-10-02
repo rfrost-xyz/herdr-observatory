@@ -1698,12 +1698,10 @@ mod tests {
     impl Fixture {
         fn new() -> Self {
             static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-            let root = std::env::temp_dir().join(format!(
-                "anton-unit-native-{}-{}-{}",
-                std::process::id(),
-                now().to_bits(),
+            let root = common::fixture_dir(
+                "anton-unit-native-",
                 SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-            ));
+            );
             std::fs::create_dir(&root).unwrap();
             let sessions = root.join("sessions");
             std::fs::create_dir(&sessions).unwrap();
