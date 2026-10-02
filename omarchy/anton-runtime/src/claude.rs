@@ -1524,7 +1524,9 @@ impl Row {
             return;
         }
         if record.kind == KIND_ASSISTANT && record.synthetic {
-            // D3 skips its usage, but it still confirms a pending start (D7).
+            // D3 skips its usage, but it still confirms a pending start (D7),
+            // and a compaction iteration on it still counts (D5).
+            self.claude.compaction_iteration |= record.compaction_iteration;
             return self.turn(record);
         }
         if record.bad && relevant {
@@ -3005,6 +3007,26 @@ mod replay_tests {
             ),
         ]);
         assert_eq!(get(&row, "compactions"), Value::Null);
+    }
+    #[test]
+    fn compaction_iteration_on_a_synthetic_record_makes_compactions_unknown() {
+        let list = iterations(&[("compaction", [1, 1, 1, 1]), ("message", [2, 2, 2, 2])]);
+        let synthetic = assistant_with(
+            "msg_s",
+            3,
+            "\"end_turn\"",
+            &(counters([5, 30, 200, 10]) + &list),
+            "",
+        )
+        .replace("claude-fixture-1", "<synthetic>");
+        let row = run(&[
+            system("compact_boundary", 1),
+            assistant("msg_a", 2, "\"end_turn\"", [1, 1, 1, 1]),
+            synthetic,
+        ]);
+        assert_eq!(get(&row, "compactions"), Value::Null);
+        // D3 still skips the `<synthetic>` record's usage.
+        assert_eq!(get(&row, "total_input"), json!(3));
     }
     #[test]
     fn usage_unclassified_assistant_makes_compactions_unknown() {
