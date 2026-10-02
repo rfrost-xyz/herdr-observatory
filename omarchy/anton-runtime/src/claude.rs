@@ -371,6 +371,10 @@ pub struct ClaudeCursor {
     /// stamp or key, a rejected start, or a failed record during a turn): no
     /// turn opens until `turn_duration` or an abort proves an end.
     pub ambiguous: bool,
+    /// A record was lost with no turn running, and it may have been the
+    /// trigger of the next turn: an assistant record before any trigger then
+    /// shows that turn running from an unknown start, which is ambiguous.
+    pub lost_idle: bool,
     /// A record named another session (D2): every value of this binding
     /// stays unknown, and later records feed nothing, until a fresh replay.
     pub foreign: bool,
@@ -399,6 +403,7 @@ impl Default for ClaudeCursor {
             queued_since_start: false,
             silent_end: false,
             ambiguous: false,
+            lost_idle: false,
             foreign: false,
             classifier: None,
         }
@@ -1095,15 +1100,21 @@ impl Row {
     }
     /// Turn coverage is lost where a turn may still be running: no later
     /// trigger may open a turn until `turn_duration` or an abort proves an end.
+    /// With no turn running, the lost record may itself have opened one.
     fn lose_turn(&mut self) {
         let running = self.turns.active.is_some() || self.claude.pending_start.is_some();
         self.turns_unknown();
-        self.claude.ambiguous |= running;
+        if running {
+            self.ambiguous();
+        } else {
+            self.claude.lost_idle |= !self.claude.ambiguous;
+        }
     }
     /// As `lose_turn`, for a record that may itself have opened a turn.
     fn ambiguous(&mut self) {
         self.turns_unknown();
         self.claude.ambiguous = true;
+        self.claude.lost_idle = false;
     }
     /// Accumulated turn coverage becomes unknown, with the D8 turn state.
     fn turns_unknown(&mut self) {
@@ -1251,6 +1262,9 @@ impl Row {
             }
             Turn::Assistant => {
                 block.abort_adjacent = false;
+                if block.lost_idle && !active && block.pending_start.is_none() {
+                    return self.ambiguous();
+                }
                 self.confirm();
                 if record.stop == STOP_END_TURN {
                     self.claude.queued_since_start = false;
@@ -1282,6 +1296,7 @@ impl Row {
                 }
                 if !self.claude.ambiguous {
                     self.claude.pending_start = Some((key, second));
+                    self.claude.lost_idle = false;
                 }
             }
             Turn::Abort => {
@@ -1289,6 +1304,7 @@ impl Row {
                 // A proven end, even when `confirm` rejected the start.
                 self.claude.ambiguous = false;
                 self.claude.silent_end = false;
+                self.claude.lost_idle = false;
                 self.claude.abort_adjacent = true;
                 self.end(second, Turns::abort);
             }
@@ -1297,6 +1313,7 @@ impl Row {
                 let adjacent = std::mem::take(&mut block.abort_adjacent);
                 block.ambiguous = false;
                 block.silent_end = false;
+                block.lost_idle = false;
                 if active {
                     self.end(second, Turns::finish);
                 } else if !adjacent || block.pending_start.is_some() {
@@ -1454,14 +1471,17 @@ impl Row {
     }
     /// D8: queue evidence belongs to an active turn or a pending start, a
     /// silent end to an active turn without queue evidence, and a pending
-    /// start only exists with no active turn.
+    /// start only exists with no active turn. A record lost while idle
+    /// matters only while no turn is running and nothing is ambiguous.
     fn turn_state(&self) -> bool {
         let active = self.turns.active.is_some();
+        let idle = !active && self.claude.pending_start.is_none();
         (!self.claude.queued_since_start || active || self.claude.pending_start.is_some())
             && (!self.claude.silent_end || active && !self.claude.queued_since_start)
             && (!self.claude.ambiguous
                 || !active && self.claude.pending_start.is_none() && !self.turns.valid)
             && (self.claude.pending_start.is_none() || !active)
+            && (!self.claude.lost_idle || idle && !self.claude.ambiguous)
     }
     /// The replay state every pass boundary must leave resumable.
     fn gate(&self, time: f64) -> bool {

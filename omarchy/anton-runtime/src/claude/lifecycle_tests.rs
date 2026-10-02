@@ -799,6 +799,14 @@ fn turns_block_inconsistent_with_turns_is_rejected() {
     silent.claude.queued_since_start = false;
     silent.turns.unknown();
     assert!(!silent.turn_state());
+    // A record lost while idle holds no running turn and no ambiguity.
+    let mut idle = steps(&[Some(system("turn_duration", 10)), None]);
+    assert!(idle.claude.lost_idle && idle.turn_state());
+    idle.claude.ambiguous = true;
+    assert!(!idle.turn_state());
+    idle.claude.ambiguous = false;
+    idle.claude.pending_start = Some((turn_key(ID, "user-20"), second(20)));
+    assert!(!idle.turn_state());
 }
 
 #[test]
@@ -1054,6 +1062,52 @@ fn turns_lost_while_idle_keep_later_turns_publishable() {
     let row = steps(&lines);
     lost(&row, Some("user-1"));
     assert_eq!(row.turns.last_duration, Some(2));
+}
+
+#[test]
+fn turns_lost_trigger_while_idle_publishes_no_truncated_interval() {
+    let anon = user(10, "anon", "").replace(&format!("\"sessionId\":\"{ID}\","), "");
+    // The lost record may be the prompt that opened the next turn: an
+    // assistant record before any trigger shows that turn running.
+    for (case, lost_at) in [("unparseable", None), ("no session", Some(anon))] {
+        let mut lines: Vec<Option<String>> = [
+            user(1, "hello", ""),
+            assistant(2, "msg_a", "\"end_turn\""),
+            system("turn_duration", 3),
+        ]
+        .map(Some)
+        .to_vec();
+        lines.push(lost_at);
+        lines.extend(
+            [
+                assistant(11, "msg_b", "\"tool_use\""),
+                launch(12, "agent-x"),
+                assistant(13, "msg_c", "\"end_turn\""),
+                notified(40, "agent-x", "completed"),
+                assistant(41, "msg_d", "\"end_turn\""),
+            ]
+            .map(Some),
+        );
+        let row = steps(&lines);
+        assert!(
+            !row.turns.current_known && row.turns.start.is_none(),
+            "{case}"
+        );
+        lines.push(Some(system("turn_duration", 100)));
+        let row = steps(&lines);
+        lost(&row, Some("user-1"));
+        assert_eq!(row.turns.last_duration, Some(2), "{case}");
+        // The next trigger after that proven end opens a turn normally.
+        lines.extend(
+            [
+                user(110, "again", ""),
+                assistant(111, "msg_e", "\"tool_use\""),
+            ]
+            .map(Some),
+        );
+        let row = steps(&lines);
+        assert_eq!(row.turns.start, Some(second(110)), "{case}");
+    }
 }
 
 #[test]
