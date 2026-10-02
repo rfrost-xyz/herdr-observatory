@@ -1727,9 +1727,6 @@ impl Row {
                 if local && injected {
                     return self.ambiguous();
                 }
-                // Injected input may enter a turn deferred while background
-                // agents ran, so a turn it opens is never dated (D7).
-                block.clean &= !injected;
                 // Second 0 is no valid start (`Turns::begin`): a missing stamp.
                 let (Some(key), Some(second)) = (record.uuid.clone(), second.filter(|s| *s > 0))
                 else {
@@ -1745,6 +1742,9 @@ impl Row {
                 if taken && active {
                     return;
                 }
+                // Injected input may enter a turn deferred while background
+                // agents ran, so a turn it opens is never dated (D7).
+                block.clean &= !injected;
                 // A pending start that local-command output did not show to
                 // be a local command may be a turn killed before its first
                 // assistant record, or a running turn this input joined. A

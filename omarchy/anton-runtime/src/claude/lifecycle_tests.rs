@@ -1310,6 +1310,15 @@ fn turns_current_turn_is_published_only_from_a_clean_state() {
     lines[2] = zero;
     next(&mut lines, 10, user(10, "next", human));
     assert_eq!(current(&lines), Some(Some(second(10))));
+    // Injected input taken into a clean turn joins it: the turn was not
+    // opened by it, so its start stays published.
+    let mut joined = head();
+    next(&mut joined, 10, user(10, "next", human));
+    joined.extend([
+        dequeue(12),
+        queued(12, "task-notification", &notice("agent-x", "completed")),
+    ]);
+    assert_eq!(current(&joined), Some(Some(second(10))));
     // A turn opened by an injected trigger, after an abort or after local
     // output; and a turn while a launched child is still running.
     let mut injected = head();
