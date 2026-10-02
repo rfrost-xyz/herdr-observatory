@@ -1339,9 +1339,13 @@ impl Row {
             // A queue record lets a trigger join a turn, so missing one
             // while a turn is running or pending can only make turns unknown
             // later. After a record lost while idle it may show the turn that
-            // record opened. With no turn running it may be input taken,
-            // which starts a turn at its unknown time (D7).
-            KIND_QUEUE if self.claude.lost_idle => return self.ambiguous(),
+            // record opened. While a slash-command echo is pending it may
+            // be input taken that local-command output would leave unseen.
+            // With no turn running it may be input taken, which starts a
+            // turn at its unknown time (D7).
+            KIND_QUEUE if self.claude.lost_idle || self.claude.pending_command => {
+                return self.ambiguous();
+            }
             KIND_QUEUE => return self.unknown_time(),
             _ => return,
         }
@@ -1527,6 +1531,13 @@ impl Row {
                 let lead = record.text.as_ref().map(|text| text.lead);
                 let local = lead.is_some_and(|lead| text::LOCAL_OUTPUT.contains(&lead))
                     || record.kind == KIND_SYSTEM && record.subtype == SUBTYPE_LOCAL_COMMAND;
+                // Input taken while the echo was pending either joined a
+                // turn the command ran or, after a local command, opened
+                // the next turn at its take: its record keeps the stamp of
+                // the time it was queued, so its start is unknown either way.
+                if local && block.pending_command && block.queued_since_start.is_some() {
+                    return self.ambiguous();
+                }
                 if local && std::mem::take(&mut block.pending_command) {
                     block.pending_start = None;
                     block.queued_since_start = None;
@@ -1542,6 +1553,11 @@ impl Row {
                 if (active || block.pending_start.is_some()) && !block.silent_end {
                     // A stamp within second 0 is missing, as for a trigger.
                     let stamp = record.stamp.filter(|stamp| *stamp >= 1_000_000);
+                    // Without a usable stamp no trace is kept, so local
+                    // output clearing a pending echo could not see the take.
+                    if stamp.is_none() && block.pending_command {
+                        return self.ambiguous();
+                    }
                     block.queued_since_start = block.queued_since_start.max(stamp);
                     return;
                 }

@@ -2210,6 +2210,81 @@ fn zz_trigger_before_an_unstamped_end_is_never_published() {
     assert!(wrong.is_empty(), "{wrong:#?}");
 }
 
+/// Review round 10: input taken while a slash-command echo awaits its
+/// output left no trace once local-command output cleared the echo, so the
+/// taken input, stamped at its queue time (101), opened a normal start.
+/// The truth is the echo's turn (start 100) joined by the input, or a local
+/// command and a turn opened by the take (start 103): never 101.
+#[test]
+fn turns_input_taken_while_a_slash_command_echo_is_pending_is_ambiguous() {
+    let s = |line: String| Some(line);
+    let unsessioned = dequeue(103).replacen(&format!("\"sessionId\":\"{ID}\","), "", 1);
+    let forms = [
+        (
+            "stamped dequeue",
+            dequeue(103),
+            user(104, "<local-command-stdout>ok</local-command-stdout>", ""),
+        ),
+        (
+            "stamped dequeue, system output",
+            dequeue(103),
+            system("local_command", 104),
+        ),
+        (
+            "epoch-stamped dequeue",
+            restamped(&dequeue(103), 103, Some("1970-01-01T00:00:00.500Z")),
+            system("local_command", 104),
+        ),
+        (
+            "dequeue without timestamp",
+            restamped(&dequeue(103), 103, None),
+            system("local_command", 104),
+        ),
+        (
+            "dequeue without sessionId",
+            unsessioned,
+            system("local_command", 104),
+        ),
+    ];
+    let mut wrong = vec![];
+    for (name, take, output) in forms {
+        let lines = [
+            s(user(10, "hello", "")),
+            s(assistant(11, "msg_a", "\"end_turn\"")),
+            s(system("turn_duration", 12)),
+            s(user(100, "<command-name>/compact</command-name>", "")),
+            s(queue(101)),
+            s(take),
+            s(output),
+            s(user(101, "more", "")),
+            s(assistant(105, "msg_b", "\"tool_use\"")),
+            s(assistant(149, "msg_c", "\"end_turn\"")),
+            s(system("turn_duration", 150)),
+        ];
+        let mut row = Row::new([1, 2], 0, now());
+        for (index, line) in lines.iter().enumerate() {
+            step(&mut row, line.as_ref(), &lines[..=index]);
+            let published = Published::of(&row);
+            if let Some((_, Some(start))) = published.current
+                && ![second(10), second(100), second(103)].contains(&start)
+            {
+                wrong.push(format!("{name}: current start {start} after line {index}"));
+            }
+            if let Some((duration, _, _)) = published.last
+                && ![2, 50, 47].contains(&duration)
+            {
+                wrong.push(format!("{name}: last {duration} s after line {index}"));
+            }
+            if let Some(total) = published.total
+                && ![0, 2, 52, 49].contains(&total)
+            {
+                wrong.push(format!("{name}: total {total} after line {index}"));
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
 // Ground-truth turn fuzzer. A generator simulates a Claude Code session whose
 // true turn intervals it knows (start at the trigger, end at `turn_duration`,
 // an abort, the last silent record of a version without `turn_duration`, or
@@ -2429,8 +2504,9 @@ fn restamp(line: &str, stamp: &str) -> String {
     let to = from + line[from..].find('"').unwrap();
     format!("{}{stamp}{}", &line[..from], &line[to..])
 }
-/// The lines that prove an end, or take input with no turn running.
-const TARGETED: [&str; 10] = [
+/// The lines that prove an end, take input with no turn running, or take
+/// input while a slash-command echo awaits its output.
+const TARGETED: [&str; 11] = [
     "turn-duration",
     "turn-duration-again",
     "model-echo-duration",
@@ -2441,6 +2517,7 @@ const TARGETED: [&str; 10] = [
     "abort-again",
     "abort-duration",
     "idle-dequeue",
+    "model-echo-take",
 ];
 impl Story {
     /// Pushes a line with the truth after it, sometimes replaced by a fault
@@ -2631,9 +2708,39 @@ impl Story {
         self.unrecorded = false;
         self.enqueued = None;
         self.push(line, "model-echo");
+        // Input queued and taken while the echo awaits its output (review
+        // round 10): the taken record, written after the output, keeps the
+        // stamp of the time it was queued, and joins the echo's turn.
+        let mut taken = None;
+        if self.chance(300) {
+            self.tick(false);
+            self.enqueue();
+            self.tick(false);
+            taken = self.enqueued.take();
+            let operation = if self.chance(500) {
+                "dequeue"
+            } else {
+                "remove"
+            };
+            let line = self.operation(operation);
+            self.push(line, "model-echo-take");
+        }
         self.tick(false);
-        let line = self.user("<local-command-stdout>ok</local-command-stdout>", "");
+        let line = if self.chance(500) {
+            self.system("local_command")
+        } else {
+            self.user("<local-command-stdout>ok</local-command-stdout>", "")
+        };
         self.push(line, "model-echo-output");
+        if let Some(queued) = taken {
+            let line = if self.chance(500) {
+                self.user("more", "")
+            } else {
+                self.user("more", "\"origin\":{\"kind\":\"human\"}")
+            };
+            let stamp = self.stamp(queued);
+            self.push(restamp(&line, &stamp), "model-echo-taken");
+        }
         // An abort before its first assistant record. A kill there leaves no
         // record of the model running, and input taken there cannot be told
         // from input queued before a local command, which opens the next
