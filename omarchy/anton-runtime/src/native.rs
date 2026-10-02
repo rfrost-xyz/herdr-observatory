@@ -1289,7 +1289,9 @@ const LOCK_WAIT: Duration = Duration::from_millis(250);
 pub struct Checkpoints {
     state: PathBuf,
     owner: PathBuf,
-    lease: Option<(u64, u64)>,
+    /// The lock file identity taken at startup, or why it could not be
+    /// taken; `persist` reports that cause rather than a changed owner.
+    lease: Result<(u64, u64)>,
     rows: Vec<CheckpointRow>,
     written: Value,
     loaded: bool,
@@ -1340,8 +1342,7 @@ impl Checkpoints {
                     return Err("Invalid checkpoint lease".into());
                 }
                 Ok((info.dev(), info.ino()))
-            })
-            .ok();
+            });
         let mut cache = Self {
             state: state.to_owned(),
             owner: owner.to_owned(),
@@ -1461,6 +1462,7 @@ impl Checkpoints {
         {
             return Ok(());
         }
+        let lease = self.lease.clone()?;
         let _owner = common::owner_guard(&self.owner)?;
         let file = common::open_owned(&self.state.join("replay-checkpoints.lock"), true, false)?;
         lock(&file, true, LOCK_WAIT)?;
@@ -1469,7 +1471,7 @@ impl Checkpoints {
         let current = std::fs::symlink_metadata(self.state.join("replay-checkpoints.lock"))
             .map_err(|_| "Checkpoint lease removed")?;
         if info.len() != 0
-            || self.lease != Some((info.dev(), info.ino()))
+            || lease != (info.dev(), info.ino())
             || info.dev() != current.dev()
             || info.ino() != current.ino()
         {
@@ -1564,6 +1566,16 @@ pub fn retire(state: &Path, owner: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Opens checkpoints as a test expects them: with the lease taken, so a
+/// construction-time conflict fails here under its real cause.
+#[cfg(test)]
+fn leased(state: &Path, owner: &Path) -> Checkpoints {
+    let cache = Checkpoints::new(state, owner).unwrap();
+    if let Err(error) = &cache.lease {
+        panic!("checkpoint lease: {error}");
+    }
+    cache
+}
 #[cfg(test)]
 mod claude_tests;
 #[cfg(test)]
@@ -1803,11 +1815,11 @@ mod tests {
         .unwrap();
         let session = sha256(b"session");
         let mut values = BTreeMap::from([("test".to_owned(), json!({session.clone():cursor}))]);
-        let mut cache = Checkpoints::new(&state, &owner).unwrap();
+        let mut cache = leased(&state, &owner);
         cache.update(&values, true).unwrap();
         let saved = std::fs::read(state.join("replay-checkpoints.json")).unwrap();
         assert!(!String::from_utf8_lossy(&saved).contains(fixture.file.to_str().unwrap()));
-        let loaded = Checkpoints::new(&state, &owner).unwrap();
+        let loaded = leased(&state, &owner);
         assert_eq!(loaded.for_host("test"), values["test"]);
         values.get_mut("test").unwrap()[&session]["at"] = json!(now());
         cache.update(&values, false).unwrap();
@@ -1841,7 +1853,7 @@ mod tests {
         .unwrap();
         let session = sha256(b"session");
         let values = BTreeMap::from([("kept".to_owned(), json!({session.clone():cursor}))]);
-        let mut cache = Checkpoints::new(&state, &owner).unwrap();
+        let mut cache = leased(&state, &owner);
         cache.update(&values, true).unwrap();
         let mut file: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         let mut unreadable = file["records"][0].clone();
@@ -1849,7 +1861,7 @@ mod tests {
         unreadable["cursor"]["claude"] = json!({"field_from_another_build": 1});
         file["records"].as_array_mut().unwrap().push(unreadable);
         common::atomic_checkpoint_write(&path, &serde_json::to_vec(&file).unwrap()).unwrap();
-        let loaded = Checkpoints::new(&state, &owner).unwrap();
+        let loaded = leased(&state, &owner);
         let hydrated = loaded.for_host("kept");
         assert!(hydrated.get(&session).is_some());
         assert!(hydrated.get(sha256(b"other")).is_none());
@@ -1864,7 +1876,7 @@ mod tests {
         std::fs::create_dir(&state).unwrap();
         let path = state.join("replay-checkpoints.json");
         let empty = BTreeMap::from([("kept".to_owned(), json!({}))]);
-        let mut cache = Checkpoints::new(&state, &owner).unwrap();
+        let mut cache = leased(&state, &owner);
         cache.reconcile(&empty).unwrap();
         assert!(!path.exists(), "startup must not create an empty cache");
         let cursor = replay(
@@ -1881,7 +1893,7 @@ mod tests {
             ("removed".to_owned(), json!({session.clone():cursor})),
         ]);
         cache.update(&values, true).unwrap();
-        let mut loaded = Checkpoints::new(&state, &owner).unwrap();
+        let mut loaded = leased(&state, &owner);
         let configured = BTreeMap::from([("kept".to_owned(), loaded.for_host("kept"))]);
         loaded.reconcile(&configured).unwrap();
         let kept = std::fs::read(&path).unwrap();
@@ -1897,7 +1909,7 @@ mod tests {
         let mut expired: Value = serde_json::from_slice(&kept).unwrap();
         expired["records"][0]["cursor"]["at"] = json!(now() - 86401.0);
         common::atomic_checkpoint_write(&path, &serde_json::to_vec(&expired).unwrap()).unwrap();
-        let mut loaded = Checkpoints::new(&state, &owner).unwrap();
+        let mut loaded = leased(&state, &owner);
         assert_eq!(loaded.for_host("kept"), json!({}));
         loaded.reconcile(&empty).unwrap();
         let saved: CheckpointFile = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
@@ -1909,7 +1921,7 @@ mod tests {
                 true,
             )
             .unwrap();
-        let mut loaded = Checkpoints::new(&state, &owner).unwrap();
+        let mut loaded = leased(&state, &owner);
         loaded.reconcile(&empty).unwrap();
         let saved: CheckpointFile = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert!(saved.records.is_empty());
@@ -1966,12 +1978,38 @@ mod tests {
             }
         };
         for _ in 0..300 {
-            let mut cache = Checkpoints::new(&state, &owner).unwrap();
+            let mut cache = leased(&state, &owner);
             free(&mut held);
             cache.update(&empty, true).unwrap();
             free(&mut held);
         }
         assert_eq!(held, 0);
+    }
+    /// A lease that `new` could not take is reported by `persist` under its
+    /// real cause, not as a changed owner.
+    #[test]
+    fn checkpoint_lease_failure_at_startup_is_reported_by_persist() {
+        let fixture = Fixture::new();
+        let owner = fixture.root.join(".herdr-observatory-install");
+        std::fs::write(&owner, b"herdr.observatory\n").unwrap();
+        let state = fixture.root.join("state");
+        std::fs::create_dir(&state).unwrap();
+        let holder =
+            common::open_owned(&state.join("replay-checkpoints.lock"), true, true).unwrap();
+        lock(&holder, true, Duration::ZERO).unwrap();
+        let mut cache = Checkpoints::new(&state, &owner).unwrap();
+        drop(holder);
+        assert_eq!(cache.lease, Err("Checkpoint ownership busy".to_owned()));
+        assert_eq!(
+            cache.update(&BTreeMap::new(), true),
+            Err("Checkpoint ownership busy".to_owned())
+        );
+        assert!(!state.join("replay-checkpoints.json").exists());
+        assert!(
+            leased(&state, &owner)
+                .update(&BTreeMap::new(), true)
+                .is_ok()
+        );
     }
     #[test]
     fn checkpoint_lock_waits_out_concurrent_process_spawns() {
@@ -2064,7 +2102,7 @@ mod tests {
         std::fs::write(&owner, b"herdr.observatory\n").unwrap();
         let state = fixture.root.join("state");
         std::fs::create_dir(&state).unwrap();
-        let mut cache = Checkpoints::new(&state, &owner).unwrap();
+        let mut cache = leased(&state, &owner);
         cache
             .update(
                 &BTreeMap::from([("test".to_owned(), cursors.clone())]),

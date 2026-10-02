@@ -315,7 +315,7 @@ fn checkpointed(fixture: &Fixture, cursors: &Value) -> Value {
     std::fs::write(&owner, b"herdr.observatory\n").unwrap();
     let state = fixture.root.join("state");
     let _ = std::fs::create_dir(&state);
-    let mut cache = Checkpoints::new(&state, &owner).unwrap();
+    let mut cache = leased(&state, &owner);
     cache
         .update(
             &BTreeMap::from([("test".to_owned(), cursors.clone())]),
@@ -325,7 +325,7 @@ fn checkpointed(fixture: &Fixture, cursors: &Value) -> Value {
     let saved = std::fs::read_to_string(state.join("replay-checkpoints.json")).unwrap();
     assert!(!saved.contains(ID) && !saved.contains("entry-a"));
     drop(cache);
-    Checkpoints::new(&state, &owner).unwrap().for_host("test")
+    leased(&state, &owner).for_host("test")
 }
 
 #[test]
@@ -532,11 +532,8 @@ fn claude_rows_share_the_32_row_checkpoint_bound_with_hashed_keys() {
     std::fs::write(&owner, b"herdr.observatory\n").unwrap();
     let state = fixture.root.join("state");
     std::fs::create_dir(&state).unwrap();
-    Checkpoints::new(&state, &owner)
-        .unwrap()
-        .update(&hosts, true)
-        .unwrap();
-    let loaded = Checkpoints::new(&state, &owner).unwrap();
+    leased(&state, &owner).update(&hosts, true).unwrap();
+    let loaded = leased(&state, &owner);
     let (a, b) = (loaded.for_host("host-a"), loaded.for_host("host-b"));
     assert_eq!(
         a.as_object().unwrap().len() + b.as_object().unwrap().len(),
@@ -672,11 +669,8 @@ fn codex_rows_are_charged_before_claude_rows_in_cursor_and_checkpoint_bounds() {
             ("codex-host".to_owned(), split(false, now() - 100.0)),
             ("claude-host".to_owned(), split(true, now() - 10.0)),
         ]);
-        Checkpoints::new(&state, &owner)
-            .unwrap()
-            .update(&hosts, true)
-            .unwrap();
-        let loaded = Checkpoints::new(&state, &owner).unwrap();
+        leased(&state, &owner).update(&hosts, true).unwrap();
+        let loaded = leased(&state, &owner);
         let codex = loaded.for_host("codex-host");
         assert_eq!(codex.as_object().unwrap().len(), count, "{count}");
         assert!(
