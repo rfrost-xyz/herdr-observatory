@@ -88,6 +88,7 @@ This change publishes for 10 of 18 files.
   - That left the lease `None`, and `loaded.reconcile(&empty).unwrap()` panicked at `src/native.rs:1704:34`. The `std::fs::read` was not the failing call.
   - A reviewer repro failed 97 of 300 times under concurrent spawns. `893ab77` adds a 250 ms bounded wait.
   - The new spawn-storm test (since renamed `checkpoint_cycles_succeed_while_siblings_spawn`) failed 20 of 20 runs before the fix and passed 20 of 20 after. The wait is now guarded by `checkpoint_lease_and_write_wait_out_a_brief_holder`, and the release by `checkpoint_lock_is_free_at_once_after_each_holder_while_siblings_spawn`.
+  - A later `read checkpoint: NotFound` failure had a different cause, reproduced in round 15: a lib test binary from between `51ab736` and `895fabe`, sharing `/tmp` from another pid namespace, swept live fixtures. The age gate in `895fabe` closes it (see rounds 11 and 15).
 
 ## Traceability
 
@@ -725,5 +726,30 @@ The four-lens review of `c1d0604` gave three CLEAN lenses: 1, 3 and a lens 4 wit
 - The age gate in `895fabe` closes this. An `flock`-based liveness check would also survive clock jumps; it is recorded as a follow-up.
 
 **Lens 4, nit.** The round 12 hashes above were updated to their re-signed commits. The round 13 review ran on the unsigned `5a2fb76`, which was re-signed as `2627ffd`.
+
+**Gates:** fmt and clippy are clean. The full suite passes: lib 223, main 19, native_navigation 6, native_process 32.
+
+## Review round 16 and remediation
+
+The four-lens review of `1386117` produced:
+- lens 3: CLEAN;
+- lenses 1 and 4: no blocking findings;
+- lens 2: one blocking finding.
+
+**Lens 2, blocking: teammate launches.**
+- A teammate launch is written as `teammate_spawned`, with a snake-case `agent_id`. A remote launch is written as `remote_launched`. Neither cleared `clean`, so the current turn stayed published while the launched work ran. The corpus has 4 `teammate_spawned` results and 0 `remote_launched` (counts only).
+- The fix: any of `async_launched`, `teammate_spawned` or `remote_launched` now masks the current turn. Both shapes are added to `turns_current_turn_is_published_only_from_a_clean_state`, which failed before the fix.
+- The spec now names the background work it masks for. Background shell tasks are excluded, because they do not change `durationMs`.
+
+**Lens 2, non-blocking: swarm-defer accept case.** D7 now describes the case where a swarm-deferred `turn_duration` lands while its spawning turn is still open. The gate then accepts Claude Code's own measure of that turn.
+
+**Lens 2, nit.** The test doc comments for the mask and the aborted interval were moved and corrected.
+
+**Lens 1, non-blocking: empty key in an oversized line.**
+- On an oversized line, a top-level `""` key matched the root node. A long value at that key then made the record unclassified, although the short-line path classified it.
+- The classifier now ignores empty keys, as `viable()` already did. A parity line in `classifier_matches_parsed_path_for_every_chunking` failed before the fix.
+- Lens 1's random parity checks agreed in all cases: 264,262 records, 200,000 with checkpoints at every chunk, and 400 growth transcripts.
+
+**Lens 4, nit.** The checkpoint test summary above now points to the reproduced `NotFound` cause.
 
 **Gates:** fmt and clippy are clean. The full suite passes: lib 223, main 19, native_navigation 6, native_process 32.
