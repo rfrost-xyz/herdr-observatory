@@ -988,7 +988,9 @@ impl NativeTelemetry {
                 binding.retained = Some((subset, seq));
             } else if let Some((subset, seq)) = &binding.retained {
                 publish_claude(agent, subset, None, *seq, time);
-            } else if restarted {
+            } else if restarted || foreign {
+                // An identity failure replaces the copy a local retains for
+                // a peer, whose fresh follower has nothing to re-emit (D3).
                 unknown(agent);
             }
         } else if let Some((subset, seq)) = &self.claude[&key].retained {

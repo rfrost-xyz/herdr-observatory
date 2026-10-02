@@ -1804,6 +1804,46 @@ fn claude_peer_sample_is_retained_for_incomplete_replay_and_dropped_on_ambiguity
     stream.close();
 }
 
+/// Whether `sample` is the all-null Claude sample a lost or failed binding
+/// publishes: only `seq`, `event` and `phase` are set.
+fn all_null(sample: &Value) -> bool {
+    sample["seq"].is_u64()
+        && sample.as_object().unwrap().iter().all(|(key, value)| {
+            ["seq", "event", "phase"].contains(&key.as_str()) || value.is_null()
+        })
+}
+
+/// A record naming another session, applied in a pass that does not catch
+/// up, is an identity failure on both hosts: the fresh peer follower
+/// publishes the all-null sample, so the local never re-emits the old one.
+#[test]
+fn claude_foreign_record_in_an_incomplete_peer_pass_publishes_all_null() {
+    let f = Fixture::new();
+    f.claude(&claude_transcript());
+    let mut stream = Stream::new(&f);
+    stream.until(|v| (0..2).all(|host| telemetry(v, host)["total_output"] == 25));
+    let path = f.transcript("entry-a");
+    let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+    let foreign = claude_record(
+        "user",
+        30,
+        "\"message\":{\"role\":\"user\",\"content\":\"synthetic\"}",
+    )
+    .replace(CLAUDE_ID, "fixture-other-session");
+    file.write_all(format!("{foreign}\n{{\"type\":").as_bytes())
+        .unwrap();
+    drop(file);
+    stream.until(|v| (0..2).all(|host| pane(v, host) && all_null(telemetry(v, host))));
+    for _ in 0..3 {
+        let snapshot = stream.until(|v| pane(v, 1));
+        for host in 0..2 {
+            let sample = telemetry(&snapshot, host);
+            assert!(all_null(sample), "{host}: {sample}");
+        }
+    }
+    stream.close();
+}
+
 #[test]
 fn claude_peer_retention_follows_invalid_totals_unknown_samples_and_missing_rows() {
     let f = Fixture::new();

@@ -721,7 +721,8 @@ fn claude_record_naming_another_session_keeps_the_binding_unknown() {
     let mut follower = NativeTelemetry::default();
     let (first, _, cursors) = enrich(&mut follower, &json!({}));
     assert_eq!(first["total_output"], 26);
-    // A foreign record in an incomplete pass drops the retained sample.
+    // A foreign record in an incomplete pass drops the retained sample and
+    // publishes the all-null one.
     let other = prompt(24).replace(ID, "fixture-session-b");
     let later = [
         prompt(30),
@@ -734,7 +735,8 @@ fn claude_record_naming_another_session_keeps_the_binding_unknown() {
     fixture.append(&format!("{other}\n{partial}"));
     let (telemetry, timing, cursors) = enrich(&mut follower, &cursors);
     assert_eq!(cursors[key()]["caught_up"], false);
-    assert!(telemetry.is_null() && timing.is_null(), "{telemetry}");
+    unknown(&telemetry, micros(23));
+    assert!(timing.is_null());
     // Later complete groups, children, compactions and turns stay unknown.
     let rest = body(&later).split_once('\n').unwrap().1.to_owned();
     fixture.append(&format!("{}\n{rest}", &later[0][30..]));
