@@ -1079,9 +1079,12 @@ impl NativeTelemetry {
                 // a peer, whose fresh follower has nothing to re-emit (D3).
                 withhold = !unknown(agent);
             }
-        } else if let Some((subset, seq)) = &self.claude[&key].retained {
-            // The deadline passed after binding, before any replay pass.
-            publish_claude(agent, subset, None, *seq, time);
+        } else {
+            // The deadline passed after binding, before any replay pass: the
+            // file was not opened, so this is a deadline skip (D1, D3).
+            cursors.insert(key.clone(), Cursor::from_row(row));
+            self.skip_claude(agent, &key, cursors, time);
+            return;
         }
         if !withhold {
             cursors.insert(key, Cursor::from_row(row));
