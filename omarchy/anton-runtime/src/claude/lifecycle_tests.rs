@@ -1171,12 +1171,26 @@ fn turns_lost_while_idle_keep_later_turns_publishable() {
     ]
     .map(Some)
     .to_vec();
-    // An unparseable line between turns loses no running turn.
+    // An unparseable line between turns may have been a prompt whose turn
+    // the next trigger joined, so that trigger is ambiguous (review round 5).
+    // The turn after a proven end publishes its current turn again.
     lines.push(None);
     lines.extend([user(10, "next", ""), assistant(11, "msg_b", "\"tool_use\"")].map(Some));
     let row = steps(&lines);
-    assert!(!row.claude.ambiguous && row.turns.current_known);
-    assert_eq!(row.turns.start, Some(second(10)));
+    assert!(row.claude.ambiguous && !row.turns.current_known);
+    let mut later = lines.clone();
+    later.extend(
+        [
+            assistant(12, "msg_c", "\"end_turn\""),
+            system("turn_duration", 20),
+            user(30, "again", ""),
+            assistant(31, "msg_d", "\"tool_use\""),
+        ]
+        .map(Some),
+    );
+    let row = steps(&later);
+    assert!(row.turns.current_known && !row.turns.valid);
+    assert_eq!(row.turns.start, Some(second(30)));
     // D: an unrecognised origin may itself have opened a turn.
     let mut lines = lines[..3].to_vec();
     lines.extend(
@@ -1238,6 +1252,41 @@ fn turns_lost_trigger_while_idle_publishes_no_truncated_interval() {
         let row = steps(&lines);
         assert_eq!(row.turns.start, Some(second(110)), "{case}");
     }
+}
+
+#[test]
+fn turns_trigger_after_a_record_lost_while_idle_is_ambiguous() {
+    // Review round 5: a prompt lost as a non-JSON line, then a queued
+    // notification injected into the turn that prompt opened. Published as a
+    // pending start, it showed the turn running from 12 and lasting 8 s.
+    let mut lines: Vec<Option<String>> = [
+        user(1, "hello", ""),
+        assistant(2, "msg_a", "\"end_turn\""),
+        system("turn_duration", 3),
+    ]
+    .map(Some)
+    .to_vec();
+    lines.push(None);
+    lines.extend(
+        [
+            queued(12, "task-notification", &notice("agent-y", "completed")),
+            assistant(13, "msg_b", "\"tool_use\""),
+        ]
+        .map(Some),
+    );
+    let row = steps(&lines);
+    let published = row.published_turns();
+    assert!(!published.current_known && !published.valid);
+    lines.extend(
+        [
+            assistant(14, "msg_c", "\"end_turn\""),
+            system("turn_duration", 20),
+        ]
+        .map(Some),
+    );
+    let row = steps(&lines);
+    lost(&row, Some("user-1"));
+    assert_eq!(row.turns.last_duration, Some(2));
 }
 
 #[test]
@@ -2111,6 +2160,18 @@ impl Story {
         let stamp = self.stamp(at);
         self.body(restamp(&line, &stamp), tag);
     }
+    /// A task notification injected into the running turn before its first
+    /// assistant record, without queue evidence.
+    fn injected(&mut self) {
+        self.tick(false);
+        let note = notice("agent-y", "completed");
+        let line = if self.chance(500) {
+            self.queued("task-notification", &note)
+        } else {
+            self.user(&note, "\"origin\":{\"kind\":\"task-notification\"}")
+        };
+        self.push(line, "pending-notification");
+    }
     /// One true turn: a trigger, a body, and an end of a random kind.
     fn turn(&mut self) {
         if std::mem::take(&mut self.queued_left) {
@@ -2154,7 +2215,16 @@ impl Story {
                     self.user("<local-command-stdout>ok</local-command-stdout>", "")
                 };
                 self.push(line, "pending-local-output");
+                // The prompt's turn still runs: input injected into it, an
+                // abort or a kill before its first assistant record.
+                match self.random.below(4) {
+                    0 => self.injected(),
+                    1 => return self.abort(),
+                    2 => return self.kill(),
+                    _ => {}
+                }
             }
+            17..=18 => self.injected(),
             _ => {}
         }
         self.tick(false);

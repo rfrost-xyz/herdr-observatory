@@ -515,7 +515,8 @@ pub struct ClaudeCursor {
     /// lets input join it, because the turn may already have ended.
     pub silent_end: bool,
     /// Turn coverage was lost where a turn may still be running (an unjoined
-    /// trigger during a turn, an unrecognised origin, a trigger without a
+    /// trigger during a turn, a trigger replacing a pending start or after a
+    /// record lost while idle, an unrecognised origin, a trigger without a
     /// stamp or key, a rejected start, or a failed record during a turn): no
     /// turn opens until `turn_duration` or an abort proves an end.
     pub ambiguous: bool,
@@ -1480,13 +1481,13 @@ impl Row {
                 }
                 // A pending start that local-command output did not show to
                 // be a local command may be a turn killed before its first
-                // assistant record, or a running turn this input joined.
-                if active || block.pending_start.is_some() {
+                // assistant record, or a running turn this input joined. A
+                // record lost while idle may have opened such a turn too.
+                if active || block.pending_start.is_some() || block.lost_idle {
                     // The turn may have ended without a record, or the input
                     // joined it: never absorb the gap, and never publish an
                     // interval whose start is a guess.
-                    self.turns_unknown();
-                    self.claude.ambiguous = true;
+                    self.ambiguous();
                 }
                 if !self.claude.ambiguous {
                     // A slash-command echo, whatever its origin.
