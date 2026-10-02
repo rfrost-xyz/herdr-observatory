@@ -233,6 +233,64 @@ mod tests {
         assert!(!valid_pane("wrong/path"));
         assert!(valid_pane("p:1_ab-c"));
     }
+    /// The hook lock is released before it is closed, so a zero-wait lock
+    /// taken straight after `report` never finds it held by a child that a
+    /// sibling thread spawned in between.
+    #[test]
+    fn hook_lock_is_free_at_once_after_report_while_siblings_spawn() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let base = std::env::temp_dir().join(format!(
+            "anton-report-lock-{}-{}",
+            std::process::id(),
+            common::now().to_bits()
+        ));
+        std::fs::create_dir(&base).unwrap();
+        common::atomic_owned_write(
+            &base.join(".herdr-observatory-install"),
+            b"herdr.observatory\n",
+        )
+        .unwrap();
+        // No listener: the lock is taken, then `pane.get` fails at once.
+        let socket = base.join("absent.sock");
+        common::atomic_owned_write(
+            &base.join(".config.json"),
+            &serde_json::to_vec(&json!({"hosts":[{"id":"fixture","socket_path":socket}]})).unwrap(),
+        )
+        .unwrap();
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let storm: Vec<_> = (0..2)
+            .map(|_| {
+                let stop = stop.clone();
+                std::thread::spawn(move || {
+                    while !stop.load(Ordering::Relaxed) {
+                        let _ = std::process::Command::new("true").status();
+                    }
+                })
+            })
+            .collect();
+        let state = base.join("state");
+        let raw = json!({"session_path":"/synthetic/session","event":"turn","phase":"working","usage_seq":1,"usage_source":"pi-extension"});
+        let mut held = 0;
+        for seq in 1..=300 {
+            assert!(report(&base, &state, "pi", "p:1", seq, raw.clone()).is_err());
+            let lock = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(state.join("hook.lock"))
+                .unwrap();
+            if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+                let _unlock = common::Unlock(&lock);
+            } else {
+                held += 1;
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+        for join in storm {
+            join.join().unwrap();
+        }
+        std::fs::remove_dir_all(base).unwrap();
+        assert_eq!(held, 0);
+    }
     #[test]
     fn pi_report_is_bound_read_only_then_one_metadata_write() {
         use std::io::{BufRead, BufReader, Write};
