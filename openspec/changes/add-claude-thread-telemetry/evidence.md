@@ -613,11 +613,11 @@ The four-lens review of `ca52bda` found 2 blocking, 3 non-blocking and 1 nit fin
 ## Review round 12 and remediation
 
 The four-lens review of `a97f2ac` found **no blocking findings**: 4 non-blocking and 1 nit. All are fixed, and each fix has a regression test that failed before it.
-- **Classifier depth bound** (`b34b526`). A well-formed record nested past the 128-container bound was rejected wholesale. It now follows the coverage table, so totals stay published.
-- **Queued prompt attachments outside a turn** (`2b56810`). These are now ambiguous, and an idle take clears abort adjacency. The fuzzer gave 311 violations with this fix reverted and 0 with it (319,933 records).
-- **Request row rejected by the peer** (`b8bb423`). When the peer's own validation rejects the request row (a peer clock step), the row is withheld.
-- **Fixture sweep** (`f36b7c2`). It now also needs an hour of inactivity, which is safe across pid namespaces.
-- **Checkpoint diagnosis** (`5a2fb76`). It is printed at every failing step.
+- **Classifier depth bound** (`a2037a9`). A well-formed record nested past the 128-container bound was rejected wholesale. It now follows the coverage table, so totals stay published.
+- **Queued prompt attachments outside a turn** (`c562e4a`). These are now ambiguous, and an idle take clears abort adjacency. The fuzzer gave 311 violations with this fix reverted and 0 with it (319,933 records).
+- **Request row rejected by the peer** (`caae67d`). When the peer's own validation rejects the request row (a peer clock step), the row is withheld.
+- **Fixture sweep** (`895fabe`). It now also needs an hour of inactivity, which is safe across pid namespaces.
+- **Checkpoint diagnosis** (`2627ffd`). It is printed at every failing step.
 
 **Corpus:** unchanged (0 of 59 lines).
 
@@ -627,7 +627,7 @@ The four-lens review of `a97f2ac` found **no blocking findings**: 4 non-blocking
 
 ## Review round 13 and the turn-timing gate (user decision)
 
-The round 13 review of `5a2fb76` found three blocking findings. Lens 3 was CLEAN.
+The round 13 review of `5a2fb76` (re-signed as `2627ffd`) found three blocking findings. Lens 3 was CLEAN.
 1. **Compaction iteration on a reopened group.** It was ignored. Fixed in `8e1b875`.
 2. **Final stops other than `end_turn`.** With no `turn_duration`, `max_tokens`, `refusal` and `<synthetic>` stops merged two turns into one.
 3. **Deferred `turn_duration`.** Claude Code defers a turn's `turn_duration` while background agents run, and may write it during a later turn. This was established by reading the Claude Code 2.1.287 bundle (`[bin]`).
@@ -689,7 +689,7 @@ So a rejected record is a real turn end. `2283b41` ends the turn at a rejected r
 | Coverage valid | 12 of 20 | 12 of 20 |
 | Published current turn | 12 of 20 | 12 of 20 |
 
-**Remaining limitation:** the 19 rejected records are real ends whose intervals are probably correct. They stay unknown, which fails closed. Accepting them would need the pending run to be modelled, which is recorded as a possible refinement.
+**Remaining limitation:** the 19 rejected records are real ends whose intervals are probably correct. They stay unknown, which fails closed. Round 15 showed that only 11 are pending-run records, which modelling the run could recover; the other 8 reflect dialog-paused time that the transcript does not record (see round 15).
 
 **Other fixes:**
 - `6f57c3d`: the fuzzer models pending runs, background-agent turns and a hostile mid-turn `turn_duration`. With the gate it reports 0 violations over 327,091 records; with the gate disabled it reports 11,834.
@@ -700,5 +700,30 @@ So a rejected record is a real turn end. `2283b41` ends the turn at a rejected r
 - `6f8a3fa`: the checkpoint test names the load step that finds no file.
 
 **Pre-existing follow-up, not in this change:** a fresh Codex cursor's `seq = (time*1e6) as u64` can round above `time` in `telemetry_view_at`, which leaves a one-probe gap after a fresh Codex binding with no child records. It is present on origin/main, and production Codex code is unchanged here.
+
+**Gates:** fmt and clippy are clean. The full suite passes: lib 223, main 19, native_navigation 6, native_process 32.
+
+## Review round 15 and remediation
+
+The four-lens review of `c1d0604` gave three CLEAN lenses: 1, 3 and a lens 4 with no blocking findings.
+
+**Lens 2, blocking: workflow launch.**
+- An `async_launched` tool result without an `agentId` left the current turn published while the launched work ran. Workflow launches look like this: 43 in the corpus without an `agentId`, against 25 with one (counts only).
+- Fixed in `c08eeee`: any async launch clears `clean`. The regression case in `turns_current_turn_is_published_only_from_a_clean_state` failed before the fix.
+- Corpus cost: running records with a published start fell from 2722 to 2703. Coverage, the gate and published-current counts are unchanged.
+
+**Lens 2, non-blocking: paused time.**
+- Claude Code subtracts time paused on blocking dialogs from `durationMs`.
+- 8 of the 19 rejections imply a later start. In each, the turn's first assistant record precedes the implied start, so these are paused time and cannot be recovered. The other 11 are pending-run rejections.
+- D7 Durations and Risks now record this, along with the swarm-defer path, which a scratch trace confirmed fails closed.
+
+**Lens 2, nit.** The Publication paragraph now says local-command output clears `clean` only when it clears a pending slash-command start.
+
+**Lens 4, non-blocking: checkpoint failure cause, now reproduced.**
+- A lib test binary built between `51ab736` and `895fabe`, running in another pid namespace with a shared `/tmp`, treats every host pid as dead and sweeps live fixtures.
+- With that binary as a namespaced neighbour, the checkpoint test failed 73 times in 24,732 runs, including the reported `read checkpoint: NotFound`. With HEAD's binary as the neighbour, it failed 0 times in 26,383.
+- The age gate in `895fabe` closes this. An `flock`-based liveness check would also survive clock jumps; it is recorded as a follow-up.
+
+**Lens 4, nit.** The round 12 hashes above were updated to their re-signed commits. The round 13 review ran on the unsigned `5a2fb76`, which was re-signed as `2627ffd`.
 
 **Gates:** fmt and clippy are clean. The full suite passes: lib 223, main 19, native_navigation 6, native_process 32.
