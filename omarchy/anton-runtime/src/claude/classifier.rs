@@ -251,7 +251,9 @@ impl Classifier {
         let name: Option<String> = serde_json::from_slice(&raw).ok();
         let node = NODES
             .iter()
-            .position(|(owner, key)| *owner == parent && name.as_deref() == Some(*key))
+            .position(|(owner, key)| {
+                !key.is_empty() && *owner == parent && name.as_deref() == Some(*key)
+            })
             .map_or(NONE, |node| node as u8);
         if node != NONE {
             if self.seen & (1 << node) != 0 {
@@ -909,6 +911,8 @@ mod tests {
             ),
             format!("{{\"type\":7,\"sessionId\":5,\"uuid\":[],\"timestamp\":{{}}}}"),
             "{}".to_owned(),
+            // An empty key names no consumed field, even past `CAP`.
+            assistant(&format!("\"\":\"{pad}\","), ""),
         ];
         for operation in [
             "\"enqueue\"",
