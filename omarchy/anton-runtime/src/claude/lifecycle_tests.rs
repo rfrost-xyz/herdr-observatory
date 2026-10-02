@@ -2068,6 +2068,119 @@ fn zz_trigger_before_a_proven_end_after_ambiguity_is_never_published() {
     assert!(!row.published_turns().current_known);
 }
 
+/// `line` with its timestamp replaced by `stamp`, or removed when `None`.
+fn restamped(line: &str, at: u64, stamp_text: Option<&str>) -> String {
+    let field = format!("\"timestamp\":\"{}\"", stamp(at));
+    let value = stamp_text.map(|text| format!("\"timestamp\":\"{text}\""));
+    match value {
+        Some(value) => line.replacen(&field, &value, 1),
+        None => line.replacen(&format!("{field},"), "", 1),
+    }
+}
+/// Pushes every published current start before `proven`, and every last
+/// interval overlapping it, after the records from `from` onwards.
+fn published_before(name: &str, lines: &[Option<String>], from: usize, proven: u64) -> Vec<String> {
+    let mut wrong = vec![];
+    let mut row = Row::new([1, 2], 0, now());
+    for (index, line) in lines.iter().enumerate() {
+        step(&mut row, line.as_ref(), &lines[..=index]);
+        if index + 1 < from {
+            continue;
+        }
+        let published = Published::of(&row);
+        if let Some((true, Some(start))) = published.current
+            && start < proven
+        {
+            wrong.push(format!("{name}: current start {start} before {proven}"));
+        }
+        if let Some((duration, _, end)) = published.last
+            && end > proven
+            && end - duration < proven
+        {
+            wrong.push(format!("{name}: last {duration} s overlaps {proven}"));
+        }
+    }
+    wrong
+}
+
+/// Review round 9: an end with no usable second (missing, unparseable,
+/// within Unix second 0 or past the horizon) proves an end at an unknown
+/// time, so a trigger stamped before it is never published as a start.
+#[test]
+fn zz_trigger_before_an_unstamped_end_is_never_published() {
+    let a = |at, message: &str, stop: &str| Some(assistant(at, message, stop));
+    let s = |line: String| Some(line);
+    let marker = "[Request interrupted by user]";
+    let unusable = [
+        Some("not-a-time"),
+        Some("1970-01-01T00:00:00.500Z"),
+        Some("2099-01-01T00:00:00.250Z"),
+        None,
+    ];
+    let mut wrong = vec![];
+    for text in unusable {
+        let name = text.unwrap_or("missing");
+        // (a) A turn ended by an unstamped `turn_duration` (true time 20),
+        // then leftover input stamped 12, with no take, a take without a
+        // usable stamp or `sessionId`, or a valid take at 20.
+        let takes = [
+            ("no take", None),
+            ("unstamped take", s(restamped(&dequeue(20), 20, text))),
+            (
+                "take without sessionId",
+                s(dequeue(20).replacen(&format!("\"sessionId\":\"{ID}\","), "", 1)),
+            ),
+            ("valid take", s(dequeue(20))),
+        ];
+        for (take, line) in takes {
+            let mut lines = vec![
+                s(user(10, "hello", "")),
+                a(11, "msg_a", "\"tool_use\""),
+                s(queue(12)),
+                a(18, "msg_b", "\"end_turn\""),
+                s(restamped(&system("turn_duration", 20), 20, text)),
+            ];
+            let from = lines.len();
+            lines.extend(line.map(Some));
+            lines.extend([
+                s(user(12, "queued before the end", "")),
+                a(21, "msg_c", "\"tool_use\""),
+                a(24, "msg_d", "\"end_turn\""),
+                s(system("turn_duration", 25)),
+            ]);
+            let label = format!("(a) {name}, {take}");
+            wrong.extend(published_before(&label, &lines, from, second(20)));
+        }
+        // (b) The round 8 path with an unstamped closer (true time 50).
+        let closers = [
+            (
+                "turn_duration",
+                restamped(&system("turn_duration", 50), 50, text),
+            ),
+            ("abort", restamped(&user(50, marker, ""), 50, text)),
+        ];
+        for (closer, line) in closers {
+            let mut lines = vec![
+                s(user(31, "next", "")),
+                a(32, "msg_b", "\"tool_use\""),
+                s(notified(33, "agent-x", "completed")),
+                a(36, "msg_c", "\"end_turn\""),
+                s(line),
+            ];
+            let from = lines.len();
+            lines.extend([
+                s(user(45, "stamped before the end", "")),
+                a(60, "msg_y", "\"tool_use\""),
+                a(64, "msg_z", "\"end_turn\""),
+                s(system("turn_duration", 65)),
+            ]);
+            let label = format!("(b) {name}, {closer}");
+            wrong.extend(published_before(&label, &lines, from, second(50)));
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
 // Ground-truth turn fuzzer. A generator simulates a Claude Code session whose
 // true turn intervals it knows (start at the trigger, end at `turn_duration`,
 // an abort, the last silent record of a version without `turn_duration`, or
@@ -2185,6 +2298,8 @@ struct Story {
     message: u64,
     /// Per-mille rate of injected record faults; 0 for a clean session.
     faults: u64,
+    /// Per-mille rate of unusable stamps on end, abort and idle-take lines.
+    targeted: u64,
     /// Lines over `LINE` are only written for file mode.
     oversized: bool,
     /// Input still queued when a turn ended starts the next turn.
@@ -2195,7 +2310,7 @@ struct Story {
     enqueued: Option<u64>,
 }
 impl Story {
-    fn new(seed: u64, faults: u64, oversized: bool) -> Self {
+    fn new(seed: u64, faults: u64, oversized: bool, targeted: u64) -> Self {
         Self {
             random: Seeded(seed),
             lines: vec![],
@@ -2207,6 +2322,7 @@ impl Story {
             uuid: 0,
             message: 0,
             faults,
+            targeted,
             oversized,
             queued_left: false,
             unrecorded: false,
@@ -2284,13 +2400,42 @@ fn restamp(line: &str, stamp: &str) -> String {
     let to = from + line[from..].find('"').unwrap();
     format!("{}{stamp}{}", &line[..from], &line[to..])
 }
+/// The lines that prove an end, or take input with no turn running.
+const TARGETED: [&str; 10] = [
+    "turn-duration",
+    "turn-duration-again",
+    "model-echo-duration",
+    "abort",
+    "abort-tool",
+    "abort-id",
+    "abort-stream",
+    "abort-again",
+    "abort-duration",
+    "idle-dequeue",
+];
 impl Story {
     /// Pushes a line with the truth after it, sometimes replaced by a fault
-    /// that loses or corrupts it. A fault never changes the truth.
+    /// that loses or corrupts it. A fault never changes the truth. A
+    /// targeted line sometimes has no usable second instead (review round
+    /// 9): unparseable, within second 0, past the horizon or missing.
     fn push(&mut self, line: String, tag: &str) {
         let mut tag = tag.to_owned();
         let mut line = Some(line);
-        if self.faults > 0 && self.chance(self.faults) {
+        if self.targeted > 0 && TARGETED.contains(&tag.as_str()) && self.chance(self.targeted) {
+            let text = line.take().unwrap();
+            let faulty = match self.random.below(4) {
+                0 => restamp(&text, "not-a-time"),
+                1 => restamp(&text, "1970-01-01T00:00:00.500Z"),
+                2 => restamp(&text, "2099-01-01T00:00:00.250Z"),
+                _ => {
+                    let from = text.find("\"timestamp\":\"").unwrap();
+                    let to = from + 13 + text[from + 13..].find('"').unwrap() + 2;
+                    format!("{}{}", &text[..from], &text[to..])
+                }
+            };
+            tag = format!("{tag}+unusable-stamp");
+            line = Some(faulty);
+        } else if self.faults > 0 && self.chance(self.faults) {
             let text = line.take().unwrap();
             let (fault, faulty) = match self.random.below(6) {
                 0 => ("lost", None),
@@ -2785,8 +2930,8 @@ impl Story {
     }
 }
 /// A generated session of 2 to 11 turns with idle records between them.
-fn story(seed: u64, faults: u64, oversized: bool) -> Story {
-    let mut story = Story::new(seed, faults, oversized);
+fn story(seed: u64, faults: u64, oversized: bool, targeted: u64) -> Story {
+    let mut story = Story::new(seed, faults, oversized, targeted);
     for _ in 0..2 + story.random.below(10) {
         story.idle();
         story.turn();
@@ -2949,16 +3094,24 @@ fn replay_file(
 fn turns_ground_truth_fuzz_never_publishes_a_wrong_value() {
     let started = std::time::Instant::now();
     let (mut found, mut records, mut restarts) = (Found::default(), 0, 0);
-    for (base, sessions, file) in [
-        (0x9e37_79b9_7f4a_7c15_u64, 3000, false),
-        (0xc2b2_ae3d_27d4_eb4f, 160, true),
+    // The last run targets unusable stamps on the lines that prove an end
+    // or take input with no turn running, which uniform faults rarely pair.
+    for (base, sessions, file, targeted) in [
+        (0x9e37_79b9_7f4a_7c15_u64, 3000, false, false),
+        (0xc2b2_ae3d_27d4_eb4f, 160, true, false),
+        (0x1656_67b1_9e37_79f9, 1000, false, true),
     ] {
         for index in 0..sessions {
             let seed = (base ^ (index + 1_u64).wrapping_mul(0x2545_f491_4f6c_dd1d)) | 1;
             let faults = [0, 10, 40, 120, 250][index as usize % 5];
-            let story = story(seed, faults, file);
+            let targeted = if targeted {
+                [100, 300][index as usize % 2]
+            } else {
+                0
+            };
+            let story = story(seed, faults, file, targeted);
             records += story.lines.len();
-            let label = format!("seed {seed:#x} faults {faults} file {file}");
+            let label = format!("seed {seed:#x} faults {faults} file {file} targeted {targeted}");
             let memory = replay_memory(&story, &label, &mut found);
             if file {
                 restarts += replay_file(&story, &memory, seed, &label, &mut found);

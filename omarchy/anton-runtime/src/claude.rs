@@ -579,6 +579,9 @@ pub struct ClaudeCursor {
     /// A record was lost with no turn running, and that record may have
     /// opened the next turn: an assistant record or a trigger before any
     /// proven end then shows a turn of unknown start, which is ambiguous.
+    /// Also set by a `turn_duration` or abort with no usable second: the
+    /// end is proven but its time is not, so `end_floor` cannot reject a
+    /// trigger stamped before it, until an end with a usable second.
     pub lost_idle: bool,
     /// Local-command output cleared a pending slash-command start (D7). The
     /// command is taken to have run locally, but it may still be running
@@ -1493,6 +1496,11 @@ impl Row {
         // The latest end proven, published or not: no later turn started
         // before it.
         let floor = self.turns.last_end.unwrap_or(0).max(self.claude.end_floor);
+        // An end with no usable second (missing, unparseable, within second
+        // 0 or past the horizon) is proven, but its time is unknown: every
+        // later trigger may be stamped before it, so the reader is left as
+        // after a record lost while idle until an end with a usable second.
+        let unstamped = second.is_none_or(|second| second == 0);
         let block = &mut self.claude;
         match Turn::of(record) {
             // Local-command output, as a wrapped user record or a system
@@ -1613,7 +1621,8 @@ impl Row {
                 self.claude.end_floor = self.claude.end_floor.max(second.unwrap_or(0));
                 self.claude.ambiguous = false;
                 self.claude.silent_end = false;
-                self.claude.lost_idle = false;
+                // An end with no usable second is at an unknown time (D7).
+                self.claude.lost_idle = unstamped;
                 self.claude.local_idle = false;
                 self.claude.abort_adjacent = true;
                 self.end(second, Turns::abort);
@@ -1624,7 +1633,7 @@ impl Row {
                 block.end_floor = block.end_floor.max(second.unwrap_or(0));
                 block.ambiguous = false;
                 block.silent_end = false;
-                block.lost_idle = false;
+                block.lost_idle = unstamped;
                 block.local_idle = false;
                 if active {
                     self.end(second, Turns::finish);
