@@ -631,9 +631,11 @@ pub struct ClaudeCursor {
     /// cannot reject a trigger stamped before it, until an end with a usable
     /// second.
     pub lost_idle: bool,
-    /// Local-command output cleared a pending slash-command start (D7). The
-    /// command is taken to have run locally, but it may still be running
-    /// the model, so the current turn is unknown until a trigger,
+    /// Local-command output cleared a pending slash-command start (D7), or
+    /// a `turn_duration` ended no turn. The command is taken to have run
+    /// locally, but it may still be running the model, and the
+    /// `turn_duration` may have been deferred while background agents ran
+    /// and written in a later turn, so the current turn is unknown until a trigger,
     /// `turn_duration`, an abort or ambiguity. A task notification (user
     /// origin or queued attachment), peer or coordinator trigger can enter
     /// that turn with no queue record, so while this is set it is ambiguous;
@@ -1749,8 +1751,15 @@ impl Row {
                 block.local_idle = false;
                 if active {
                     self.end(second, Turns::finish);
-                } else if !adjacent || block.pending_start.is_some() {
-                    self.turns_unknown();
+                } else {
+                    if !adjacent || block.pending_start.is_some() {
+                        self.turns_unknown();
+                    }
+                    // A `turn_duration` that ended no turn may be one Claude
+                    // Code deferred while background agents ran, written in
+                    // a later turn: an injected trigger may enter that turn
+                    // with no queue record, as after local output (D7).
+                    self.claude.local_idle = true;
                 }
                 if unstamped {
                     self.unknown_time();

@@ -595,15 +595,19 @@ fn turns_pending_start_needs_an_assistant_record_including_synthetic() {
     let block: ClaudeCursor =
         serde_json::from_value(serde_json::to_value(&row.claude).unwrap()).unwrap();
     assert!(block.local_idle);
-    for (next, valid) in [
-        (user(20, "second", ""), true),
-        (system("turn_duration", 20), false),
-        (user(20, "[Request interrupted by user]", ""), false),
+    // A `turn_duration` that ended no turn sets it again (review round 13).
+    for (next, valid, local) in [
+        (user(20, "second", ""), true, false),
+        (system("turn_duration", 20), false, true),
+        (user(20, "[Request interrupted by user]", ""), false, false),
     ] {
         let mut lines = ended.to_vec();
         lines.push(next.clone());
         let row = run(&lines);
-        assert!(!row.claude.local_idle && row.turns.valid == valid, "{next}");
+        assert!(
+            row.claude.local_idle == local && row.turns.valid == valid,
+            "{next}"
+        );
     }
     // Local output while a prompt awaits its first response comes from a
     // local command run meanwhile: the prompt's start stays pending, so the
@@ -1057,6 +1061,61 @@ fn turns_final_stop_other_than_tool_use_is_a_silent_end() {
         let turns = run(&lines).published_turns();
         assert!(!turns.valid && turns.last_duration.is_none(), "{last}");
     }
+}
+
+/// Review round 13: Claude Code defers a turn's `turn_duration` while
+/// background agents run and may write it in the middle of a later turn. A
+/// `turn_duration` that ended no turn therefore proves no idle point: an
+/// injected notification after it may enter a running turn, as after local
+/// output.
+#[test]
+fn turns_injected_trigger_after_a_turn_duration_that_ended_no_turn_is_ambiguous() {
+    let human = "\"origin\":{\"kind\":\"human\"}";
+    for trigger in [
+        queued(152, "task-notification", &notice("agent-a", "completed")),
+        notified(152, "agent-a", "completed"),
+    ] {
+        let mut lines = vec![
+            user(100, "first", human),
+            assistant(101, "msg_a", "\"tool_use\""),
+            launch(102, "agent-a"),
+            assistant(110, "msg_b", "\"end_turn\""),
+            user(120, "second", human),
+            assistant(121, "msg_c", "\"tool_use\""),
+            // The first turn's deferred `turn_duration`, written mid-turn.
+            system("turn_duration", 150),
+        ];
+        let row = run(&lines);
+        assert!(row.claude.local_idle && !row.published_turns().current_known);
+        lines.extend([
+            tool(151, "{\"stdout\":\"ok\"}"),
+            trigger.clone(),
+            assistant(153, "msg_d", "\"tool_use\""),
+        ]);
+        // The second turn runs from 120: nothing dates it from 152.
+        let row = run(&lines);
+        assert!(
+            row.claude.ambiguous && row.turns.active.is_none(),
+            "{trigger}"
+        );
+        assert!(!row.published_turns().current_known, "{trigger}");
+        lines.extend([
+            assistant(159, "msg_e", "\"end_turn\""),
+            system("turn_duration", 160),
+        ]);
+        let turns = run(&lines).published_turns();
+        assert!(!turns.valid && turns.last_duration.is_none(), "{trigger}");
+    }
+    // A human prompt is queued and taken instead, so it opens normally.
+    let row = run(&[
+        user(100, "first", human),
+        assistant(101, "msg_a", "\"end_turn\""),
+        user(120, "second", human),
+        system("turn_duration", 150),
+        user(200, "third", human),
+        assistant(201, "msg_b", "\"tool_use\""),
+    ]);
+    assert_eq!(row.turns.start, Some(second(200)));
 }
 
 #[test]
