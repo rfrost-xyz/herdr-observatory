@@ -726,6 +726,10 @@ pub fn read_usage(path: &Path, session: &str, time: f64) -> Value {
 }
 
 type FileSignature = (u64, u64, u64, i64, i64, i64, i64);
+// Records the harness of each pane enrichment on this thread, so a test can
+// check the order of enrichment without depending on timing.
+#[cfg(test)]
+thread_local! { static ENRICHED: std::cell::RefCell<Vec<&'static str>> = const { std::cell::RefCell::new(Vec::new()) }; }
 /// A Claude session binding (D1) and its last published numeric sample (D3).
 struct Binding {
     at: Instant,
@@ -1025,6 +1029,8 @@ impl NativeTelemetry {
         time: f64,
         [deadline, passes]: [Instant; 2],
     ) {
+        #[cfg(test)]
+        ENRICHED.with(|order| order.borrow_mut().push("claude"));
         let Some((session, key)) = claude_session(agent) else {
             return;
         };
@@ -1179,6 +1185,8 @@ impl NativeTelemetry {
         time: f64,
         deadline: Instant,
     ) {
+        #[cfg(test)]
+        ENRICHED.with(|order| order.borrow_mut().push("codex"));
         if agent["agent"] != "codex"
             || telemetry::session_binding(agent).is_none()
             || agent["agent_session"]["kind"] != "id"

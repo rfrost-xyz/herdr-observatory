@@ -1133,9 +1133,13 @@ fn claude_replay_listed_first_never_starves_a_codex_pane() {
             .map(|id| json!({"agent":"claude","agent_session":{"agent":"claude","source":"herdr:claude","kind":"id","value":id}}))
             .collect();
         agents.push(codex.clone());
-        // A short shared deadline that the Claude replay alone outlasts.
-        let deadline = Instant::now() + Duration::from_millis(150);
+        // A far deadline: the order is checked, not timing, so a descheduled
+        // test thread cannot fail it.
+        ENRICHED.with(|order| order.borrow_mut().clear());
+        let deadline = Instant::now() + Duration::from_secs(30);
         let next = NativeTelemetry::default().enrich_until(&mut agents, &cursors, deadline);
+        let order = ENRICHED.with(|order| order.borrow().clone());
+        assert_eq!(order, ["codex", "claude", "claude"]);
         assert_eq!(
             agents[PANES]["_native_telemetry"]["total_input"],
             21_700_000
