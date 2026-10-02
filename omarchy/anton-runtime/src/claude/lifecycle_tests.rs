@@ -1254,11 +1254,10 @@ fn turns_duration_ms_rejects_an_interval_whose_saved_bounds_disagree() {
     assert_eq!(row.turns.last_duration, Some(5));
 }
 
-/// An aborted interval has no `durationMs` to check: it is published as the
-/// last interval, but accumulated coverage becomes unknown.
 /// D7 mask: the current turn is published only when it was opened by a
 /// human-origin or shape prompt after a gated `turn_duration` with nothing
-/// pending, and no child launched since is still running.
+/// pending, or from the start of the session file, and no background work
+/// launched since is still running.
 #[test]
 fn turns_current_turn_is_published_only_from_a_clean_state() {
     let human = "\"origin\":{\"kind\":\"human\"}";
@@ -1321,6 +1320,8 @@ fn turns_current_turn_is_published_only_from_a_clean_state() {
     for result in [
         "{\"status\":\"async_launched\",\"agentId\":\"agent-a\"}",
         "{\"status\":\"async_launched\",\"taskId\":\"w1\",\"taskType\":\"local_workflow\"}",
+        "{\"status\":\"teammate_spawned\",\"agent_id\":\"mate-a\",\"teammate_id\":\"mate-a\"}",
+        "{\"status\":\"remote_launched\",\"taskId\":\"r1\"}",
     ] {
         let mut lines = head();
         next(&mut lines, 10, user(10, "next", human));
@@ -1384,6 +1385,8 @@ fn turns_current_turn_is_published_only_from_a_clean_state() {
     assert_eq!(current(&child), Some(Some(second(20))));
 }
 
+/// An aborted interval has no `durationMs` to check: it is published as the
+/// last interval, but accumulated coverage becomes unknown.
 #[test]
 fn turns_aborted_interval_is_last_but_makes_the_total_unknown() {
     let row = run(&[

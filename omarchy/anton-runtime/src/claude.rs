@@ -822,6 +822,9 @@ pub struct Record {
     pub tool: bool,
     /// `toolUseResult.status` is `async_launched`.
     pub launch: bool,
+    /// `toolUseResult.status` starts background work: `async_launched`,
+    /// `teammate_spawned` or `remote_launched`.
+    pub spawn: bool,
     /// sha256 of a valid `agentId` or `resumedAgentId`; `*_bad` marks one
     /// present with any other value.
     #[serde(deserialize_with = "Option::deserialize")]
@@ -1164,7 +1167,13 @@ impl Record {
                 }
             }
             TOOL => self.tool = !value.is_null(),
-            28 => self.launch = value == "async_launched",
+            28 => {
+                self.launch = value == "async_launched";
+                self.spawn = matches!(
+                    value.as_str(),
+                    Some("async_launched" | "teammate_spawned" | "remote_launched")
+                );
+            }
             29 => (self.agent, self.agent_bad) = agent(value),
             30 => (self.resumed, self.resumed_bad) = agent(value),
             31 => self.success = *value == true,
@@ -1196,6 +1205,7 @@ impl Record {
             self.origin = 0;
             self.tool = false;
             self.launch = false;
+            self.spawn = false;
             (self.agent, self.agent_bad) = (None, false);
             (self.resumed, self.resumed_bad) = (None, false);
             self.success = false;
@@ -1558,9 +1568,9 @@ impl Row {
     fn children(&mut self, record: &Record) {
         let user = record.kind == KIND_USER;
         if user && record.tool {
-            // Any async launch, including a workflow or teammate without an
-            // `agentId`, starts background work, so the current turn is masked.
-            if record.launch {
+            // Any background launch, including a workflow without an `agentId`
+            // and a teammate or remote launch, masks the current turn.
+            if record.spawn {
                 self.claude.clean = false;
             }
             let sync = !record.launch && record.duration;
