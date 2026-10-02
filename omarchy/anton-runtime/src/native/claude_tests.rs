@@ -1103,6 +1103,7 @@ fn claude_replay_listed_first_never_starves_a_codex_pane() {
         ),
     )
     .unwrap();
+    let rollout = sessions.join("rollout-fixture-codex.jsonl");
     TEST_ROOT.with(|value| *value.borrow_mut() = Some(sessions));
     let _codex = Codex;
     // Each Claude pane holds more than the 16 passes of `TAIL` it may replay.
@@ -1133,11 +1134,18 @@ fn claude_replay_listed_first_never_starves_a_codex_pane() {
             .map(|id| json!({"agent":"claude","agent_session":{"agent":"claude","source":"herdr:claude","kind":"id","value":id}}))
             .collect();
         agents.push(codex.clone());
-        // A far deadline: the order is checked, not timing, so a descheduled
-        // test thread cannot fail it.
+        // The order shows Codex was reached first, and its value shows it was
+        // enriched. Codex discovery has its own 100 ms budget, so the fresh
+        // follower is given the binding a scan finds, and with the far
+        // deadline a descheduled test thread cannot fail either assertion.
         ENRICHED.with(|order| order.borrow_mut().clear());
         let deadline = Instant::now() + Duration::from_secs(30);
-        let next = NativeTelemetry::default().enrich_until(&mut agents, &cursors, deadline);
+        let mut follower = NativeTelemetry::default();
+        let key = sha256(b"anton-native-session-v1:fixture-codex");
+        follower
+            .discovery
+            .insert(key, (Instant::now(), Some(rollout.clone())));
+        let next = follower.enrich_until(&mut agents, &cursors, deadline);
         let order = ENRICHED.with(|order| order.borrow().clone());
         assert_eq!(order, ["codex", "claude", "claude"]);
         assert_eq!(
