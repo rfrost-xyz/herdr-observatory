@@ -2178,6 +2178,35 @@ fn zz_trigger_before_an_unstamped_end_is_never_published() {
             wrong.extend(published_before(&label, &lines, from, second(50)));
         }
     }
+    // (c) A stamped end in the second the leftover input was queued, then a
+    // take with no usable second or no `sessionId` (true time 25): only the
+    // take's second shows the next turn started after that end.
+    let takes = unusable
+        .map(|text| (text.unwrap_or("missing"), restamped(&dequeue(25), 25, text)))
+        .into_iter()
+        .chain([(
+            "no sessionId",
+            dequeue(25).replacen(&format!("\"sessionId\":\"{ID}\","), "", 1),
+        )]);
+    for (name, take) in takes {
+        let mut lines = vec![
+            s(user(10, "hello", "")),
+            a(11, "msg_a", "\"tool_use\""),
+            s(queue(20)),
+            a(20, "msg_b", "\"end_turn\""),
+            s(system("turn_duration", 20)),
+            s(take),
+        ];
+        let from = lines.len();
+        lines.extend([
+            s(user(20, "queued in the second of the end", "")),
+            a(26, "msg_c", "\"tool_use\""),
+            a(28, "msg_d", "\"end_turn\""),
+            s(system("turn_duration", 29)),
+        ]);
+        let label = format!("(c) stamped end, take {name}");
+        wrong.extend(published_before(&label, &lines, from, second(25)));
+    }
     assert!(wrong.is_empty(), "{wrong:#?}");
 }
 

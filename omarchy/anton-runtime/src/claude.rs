@@ -579,9 +579,11 @@ pub struct ClaudeCursor {
     /// A record was lost with no turn running, and that record may have
     /// opened the next turn: an assistant record or a trigger before any
     /// proven end then shows a turn of unknown start, which is ambiguous.
-    /// Also set by a `turn_duration` or abort with no usable second: the
-    /// end is proven but its time is not, so `end_floor` cannot reject a
-    /// trigger stamped before it, until an end with a usable second.
+    /// Also set by a `turn_duration` or abort with no usable second, or a
+    /// queue record with no turn running that has no usable second or is
+    /// lost: the end or take is proven but its time is not, so `end_floor`
+    /// cannot reject a trigger stamped before it, until an end with a usable
+    /// second.
     pub lost_idle: bool,
     /// Local-command output cleared a pending slash-command start (D7). The
     /// command is taken to have run locally, but it may still be running
@@ -1334,10 +1336,13 @@ impl Row {
             }
             KIND_SYSTEM => self.compactions_valid = false,
             KIND_USER | KIND_ATTACHMENT => self.valid = false,
-            // A queue record only ever lets a trigger join a turn, so missing
-            // one can only make turns unknown later, except after a record
-            // lost while idle: it may show the turn that record opened.
+            // A queue record lets a trigger join a turn, so missing one
+            // while a turn is running or pending can only make turns unknown
+            // later. After a record lost while idle it may show the turn that
+            // record opened. With no turn running it may be input taken,
+            // which starts a turn at its unknown time (D7).
             KIND_QUEUE if self.claude.lost_idle => return self.ambiguous(),
+            KIND_QUEUE => return self.unknown_time(),
             _ => return,
         }
         self.lose_turn();
@@ -1356,6 +1361,17 @@ impl Row {
             self.ambiguous();
         } else {
             self.claude.lost_idle |= !self.claude.ambiguous;
+        }
+    }
+    /// A proven end, or input taken with no turn running, at an unknown
+    /// time (no usable second, or a lost take): a later trigger may be
+    /// stamped before it, so the reader is left as after a record lost while
+    /// idle until an end with a usable second (D7).
+    fn unknown_time(&mut self) {
+        let idle = self.turns.active.is_none() && self.claude.pending_start.is_none();
+        if idle && !self.claude.ambiguous {
+            self.turns_unknown();
+            self.claude.lost_idle = true;
         }
     }
     /// As `lose_turn`, for a record that may itself have opened a turn.
@@ -1496,10 +1512,8 @@ impl Row {
         // The latest end proven, published or not: no later turn started
         // before it.
         let floor = self.turns.last_end.unwrap_or(0).max(self.claude.end_floor);
-        // An end with no usable second (missing, unparseable, within second
-        // 0 or past the horizon) is proven, but its time is unknown: every
-        // later trigger may be stamped before it, so the reader is left as
-        // after a record lost while idle until an end with a usable second.
+        // No usable second: missing, unparseable, within second 0 or past
+        // the horizon.
         let unstamped = second.is_none_or(|second| second == 0);
         let block = &mut self.claude;
         match Turn::of(record) {
@@ -1534,13 +1548,19 @@ impl Row {
                 // Input taken with no turn running starts one now, but its
                 // record keeps the stamp of the time it was queued: a
                 // trigger stamped before the take has an unknown start.
-                if !active && block.pending_start.is_none() {
+                let idle = !active && block.pending_start.is_none();
+                if idle {
                     block.end_floor = block.end_floor.max(second.unwrap_or(0));
                 }
                 if block.lost_idle {
                     // Input taken after a record lost while idle: that record
                     // may have opened the turn that took it.
                     self.ambiguous();
+                } else if unstamped {
+                    // A take with no usable second starts a turn at an
+                    // unknown time, which a trigger stamped at or after the
+                    // last end cannot show.
+                    self.unknown_time();
                 }
             }
             Turn::Queue => {}
@@ -1621,11 +1641,13 @@ impl Row {
                 self.claude.end_floor = self.claude.end_floor.max(second.unwrap_or(0));
                 self.claude.ambiguous = false;
                 self.claude.silent_end = false;
-                // An end with no usable second is at an unknown time (D7).
-                self.claude.lost_idle = unstamped;
+                self.claude.lost_idle = false;
                 self.claude.local_idle = false;
                 self.claude.abort_adjacent = true;
                 self.end(second, Turns::abort);
+                if unstamped {
+                    self.unknown_time();
+                }
             }
             Turn::End => {
                 self.turns.supported = true;
@@ -1633,12 +1655,15 @@ impl Row {
                 block.end_floor = block.end_floor.max(second.unwrap_or(0));
                 block.ambiguous = false;
                 block.silent_end = false;
-                block.lost_idle = unstamped;
+                block.lost_idle = false;
                 block.local_idle = false;
                 if active {
                     self.end(second, Turns::finish);
                 } else if !adjacent || block.pending_start.is_some() {
                     self.turns_unknown();
+                }
+                if unstamped {
+                    self.unknown_time();
                 }
             }
         }
