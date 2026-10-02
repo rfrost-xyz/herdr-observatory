@@ -819,6 +819,36 @@ fn publish_claude(
     }
     false
 }
+/// The source times of a Claude cursor row: `coverage_seq`, `usage_seq` and
+/// the child `seq`.
+fn incoming_stamps(cursors: &BTreeMap<String, Cursor>, key: &str) -> Option<[u64; 3]> {
+    cursors.get(key).and_then(|v| {
+        let block = v.claude.as_ref()?;
+        Some([block.coverage_seq, block.usage_seq, v.seq])
+    })
+}
+/// A peer follower is fresh on every probe, so a bind or verification
+/// failure, a deadline skip, or a restart that publishes nothing, for a
+/// session with a cursor row publishes an all-null sample at that row's
+/// latest usable original source time. It replaces the copy the local
+/// retains for the peer (D3). Without a cursor row the local re-emits
+/// nothing. Returns false only when the row has a source time but none is
+/// usable yet: the caller then withholds the row, so the local cannot
+/// re-emit.
+fn unknown_claude(agent: &mut Value, stamps: Option<[u64; 3]>, time: f64) -> bool {
+    let Some(stamps) = stamps else {
+        return true;
+    };
+    let usage = claude::Row::new([0, 0], 0, time).usage();
+    match stamps
+        .into_iter()
+        .filter(|v| *v > 0 && *v as f64 <= time * 1e6)
+        .max()
+    {
+        Some(seq) => publish_claude(agent, &usage, None, seq, time),
+        None => stamps.iter().all(|v| *v == 0),
+    }
+}
 impl NativeTelemetry {
     fn discover(session: &str, deadline: Instant) -> Option<PathBuf> {
         let mut stack = vec![(session_root(), 0)];
@@ -907,19 +937,30 @@ impl NativeTelemetry {
     }
     /// A pane skipped by the shared deadline: a current binding with its
     /// cursor row re-emits the retained sample, as an incomplete replay does.
+    /// Without a current binding, which a peer's fresh follower never has,
+    /// nothing verified the file, so an incoming row takes the all-null sample
+    /// or is withheld, as after a bind failure; the local never re-emits.
     fn skip_claude(
         &self,
         agent: &mut Value,
         key: &str,
-        cursors: &BTreeMap<String, Cursor>,
+        cursors: &mut BTreeMap<String, Cursor>,
         time: f64,
     ) {
         let current = self
             .claude
             .get(key)
             .filter(|v| !v.rescan && v.path.is_some() && v.at.elapsed() < Duration::from_secs(60));
-        if let Some((subset, seq)) = current
-            .and_then(|v| v.retained.as_ref())
+        let Some(binding) = current else {
+            let stamps = incoming_stamps(cursors, key);
+            if stamps.is_some() && !unknown_claude(agent, stamps, time) {
+                cursors.remove(key);
+            }
+            return;
+        };
+        if let Some((subset, seq)) = binding
+            .retained
+            .as_ref()
             .filter(|_| cursors.get(key).is_some_and(Cursor::is_claude))
         {
             publish_claude(agent, subset, None, *seq, time);
@@ -951,34 +992,8 @@ impl NativeTelemetry {
             self.skip_claude(agent, &key, cursors, time);
             return;
         }
-        // A peer follower is fresh on every probe, so a bind or verification
-        // failure, or a restart that publishes nothing, for a session with a
-        // cursor row publishes an all-null sample at that row's latest usable
-        // original source time. It replaces the copy the local retains for
-        // the peer (D3). Without a cursor row the local re-emits nothing.
-        let incoming = cursors.get(&key).and_then(|v| {
-            Some([
-                v.claude.as_ref()?.coverage_seq,
-                v.claude.as_ref()?.usage_seq,
-                v.seq,
-            ])
-        });
-        // Returns false only when the row has a source time but none is usable
-        // yet: the caller then withholds the row, so the local cannot re-emit.
-        let unknown = |agent: &mut Value| -> bool {
-            let Some(stamps) = incoming else {
-                return true;
-            };
-            let usage = claude::Row::new([0, 0], 0, time).usage();
-            match stamps
-                .into_iter()
-                .filter(|v| *v > 0 && *v as f64 <= time * 1e6)
-                .max()
-            {
-                Some(seq) => publish_claude(agent, &usage, None, seq, time),
-                None => stamps.iter().all(|v| *v == 0),
-            }
-        };
+        let incoming = incoming_stamps(cursors, &key);
+        let unknown = |agent: &mut Value| unknown_claude(agent, incoming, time);
         let root = claude::projects_root();
         let path = match self.bind(&root, &session, &key, deadline) {
             Some(Some(path)) => path,

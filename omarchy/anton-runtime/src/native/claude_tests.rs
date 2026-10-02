@@ -705,15 +705,20 @@ fn claude_deadline_skip_reemits_the_retained_sample_of_a_current_binding() {
     // Without a cursor row the retained sample is not re-emitted.
     assert_eq!(skipped(&mut follower, &json!({})), (Value::Null, false));
     assert!(follower.claude[&key()].retained.is_some());
-    // A binding due for rediscovery is unverified, so nothing is re-emitted.
+    // A binding due for rediscovery is unverified, so nothing is re-emitted:
+    // the row takes the all-null sample, as after a bind failure.
     age(&mut follower);
-    assert_eq!(skipped(&mut follower, &cursors), (Value::Null, true));
+    let (telemetry, kept) = skipped(&mut follower, &cursors);
+    unknown(&telemetry, micros(23));
+    assert!(kept && follower.claude[&key()].retained.is_some());
 }
 
 /// A rediscovery that the shared deadline cuts short is a deadline skip,
-/// not a truncated discovery: nothing is published, the cursor row is kept
-/// and a retained sample survives for the next pass. The pad entries stay
-/// well under the entry budget, so only the deadline truncates the scan.
+/// not a truncated discovery: the cursor row is kept and a retained sample
+/// survives for the next pass. Nothing verified the file, so the row takes
+/// the all-null sample, and a peer's local never re-emits an unverified copy.
+/// The pad entries stay well under the entry budget, so only the deadline
+/// truncates the scan.
 #[test]
 fn claude_deadline_inside_rediscovery_is_a_skip_not_a_drop() {
     let fixture = Fixture::new();
@@ -735,19 +740,61 @@ fn claude_deadline_inside_rediscovery_is_a_skip_not_a_drop() {
     };
     // A peer: a fresh follower with the caught-up row the local sent back.
     let mut peer = NativeTelemetry::default();
-    assert_eq!(expiring(&mut peer), (Value::Null, true));
-    assert!(peer.claude.is_empty());
+    let (telemetry, kept) = expiring(&mut peer);
+    unknown(&telemetry, micros(23));
+    assert!(kept && peer.claude.is_empty());
     // A local binding due for rediscovery keeps its retained sample, which
     // the next incomplete pass re-emits.
     let mut follower = NativeTelemetry::default();
     let (_, _, cursors) = enrich(&mut follower, &cursors);
     age(&mut follower);
-    assert_eq!(expiring(&mut follower), (Value::Null, true));
-    assert!(follower.claude[&key()].retained.is_some());
+    let (telemetry, kept) = expiring(&mut follower);
+    unknown(&telemetry, micros(23));
+    assert!(kept && follower.claude[&key()].retained.is_some());
     fixture.append("{\"type\":");
     let (telemetry, _, rows) = enrich(&mut follower, &cursors);
     assert_eq!(rows[key()]["caught_up"], false);
     assert_eq!(telemetry, retained(&first));
+}
+
+/// A peer follower is fresh on every probe, so it never has a current
+/// binding. A pane it skips at the deadline must not return the incoming row
+/// as if verified: the local would re-emit its retained copy for a file that
+/// has since become ambiguous. It publishes the all-null sample at the row's
+/// latest usable time, or withholds the row when no time is usable (D3).
+#[test]
+fn claude_peer_deadline_skip_never_returns_an_unverified_row() {
+    let fixture = Fixture::new();
+    fixture.write(&session());
+    let (first, _, cursors) = enrich(&mut NativeTelemetry::default(), &json!({}));
+    assert_eq!(first["total_output"], 26);
+    std::fs::write(fixture.path("entry-b", ID), body(&session())).unwrap();
+    let skipped = |time: f64| {
+        let mut rows = validate_cursors(&cursors);
+        let mut agent = agent();
+        let mut peer = NativeTelemetry::default();
+        peer.enrich_claude(
+            &mut agent,
+            &mut rows,
+            &mut BTreeSet::new(),
+            time,
+            Instant::now(),
+        );
+        assert!(peer.claude.is_empty());
+        (
+            agent["_native_telemetry"].clone(),
+            rows.get(&key()).cloned(),
+        )
+    };
+    let (telemetry, row) = skipped(now());
+    unknown(&telemetry, micros(23));
+    assert_eq!(serde_json::to_value(row).unwrap(), cursors[key()]);
+    // Before any of the row's times, nothing can be stamped: it is withheld.
+    let (telemetry, row) = skipped((BASE + 20) as f64);
+    assert!(telemetry.is_null() && row.is_none());
+    // With time, the ambiguity is found and the same sample is published.
+    let (telemetry, _, _) = enrich(&mut NativeTelemetry::default(), &cursors);
+    unknown(&telemetry, micros(23));
 }
 
 #[test]

@@ -1497,6 +1497,45 @@ mod tests {
             assert!(shown(&state).is_none(), "{at}");
         }
     }
+    /// The two shapes a peer returns for a pane its deadline skipped
+    /// (`claude_peer_deadline_skip_never_returns_an_unverified_row`): the
+    /// all-null sample at the row's `coverage_seq`, or no row. Neither lets
+    /// the retained copy be re-emitted, then or on a later incomplete pass.
+    #[test]
+    fn claude_peer_deadline_skip_shapes_drop_the_retained_copy() {
+        let now = common::now();
+        let rows = claude_row();
+        let coverage = rows.as_object().unwrap().values().next().unwrap()["claude"]["coverage_seq"]
+            .as_u64()
+            .unwrap();
+        let with = |telemetry: Value, cursors: &Value| {
+            let mut value = sample("working", now);
+            value.agents[0] = claude(7, telemetry);
+            value.cursors = cursors.clone();
+            value.requested = Some(1);
+            value
+        };
+        for (skipped, cursors) in [
+            (
+                json!({"seq":coverage,"event":"session","phase":"ready"}),
+                &rows,
+            ),
+            (Value::Null, &json!({})),
+        ] {
+            let mut state = peer();
+            state.sample("test", Ok(with(caught_up(coverage), &rows)));
+            assert_eq!(state.retained["test"].len(), 1);
+            state.sample("test", Ok(with(skipped.clone(), cursors)));
+            let shown = |state: &State| {
+                let telemetry = state.hosts[0].agents[0].technical.telemetry.as_ref();
+                telemetry.and_then(|v| v.total_output)
+            };
+            assert!(shown(&state).is_none(), "{skipped}");
+            assert!(state.retained["test"].is_empty(), "{skipped}");
+            state.sample("test", Ok(with(Value::Null, &rows)));
+            assert!(shown(&state).is_none(), "{skipped}");
+        }
+    }
     /// A peer sample that revalidation rejects is not an absent one: it drops
     /// the retained copy, which is not re-emitted then or on a later pass.
     #[test]
