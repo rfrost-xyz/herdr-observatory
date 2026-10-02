@@ -3544,7 +3544,7 @@ mod replay_tests {
     /// A line over `TAIL` observed mid-write is cut only at `TAIL` multiples
     /// from its start, so it reads as a whole-file replay does.
     #[test]
-    fn zz_review_line_over_tail_written_in_two_steps_loses_its_timestamp() {
+    fn line_over_tail_written_in_two_steps_reads_as_a_whole_file_replay() {
         let fixture = tests::Fixture::new();
         let late = assistant("msg_b", 2, "\"end_turn\"", [5, 5, 5, 5]);
         // Every consumed key sits after a leading pad that spans `TAIL`.
