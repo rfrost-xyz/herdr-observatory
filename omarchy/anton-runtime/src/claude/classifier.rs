@@ -826,6 +826,7 @@ impl Classifier {
             && record.origin <= super::ORIGIN_OTHER
             && record.mode as usize <= super::MODES.len()
             && record.operation as usize <= super::OPERATIONS.len()
+            && record.elapsed.is_none_or(|value| value <= super::SAFE)
             && [&record.agent, &record.resumed]
                 .iter()
                 .all(|key| key.as_deref().is_none_or(|key| crate::common::hex_id(key, 64)))
@@ -1070,6 +1071,39 @@ mod tests {
                 "{{\"type\":\"system\",\"subtype\":\"stop_hook_summary\",\"sessionId\":\"{ID}\",\"timestamp\":\"{STAMP}\",\"isAbortedMidStream\":true}}"
             ),
         );
+        for (subtype, fields) in [
+            ("turn_duration", "\"durationMs\":4250,\"messageCount\":3"),
+            (
+                "turn_duration",
+                "\"durationMs\":0,\"pendingBackgroundAgentCount\":0,\"pendingWorkflowCount\":0",
+            ),
+            (
+                "turn_duration",
+                "\"durationMs\":12.5,\"pendingBackgroundAgentCount\":2",
+            ),
+            (
+                "turn_duration",
+                "\"durationMs\":-3,\"pendingWorkflowCount\":1",
+            ),
+            (
+                "turn_duration",
+                "\"durationMs\":\"9\",\"pendingWorkflowCount\":null",
+            ),
+            (
+                "turn_duration",
+                "\"durationMs\":{},\"pendingBackgroundAgentCount\":[]",
+            ),
+            ("turn_duration", "\"durationMs\":9007199254740992"),
+            ("turn_duration", "\"pendingBackgroundAgentCount\":\"0\""),
+            (
+                "compact_boundary",
+                "\"durationMs\":5,\"pendingWorkflowCount\":1",
+            ),
+        ] {
+            lines.push(format!(
+                "{{\"type\":\"system\",\"subtype\":\"{subtype}\",\"sessionId\":\"{ID}\",\"timestamp\":\"{STAMP}\",{fields}}}"
+            ));
+        }
         lines
     }
 

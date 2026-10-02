@@ -85,6 +85,15 @@ fn assistant(second: u64, message: &str, stop: &str) -> String {
 fn system(subtype: &str, second: u64) -> String {
     record("system", second, &format!("\"subtype\":\"{subtype}\""))
 }
+/// A `turn_duration` at `second` whose `durationMs` dates its turn from `from`.
+fn ended(second: u64, from: u64) -> String {
+    let elapsed = (second - from) * 1000;
+    record(
+        "system",
+        second,
+        &format!("\"subtype\":\"turn_duration\",\"durationMs\":{elapsed}"),
+    )
+}
 /// A `queue-operation` record; only `enqueue` is written when input is typed.
 fn queue(second: u64) -> String {
     operation(second, "enqueue")
@@ -100,11 +109,37 @@ fn operation(second: u64, operation: &str) -> String {
 fn dequeue(second: u64) -> String {
     operation(second, "dequeue")
 }
+/// Fixtures written before the `durationMs` gate (D7) leave `durationMs` out
+/// of `turn_duration`: it is filled in to agree with the open start, so they
+/// keep testing their own rule. Gate fixtures write it themselves or replay
+/// through `run_exact`.
+fn timed(row: &Row, mut value: Value) -> Value {
+    let duration = value["type"] == "system" && value["subtype"] == "turn_duration";
+    if duration && value.get("durationMs").is_none() {
+        let stamp = Record::from_value(&value, ID, now()).and_then(|record| record.stamp);
+        let elapsed = match (row.turns.start, stamp) {
+            (Some(start), Some(stamp)) => (stamp / 1000).saturating_sub(start * 1000),
+            _ => 0,
+        };
+        value["durationMs"] = elapsed.into();
+    }
+    value
+}
 /// Replays `lines`, checking the D8 turn invariants after every record.
 fn run(lines: &[String]) -> Row {
+    replay_lines(lines, true)
+}
+/// As `run`, with every line applied unchanged.
+fn run_exact(lines: &[String]) -> Row {
+    replay_lines(lines, false)
+}
+fn replay_lines(lines: &[String], fill: bool) -> Row {
     let mut row = Row::new([1, 2], 0, now());
     for line in lines {
-        let value: Value = serde_json::from_str(line).unwrap();
+        let mut value: Value = serde_json::from_str(line).unwrap();
+        if fill {
+            value = timed(&row, value);
+        }
         row.apply(&Record::from_value(&value, ID, now()).unwrap());
         assert!(row.turns.validate() && row.claude.validate(now()), "{line}");
         assert!(row.turn_state(), "{line}");
@@ -543,7 +578,7 @@ fn turns_idle_take_after_an_abort_clears_its_adjacency() {
         user(12, "[Request interrupted by user]", ""),
         dequeue(13),
     ]);
-    assert!(!row.claude.abort_adjacent && row.turns.valid);
+    assert!(!row.claude.abort_adjacent && !row.claude.ambiguous);
     let row = run(&[
         user(10, "hello", ""),
         assistant(11, "msg_a", "\"tool_use\""),
@@ -758,7 +793,8 @@ fn turns_local_output_never_clears_a_pending_prompt() {
         let mut lines = head(output);
         lines.push(user(15, "[Request interrupted by user]", ""));
         let row = run(&lines);
-        assert!(row.turns.valid && row.turns.total == 7);
+        // An aborted interval makes accumulated coverage unknown (D7).
+        assert!(!row.turns.valid && row.turns.total == 7);
         assert_eq!(
             finished(&row, "user", 10),
             Some((second(10), second(15), "aborted".into()))
@@ -785,8 +821,10 @@ fn turns_abort_during_pending_start_confirms_and_aborts() {
         record("attachment", 15, "\"interruptedMessageId\":\"msg_a\""),
         mid_stream,
     ] {
+        // An aborted interval is published as the last one, but makes
+        // accumulated coverage unknown (D7).
         let row = run(&[user(10, "hello", ""), abort.clone()]);
-        assert!(row.turns.valid, "{abort}");
+        assert!(!row.turns.valid, "{abort}");
         assert_eq!(
             finished(&row, "user", 10),
             Some((second(10), second(15), "aborted".into())),
@@ -831,17 +869,20 @@ fn turns_orphan_abort_and_orphan_turn_duration() {
             record("attachment", 6, "\"attachment\":{}"),
             system("turn_duration", 7),
         ],
-        vec![
-            user(1, "hello", ""),
-            assistant(2, "msg_a", "\"tool_use\""),
-            marker(5),
-            system("turn_duration", 6),
-        ],
     ] {
         let row = run(&lines);
         assert!(row.turns.valid && row.turns.supported, "{lines:?}");
         assert!(!row.claude.abort_adjacent);
     }
+    // After an aborted interval, which makes accumulated coverage unknown.
+    let row = run(&[
+        user(1, "hello", ""),
+        assistant(2, "msg_a", "\"tool_use\""),
+        marker(5),
+        system("turn_duration", 6),
+    ]);
+    assert!(!row.turns.valid && row.turns.supported && !row.claude.abort_adjacent);
+    assert_eq!(row.turns.last_outcome.as_deref(), Some("aborted"));
     // Otherwise it makes accumulated coverage unknown.
     for lines in [
         vec![system("turn_duration", 6)],
@@ -928,13 +969,16 @@ fn turns_assistant_record_with_no_turn_running_is_ambiguous() {
             assistant(31, "msg_c", "\"end_turn\""),
             system("turn_duration", 40),
         ]);
+        // The aborted interval makes accumulated coverage unknown (D7).
         let row = run(&lines);
-        assert!(row.turns.valid && !row.claude.ambiguous);
+        assert!(!row.turns.valid && !row.claude.ambiguous);
         assert_eq!(row.turns.total, 2 + 10 + 10);
+        assert_eq!(row.turns.last, Some(turn_key(ID, "user-30")));
         // A second one is not adjacent to the abort.
         lines.insert(lines.len() - 3, synthetic.replace("msg_s", "msg_t"));
         let row = run(&lines);
         assert!(!row.turns.valid && row.turns.last_duration == Some(10));
+        assert_eq!(row.turns.last, Some(turn_key(ID, "user-10")));
     }
 }
 
@@ -1116,6 +1160,101 @@ fn turns_injected_trigger_after_a_turn_duration_that_ended_no_turn_is_ambiguous(
         assistant(201, "msg_b", "\"tool_use\""),
     ]);
     assert_eq!(row.turns.start, Some(second(200)));
+}
+
+/// D7 gate: a `turn_duration` whose stamp less `durationMs` floors more than
+/// 2 s from the saved start, or that has no usable `durationMs`, publishes no
+/// interval and makes accumulated coverage unknown. The previous interval
+/// stays the last one, and `durationMs` never replaces a bound.
+#[test]
+fn turns_duration_ms_rejects_an_interval_whose_saved_bounds_disagree() {
+    let first = [
+        user(1, "hello", ""),
+        assistant(2, "msg_a", "\"end_turn\""),
+        ended(3, 1),
+        user(10, "second", ""),
+        assistant(11, "msg_b", "\"end_turn\""),
+    ];
+    let with = |fields: &str| {
+        let mut lines = first.to_vec();
+        lines.push(record(
+            "system",
+            20,
+            &format!("\"subtype\":\"turn_duration\"{fields}"),
+        ));
+        run_exact(&lines)
+    };
+    // The end is at 20.25 s: less 12.25 s or 8.25 s it floors to second 8
+    // or 12, within 2 s of 10; less 13.251 s or 7.25 s, to 6 or 13.
+    for (fields, kept) in [
+        (",\"durationMs\":10000", true),
+        (",\"durationMs\":12250", true),
+        (",\"durationMs\":8250", true),
+        (",\"durationMs\":7250", false),
+        (",\"durationMs\":13251", false),
+        (",\"durationMs\":6249", false),
+        (",\"durationMs\":19000", false),
+        ("", false),
+        (",\"durationMs\":null", false),
+        (",\"durationMs\":-1000", false),
+        (",\"durationMs\":10000.5", false),
+        (",\"durationMs\":\"10000\"", false),
+        (",\"durationMs\":9007199254740991", false),
+    ] {
+        let row = with(fields);
+        let turns = row.published_turns();
+        assert_eq!(turns.valid, kept, "{fields}");
+        if kept {
+            // The saved bounds are published, never `durationMs`.
+            assert_eq!(
+                finished(&row, "user", 10),
+                Some((second(10), second(20), "completed".into()))
+            );
+            assert_eq!(turns.total, 2 + 10);
+        } else {
+            assert!(row.turns.active.is_none() && finished(&row, "user", 10).is_none());
+            assert_eq!(turns.last, Some(turn_key(ID, "user-1")), "{fields}");
+            assert_eq!(turns.last_duration, Some(2));
+            assert!(row.claude.local_idle && !turns.current_known);
+        }
+    }
+    // The record may be a deferred `turn_duration` of an earlier turn, so
+    // the turn may still run: an injected notification is ambiguous, while
+    // a human prompt opens the next turn, whose own end is checked again.
+    let mut lines = with(",\"durationMs\":19000");
+    let note = queued(30, "task-notification", &notice("agent-y", "completed"));
+    lines.apply(&Record::from_value(&serde_json::from_str(&note).unwrap(), ID, now()).unwrap());
+    assert!(lines.claude.ambiguous && lines.turns.active.is_none());
+    let mut lines = first.to_vec();
+    lines.extend([
+        ended(20, 1),
+        user(30, "third", ""),
+        assistant(31, "msg_c", "\"end_turn\""),
+        ended(35, 30),
+    ]);
+    let row = run_exact(&lines);
+    assert!(!row.turns.valid && finished(&row, "user", 30).is_some());
+    assert_eq!(row.turns.last_duration, Some(5));
+}
+
+/// An aborted interval has no `durationMs` to check: it is published as the
+/// last interval, but accumulated coverage becomes unknown.
+#[test]
+fn turns_aborted_interval_is_last_but_makes_the_total_unknown() {
+    let row = run(&[
+        user(1, "hello", ""),
+        assistant(2, "msg_a", "\"end_turn\""),
+        system("turn_duration", 3),
+        user(10, "second", ""),
+        assistant(11, "msg_b", "\"tool_use\""),
+        user(15, "[Request interrupted by user]", ""),
+    ]);
+    let turns = row.published_turns();
+    assert!(!turns.valid);
+    assert_eq!(
+        (turns.last_duration, turns.last_outcome.as_deref()),
+        (Some(5), Some("aborted"))
+    );
 }
 
 #[test]
@@ -1470,7 +1609,7 @@ fn turns_after_an_unjoined_trigger_publish_nothing_until_a_proven_end() {
 fn step(row: &mut Row, line: Option<&String>, trail: &[Option<String>]) {
     match line {
         Some(line) => {
-            let value: Value = serde_json::from_str(line).unwrap();
+            let value = timed(row, serde_json::from_str(line).unwrap());
             row.apply(&Record::from_value(&value, ID, now()).unwrap());
         }
         None => row.invalid(),
@@ -1734,7 +1873,7 @@ fn turns_unrecognised_origin_with_is_meta_is_unknown() {
     ];
     let row = run(&lines);
     assert!(
-        !row.turns.valid,
+        !row.turns.valid && finished(&row, "user", 10).is_none(),
         "an unrecognised origin may have opened a turn"
     );
     // A recognised origin with `isMeta` stays a trigger.
@@ -1744,7 +1883,7 @@ fn turns_unrecognised_origin_with_is_meta_is_unknown() {
         "\"isMeta\":true,\"origin\":{\"kind\":\"peer\"}",
     );
     let row = run(&lines);
-    assert!(row.turns.valid);
+    assert!(finished(&row, "user", 10).is_some_and(|turn| turn.2 == "aborted"));
 }
 
 #[test]
@@ -1808,7 +1947,7 @@ fn turns_rejected_start_at_a_pass_boundary_still_catches_up() {
     lines.extend([
         user(10, "hello", ""),
         assistant(11, "msg_a", "\"end_turn\""),
-        system("turn_duration", 20),
+        ended(20, 10),
         user(15, "next", ""),
         dequeue(16),
         assistant(21, "msg_b", "\"tool_use\""),
@@ -1881,7 +2020,7 @@ fn turns_epoch_stamped_dequeue_at_a_pass_boundary_still_catches_up() {
     lines.extend((0..100).map(|n| record("progress", 30 + n, &format!("\"data\":\"{pad}\""))));
     lines.extend([
         assistant(180, "msg_b", "\"end_turn\""),
-        system("turn_duration", 190),
+        ended(190, 10),
         user(200, "again", ""),
         assistant(201, "msg_c", "\"tool_use\""),
     ]);
@@ -2720,6 +2859,17 @@ impl Story {
     fn operation(&mut self, operation: &str) -> String {
         self.record("queue-operation", &format!("\"operation\":\"{operation}\""))
     }
+    /// The `turn_duration` of the turn that just ended, whose `durationMs`
+    /// Claude Code measures from its own start: within 1.5 s of the truth.
+    fn duration(&mut self) -> String {
+        let (start, _, _) = self.world.last.unwrap();
+        let jitter = self.random.below(3001) as i64 - 1500;
+        let elapsed = ((self.at - start) as i64 * 1000 + jitter).max(0);
+        self.record(
+            "system",
+            &format!("\"subtype\":\"turn_duration\",\"durationMs\":{elapsed}"),
+        )
+    }
     fn queued(&mut self, mode: &str, prompt: &str) -> String {
         let prompt = serde_json::to_string(prompt).unwrap();
         self.record(
@@ -2912,7 +3062,7 @@ impl Story {
         }
         if self.chance(500) {
             self.tick(false);
-            let line = self.system("turn_duration");
+            let line = self.duration();
             self.push(line, "abort-duration");
         }
     }
@@ -3021,7 +3171,7 @@ impl Story {
         self.push(line, "model-echo-end");
         self.tick(false);
         self.end("completed");
-        let line = self.system("turn_duration");
+        let line = self.duration();
         self.push(line, "model-echo-duration");
     }
     /// Records between turns that never start or end one, including an idle
@@ -3267,12 +3417,12 @@ impl Story {
                 }
                 self.tick(false);
                 self.end("completed");
-                let line = self.system("turn_duration");
+                let line = self.duration();
                 self.push(line, "turn-duration");
                 // A repeated `turn_duration` shows a turn whose start was
                 // not seen: coverage becomes unknown, never wrong.
                 if self.chance(100) {
-                    let line = self.system("turn_duration");
+                    let line = self.duration();
                     self.push(line, "turn-duration-again");
                 }
                 self.queued_left = queued;

@@ -1680,7 +1680,11 @@ fn claude_transcript() -> String {
         ),
         claude_assistant(11, "msg-1", "\"tool_use\"", [100, 20, 1000, 50]),
         claude_assistant(12, "msg-2", "\"end_turn\"", [10, 5, 1100, 0]),
-        claude_record("system", 13, "\"subtype\":\"turn_duration\""),
+        claude_record(
+            "system",
+            13,
+            "\"subtype\":\"turn_duration\",\"durationMs\":3000",
+        ),
     ];
     lines.map(|line| line + "\n").concat()
 }

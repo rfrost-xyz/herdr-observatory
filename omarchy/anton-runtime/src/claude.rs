@@ -531,6 +531,9 @@ const RING: usize = 32;
 /// within the ring and the open group is negligible.
 pub(crate) const GROUP: usize = 16;
 const CHILDREN: usize = 128;
+/// Seconds by which a `turn_duration` record's implied start may differ from
+/// the saved start before the interval is rejected (D7).
+const SKEW: u64 = 2;
 
 /// Usage counters in source order: input, output, cache read, cache creation.
 pub type Counters = [u64; 4];
@@ -833,6 +836,13 @@ pub struct Record {
     #[serde(deserialize_with = "Option::deserialize")]
     pub text: Option<Text>,
     pub interrupt: bool,
+    /// A `turn_duration` record's `durationMs` as an integer within 2^53,
+    /// used only to reject an interval whose saved bounds disagree (D7).
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub elapsed: Option<u64>,
+    /// A `turn_duration` record's `pendingBackgroundAgentCount` or
+    /// `pendingWorkflowCount` is present and not the integer 0.
+    pub background: bool,
 }
 pub const IDENTITY_ABSENT: u8 = 0;
 pub const IDENTITY_MATCH: u8 = 1;
@@ -919,6 +929,9 @@ pub(crate) const NODES: &[(u8, &str)] = &[
     (BLOCK, "type"),
     (BLOCK, "text"),
     (0, "operation"),
+    (0, "durationMs"),
+    (0, "pendingBackgroundAgentCount"),
+    (0, "pendingWorkflowCount"),
 ];
 pub(crate) const FORKED: u8 = 7;
 pub(crate) const COMPACT_SUMMARY: u8 = 8;
@@ -937,6 +950,9 @@ pub(crate) const CONTENT: u8 = 39;
 pub(crate) const BLOCK: u8 = 40;
 pub(crate) const BLOCK_TEXT: u8 = 42;
 pub(crate) const OPERATION: u8 = 43;
+pub(crate) const DURATION: u8 = 44;
+pub(crate) const PENDING_AGENTS: u8 = 45;
+pub(crate) const PENDING_WORKFLOWS: u8 = 46;
 /// Nodes whose string values go to the text analyser, never a capture.
 pub(crate) const TEXT_NODES: [u8; 3] = [PROMPT, CONTENT, BLOCK_TEXT];
 /// Nodes that only frame consumed fields; their own scalars carry nothing.
@@ -954,6 +970,7 @@ pub(crate) const fn consumed(kind: u8) -> u64 {
             KIND_USER => 1 << MESSAGE | bits(ORIGIN, 32) | bits(CONTENT, BLOCK_TEXT),
             KIND_ATTACHMENT => bits(ATTACHMENT, PROMPT) | bits(BLOCK, BLOCK_TEXT),
             KIND_QUEUE => 1 << OPERATION,
+            KIND_SYSTEM => bits(DURATION, PENDING_WORKFLOWS),
             _ => 0,
         }
 }
@@ -1146,6 +1163,11 @@ impl Record {
             36 => self.queued = value == "queued_command",
             37 => self.mode = index(MODES, value.as_str()),
             OPERATION => self.operation = index(OPERATIONS, value.as_str()),
+            DURATION => self.elapsed = common::number(value),
+            // Any value but the integer 0, malformed included, may be pending.
+            PENDING_AGENTS | PENDING_WORKFLOWS => {
+                self.background |= common::number(value) != Some(0)
+            }
             _ => {}
         }
     }
@@ -1174,6 +1196,10 @@ impl Record {
         }
         if self.kind != KIND_QUEUE {
             self.operation = 0;
+        }
+        if self.kind != KIND_SYSTEM || self.subtype != SUBTYPE_TURN_DURATION {
+            self.elapsed = None;
+            self.background = false;
         }
         self.text = if user {
             blocks.content.first.clone()
@@ -1572,6 +1598,7 @@ impl Row {
         // No usable second: missing, unparseable, within second 0 or past
         // the horizon.
         let unstamped = second.is_none_or(|second| second == 0);
+        let agrees = self.agrees(record);
         let block = &mut self.claude;
         match Turn::of(record) {
             // Local-command output, as a wrapped user record or a system
@@ -1736,7 +1763,14 @@ impl Row {
                 self.claude.lost_idle = false;
                 self.claude.local_idle = false;
                 self.claude.abort_adjacent = true;
+                // An aborted interval has no `durationMs` to check its saved
+                // bounds against: it is still the last interval, but
+                // accumulated coverage becomes unknown.
+                let interval = self.turns.active.is_some();
                 self.end(second, Turns::abort);
+                if interval {
+                    self.turns.valid = false;
+                }
                 if unstamped {
                     self.unknown_time();
                 }
@@ -1749,8 +1783,15 @@ impl Row {
                 block.silent_end = false;
                 block.lost_idle = false;
                 block.local_idle = false;
-                if active {
+                if active && agrees {
                     self.end(second, Turns::finish);
+                } else if active {
+                    // Its saved bounds disagree with Claude Code's own
+                    // duration: it may be a deferred `turn_duration` of an
+                    // earlier turn written in this one, so no interval is
+                    // published and this one may still be running.
+                    self.turns_unknown();
+                    self.claude.local_idle = true;
                 } else {
                     if !adjacent || block.pending_start.is_some() {
                         self.turns_unknown();
@@ -1766,6 +1807,25 @@ impl Row {
                 }
             }
         }
+    }
+    /// D7 gate: `turn_duration` may end the active turn only when its record
+    /// stamp less `durationMs` floors to within `SKEW` seconds of the saved
+    /// start and no more than `SKEW` before the previous end. `durationMs`
+    /// only rejects an interval; it never replaces a bound.
+    fn agrees(&self, record: &Record) -> bool {
+        let (Some(start), Some(stamp), Some(elapsed)) =
+            (self.turns.start, record.stamp, record.elapsed)
+        else {
+            return false;
+        };
+        let Some(implied) = (elapsed.checked_mul(1000))
+            .and_then(|elapsed| stamp.checked_sub(elapsed))
+            .map(|start| start / 1_000_000)
+        else {
+            return false;
+        };
+        implied.abs_diff(start) <= SKEW
+            && (self.turns.last_end).is_none_or(|end| implied.saturating_add(SKEW) >= end)
     }
     /// A pending start followed by an assistant record or abort becomes the turn.
     fn confirm(&mut self) {
@@ -2659,6 +2719,13 @@ mod replay_tests {
             stamp(second)
         )
     }
+    /// A `turn_duration` at `second` whose `durationMs` dates its turn from `from`.
+    fn ended(second: u64, from: u64) -> String {
+        system("turn_duration", second).replace(
+            "\"subtype\"",
+            &format!("\"durationMs\":{},\"subtype\"", (second - from) * 1000),
+        )
+    }
     fn run(lines: &[String]) -> Row {
         let mut row = Row::new([1, 2], 0, now());
         for line in lines {
@@ -3049,12 +3116,12 @@ mod replay_tests {
         let lines = [
             user(1),
             assistant("msg_a", 2, "\"end_turn\"", [1, 2, 3, 4]),
-            system("turn_duration", 3),
+            ended(3, 1),
             other,
             user(10),
             assistant("msg_b", 11, "\"end_turn\"", [5, 6, 7, 8]),
             system("compact_boundary", 12),
-            system("turn_duration", 13),
+            ended(13, 10),
         ];
         let row = run(&lines);
         let usage = row.usage();
@@ -3222,12 +3289,13 @@ mod replay_tests {
                 interrupt,
                 user(40),
                 assistant("msg_b", 41, "\"end_turn\"", [1, 1, 0, 0]),
-                system("turn_duration", 42),
+                ended(42, 40),
             ]),
         );
         let (row, resumed) = resume(&fixture.projects, &path, ID, None, now(), deadline()).unwrap();
         assert!(!resumed && row.caught_up);
-        assert!(row.turns.valid && row.turns.supported);
+        // The aborted interval makes accumulated coverage unknown (D7).
+        assert!(!row.turns.valid && row.turns.supported);
         assert_eq!(row.turns.total, 31);
         assert_eq!(row.turns.finished.len(), 2);
         // An assistant header with usage counts; a resumed pass never re-applies it.
@@ -3270,7 +3338,7 @@ mod replay_tests {
         let deadline = || Instant::now() + Duration::from_secs(5);
         let rest = body(&[
             assistant("msg_a", 2, "\"end_turn\"", [5, 1, 7, 3]),
-            system("turn_duration", 3),
+            ended(3, 1),
         ]);
         let replayed = |first: &str| {
             let text = format!("{}\n{rest}", user(1).replace("synthetic", first));
@@ -3313,7 +3381,7 @@ mod replay_tests {
         assert!(parse_line(first.as_bytes()).is_none());
         let rest = body(&[
             assistant("msg_a", 2, "\"end_turn\"", [5, 1, 7, 3]),
-            system("turn_duration", 3),
+            ended(3, 1),
         ]);
         let replayed = |entry: &str, text: String| {
             let path = fixture.file(entry, &format!("{ID}.jsonl"), &text);
@@ -3467,7 +3535,7 @@ mod replay_tests {
         let lines = vec![
             user(0),
             assistant("msg_a", 1, "\"end_turn\"", [1, 2, 3, 4]),
-            system("turn_duration", 1),
+            ended(1, 0),
             lead_pad(&padded_user(2, LINE), TAIL),
             content_pad(
                 &assistant_with(
@@ -3735,7 +3803,7 @@ mod replay_tests {
             &stamp(2),
             &[
                 assistant("msg_b", 3, "\"end_turn\"", [1, 0, 0, 0]),
-                system("turn_duration", 3),
+                ended(3, 0),
             ],
         );
         let path = fixture.file("slug", &format!("{ID}.jsonl"), &(header() + &body(&lines)));

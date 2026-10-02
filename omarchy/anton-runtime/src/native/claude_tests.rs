@@ -114,6 +114,15 @@ fn assistant(second: u64, message: &str, stop: &str, usage: [u64; 4]) -> String 
 fn system(subtype: &str, second: u64) -> String {
     record("system", second, &format!("\"subtype\":\"{subtype}\""))
 }
+/// A `turn_duration` at `second` whose `durationMs` dates its turn from `from`.
+fn ended(second: u64, from: u64) -> String {
+    let elapsed = (second - from) * 1000;
+    record(
+        "system",
+        second,
+        &format!("\"subtype\":\"turn_duration\",\"durationMs\":{elapsed}"),
+    )
+}
 fn agent() -> Value {
     json!({"agent":"claude","agent_session":{"agent":"claude","source":"herdr:claude","kind":"id","value":ID}})
 }
@@ -128,12 +137,12 @@ fn session() -> Vec<String> {
         launch(12, "agent-b"),
         assistant(13, "msg-1", "\"tool_use\"", [100, 20, 1000, 50]),
         assistant(14, "msg-2", "\"end_turn\"", [10, 5, 1100, 0]),
-        system("turn_duration", 15),
+        ended(15, 10),
         system("compact_boundary", 16),
         notified(20, "agent-a", "completed"),
         notified(21, "agent-b", "blocked"),
         assistant(22, "msg-3", "\"end_turn\"", [1, 1, 1200, 0]),
-        system("turn_duration", 23),
+        ended(23, 20),
     ]
 }
 /// Enriches one Claude pane and returns its telemetry, timing and cursors.
@@ -949,7 +958,7 @@ fn claude_record_naming_another_session_keeps_the_binding_unknown() {
         launch(31, "agent-c"),
         assistant(32, "msg-4", "\"end_turn\"", [1, 1, 1, 1]),
         system("compact_boundary", 33),
-        system("turn_duration", 34),
+        ended(34, 30),
     ];
     let partial = &later[0][..30];
     fixture.append(&format!("{other}\n{partial}"));
@@ -990,7 +999,7 @@ fn claude_rows_over_the_byte_bound_shrink_and_keep_their_position() {
             "\"end_turn\"",
             [1, 1, 1, 1],
         ));
-        lines.push(system("turn_duration", second + 2));
+        lines.push(ended(second + 2, second));
     }
     let text = body(&lines);
     let panes: Vec<_> = (0..7)
@@ -1220,7 +1229,7 @@ fn claude_turn_timing_publishes_no_unproven_current_turn_or_total() {
     let first = vec![
         prompt(10),
         assistant(11, "msg-1", "\"end_turn\"", [1, 1, 0, 0]),
-        system("turn_duration", 12),
+        ended(12, 10),
         prompt(20),
     ];
     let known = |active: Value, started: Value, total: u64| {
@@ -1266,7 +1275,7 @@ fn claude_turn_timing_publishes_no_unproven_current_turn_or_total() {
     hook.insert(6, system("stop_hook_summary", 23));
     assert_eq!(timing_of(&fixture, &hook), unknown);
     // A later `turn_duration` proves the end and restores both.
-    hook.push(system("turn_duration", 25));
+    hook.push(ended(25, 20));
     assert_eq!(
         timing_of(&fixture, &hook),
         json!({"active": false, "started_at_s": null, "complete": true,
