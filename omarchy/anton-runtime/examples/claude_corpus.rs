@@ -153,6 +153,11 @@ fn outcome(row: &Row, counts: &mut Counts) {
             row.published_turns().current_known,
         ),
         ("turns.local_idle", row.claude.local_idle),
+        ("turns.clean", row.claude.clean),
+        (
+            "turns.published_current_active",
+            row.published_turns().current_known && row.turns.active.is_some(),
+        ),
     ];
     for (key, value) in flags {
         counts.tick(format!("{key}.{}", if value { "yes" } else { "no" }));
@@ -256,8 +261,11 @@ fn scan(path: &Path, id: &str, counts: &mut Counts) -> Option<Row> {
         attribute(&record, counts);
         let before = flags(&shadow);
         let turn = Join::of(&shadow);
+        let ending = Ending::of(&shadow, &record);
         shadow.apply(&record);
         turn.count(&shadow, counts);
+        ending.count(&shadow, counts);
+        running(&shadow, counts);
         let name = category(&record);
         flips(before, &shadow, &name, counts);
         durations |= record.kind == KIND_SYSTEM && record.subtype == SUBTYPE_TURN_DURATION;
@@ -328,6 +336,57 @@ impl Join {
         let consumed = self.queued && row.claude.queued_since_start.is_none();
         if running && consumed && !row.claude.silent_end && !row.claude.ambiguous {
             counts.tick("turns.joins");
+        }
+    }
+}
+
+/// Counts each record after which a turn is running, and those after which
+/// its start is published (the D7 mask).
+fn running(row: &Row, counts: &mut Counts) {
+    if row.turns.active.is_some() {
+        counts.tick("turns.running_records");
+        if row.published_turns().current_known {
+            counts.tick("turns.running_records_published");
+        }
+    }
+}
+
+/// A `turn_duration` or abort that may end the running turn, before it is
+/// applied.
+struct Ending {
+    kind: Option<&'static str>,
+    active: bool,
+    last: Option<String>,
+    missing: bool,
+    background: bool,
+}
+impl Ending {
+    fn of(row: &Row, record: &Record) -> Self {
+        let duration = record.kind == KIND_SYSTEM && record.subtype == SUBTYPE_TURN_DURATION;
+        let abort = record.interrupt || record.interrupted || record.aborted;
+        Self {
+            kind: (abort || duration).then_some(if abort { "abort" } else { "gate" }),
+            active: row.turns.active.is_some(),
+            last: row.turns.last.clone(),
+            missing: record.elapsed.is_none(),
+            background: duration && record.background,
+        }
+    }
+    /// Counts `turns.gate.*` and `turns.abort.*`: an interval kept as the
+    /// last one, or rejected, by the `durationMs` gate or the abort rule.
+    fn count(self, row: &Row, counts: &mut Counts) {
+        if self.background {
+            counts.tick("records.turn_duration_background");
+        }
+        let Some(kind) = self.kind.filter(|_| self.active) else {
+            return;
+        };
+        if row.turns.last != self.last {
+            counts.tick(format!("turns.{kind}.kept"));
+        } else if kind == "gate" && self.missing {
+            counts.tick("turns.gate.rejected_missing");
+        } else {
+            counts.tick(format!("turns.{kind}.rejected"));
         }
     }
 }
