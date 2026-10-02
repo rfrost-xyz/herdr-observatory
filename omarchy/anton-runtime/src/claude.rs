@@ -1767,6 +1767,8 @@ impl Row {
                 }
             }
             Turn::Abort => {
+                // Whether the turn's start was published while it ran.
+                let dated = self.dated();
                 // After a slash command's local output, an abort with no
                 // turn running shows the command ran the model: its interval
                 // is unseen, so accumulated coverage is unknown.
@@ -1784,12 +1786,16 @@ impl Row {
                 self.claude.abort_adjacent = true;
                 self.claude.clean = false;
                 // An aborted interval has no `durationMs` to check its saved
-                // bounds against: it is still the last interval, but
-                // accumulated coverage becomes unknown.
-                let interval = self.turns.active.is_some();
-                self.end(second, Turns::abort);
-                if interval {
-                    self.turns.valid = false;
+                // bounds against: it is the last interval only when its start
+                // was dated, and accumulated coverage becomes unknown.
+                if self.turns.active.is_none() || dated {
+                    let interval = self.turns.active.is_some();
+                    self.end(second, Turns::abort);
+                    if interval {
+                        self.turns.valid = false;
+                    }
+                } else {
+                    self.turns_unknown();
                 }
                 if unstamped {
                     self.unknown_time();
@@ -1837,6 +1843,11 @@ impl Row {
     /// A launched or resumed child has not been reported finished.
     fn running(&self) -> bool {
         self.children.values().any(|status| status == "running")
+    }
+    /// The current turn's start, or the idle state, may be published: the
+    /// state is clean and no child may still defer a `turn_duration` (D7).
+    fn dated(&self) -> bool {
+        self.claude.clean && self.valid && !self.running()
     }
     /// D7 gate: `turn_duration` may end the active turn only when its record
     /// stamp less `durationMs` floors to within `SKEW` seconds of the saved
@@ -1989,7 +2000,7 @@ impl Row {
         }
         // The current turn is dated only from a clean state with no child
         // that may still defer a `turn_duration` (D7).
-        let undated = !block.clean || !self.valid || self.running();
+        let undated = !self.dated();
         if block.silent_end
             || block.pending_start.is_some()
             || block.lost_idle

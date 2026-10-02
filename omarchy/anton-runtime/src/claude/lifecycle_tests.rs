@@ -1374,6 +1374,33 @@ fn turns_aborted_interval_is_last_but_makes_the_total_unknown() {
         (turns.last_duration, turns.last_outcome.as_deref()),
         (Some(5), Some("aborted"))
     );
+    // Only a dated turn: publishing the interval would reveal a start the
+    // mask withheld while the turn ran, such as an injected trigger's.
+    for (name, opened) in [
+        ("injected", notified(10, "agent-x", "completed")),
+        ("after local output", system("local_command", 6)),
+    ] {
+        let mut lines = vec![
+            user(1, "hello", ""),
+            assistant(2, "msg_a", "\"end_turn\""),
+            system("turn_duration", 3),
+        ];
+        if name == "after local output" {
+            lines.push(user(5, "<command-name>/model</command-name>", ""));
+            lines.push(opened);
+            lines.push(user(10, "second", ""));
+        } else {
+            lines.push(opened);
+        }
+        lines.extend([
+            assistant(11, "msg_b", "\"tool_use\""),
+            user(15, "[Request interrupted by user]", ""),
+        ]);
+        let turns = run(&lines).published_turns();
+        assert!(!turns.valid, "{name}");
+        assert_eq!(turns.last, Some(turn_key(ID, "user-1")), "{name}");
+        assert_eq!(turns.last_outcome.as_deref(), Some("completed"), "{name}");
+    }
 }
 
 #[test]
@@ -1998,14 +2025,15 @@ fn turns_unrecognised_origin_with_is_meta_is_unknown() {
         !row.turns.valid && finished(&row, "user", 10).is_none(),
         "an unrecognised origin may have opened a turn"
     );
+    assert!(run(&lines[..4]).claude.ambiguous);
     // A recognised origin with `isMeta` stays a trigger.
     lines[3] = user(
         10,
         "later",
         "\"isMeta\":true,\"origin\":{\"kind\":\"peer\"}",
     );
-    let row = run(&lines);
-    assert!(finished(&row, "user", 10).is_some_and(|turn| turn.2 == "aborted"));
+    let row = run(&lines[..4]);
+    assert!(row.claude.pending_start.is_some() && !row.claude.ambiguous);
 }
 
 #[test]
