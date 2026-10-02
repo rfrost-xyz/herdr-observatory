@@ -1316,6 +1316,18 @@ fn turns_current_turn_is_published_only_from_a_clean_state() {
         next(&mut lines, 30, user(30, "then", human));
         assert_eq!(current(&lines), Some(Some(second(30))), "{pending}");
     }
+    // An async launch masks the current turn, with or without an `agentId`
+    // (a workflow launch carries only a task id).
+    for result in [
+        "{\"status\":\"async_launched\",\"agentId\":\"agent-a\"}",
+        "{\"status\":\"async_launched\",\"taskId\":\"w1\",\"taskType\":\"local_workflow\"}",
+    ] {
+        let mut lines = head();
+        next(&mut lines, 10, user(10, "next", human));
+        assert_eq!(current(&lines), Some(Some(second(10))));
+        lines.push(tool(12, result));
+        assert_eq!(current(&lines), None, "{result}");
+    }
     let zero = ended(3, 1).replace(
         "\"durationMs\"",
         "\"pendingBackgroundAgentCount\":0,\"pendingWorkflowCount\":0,\"durationMs\"",

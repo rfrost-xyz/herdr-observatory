@@ -1558,6 +1558,11 @@ impl Row {
     fn children(&mut self, record: &Record) {
         let user = record.kind == KIND_USER;
         if user && record.tool {
+            // Any async launch, including a workflow or teammate without an
+            // `agentId`, starts background work, so the current turn is masked.
+            if record.launch {
+                self.claude.clean = false;
+            }
             let sync = !record.launch && record.duration;
             if record.agent_bad && (record.launch || sync) || record.resumed_bad {
                 self.valid = false;
@@ -1565,7 +1570,6 @@ impl Row {
             }
             if let Some(agent) = record.agent.as_deref() {
                 if record.launch {
-                    self.claude.clean = false;
                     self.child(agent, "running", true, record.stamp);
                 } else if sync {
                     self.child(agent, "completed", true, record.stamp);
