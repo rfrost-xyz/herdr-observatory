@@ -2019,7 +2019,9 @@ mod tests {
         let holder =
             common::open_owned(&state.join("replay-checkpoints.lock"), true, true).unwrap();
         lock(&holder, true, Duration::ZERO).unwrap();
+        let unlock = common::Unlock(&holder);
         let mut cache = Checkpoints::new(&state, &owner).unwrap();
+        drop(unlock);
         drop(holder);
         assert_eq!(cache.lease, Err("Checkpoint ownership busy".to_owned()));
         assert_eq!(
