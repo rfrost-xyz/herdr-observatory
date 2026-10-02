@@ -1084,3 +1084,47 @@ fn claude_turn_timing_publishes_no_unproven_current_turn_or_total() {
             "total_finished_duration_s": 7})
     );
 }
+
+/// A file that binds but fails verification when replay opens it (a header
+/// naming another session, or a first line over 64 KiB) keeps its incoming
+/// row and publishes the all-null sample at that row's `coverage_seq`, so a
+/// peer reports a row for every bound pane and the local's retained copy is
+/// replaced (D3). Another pane on the same host is unaffected.
+#[test]
+fn claude_header_failure_with_a_cursor_row_keeps_it_and_publishes_an_all_null_sample() {
+    const OTHER: &str = "fixture-session-b";
+    let fixture = Fixture::new();
+    fixture.write(&session());
+    let other = fixture.path("entry-b", OTHER);
+    let text = body(&session()).replace(ID, OTHER);
+    std::fs::write(&other, &text).unwrap();
+    let panes = || {
+        let mut b = agent();
+        b["agent_session"]["value"] = json!(OTHER);
+        vec![agent(), b]
+    };
+    let other_key = sha256(format!("anton-native-session-v1:claude:{OTHER}").as_bytes());
+    let mut agents = panes();
+    let cursors = NativeTelemetry::default().enrich(&mut agents, &json!({}));
+    assert_eq!(cursors.as_object().unwrap().len(), 2);
+    let expected = agents[0]["_native_telemetry"].clone();
+    assert_eq!(expected["total_input"], 3461);
+    let (_, rest) = text.split_once('\n').unwrap();
+    for header in [
+        "{\"type\":\"permission-mode\",\"sessionId\":\"fixture-other\"}\n".to_owned(),
+        format!(
+            "{{\"type\":\"permission-mode\",\"sessionId\":\"{OTHER}\",\"pad\":\"{}\"}}\n",
+            "x".repeat(70 * 1024)
+        ),
+    ] {
+        std::fs::write(&other, format!("{header}{rest}")).unwrap();
+        // A fresh follower, as on a peer, with the rows the local sent back.
+        let mut agents = panes();
+        let kept = NativeTelemetry::default().enrich(&mut agents, &cursors);
+        unknown(&agents[1]["_native_telemetry"], micros(23));
+        assert!(agents[1]["_native_turn_timing"].is_null());
+        assert_eq!(kept[&other_key], cursors[&other_key]);
+        assert_eq!(kept.as_object().unwrap().len(), 2);
+        assert_eq!(agents[0]["_native_telemetry"], expected);
+    }
+}

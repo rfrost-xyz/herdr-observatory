@@ -975,7 +975,8 @@ impl NativeTelemetry {
                 return;
             }
         };
-        let mut row = cursors.remove(&key).and_then(Cursor::into_row);
+        let incoming_row = cursors.remove(&key);
+        let mut row = incoming_row.clone().and_then(Cursor::into_row);
         let (mut ran, mut restarted) = (false, false);
         for _ in 0..16 {
             if Instant::now() >= deadline {
@@ -986,7 +987,16 @@ impl NativeTelemetry {
             let Ok((next, resumed)) =
                 claude::resume(&root, &path, &session, row.take(), time, pass)
             else {
+                // An open, ownership, header or read failure drops the
+                // binding and its retained sample, but keeps the incoming
+                // row, so the host still reports a row for this pane and a
+                // peer publishes the all-null sample at its source time (D3).
+                // Progress made by an earlier pass of this call is discarded.
                 self.claude.remove(&key);
+                if let Some(incoming_row) = incoming_row {
+                    cursors.insert(key, incoming_row);
+                }
+                unknown(agent);
                 return;
             };
             ran = true;
