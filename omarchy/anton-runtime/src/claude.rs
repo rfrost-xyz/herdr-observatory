@@ -637,10 +637,10 @@ pub struct ClaudeCursor {
     pub lost_idle: bool,
     /// Local-command output cleared a pending slash-command start (D7), or
     /// a `turn_duration` ended no turn. The command is taken to have run
-    /// locally, but it may still be running the model, and the
-    /// `turn_duration` may have been deferred while background agents ran
-    /// and written in a later turn, so the current turn is unknown until a trigger,
-    /// `turn_duration`, an abort or ambiguity. A task notification (user
+    /// locally, but it may still be running the model, and nothing shows
+    /// which turn the `turn_duration` ended, so the current turn is unknown
+    /// until a trigger, `turn_duration`, an abort or ambiguity. A task
+    /// notification (user
     /// origin or queued attachment), peer or coordinator trigger can enter
     /// that turn with no queue record, so while this is set it is ambiguous;
     /// a human-origin or shape prompt opens a pending start normally. Only
@@ -1833,10 +1833,10 @@ impl Row {
                     if !adjacent || block.pending_start.is_some() {
                         self.turns_unknown();
                     }
-                    // A `turn_duration` that ended no turn may be one Claude
-                    // Code deferred while background agents ran, written in
-                    // a later turn: an injected trigger may enter that turn
-                    // with no queue record, as after local output (D7).
+                    // Nothing shows which turn a `turn_duration` that ended
+                    // no turn ended, so a turn may still run: an injected
+                    // trigger may enter it with no queue record, as after
+                    // local output (D7).
                     self.claude.local_idle = true;
                     self.claude.clean = false;
                 }
