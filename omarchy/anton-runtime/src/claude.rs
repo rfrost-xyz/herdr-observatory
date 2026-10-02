@@ -1102,7 +1102,11 @@ impl Row {
     /// D3 coverage table for a relevant record that cannot be classified.
     fn unclassified(&mut self, kind: u8) {
         match kind {
-            KIND_ASSISTANT => self.fail_totals(),
+            // Its usage may have carried a compaction iteration (D5).
+            KIND_ASSISTANT => {
+                self.fail_totals();
+                self.compactions_valid = false;
+            }
             KIND_SYSTEM => self.compactions_valid = false,
             KIND_USER | KIND_ATTACHMENT => self.valid = false,
             // A queue record only ever lets a trigger join a turn, so missing
@@ -2263,6 +2267,33 @@ mod replay_tests {
         assert_eq!(get(&row, "total_input"), json!(215));
     }
     #[test]
+    fn usage_unclassified_assistant_makes_compactions_unknown() {
+        // A compaction iteration in a record that cannot be classified may
+        // be lost, so less evidence never yields a count.
+        let list = iterations(&[("compaction", [1, 1, 1, 1]), ("message", [2, 2, 2, 2])]);
+        let compacted = assistant_with(
+            "msg_b",
+            2,
+            "\"end_turn\"",
+            &(counters([5, 5, 5, 5]) + &list),
+            "",
+        );
+        let no_stamp = compacted.replacen(&format!("\"timestamp\":\"{}\",", stamp(2)), "", 1);
+        let anonymous = compacted.replacen(&format!("\"sessionId\":\"{ID}\","), "", 1);
+        let plain = assistant("msg_b", 2, "\"end_turn\"", [5, 5, 5, 5]);
+        let no_id = plain.replacen("\"id\":\"msg_b\"", "\"name\":\"msg_b\"", 1);
+        for line in [no_stamp, anonymous, no_id] {
+            let row = run(&[
+                assistant("msg_a", 1, "\"end_turn\"", [1, 2, 3, 4]),
+                line.clone(),
+                assistant("msg_c", 3, "\"end_turn\"", [1, 0, 0, 0]),
+            ]);
+            assert_eq!(get(&row, "total_input"), Value::Null, "{line}");
+            assert_eq!(get(&row, "compactions"), Value::Null, "{line}");
+            assert!(!row.compactions_valid, "{line}");
+        }
+    }
+    #[test]
     fn usage_synthetic_records_are_neutral() {
         let synthetic = |message: &str, second: u64| {
             assistant(message, second, "\"stop_sequence\"", [0, 0, 0, 0])
@@ -2388,7 +2419,8 @@ mod replay_tests {
         let anonymous = good.replace(&format!("\"sessionId\":\"{ID}\","), "");
         let row = run(&[anonymous]);
         assert_eq!(get(&row, "total_input"), Value::Null);
-        assert!(row.valid && row.compactions_valid && !row.turns.valid);
+        assert_eq!(get(&row, "compactions"), Value::Null);
+        assert!(row.valid && !row.compactions_valid && !row.turns.valid);
     }
     #[test]
     fn identity_mismatch_keeps_every_value_unknown_for_the_binding() {
@@ -2764,11 +2796,11 @@ mod replay_tests {
         let path = fixture.file("slug", &format!("{ID}.jsonl"), &text);
         let (row, count) = passes(&fixture, &path, None);
         assert!(count >= 2);
-        assert!(row.valid && row.compactions_valid && !row.turns.valid);
+        assert!(row.valid && !row.compactions_valid && !row.turns.valid);
         assert_eq!(totals(&row), [(); 5].map(|_| Value::Null));
         // The next complete group restores last-response values only.
         assert_eq!(get(&row, "context"), json!(1));
-        assert_eq!(get(&row, "compactions"), json!(0));
+        assert_eq!(get(&row, "compactions"), Value::Null);
         let duplicated = |line: &str, key: &str| {
             lead_pad(line, LINE).replacen(
                 &format!("\"{key}\""),
@@ -2793,6 +2825,35 @@ mod replay_tests {
             assert_eq!(get(&row, "total_input"), json!(9));
             assert_eq!(get(&row, "compactions") != Value::Null, compactions);
         }
+    }
+
+    #[test]
+    fn oversized_assistant_cut_inside_an_iteration_type_makes_compactions_unknown() {
+        let fixture = tests::Fixture::new();
+        let good = assistant("msg_a", 1, "\"end_turn\"", [1, 2, 3, 4]);
+        let next = assistant("msg_c", 9, "\"end_turn\"", [1, 0, 0, 0]);
+        let list = iterations(&[("compaction", [1, 1, 1, 1]), ("message", [2, 2, 2, 2])]);
+        let late = assistant_with(
+            "msg_b",
+            2,
+            "\"end_turn\"",
+            &(counters([5, 5, 5, 5]) + &list),
+            "",
+        );
+        // A pass boundary five bytes into the `compaction` iteration type.
+        let at = lead_pad(&late, 0).find("\"compaction\"").unwrap() + 1;
+        let cut = lead_pad(&late, TAIL - good.len() - 1 - at - 5);
+        let text = header() + &body(&[good, cut, next]);
+        assert_eq!(
+            text.find("\"compaction\"").unwrap() + 6,
+            header().len() + TAIL
+        );
+        let path = fixture.file("slug", &format!("{ID}.jsonl"), &text);
+        let (row, count) = passes(&fixture, &path, None);
+        assert!(count >= 2 && row.caught_up);
+        assert_eq!(get(&row, "total_input"), Value::Null);
+        assert_eq!(get(&row, "compactions"), Value::Null);
+        assert!(!row.compactions_valid);
     }
 
     #[test]
