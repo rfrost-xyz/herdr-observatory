@@ -1432,6 +1432,37 @@ fn turns_user_record_without_origin_text_or_flag_is_unknown() {
 }
 
 #[test]
+fn turns_unrecognised_origin_with_is_meta_is_unknown() {
+    let mut lines = vec![
+        user(1, "hello", ""),
+        assistant(2, "msg_a", "\"end_turn\""),
+        system("turn_duration", 3),
+        user(
+            10,
+            "later",
+            "\"isMeta\":true,\"origin\":{\"kind\":\"future-kind\"}",
+        ),
+        user(15, "[Request interrupted by user]", ""),
+        user(20, "next", ""),
+        assistant(21, "msg_b", "\"end_turn\""),
+        system("turn_duration", 25),
+    ];
+    let row = run(&lines);
+    assert!(
+        !row.turns.valid,
+        "an unrecognised origin may have opened a turn"
+    );
+    // A recognised origin with `isMeta` stays a trigger.
+    lines[3] = user(
+        10,
+        "later",
+        "\"isMeta\":true,\"origin\":{\"kind\":\"peer\"}",
+    );
+    let row = run(&lines);
+    assert!(row.turns.valid);
+}
+
+#[test]
 fn turns_rejected_start_is_lost_with_its_queue_evidence() {
     let ended = [
         user(10, "hello", ""),

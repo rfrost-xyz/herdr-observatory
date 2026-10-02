@@ -1231,9 +1231,11 @@ impl Turn {
             // Rule 2: a recognised origin, or a queued task notification.
             KIND_USER if (1..ORIGIN_OTHER).contains(&record.origin) => Self::Trigger,
             KIND_ATTACHMENT if record.queued && record.mode == MODE_NOTIFICATION => Self::Trigger,
+            // An unrecognised origin is unknown even with `isMeta`, because a
+            // recognised origin such as `peer` also carries `isMeta`.
+            KIND_USER if record.origin == ORIGIN_OTHER => Self::Unknown,
             // Rule 3: metadata, tool results, summaries and command output.
             KIND_USER if record.meta || record.tool || record.compact_summary => Self::Ignored,
-            KIND_USER if record.origin == ORIGIN_OTHER => Self::Unknown,
             // Rule 4: remaining text without a leading tag, a slash-command
             // echo, or any tag outside the output wrappers. A record with no
             // origin, flag or text (an image-only prompt) may be a trigger.
