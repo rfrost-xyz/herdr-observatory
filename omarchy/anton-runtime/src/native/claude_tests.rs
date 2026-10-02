@@ -1014,3 +1014,73 @@ fn claude_published_telemetry_never_carries_window_or_context_percent() {
     let (telemetry, _, _) = enrich(&mut NativeTelemetry::default(), &json!({}));
     windowless(&telemetry);
 }
+
+/// The published turn timing of a fresh pass over `lines`, without its
+/// observation time.
+fn timing_of(fixture: &Fixture, lines: &[String]) -> Value {
+    fixture.write(lines);
+    let (_, mut timing, _) = enrich(&mut NativeTelemetry::default(), &json!({}));
+    timing.as_object_mut().unwrap().remove("observed_at_s");
+    timing
+}
+
+#[test]
+fn claude_turn_timing_publishes_no_unproven_current_turn_or_total() {
+    let fixture = Fixture::new();
+    let first = vec![
+        prompt(10),
+        assistant(11, "msg-1", "\"end_turn\"", [1, 1, 0, 0]),
+        system("turn_duration", 12),
+        prompt(20),
+    ];
+    let known = |active: Value, started: Value, total: u64| {
+        json!({"active": active, "started_at_s": started, "complete": true,
+            "last_duration_s": 2, "last_outcome": "completed",
+            "total_finished_duration_s": total})
+    };
+    // A start pending its first assistant record may be a running turn.
+    assert_eq!(
+        timing_of(&fixture, &first),
+        known(Value::Null, Value::Null, 2)
+    );
+    let mut confirmed = first.clone();
+    confirmed.push(assistant(21, "msg-2", "\"tool_use\"", [1, 1, 0, 0]));
+    assert_eq!(
+        timing_of(&fixture, &confirmed),
+        known(json!(true), json!(BASE + 20), 2)
+    );
+    // Local-command output clears the pending start, which may still have
+    // been a turn (`lost_idle`).
+    let mut local = first.clone();
+    local.push(record(
+        "user",
+        21,
+        "\"message\":{\"role\":\"user\",\"content\":\"<local-command-stdout>ok</local-command-stdout>\"}",
+    ));
+    assert_eq!(
+        timing_of(&fixture, &local),
+        known(Value::Null, Value::Null, 2)
+    );
+    // A silent end, with or without a stop hook, may have ended the turn
+    // without `turn_duration`: neither the running turn nor a total that
+    // leaves it out is published across the idle gap.
+    let mut silent = confirmed.clone();
+    silent.push(assistant(22, "msg-3", "\"end_turn\"", [1, 1, 0, 0]));
+    let snapshot = "{\"type\":\"file-history-snapshot\",\"messageId\":\"m\",\"snapshot\":{}}";
+    silent.push(snapshot.to_owned());
+    let unknown = json!({"active": null, "started_at_s": null, "complete": false,
+        "last_duration_s": 2, "last_outcome": "completed",
+        "total_finished_duration_s": null});
+    assert_eq!(timing_of(&fixture, &silent), unknown);
+    let mut hook = silent.clone();
+    hook.insert(6, system("stop_hook_summary", 23));
+    assert_eq!(timing_of(&fixture, &hook), unknown);
+    // A later `turn_duration` proves the end and restores both.
+    hook.push(system("turn_duration", 25));
+    assert_eq!(
+        timing_of(&fixture, &hook),
+        json!({"active": false, "started_at_s": null, "complete": true,
+            "last_duration_s": 5, "last_outcome": "completed",
+            "total_finished_duration_s": 7})
+    );
+}

@@ -1009,7 +1009,7 @@ impl NativeTelemetry {
             }
             if row.caught_up && !row.skipping {
                 if !foreign {
-                    agent["_native_turn_timing"] = turn_timing(&row.turns, time);
+                    agent["_native_turn_timing"] = turn_timing(&row.published_turns(), time);
                 }
                 let usage = row.usage();
                 let seq = row.claude.coverage_seq;

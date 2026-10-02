@@ -1482,6 +1482,22 @@ impl Row {
 }
 
 impl Row {
+    /// The turn state to publish (D7). The row's `Turns` is kept unchanged.
+    /// After a silent end the turn may have ended without `turn_duration`, so
+    /// neither the current turn nor a total that leaves it out is published.
+    /// A pending start, or one cleared by local-command output, may be a turn
+    /// awaiting its first response, so the current turn is unknown.
+    pub fn published_turns(&self) -> Turns {
+        let mut turns = self.turns.clone();
+        let block = &self.claude;
+        if block.silent_end {
+            turns.valid = false;
+        }
+        if block.silent_end || block.pending_start.is_some() || block.lost_idle {
+            turns.current_known = false;
+        }
+        turns
+    }
     /// D3 to D5 projection into the telemetry object. `window` and
     /// `context_percent` are omitted rather than null, so a merge never replaces
     /// metadata values (D4). Publishing it only when caught up is the caller's.
