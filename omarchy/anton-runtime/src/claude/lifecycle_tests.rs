@@ -453,17 +453,34 @@ fn turns_pending_start_needs_an_assistant_record_including_synthetic() {
             Some((second(12), second(20), "completed".into()))
         );
     }
-    // The echo ran no turn, so nothing masks the idle state it leaves.
-    let row = run(&[
+    // The echo is taken to have run no turn, so coverage stays complete, but
+    // the command may still be running the model: the current turn is
+    // unknown until a trigger, `turn_duration` or an abort.
+    let ended = [
         user(1, "hello", ""),
         assistant(2, "msg_a", "\"end_turn\""),
         system("turn_duration", 3),
         echo.clone(),
         user(11, "<local-command-stdout>ok</local-command-stdout>", ""),
-    ]);
+    ];
+    let row = run(&ended);
     assert!(!row.claude.lost_idle && !row.claude.pending_command);
+    assert!(row.claude.local_idle && row.turns.current_known);
     let published = row.published_turns();
-    assert!(published.valid && published.current_known && published.active.is_none());
+    assert!(published.valid && !published.current_known && published.active.is_none());
+    let block: ClaudeCursor =
+        serde_json::from_value(serde_json::to_value(&row.claude).unwrap()).unwrap();
+    assert!(block.local_idle);
+    for (next, valid) in [
+        (user(20, "second", ""), true),
+        (system("turn_duration", 20), false),
+        (user(20, "[Request interrupted by user]", ""), true),
+    ] {
+        let mut lines = ended.to_vec();
+        lines.push(next.clone());
+        let row = run(&lines);
+        assert!(!row.claude.local_idle && row.turns.valid == valid, "{next}");
+    }
     // Local output while a prompt awaits its first response comes from a
     // local command run meanwhile: the prompt's start stays pending, so the
     // assistant record confirms it and a notification injected into the
@@ -996,6 +1013,23 @@ fn turns_block_inconsistent_with_turns_is_rejected() {
     idle.claude.ambiguous = false;
     idle.claude.pending_start = Some((turn_key(ID, "user-20"), second(20)));
     assert!(!idle.turn_state());
+    // So does a slash command's local output.
+    let mut local = run(&[
+        user(10, "<command-name>/model</command-name>", ""),
+        system("local_command", 11),
+    ]);
+    assert!(local.claude.local_idle && local.turn_state());
+    local.claude.ambiguous = true;
+    assert!(!local.turn_state());
+    local.claude.ambiguous = false;
+    local.claude.pending_start = Some((turn_key(ID, "user-20"), second(20)));
+    assert!(!local.turn_state());
+    let mut active = run(&[
+        user(10, "hello", ""),
+        assistant(11, "msg_a", "\"tool_use\""),
+    ]);
+    active.claude.local_idle = true;
+    assert!(!active.turn_state());
 }
 
 #[test]
@@ -2191,9 +2225,44 @@ impl Story {
     }
 }
 impl Story {
+    /// A slash command that writes local-command output and then runs the
+    /// model: the D7 local-output assumption failing. Its echo opens a turn.
+    fn model_command(&mut self) {
+        self.tick(true);
+        let line = self.user("<command-name>/review</command-name>", "");
+        self.world.running = Some(self.at);
+        self.unrecorded = false;
+        self.enqueued = None;
+        self.push(line, "model-echo");
+        self.tick(false);
+        let line = self.user("<local-command-stdout>ok</local-command-stdout>", "");
+        self.push(line, "model-echo-output");
+        for _ in 0..1 + self.random.below(3) {
+            self.tick(false);
+            let line = self.assistant("\"tool_use\"", true);
+            self.push(line, "model-echo-assistant");
+        }
+        if self.chance(500) {
+            self.tick(false);
+            self.enqueue();
+            self.tick(false);
+            self.take();
+        }
+        self.tick(false);
+        let line = self.assistant("\"end_turn\"", true);
+        self.push(line, "model-echo-end");
+        self.tick(false);
+        self.end("completed");
+        let line = self.system("turn_duration");
+        self.push(line, "model-echo-duration");
+    }
     /// Records between turns that never start or end one, including an idle
-    /// slash-command echo that runs no model.
+    /// slash-command echo that runs no model, and sometimes a slash command
+    /// that does.
     fn idle(&mut self) {
+        if self.chance(150) {
+            self.model_command();
+        }
         for _ in 0..self.random.below(3) {
             self.tick(true);
             let (line, tag) = match self.random.below(5) {

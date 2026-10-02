@@ -580,6 +580,12 @@ pub struct ClaudeCursor {
     /// opened the next turn: an assistant record or a trigger before any
     /// proven end then shows a turn of unknown start, which is ambiguous.
     pub lost_idle: bool,
+    /// Local-command output cleared a pending slash-command start (D7). The
+    /// command is taken to have run locally, but it may still be running
+    /// the model, so the current turn is unknown until a trigger,
+    /// `turn_duration`, an abort or ambiguity. Only set while idle and not
+    /// ambiguous.
+    pub local_idle: bool,
     /// A record named another session (D2): every value of this binding
     /// stays unknown, and later records feed nothing, until a fresh replay.
     pub foreign: bool,
@@ -610,6 +616,7 @@ impl Default for ClaudeCursor {
             silent_end: false,
             ambiguous: false,
             lost_idle: false,
+            local_idle: false,
             foreign: false,
             classifier: None,
         }
@@ -1339,6 +1346,7 @@ impl Row {
         self.turns_unknown();
         self.claude.ambiguous = true;
         self.claude.lost_idle = false;
+        self.claude.local_idle = false;
     }
     /// Accumulated turn coverage becomes unknown, with the D8 turn state.
     fn turns_unknown(&mut self) {
@@ -1472,9 +1480,10 @@ impl Row {
         match Turn::of(record) {
             // Local-command output, as a wrapped user record or a system
             // record, shows a pending slash-command echo was a local command,
-            // which runs no turn (an assumption, D7). Any other pending
-            // trigger may be a turn still awaiting its first response while
-            // a local command runs, so its start stays pending.
+            // which runs no turn (an assumption, D7). Such a command may
+            // still run the model, so the current turn stays unknown. Any
+            // other pending trigger may be a turn still awaiting its first
+            // response while a local command runs, so its start stays pending.
             Turn::Ignored => {
                 let lead = record.text.as_ref().map(|text| text.lead);
                 let local = lead.is_some_and(|lead| text::LOCAL_OUTPUT.contains(&lead))
@@ -1482,6 +1491,7 @@ impl Row {
                 if local && std::mem::take(&mut block.pending_command) {
                     block.pending_start = None;
                     block.queued_since_start = None;
+                    block.local_idle = true;
                 }
             }
             // An unrecognised origin may be a trigger, or input to a turn.
@@ -1527,6 +1537,7 @@ impl Row {
             Turn::Trigger => {
                 block.abort_adjacent = false;
                 block.silent_end = false;
+                block.local_idle = false;
                 self.turns.supported = true;
                 // Second 0 is no valid start (`Turns::begin`): a missing stamp.
                 let (Some(key), Some(second)) = (record.uuid.clone(), second.filter(|s| *s > 0))
@@ -1568,6 +1579,7 @@ impl Row {
                 self.claude.ambiguous = false;
                 self.claude.silent_end = false;
                 self.claude.lost_idle = false;
+                self.claude.local_idle = false;
                 self.claude.abort_adjacent = true;
                 self.end(second, Turns::abort);
             }
@@ -1577,6 +1589,7 @@ impl Row {
                 block.ambiguous = false;
                 block.silent_end = false;
                 block.lost_idle = false;
+                block.local_idle = false;
                 if active {
                     self.end(second, Turns::finish);
                 } else if !adjacent || block.pending_start.is_some() {
@@ -1702,15 +1715,16 @@ impl Row {
     /// After a silent end the turn may have ended without `turn_duration`, so
     /// neither the current turn nor a total that leaves it out is published.
     /// A pending start may be a turn awaiting its first response, and after
-    /// a record lost while idle a turn may be running from an unknown start,
-    /// so the current turn is unknown.
+    /// a record lost while idle, or a slash command's local output, a turn
+    /// may be running from an unknown start, so the current turn is unknown.
     pub fn published_turns(&self) -> Turns {
         let mut turns = self.turns.clone();
         let block = &self.claude;
         if block.silent_end {
             turns.valid = false;
         }
-        if block.silent_end || block.pending_start.is_some() || block.lost_idle {
+        if block.silent_end || block.pending_start.is_some() || block.lost_idle || block.local_idle
+        {
             turns.current_known = false;
         }
         turns
@@ -1753,8 +1767,9 @@ impl Row {
     }
     /// D8: queue evidence belongs to an active turn or a pending start, a
     /// silent end to an active turn without queue evidence, and a pending
-    /// start only exists with no active turn. A record lost while idle
-    /// matters only while no turn is running and nothing is ambiguous.
+    /// start only exists with no active turn. A record lost while idle, or
+    /// a slash command's local output, matters only while no turn is running
+    /// and nothing is ambiguous.
     fn turn_state(&self) -> bool {
         let active = self.turns.active.is_some();
         let idle = !active && self.claude.pending_start.is_none();
@@ -1765,6 +1780,7 @@ impl Row {
                 || !active && self.claude.pending_start.is_none() && !self.turns.valid)
             && (self.claude.pending_start.is_none() || !active)
             && (!self.claude.lost_idle || idle && !self.claude.ambiguous)
+            && (!self.claude.local_idle || idle && !self.claude.ambiguous)
     }
     /// The replay state every pass boundary must leave resumable.
     fn gate(&self, time: f64) -> bool {
@@ -2901,8 +2917,9 @@ mod replay_tests {
         assert!(row.claude.validate(now()));
         let size = serde_json::to_vec(&row.claude).unwrap().len();
         println!("claude block bytes with a full ring: {size}");
-        // 2702 bytes with full 64-hex group hashes; 1118 with 16.
-        assert!(size <= 1200, "{size}");
+        // 2702 bytes with full 64-hex group hashes; 1118 with 16, and 1212
+        // with the D8 turn flags added since.
+        assert!(size <= 1250, "{size}");
     }
     #[test]
     fn replay_applies_a_counted_header_once_on_a_fresh_pass_only() {
