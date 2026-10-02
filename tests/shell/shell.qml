@@ -71,7 +71,7 @@ ShellRoot {
         var claude = view ? view.threads.filter(function (thread) {
             return thread.harness === "claude";
         }) : [];
-        check(claude.length === 1 && claude[0].usage.inputTokens === 90000 && claude[0].usage.contextPercent === null && claude[0].completion && claude[0].completion.total === 2 && claude[0].timing && claude[0].timing.active === true, label + ": the Claude thread lacks its transcript telemetry");
+        check(claude.length === 1 && claude[0].usage.inputTokens === 90000 && claude[0].usage.contextPercent === null && claude[0].children === null && claude[0].completion && claude[0].completion.total === 2 && claude[0].completion.done === 1 && claude[0].timing && claude[0].timing.active === true, label + ": the Claude thread lacks its transcript telemetry");
         cards.forEach(function (row) {
             check(row.width > 0 && row.height > 0, label + ": a thread row has no size");
         });

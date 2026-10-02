@@ -15,7 +15,7 @@ if (process.argv.length > 2) process.exit(0);
 const oracle = JSON.parse(fs.readFileSync(process.env.ANTON_FIXTURE, 'utf8'));
 const base = structuredClone(oracle.cases.find((entry) => entry.name === 'mixed-fleet').raw);
 // Microsecond sequences are not shifted, so the Claude stamps are set per emit.
-const stamped = ['seq', 'usage_seq', 'subagent_status_seq', 'subagent_seq'];
+const stamped = ['seq', 'usage_seq', 'subagent_status_seq'];
 base.hosts[0].agents.push({
   id: 'claude-a', status: 'working', project: 'Project claude', title: 'Task claude', branch: 'feature/claude',
   checkout: 'branch-claude', harness: 'claude',
@@ -25,7 +25,8 @@ base.hosts[0].agents.push({
       model: 'claude-synthetic-1', context: 48000, last_input: 2000, last_output: 300,
       total_input: 90000, total_output: 4000, total_cache_read: 70000, total_cache_write: 12000, total_uncached_input: 8000,
       subagent_total: 2, subagent_done: 1, subagent_running: 1, subagent_interrupted: 0, subagent_failed: 0, subagent_unknown: 0,
-      subagent_starts: 2, subagent_stops: 1
+      // Native Claude telemetry has no hook start/stop observations.
+      subagent_starts: null, subagent_stops: null, subagent_seq: null
     },
     turn_timing: {
       active: true, started_at_s: base.at - 90, observed_at_s: base.at - 5, last_duration_s: 60, last_outcome: 'completed',

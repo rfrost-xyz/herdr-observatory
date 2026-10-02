@@ -1130,14 +1130,14 @@ test('stable row order survives store updates', () => {
   assert.deepEqual(Array.from(store.view.threads, t => t.id), ['a', 'c', 'b']);
 });
 
-test('claude transcript telemetry projects totals, children and timing with no context percentage', () => {
+test('claude transcript telemetry projects totals, completion and timing with no children or context percentage', () => {
   const { turnTiming } = sandbox.module.exports;
   const stamp = (now - 4000) * 1000;
   const telemetry = { seq: stamp, usage_seq: stamp, event: 'session', phase: 'ready', usage_source: 'claude-transcript',
     model: 'claude-synthetic-1', context: 48000, last_input: 2000, last_output: 300,
     total_input: 90000, total_output: 4000, total_cache_read: 70000, total_cache_write: 12000, total_uncached_input: 8000,
     subagent_total: 3, subagent_done: 1, subagent_running: 1, subagent_interrupted: 0, subagent_failed: 0, subagent_unknown: 1,
-    subagent_status_seq: stamp, subagent_starts: 3, subagent_stops: 1, subagent_seq: stamp };
+    subagent_status_seq: stamp, subagent_starts: null, subagent_stops: null, subagent_seq: null };
   const turn_timing = { observed_at_s: now / 1000 - 1, active: true, started_at_s: now / 1000 - 30, freshness_seconds: 12,
     complete: true, last_duration_s: 20, last_outcome: 'completed', total_finished_duration_s: 120 };
   const agent = { id: 'c1', status: 'working', harness: 'claude', project: 'Example', technical: { telemetry, turn_timing } };
@@ -1149,10 +1149,11 @@ test('claude transcript telemetry projects totals, children and timing with no c
   assert.equal(thread.usage.outputTokens, 4000);
   assert.equal(thread.usage.uncachedTokens, 8000);
   assert.equal(thread.usage.at, now - 4000);
-  assert.equal(thread.children.starts, 3);
-  assert.equal(thread.children.stops, 1);
+  assert.equal(thread.children, null);
   assert.equal(thread.completion.total, 3);
   assert.equal(thread.completion.done, 1);
+  assert.deepEqual({ ...thread.completion.outcomes }, { running: 1, interrupted: 0, failed: 0, unknown: 1 });
+  assert.equal(thread.completion.stale, false);
   assert.equal(thread.timing.active, true);
   assert.equal(thread.timing.finishedTotal, 120);
   const read = presented(raw).threads[0];
