@@ -999,6 +999,174 @@ impl NativeTelemetry {
         }
         cursors.insert(key, Cursor::from_row(row));
     }
+    /// One Codex pane: discover, read usage, replay up to 16 bounded passes,
+    /// then publish usage, children, compactions and turn timing.
+    fn enrich_codex(
+        &mut self,
+        agent: &mut Value,
+        cursors: &mut BTreeMap<String, Cursor>,
+        active: &mut BTreeSet<String>,
+        time: f64,
+        deadline: Instant,
+    ) {
+        if agent["agent"] != "codex"
+            || telemetry::session_binding(agent).is_none()
+            || agent["agent_session"]["kind"] != "id"
+        {
+            return;
+        }
+        let Some(session) = agent["agent_session"]["value"]
+            .as_str()
+            .filter(|v| safe_id(v, 128))
+            .map(str::to_owned)
+        else {
+            return;
+        };
+        let key = sha256(format!("anton-native-session-v1:{session}").as_bytes());
+        active.insert(key.clone());
+        if Instant::now() >= deadline {
+            return;
+        }
+        let cached = self.discovery.get(&key);
+        let path = if cached
+            .is_none_or(|(at, path)| path.is_none() && at.elapsed() >= Duration::from_secs(60))
+        {
+            let path = Self::discover(
+                &session,
+                deadline.min(Instant::now() + Duration::from_millis(100)),
+            );
+            self.discovery
+                .insert(key.clone(), (Instant::now(), path.clone()));
+            path
+        } else {
+            cached.and_then(|(_, path)| path.clone())
+        };
+        let Some(path) = path else {
+            return;
+        };
+        let usage = if let Ok(info) = open_session(&path)
+            .and_then(|file| file.metadata().map_err(|_| "Session stat failed".into()))
+        {
+            let signature = (
+                info.dev(),
+                info.ino(),
+                info.len(),
+                info.mtime(),
+                info.mtime_nsec(),
+                info.ctime(),
+                info.ctime_nsec(),
+            );
+            let result = if let Some((old, value)) =
+                self.usage.get(&key).filter(|(old, _)| *old == signature)
+            {
+                let _ = old;
+                value.clone()
+            } else {
+                read_usage(&path, &session, time)
+            };
+            self.usage.insert(key.clone(), (signature, result.clone()));
+            result
+        } else {
+            self.usage.remove(&key);
+            self.discovery.remove(&key);
+            json!({})
+        };
+        let mut native = cursors.remove(&key).filter(|v| v.claude.is_none());
+        for _ in 0..16 {
+            if Instant::now() >= deadline {
+                break;
+            }
+            let offset = native.as_ref().map(|v| v.offset);
+            native = replay(
+                &path,
+                &session,
+                native,
+                time,
+                deadline.min(Instant::now() + Duration::from_millis(600)),
+            )
+            .ok();
+            if native
+                .as_ref()
+                .is_none_or(|v| v.caught_up || Some(v.offset) == offset)
+            {
+                break;
+            }
+        }
+        if let Some(state) = &native {
+            if state.caught_up && !state.skipping {
+                if let Some(turns) = &state.turns {
+                    agent["_native_turn_timing"] = turn_timing(turns, time);
+                }
+            }
+        }
+        let previous = telemetry::telemetry_from_agent(agent).unwrap_or_else(|| json!({}));
+        let mut value = previous.clone();
+        if usage.as_object().is_some_and(|v| !v.is_empty())
+            && (number(&previous["usage_seq"]).is_none()
+                || number(&usage["usage_seq"]) >= number(&previous["usage_seq"]))
+        {
+            value
+                .as_object_mut()
+                .unwrap()
+                .extend(usage.as_object().unwrap().clone());
+        }
+        if let Some(state) = native
+            .as_ref()
+            .filter(|v| v.valid && v.caught_up && !v.skipping)
+        {
+            let total = state.children.len();
+            let count = |status: &str| {
+                state
+                    .children
+                    .values()
+                    .filter(|v| v.as_str() == status)
+                    .count()
+            };
+            let done = count("completed");
+            value["subagent_total"] = json!(total);
+            value["subagent_done"] = json!(done);
+            value["subagent_status_seq"] = json!(state.seq);
+            for (key, count) in [
+                ("subagent_running", count("running")),
+                ("subagent_completed", done),
+                ("subagent_interrupted", count("interrupted")),
+                ("subagent_failed", count("errored")),
+                ("subagent_unknown", 0),
+            ] {
+                value[key] = json!(count);
+            }
+        } else {
+            for key in ["subagent_total", "subagent_done", "subagent_status_seq"]
+                .iter()
+                .chain(telemetry::OUTCOMES)
+            {
+                value[*key] = Value::Null;
+            }
+        }
+        if let Some(state) = native
+            .as_ref()
+            .filter(|v| v.caught_up && v.compactions_valid && number(&value["usage_seq"]).is_some())
+        {
+            value["compactions"] = json!(state.compaction_markers.max(state.compaction_summaries));
+        }
+        if let Some(stamp) = ["seq", "usage_seq", "subagent_status_seq"]
+            .iter()
+            .filter_map(|key| number(&value[*key]))
+            .filter(|v| *v > 0 && *v as f64 <= time * 1e6)
+            .max()
+        {
+            value["seq"] = json!(stamp);
+            if value.get("event").is_none() {
+                value["event"] = json!("session");
+                value["phase"] = json!("ready");
+            }
+            agent["_native_telemetry"] =
+                telemetry::telemetry_view_at(&value, time).unwrap_or(Value::Null);
+        }
+        if let Some(state) = native {
+            cursors.insert(key, state);
+        }
+    }
     pub fn enrich(&mut self, agents: &mut [Value], raw_cursors: &Value) -> Value {
         let time = now();
         let mut cursors = validate_cursors(raw_cursors);
@@ -1007,164 +1175,8 @@ impl NativeTelemetry {
         for agent in agents.iter_mut().take(32) {
             if agent["agent"] == "claude" {
                 self.enrich_claude(agent, &mut cursors, &mut active, time, deadline);
-                continue;
-            }
-            if agent["agent"] != "codex"
-                || telemetry::session_binding(agent).is_none()
-                || agent["agent_session"]["kind"] != "id"
-            {
-                continue;
-            }
-            let Some(session) = agent["agent_session"]["value"]
-                .as_str()
-                .filter(|v| safe_id(v, 128))
-                .map(str::to_owned)
-            else {
-                continue;
-            };
-            let key = sha256(format!("anton-native-session-v1:{session}").as_bytes());
-            active.insert(key.clone());
-            if Instant::now() >= deadline {
-                continue;
-            }
-            let cached = self.discovery.get(&key);
-            let path = if cached
-                .is_none_or(|(at, path)| path.is_none() && at.elapsed() >= Duration::from_secs(60))
-            {
-                let path = Self::discover(
-                    &session,
-                    deadline.min(Instant::now() + Duration::from_millis(100)),
-                );
-                self.discovery
-                    .insert(key.clone(), (Instant::now(), path.clone()));
-                path
             } else {
-                cached.and_then(|(_, path)| path.clone())
-            };
-            let Some(path) = path else {
-                continue;
-            };
-            let usage = if let Ok(info) = open_session(&path)
-                .and_then(|file| file.metadata().map_err(|_| "Session stat failed".into()))
-            {
-                let signature = (
-                    info.dev(),
-                    info.ino(),
-                    info.len(),
-                    info.mtime(),
-                    info.mtime_nsec(),
-                    info.ctime(),
-                    info.ctime_nsec(),
-                );
-                let result = if let Some((old, value)) =
-                    self.usage.get(&key).filter(|(old, _)| *old == signature)
-                {
-                    let _ = old;
-                    value.clone()
-                } else {
-                    read_usage(&path, &session, time)
-                };
-                self.usage.insert(key.clone(), (signature, result.clone()));
-                result
-            } else {
-                self.usage.remove(&key);
-                self.discovery.remove(&key);
-                json!({})
-            };
-            let mut native = cursors.remove(&key).filter(|v| v.claude.is_none());
-            for _ in 0..16 {
-                if Instant::now() >= deadline {
-                    break;
-                }
-                let offset = native.as_ref().map(|v| v.offset);
-                native = replay(
-                    &path,
-                    &session,
-                    native,
-                    time,
-                    deadline.min(Instant::now() + Duration::from_millis(600)),
-                )
-                .ok();
-                if native
-                    .as_ref()
-                    .is_none_or(|v| v.caught_up || Some(v.offset) == offset)
-                {
-                    break;
-                }
-            }
-            if let Some(state) = &native {
-                if state.caught_up && !state.skipping {
-                    if let Some(turns) = &state.turns {
-                        agent["_native_turn_timing"] = turn_timing(turns, time);
-                    }
-                }
-            }
-            let previous = telemetry::telemetry_from_agent(agent).unwrap_or_else(|| json!({}));
-            let mut value = previous.clone();
-            if usage.as_object().is_some_and(|v| !v.is_empty())
-                && (number(&previous["usage_seq"]).is_none()
-                    || number(&usage["usage_seq"]) >= number(&previous["usage_seq"]))
-            {
-                value
-                    .as_object_mut()
-                    .unwrap()
-                    .extend(usage.as_object().unwrap().clone());
-            }
-            if let Some(state) = native
-                .as_ref()
-                .filter(|v| v.valid && v.caught_up && !v.skipping)
-            {
-                let total = state.children.len();
-                let count = |status: &str| {
-                    state
-                        .children
-                        .values()
-                        .filter(|v| v.as_str() == status)
-                        .count()
-                };
-                let done = count("completed");
-                value["subagent_total"] = json!(total);
-                value["subagent_done"] = json!(done);
-                value["subagent_status_seq"] = json!(state.seq);
-                for (key, count) in [
-                    ("subagent_running", count("running")),
-                    ("subagent_completed", done),
-                    ("subagent_interrupted", count("interrupted")),
-                    ("subagent_failed", count("errored")),
-                    ("subagent_unknown", 0),
-                ] {
-                    value[key] = json!(count);
-                }
-            } else {
-                for key in ["subagent_total", "subagent_done", "subagent_status_seq"]
-                    .iter()
-                    .chain(telemetry::OUTCOMES)
-                {
-                    value[*key] = Value::Null;
-                }
-            }
-            if let Some(state) = native.as_ref().filter(|v| {
-                v.caught_up && v.compactions_valid && number(&value["usage_seq"]).is_some()
-            }) {
-                value["compactions"] =
-                    json!(state.compaction_markers.max(state.compaction_summaries));
-            }
-            if let Some(stamp) = ["seq", "usage_seq", "subagent_status_seq"]
-                .iter()
-                .filter_map(|key| number(&value[*key]))
-                .filter(|v| *v > 0 && *v as f64 <= time * 1e6)
-                .max()
-            {
-                value["seq"] = json!(stamp);
-                if value.get("event").is_none() {
-                    value["event"] = json!("session");
-                    value["phase"] = json!("ready");
-                }
-                agent["_native_telemetry"] =
-                    telemetry::telemetry_view_at(&value, time).unwrap_or(Value::Null);
-            }
-            if let Some(state) = native {
-                cursors.insert(key, state);
+                self.enrich_codex(agent, &mut cursors, &mut active, time, deadline);
             }
         }
         cursors.retain(|key, _| active.contains(key));
