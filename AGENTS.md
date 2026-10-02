@@ -72,7 +72,8 @@ not add features or compatibility work to the retired web application.
   reject an interval whose saved bounds disagree by over 2 s or that lacks it.
   Claude Code joins queued input to a turn only with dequeue or remove evidence;
   silent turn ends and aborts make coverage unknown, and its current turn is
-  shown only after a checked end with no background agent pending.
+  shown only from the session start or after a checked end, with no background
+  agent pending.
   Incomplete accumulated coverage stays unknown.
 - Native metadata v2 uses immutable four numeric groups plus named provenance,
   child/completion/outcome fields within 16 report keys and 80 characters/value.
