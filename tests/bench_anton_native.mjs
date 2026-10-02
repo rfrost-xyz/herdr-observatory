@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 const args = process.argv.slice(2);
 const option = (name, fallback) => { const i = args.indexOf(name); return i < 0 ? fallback : args[i + 1]; };
 if (args.includes('--help')) {
-  console.log('Usage: node tests/bench_anton_native.mjs [--binary PATH] [--seconds 60] [--agents 32] [--claude-agents 0] [--baseline-package DIR]\nTwo synthetic hosts, real fixture Unix RPC, fake SSH executing the native peer. Claude agents are opt-in (default 0, up to 16 per host) so a default run stays comparable with earlier default runs. No GPU, network or real accounts. Optional legacy package comparison is isolated from live configuration.');
+  console.log('Usage: node tests/bench_anton_native.mjs [--binary PATH] [--seconds 60] [--agents 32] [--claude-agents 0] [--baseline-package DIR]\nTwo synthetic hosts, real fixture Unix RPC, fake SSH executing the native peer. Claude agents are opt-in (default 0, up to 16 per host) so a default run measures no Claude agents. No GPU, network or real accounts. Optional legacy package comparison is isolated from live configuration.');
   process.exit(0);
 }
 const binary = path.resolve(option('--binary', path.join(path.dirname(fileURLToPath(import.meta.url)), '../omarchy/anton-runtime/target/release/anton-runtime')));
