@@ -180,10 +180,10 @@ Corpus figures in this file come from different runs of a live corpus. Absolute 
 The four-lens review of `d0eb92a` found 5 blocking and 6 other findings. All are fixed, and each code fix has a regression test that failed before it.
 
 **Blocking:**
-1. **Rejected turn start.** A rejected start left an unresumable state, so a file larger than `TAIL` never caught up. A lost turn was also published truncated. Fixed in `ee2fe7f`: `ambiguous` is now set wherever a turn may still be running, and a fuzz test of 4,500 cases checks every replay state.
+1. **Rejected turn start.** A rejected start left an unresumable state, so a file larger than `TAIL` never caught up. A lost turn was also published truncated. Fixed in `ee2fe7f`: `ambiguous` is now set wherever a turn may still be running, and a fuzz test of 4,500 cases checks that every reached state passes the resume gate.
 2. **Identity mismatch was not sticky.** Fixed in `fd8015d` with the `foreign` flag.
 3. **Lost-turn paths published truncated turns.** Also fixed in `ee2fe7f`.
-4. **Peer revalidation had zero clock-skew tolerance,** which dropped Codex peer telemetry too. It now allows 1 s (`6be49b5`).
+4. **Peer revalidation had zero clock-skew tolerance,** which dropped Codex peer telemetry too. It now allows 1 s (`6be49b5`); round 3 widened this to 1 s plus the 6 s snapshot gap from the later of now and `sampled_at` (`c3b2a96`).
 5. **A sample rejected by revalidation re-emitted stale retained values.** Fixed in `1b154b4`.
 
 **Other:**
@@ -220,3 +220,58 @@ Runtime window, alternating reruns in the same session:
 - **Peak RSS:** both binaries range from about 4.3 to 7.5 MiB.
 - **Snapshot size:** unchanged.
 - **Claude probe:** standard and large variants are 4/4 local and 4/4 peer, with all fields, `context` and `turn_timing`.
+
+## Review round 3 and remediation
+
+The four-lens review of `699c4a7` found 3 blocking and 9 other findings. All are fixed, and each code fix has a regression test that failed before it.
+
+**Blocking:**
+1. **Silent end then queue.** A queue operation after a silent end let a prompt join the ended turn. Fixed by the `silent_end` flag (`734327c`).
+2. **Lost trigger while idle.** A record lost while idle let a later turn be published truncated. Fixed by the `lost_idle` flag (`fd081c3`).
+3. **Stale peer values after a foreign record.** A peer re-showed old values after a foreign record in an incomplete pass. Fixed in `a4e6ece`.
+
+**Other:**
+- image-only prompts are unknown (`e0373ed`);
+- a lost `sessionId` is invalid for every kind (`4faacad`);
+- unpaired surrogates are read the same at both sizes (`867774c`, `5ac4706`);
+- a pass ends on a shrunk file (`77ab50b`, `d245fb0`);
+- stronger fuzz invariants with an independent oracle (`dd31309`);
+- Codex panes are enriched before Claude panes, so Claude replay can no longer starve Codex (`d19dcdf`, `e6a6c20`);
+- a deadline inside rediscovery is a skip (`fab4ddd`);
+- locks are released with `LOCK_UN` before close (`4b372b4`), which also covers the allowances receive and reporter locks;
+- peer revalidation bound (`8a58937`, `c3b2a96`).
+
+**Checkpoint flake mechanism.** The parent closed a locked descriptor without `LOCK_UN` while a sibling thread's spawned child still referenced the open file description. With zero wait the lock test failed 45, 53 and 41 of 300 runs without the guards, and 0 in 5 runs with them.
+
+**Corpus.** Aggregates are unchanged (coverage 17/1, publishable 10/8, usage known 12/6). One unknown-turn attribution moved from a silent-end shape to a queue shape, and no line used the serde-rejection fallback.
+
+**Residual (pre-existing, not in this diff).** `common::owner_guard` and `native::retire` also close locked descriptors without `LOCK_UN`. `retire` waits up to 3 s.
+
+### Verification at `c3b2a96` (release sha256 `e45104ca7ce6165c19313db350e452cd9654c4803f9516b5693dbfd2813e9914`)
+
+| Gate | Result |
+|---|---|
+| fmt, clippy | clean |
+| `cargo test`, 3 runs | lib 165, main 14, native_navigation 6, native_process 32 |
+| `node --test` | 88 of 88 |
+| QML | 95 of 95 |
+| qmllint | clean outside Panel.qml |
+| Shell harness | 0 failures |
+| History | clean |
+
+Runtime CPU: 0.033 s for both binaries. Claude probe: 4/4 local and peer, standard and large.
+
+### Peak RSS check
+
+Peak RSS was rerun in alternating order, Codex/Pi runtime window only, `--repeat 3`, twice per binary:
+
+| Run | HEAD windows (KiB) | Baseline windows (KiB) |
+|---|---|---|
+| 1 | 7,688 / 4,228 / 4,404 | 4,260 / 4,372 / 4,164 |
+| 2 | 7,568 / 4,528 / 4,704 | 4,124 / 4,444 / 4,192 |
+
+CPU was 0.034 to 0.035 s for both binaries.
+
+**Interpretation.** The harness sums RSS over the runtime's process family, which includes the fake-SSH peer probes, and samples it every 50 ms. Values are two-valued: about 4.3 MiB, or about 7.6 MiB when a second `anton-runtime` process overlaps at the sampled instant. The baseline also reached that state in earlier sessions (7,280, 7,396 and 7,564 KiB). HEAD reaches it more often in its first window. Its steady-state windows are within 0.5 MiB of the baseline.
+
+**Binary size.** The release binary grew from 1,853,520 to 2,093,472 bytes.

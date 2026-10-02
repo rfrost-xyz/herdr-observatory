@@ -58,7 +58,7 @@ Existing Codex behaviour, output and checkpoints must not change.
 
 **Lookup.**
 - Look for `<root>/<entry>/<id>.jsonl` at depth exactly two, within the Codex discovery entry and time budgets.
-- Require exactly one match. Zero or several matches leave telemetry unknown, and so does a scan truncated by the entry or time budget (`native.rs:651-670`).
+- Require exactly one match. Zero or several matches leave telemetry unknown, and so does a scan truncated by the entry or the 100 ms discovery budget (`native.rs:651-670`). A discovery or predecessor scan cut short because the shared probe deadline passed is a deadline skip: it changes nothing, publishes nothing, and keeps the cursor row and the retained sample.
 - **Predecessor after `/clear`.** If Herdr reports an id whose file has ended because a successor exists, the binding would show a stale session. Change 2 first settles from the binary which id SessionStart(clear) delivers. Until that is proven, the fallback is fail-closed. Within the discovery budget, files in the same directory that are newer than the bound file's last record are scanned to their first record carrying `session_id`, bounded at 256 KiB and 512 records. In observed successors it first appears at 0-based record 16 to 19, in a record ending 69 to 76 KiB into the file. There are four cases, with two results:
   1. End of file within the bound with no `session_id`: not a successor.
   2. Bound exhausted first: unknown (fail closed).
@@ -83,7 +83,7 @@ Existing Codex behaviour, output and checkpoints must not change.
 
 - Open with `common::open_owned`: per-component no-follow, regular file, owner uid. A symlink anywhere fails closed.
 - The header is the first line: at most 64 KiB, newline-terminated, with `sessionId == id`. Any first-record type is tolerated. A pass that starts fresh applies the header as the first replayed record, with its usage, turn, child and timestamp fields; a resumed pass never applies it again.
-- Any later record that carries a `sessionId` different from the bound id makes the session's telemetry unknown for the rest of the binding (the block's `foreign` flag): later records feed nothing, no turn timing is published, the retained sample is dropped, and only a fresh replay clears it.
+- Any later record that carries a `sessionId` different from the bound id makes the session's telemetry unknown for the rest of the binding (the block's `foreign` flag): later records feed nothing, no turn timing is published, the retained sample is dropped, the all-null sample is published even when the pass does not catch up (so a peer's local never re-emits the old sample), and only a fresh replay clears it.
 - Fork and branch paths copy the parent's records into the new file and rewrite `sessionId`, adding `forkedFrom` [bin]. A record carrying `forkedFrom` is inherited history and feeds no total, last-response value, turn, child or compaction. Only its presence is read, never the nested id. Change 2 adds a synthetic fork fixture. So a response is never counted in both sessions.
 - Records without `sessionId` (`file-history-snapshot`, `file-history-delta`) are ignored for identity and feed no metric.
 - The snake-case `session_id` is not an identity check for the bound file, because it differs from the stem in 5 of 18 files (4 name a predecessor after `/clear`). It is used only by the D1 predecessor check.
@@ -116,9 +116,9 @@ Existing Codex behaviour, output and checkpoints must not change.
   - a later record naming another session (D2);
   - a peer sample that revalidation rejects.
 
-  Growth does not drop it. A pane skipped by the shared deadline re-emits the retained sample when its cached binding is current (under 60 s old and not due for rescan) and its cursor row is present; replacement of the file is then detected at the next pass that runs. This is the retention the spec requires for an intermittent read on local hosts.
-- Peers start a fresh `NativeTelemetry` on every probe (`main.rs:1026`), so peer threads are retained locally. `State::sample` keeps the last validated Claude telemetry per agent id and `session_generation`, filled only from live peer samples in this owner run. Every caught-up Claude pass publishes a sample, with `seq = coverage_seq`, `event:"session"` and `phase:"ready"`, even when every value is null. A peer that cannot bind or verify the file publishes an all-null Claude sample stamped with the incoming cursor row's `coverage_seq`, which is an original source time. The causes are the drop triggers listed for local retention. Its arrival replaces the retained sample. A caught-up peer sample is stored only when the response has a Claude cursor row for every bound Claude pane on that host. The retained sample is re-emitted only when the peer agent's `technical.telemetry` is absent and both the request and the response had such a row for every bound pane, because without the request row the peer replays from the header and cannot detect a replaced file; otherwise it is dropped. The counts are per host, so a new pane without a row drops the retained samples of that host's other panes for that probe. It is dropped when the generation changes or the pane disappears. It retains the same numeric subset as the local rule (totals, last-response values, `context`, `model`, `usage_seq`), with child fields null. A caught-up peer sample with null totals replaces it, as on a local host. It is never stored in the checkpoint, because a loaded checkpoint is never a current measurement. Change 2 adds peer fixtures for three passes: one that does not catch up, a caught-up pass with invalid totals, and a caught-up pass where everything is unknown, and a bound session whose file becomes ambiguous after one caught-up sample.
-- An unparseable line of 64 KiB or less calls `invalid()`, which for Claude rows also clears `totals_valid`.
+  Growth does not drop it. A pane skipped by the shared deadline re-emits the retained sample when its cached binding is current (under 60 s old and not due for rescan) and its cursor row is present; replacement of the file is then detected at the next pass that runs. This is the retention the spec requires for an intermittent read on local hosts. A deadline that expires inside discovery or the predecessor scan is handled as the same skip.
+- Peers start a fresh `NativeTelemetry` on every probe (`main.rs:1026`), so peer threads are retained locally. `State::sample` keeps the last validated Claude telemetry per agent id and `session_generation`, filled only from live peer samples in this owner run. Every caught-up Claude pass publishes a sample, with `seq = coverage_seq`, `event:"session"` and `phase:"ready"`, even when every value is null. A peer that cannot bind or verify the file publishes an all-null Claude sample stamped with the incoming cursor row's `coverage_seq`, which is an original source time. The causes are the drop triggers listed for local retention, including a record naming another session in a pass that does not catch up. Its arrival replaces the retained sample. A caught-up peer sample is stored only when the response has a Claude cursor row for every bound Claude pane on that host. The retained sample is re-emitted only when the peer agent's `technical.telemetry` is absent and both the request and the response had such a row for every bound pane, because without the request row the peer replays from the header and cannot detect a replaced file; otherwise it is dropped. The counts are per host, so a new pane without a row drops the retained samples of that host's other panes for that probe. It is dropped when the generation changes or the pane disappears. It retains the same numeric subset as the local rule (totals, last-response values, `context`, `model`, `usage_seq`), with child fields null. A caught-up peer sample with null totals replaces it, as on a local host. It is never stored in the checkpoint, because a loaded checkpoint is never a current measurement. Change 2 adds peer fixtures for three passes: one that does not catch up, a caught-up pass with invalid totals, and a caught-up pass where everything is unknown, and a bound session whose file becomes ambiguous after one caught-up sample.
+- A line of 64 KiB or less that serde rejects goes through the oversized-record classifier, so a record is classified the same way at any line size. `invalid()` is called only when the classifier also rejects it, or when the parsed value is not an object; for Claude rows it also clears `totals_valid`. A pass also ends at an empty read, when the file shrank after the pass took its length.
 
 **`usage_seq`.**
 - `usage_seq` is the largest validated timestamp among the counted lines of all counted groups, in microseconds.
@@ -128,6 +128,8 @@ Existing Codex behaviour, output and checkpoints must not change.
 - An oversized line (over 64 KiB) goes through a new bounded Claude envelope classifier. The Codex `Envelope` (`envelope.rs`) cannot extract these fields.
 - The classifier extracts only the fields D3, D5, D6 and D7 consume: `type`, `subtype`, `sessionId`, `uuid`, `timestamp`, `isMeta`, `origin.kind`, `commandMode`, `message.id`, `stop_reason`, `model`, `usage`, `toolUseResult.{status, agentId, resumedAgentId, success, totalDurationMs}`, `interruptedMessageId`, `isAbortedMidStream`, the presence of `forkedFrom` and `isCompactSummary`, the bounded `task-id` and `status` tags, the leading wrapper tag of user text, and `operation` (queue-operation records).
 - `forkedFrom`, `isCompactSummary`, `origin`, `toolUseResult` and `interruptedMessageId` are presence-only: a string value is recorded at its first byte, never buffered, and survives a pass boundary.
+- A lost `type` or `sessionId` (a value over the capture bound, or cut by a pass boundary) makes the record invalid for every kind, so identity is never taken as absent.
+- An unpaired `\uD800`–`\uDFFF` escape reads as one replacement character, and a surrogate pair as one character, on both paths.
 - Persisted classifier state keeps the raw bytes of a key only while they remain a prefix, written plainly or with `\uXXXX` escapes, of a consumed key at that parent; otherwise the bytes are dropped and the key is marked non-matching.
 - Its state persists across pass boundaries in the `claude` block, because lines larger than `TAIL` exist.
 - An oversized record of a relevant type that cannot be classified makes the dependent coverage unknown:
@@ -194,7 +196,7 @@ Existing Codex behaviour, output and checkpoints must not change.
 1. **Abort:** the interrupt marker text, a record carrying `interruptedMessageId`, or an assistant record with `isAbortedMidStream`.
 2. **Turn trigger by origin:** a user record whose `origin.kind` is `human`, `task-notification`, `peer` or `coordinator`, regardless of `isMeta`; or a `queued_command` attachment with `commandMode: "task-notification"`.
 3. **Ignored:** `isMeta`, `toolUseResult`, `isCompactSummary`, `queued_command` attachments with `commandMode: "prompt"` (queued human input, observed only inside turns), local-command output, bash-mode records, and `system/compact_boundary` and `microcompact_boundary`. These never start or end turns.
-4. **Turn trigger by shape:** a remaining user text record without `origin`, or a slash-command echo.
+4. **Turn trigger by shape:** a remaining user text record without `origin`, or a slash-command echo. A user record with no `origin`, no rule-3 flag and no text (for example an image-only prompt) is an unrecognised shape and takes the unknown path.
 
 Wrapper tags are matched on the leading tag of user text:
 
@@ -210,14 +212,14 @@ Wrapper tags are matched on the leading tag of user text:
 - With no active turn, a trigger opens a pending start. It becomes the turn start only when an assistant record follows before the next trigger, including a `<synthetic>` error record, which confirms a start although D3 ignores its usage. Otherwise the newer trigger replaces it.
 - The first classified trigger or turn end sets `Turns.supported`, so `complete` can be published.
 - With an active turn, a trigger joins that turn only when a `queue-operation` record with operation `dequeue` or `remove` has appeared since the turn's trigger or the last join, while that turn was active or its start was pending [obs shape, inf semantics]. An `enqueue` alone never permits a join, so a killed turn whose queued input was never taken cannot absorb the idle gap. Every trigger consumes the evidence. With no active turn a trigger never joins; it replaces any pending start (joining a pending start added idle time in corpus replay).
-- Without the evidence, accumulated coverage becomes unknown. The same holds at every point where a turn may still be running: an unjoined trigger during a turn, an unrecognised origin, a trigger with no stamp or key, a start that `Turns::begin` rejects (before the previous end, or a repeated key), and an unparseable, foreign or unclassifiable record while a turn is active or a start is pending. Because the input may instead have joined a still-running turn, no pending start opens and the current and last values stay unchanged (`current_known` false) until `system/turn_duration` or an abort proves an end; the next trigger after that opens a pending start normally. Silent ends do not clear this state; an abort clears it even when the start it confirms is rejected.
+- Without the evidence, accumulated coverage becomes unknown. The same holds at every point where a turn may still be running: an unjoined trigger during a turn, an unrecognised origin, a trigger with no stamp or key, a start that `Turns::begin` rejects (before the previous end, or a repeated key), and an unparseable, foreign or unclassifiable record while a turn is active or a start is pending. Because the input may instead have joined a still-running turn, no pending start opens and the current and last values stay unchanged (`current_known` false) until `system/turn_duration` or an abort proves an end; the next trigger after that opens a pending start normally. Silent ends do not clear this state; an abort clears it even when the start it confirms is rejected. A record lost while no turn is running (unparseable, unclassifiable, or a user record without `sessionId`) may itself have opened a turn: an assistant record that follows before any trigger makes coverage ambiguous until `turn_duration` or an abort; a trigger before that assistant record replaces the lost start as usual.
 - An abort while a start is pending confirms that start and ends the turn as aborted at the abort timestamp. An `isAbortedMidStream` assistant record confirms a pending start before it is handled as an abort.
 - An abort with no active turn and no pending start is ignored, apart from setting the abort-adjacency flag. The next trigger, assistant record or `turn_duration` clears that flag.
 - The turn key is `sha256("anton-turn-v1:" + session + ":" + uuid)[..24]` of the record that opened the turn, which satisfies `Turns::validate`.
 
 **Ending a turn.**
 - `system/turn_duration` completes the active turn at its own timestamp.
-- A silent end clears `queued_since_start`. A silent end is `system/stop_hook_summary`, or an assistant line with `stop_reason: end_turn` and no pending tool use, while a turn is active. A later trigger with no `turn_duration` then takes the unknown path rather than joining the stale turn and absorbing the idle gap. In a reviewer's replay, the older-version file becomes honestly unknown, and the largest remaining joined gap fell from 66,701 s to 764 s. Change 2 adds a fixture for a silent end followed by queued input.
+- A silent end clears `queued_since_start`. A silent end is `system/stop_hook_summary`, or an assistant line with `stop_reason: end_turn` and no pending tool use, while a turn is active. A later trigger with no `turn_duration` then takes the unknown path rather than joining the stale turn and absorbing the idle gap. In a reviewer's replay, the older-version file becomes honestly unknown, and the largest remaining joined gap fell from 66,701 s to 764 s. Change 2 adds a fixture for a silent end followed by queued input. Until a trigger, `turn_duration`, an abort or unknown coverage, a later `dequeue` or `remove` is no join evidence.
 - An abort ends the active turn as aborted at the abort record's timestamp.
 - A `turn_duration` with no active turn is ignored when it directly follows an abort. Otherwise it makes accumulated coverage unknown.
 
@@ -240,7 +242,7 @@ Wrapper tags are matched on the leading tag of user text:
 - Codex rows are charged against the 32-row and 256 KiB bounds before Claude rows, in cursor validation and checkpoint eviction, so Claude rows never displace Codex rows; checkpoint eviction removes the oldest Claude row first.
 - Checkpoint rows load individually, so a row this build cannot read never discards the others.
 - A Claude row that would exceed the 256 KiB bound is first shrunk: `turns.finished` keeps only the last interval, `total` matches it, and accumulated coverage becomes unknown for the rest of the binding. Offset, file, fingerprint, block and children are kept, so replay resumes. The sample measured before the shrink still publishes complete coverage. Rows are taken in key order; a row that still does not fit is dropped with every row after it. Checkpoint eviction across hosts still removes whole rows.
-- The checkpoint lease and each write wait up to 250 ms for the lock, because a process spawned by another thread holds the lock's open file description until it calls exec.
+- Each holder releases the checkpoint lock with `LOCK_UN` before closing it (`common::Unlock`), because a process spawned by another thread holds the lock's open file description until it calls exec. The lease and each write still wait up to 250 ms for genuine contention. The allowances receive lock and the reporter hook lock release the same way.
 
 **Row-level fields.**
 - `Cursor::children`, `valid`, `compactions_valid`, `turns`, `fingerprint`, `offset`, `file`, `at`, `caught_up` and `skipping` keep their existing meaning for Claude rows. `seq` follows D6.
@@ -260,8 +262,10 @@ Every block field is required, bounded and revalidated on reuse:
 - the compaction boundary count and the compaction-iteration flag;
 - the pending turn start: key hash and Unix second, or none;
 - the abort-adjacency flag;
-- `queued_since_start`: set by a `dequeue` or `remove` queue-operation while a turn is active or a start is pending; kept when the pending start is confirmed; consumed by every trigger; reset when a turn ends, on a silent end (D7) and when turn coverage becomes unknown; false unless a turn is active or a start is pending;
+- `queued_since_start`: set by a `dequeue` or `remove` queue-operation while a turn is active or a start is pending and no silent end has been seen; kept when the pending start is confirmed; consumed by every trigger; reset when a turn ends, on a silent end (D7) and when turn coverage becomes unknown; false unless a turn is active or a start is pending;
 - `ambiguous`: set at every point where a turn may still be running (D7); while set there is no active turn or pending start and accumulated coverage is unknown;
+- `silent_end`: set by a silent end (D7) while a turn is active; reset by a trigger, `turn_duration`, an abort and unknown turn coverage; only set while a turn is active and `queued_since_start` is false;
+- `lost_idle`: set when a record is lost with no active turn, no pending start and no ambiguity; cleared by a pending start, `turn_duration`, an abort or ambiguity; only set while idle and not ambiguous;
 - `foreign`: set by a record whose `sessionId` differs, never cleared on resume; requires invalid totals and last-response, row `valid`, `compactions_valid` and turn coverage false, and `current_known` false;
 - the Claude envelope classifier state (D3), or none.
 
@@ -282,11 +286,11 @@ Every block field is required, bounded and revalidated on reuse:
 | Peer | Local | Result |
 |---|---|---|
 | old | new | Remote Claude threads stay status-only. |
-| new | old | Values arrive in existing fields. The old local re-serialises cursors through its own `Cursor` type, which drops the `claude` block, so the new peer replays every Claude row from the header on each probe: up to 16 × `TAIL` per agent within the shared 750 ms probe deadline. Threads whose combined replay exceeds that stay unknown. Measured with four 6 MB transcripts on one peer: every peer thread reached native telemetry in 150 ms, within the deadline, at 0.866 s CPU over 30 s against 0.550 s with a new local. The local must be upgraded before remote Claude values are relied on. |
+| new | old | Values arrive in existing fields. The old local re-serialises cursors through its own `Cursor` type, which drops the `claude` block, so the new peer replays every Claude row from the header on each probe: up to 16 × `TAIL` per agent within the shared 750 ms probe deadline. Codex panes are enriched before Claude panes within that deadline, so Codex values are never lost to Claude replay; Claude threads whose combined replay exceeds it stay unknown. Measured with four 6 MB transcripts on one peer: every peer thread reached native telemetry in 150 ms, within the deadline, at 0.866 s CPU over 30 s against 0.550 s with a new local. The local must be upgraded before remote Claude values are relied on. |
 
 **Redeployment.** SSH peer redeployment is therefore optional.
 
-**Peer revalidation.** Change 2 also re-runs `telemetry_view` and `turn_timing_view` on peer samples, at local now plus the 1 s skew that `sampled_at` already allows, for every harness, keeping original timestamps, in `State::sample` (`main.rs:191-281`, called from `accept_host`), as `harness-telemetry` already requires.
+**Peer revalidation.** Change 2 also re-runs `telemetry_view` and `turn_timing_view` on peer samples, against the later of local now and `sampled_at`, plus the 1 s skew `sampled_at` allows, plus the 6 s Herdr snapshot timeout that bounds how long after `sampled_at` the peer stamps its values, for every harness, keeping original timestamps, in `State::sample` (`main.rs:191-281`, called from `accept_host`), as `harness-telemetry` already requires.
 
 **Spec and AGENTS.md wording.** Change 2 must make the following harness-neutral, keeping Codex behaviour unchanged:
 
@@ -381,6 +385,25 @@ Every block field is required, bounded and revalidated on reuse:
   - peer skew at +2 s, rejected, which drops retention.
 - **Checkpoints:** seven maximal Claude rows shrunk at the byte bound.
 - **Test reliability:** executable fixtures under concurrent spawns.
+
+**Added after review round 3:**
+
+- **Queue and turn edge cases:**
+  - a queue operation after a silent end;
+  - a lost trigger while idle;
+  - an image-only prompt.
+- **Identity and classifier:**
+  - a lost `sessionId` in oversized records of every kind;
+  - unpaired surrogates at both line sizes.
+- **Replay and timing:**
+  - a file truncated during an oversized skip;
+  - a deadline expiring inside rediscovery;
+  - Claude replay listed before a Codex pane under a short deadline.
+- **Peers:**
+  - a foreign record in an incomplete peer pass;
+  - peer skew at +1.05 s with `sampled_at` +0.95 s;
+  - values just inside and just past the revalidation bound.
+- **Locks:** each lock is free at once after release while siblings spawn.
 
 **Corpus check.** As a verification step, this change also runs a local counts-only replay of the real transcript corpus through the implementation. It prints aggregates only, and nothing from it is committed. Prose review could not converge on these rules; replay can.
 
