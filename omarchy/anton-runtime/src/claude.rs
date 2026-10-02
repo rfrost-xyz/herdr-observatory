@@ -376,9 +376,10 @@ pub struct ClaudeCursor {
     /// stamp or key, a rejected start, or a failed record during a turn): no
     /// turn opens until `turn_duration` or an abort proves an end.
     pub ambiguous: bool,
-    /// A record was lost with no turn running, and it may have been the
-    /// trigger of the next turn: an assistant record before any trigger then
-    /// shows that turn running from an unknown start, which is ambiguous.
+    /// A record was lost with no turn running, or local-command output
+    /// discarded a pending start, and that record or start may have opened
+    /// the next turn: an assistant record before any trigger then shows that
+    /// turn running from an unknown start, which is ambiguous.
     pub lost_idle: bool,
     /// A record named another session (D2): every value of this binding
     /// stays unknown, and later records feed nothing, until a fresh replay.
@@ -479,6 +480,8 @@ pub const SUBTYPE_COMPACT_BOUNDARY: u8 = 1;
 pub const SUBTYPE_MICROCOMPACT_BOUNDARY: u8 = 2;
 pub const SUBTYPE_TURN_DURATION: u8 = 3;
 pub const SUBTYPE_STOP_HOOK_SUMMARY: u8 = 4;
+/// Local-command output written as a system record.
+pub const SUBTYPE_LOCAL_COMMAND: u8 = 5;
 const KINDS: &[&str] = &[
     "assistant",
     "user",
@@ -491,6 +494,7 @@ const SUBTYPES: &[&str] = &[
     "microcompact_boundary",
     "turn_duration",
     "stop_hook_summary",
+    "local_command",
 ];
 
 /// The fields of one record that replay consumes, extracted identically from a
@@ -1260,7 +1264,19 @@ impl Row {
         let active = self.turns.active.is_some();
         let block = &mut self.claude;
         match Turn::of(record) {
-            Turn::Ignored => {}
+            // Local-command output, as a wrapped user record or a system
+            // record, shows a pending command echo was a local command,
+            // which runs no turn. A pending prompt may instead be a turn
+            // still awaiting its first response, as after a lost record.
+            Turn::Ignored => {
+                let lead = record.text.as_ref().map(|text| text.lead);
+                let local = lead.is_some_and(|lead| text::LOCAL_OUTPUT.contains(&lead))
+                    || record.kind == KIND_SYSTEM && record.subtype == SUBTYPE_LOCAL_COMMAND;
+                if local && block.pending_start.take().is_some() {
+                    block.queued_since_start = None;
+                    block.lost_idle = true;
+                }
+            }
             // An unrecognised origin may be a trigger, or input to a turn.
             Turn::Unknown => self.ambiguous(),
             // Only a dequeue or remove shows input taken into the running
@@ -1303,16 +1319,17 @@ impl Row {
                 // Each trigger consumes the queue evidence. Only input taken
                 // into a running turn joins it, and only a trigger stamped no
                 // later than the evidence can be that input: a prompt after a
-                // kill and restart is later. With no active turn the trigger
-                // replaces a pending start, which may be an idle command
-                // echo that no assistant record ever confirmed.
+                // kill and restart is later.
                 let taken = (block.queued_since_start.take())
                     .zip(record.stamp)
                     .is_some_and(|(at, stamp)| stamp <= at);
                 if taken && active {
                     return;
                 }
-                if active {
+                // A pending start that local-command output did not show to
+                // be a local command may be a turn killed before its first
+                // assistant record, or a running turn this input joined.
+                if active || block.pending_start.is_some() {
                     // The turn may have ended without a record, or the input
                     // joined it: never absorb the gap, and never publish an
                     // interval whose start is a guess.

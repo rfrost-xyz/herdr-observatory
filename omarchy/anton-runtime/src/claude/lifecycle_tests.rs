@@ -427,18 +427,57 @@ fn turns_ignore_metadata_tool_results_and_wrapper_output() {
 
 #[test]
 fn turns_pending_start_needs_an_assistant_record_including_synthetic() {
-    // A newer trigger replaces an unconfirmed one.
+    // Local-command output, wrapped or as a system record, shows an echo was
+    // a local command: the next trigger opens a turn normally.
+    let echo = user(10, "<command-name>/model</command-name>", "");
+    for output in [
+        user(11, "<local-command-stdout>ok</local-command-stdout>", ""),
+        system("local_command", 11),
+    ] {
+        let row = run(&[
+            echo.clone(),
+            output,
+            user(12, "second", ""),
+            assistant(13, "msg_a", "\"end_turn\""),
+            system("turn_duration", 20),
+        ]);
+        assert!(row.turns.valid && row.claude.pending_start.is_none());
+        assert_eq!(finished(&row, "user", 10), None);
+        assert_eq!(
+            finished(&row, "user", 12),
+            Some((second(12), second(20), "completed".into()))
+        );
+    }
+    // Found by the ground-truth fuzzer: local output may also come from a
+    // local command run while a prompt awaits its first response, so an
+    // assistant record before the next trigger shows a turn of unknown start.
     let row = run(&[
-        user(10, "first", ""),
-        user(12, "second", ""),
-        assistant(13, "msg_a", "\"end_turn\""),
-        system("turn_duration", 20),
+        user(10, "hello", ""),
+        system("local_command", 11),
+        assistant(13, "msg_a", "\"tool_use\""),
+        queued(14, "task-notification", &notice("agent-x", "completed")),
+        assistant(15, "msg_b", "\"tool_use\""),
     ]);
-    assert_eq!(finished(&row, "user", 10), None);
-    assert_eq!(
-        finished(&row, "user", 12),
-        Some((second(12), second(20), "completed".into()))
-    );
+    assert!(row.claude.ambiguous && !row.turns.current_known);
+    // Found by the ground-truth fuzzer: any other unconfirmed start may be a
+    // turn killed before its first assistant record, or a running turn the
+    // newer trigger joined, so no interval is published until a proven end.
+    for first in [user(10, "first", ""), echo] {
+        let row = run(&[
+            first.clone(),
+            user(12, "second", ""),
+            assistant(13, "msg_a", "\"end_turn\""),
+        ]);
+        assert!(row.claude.ambiguous && !row.turns.current_known, "{first}");
+        let row = run(&[
+            first,
+            user(12, "second", ""),
+            assistant(13, "msg_a", "\"end_turn\""),
+            system("turn_duration", 20),
+        ]);
+        assert!(!row.turns.valid && row.turns.last.is_none());
+        assert!(row.turns.finished.is_empty() && !row.claude.ambiguous);
+    }
     // A `<synthetic>` error record confirms the start but feeds no usage.
     let synthetic =
         assistant(13, "msg_a", "\"stop_sequence\"").replace("claude-fixture-1", "<synthetic>");
@@ -855,19 +894,24 @@ fn turns_join_needs_a_dequeue_or_remove_and_each_join_consumes_it() {
             Some((second(1), second(7), "completed".into()))
         );
     }
-    // With no active turn a trigger never joins: it replaces an unconfirmed
-    // pending start, so an idle gap after a command echo is never absorbed,
-    // and it consumes the evidence.
-    let row = run(&[
-        user(4, "<command-name>/model</command-name>", ""),
-        dequeue(4000),
-        user(4000, "queued", ""),
-        assistant(4001, "msg_a", "\"end_turn\""),
-        system("turn_duration", 4003),
-    ]);
-    assert!(row.turns.valid && row.claude.queued_since_start.is_none());
-    assert_eq!(row.turns.total, 3);
-    assert!(finished(&row, "user", 4).is_none());
+    // With no active turn a trigger never joins, so an idle gap after a
+    // command echo is never absorbed. Input taken while the echo is pending,
+    // or after local-command output, which may also follow a prompt still
+    // awaiting its first response, may have joined a running turn, so the
+    // trigger is ambiguous.
+    for local in [vec![], vec![system("local_command", 5)]] {
+        let mut lines = vec![user(4, "<command-name>/model</command-name>", "")];
+        lines.extend(local);
+        lines.extend([
+            dequeue(4000),
+            user(4000, "queued", ""),
+            assistant(4001, "msg_a", "\"end_turn\""),
+            system("turn_duration", 4003),
+        ]);
+        let row = run(&lines);
+        assert!(!row.turns.valid && row.turns.finished.is_empty());
+        assert!(row.claude.queued_since_start.is_none());
+    }
     // Each join consumes the evidence: a second prompt needs its own.
     let row = run(&[
         user(10, "hello", ""),
@@ -1467,4 +1511,23 @@ fn turns_input_taken_after_a_record_lost_while_idle_is_ambiguous() {
         lost(&row, Some("user-1"));
         assert_eq!(row.turns.last_duration, Some(2));
     }
+}
+
+#[test]
+fn turns_input_taken_while_a_start_is_pending_is_ambiguous() {
+    // Found by the ground-truth fuzzer: a notification queued and taken
+    // before the first assistant record is input to the pending turn, so it
+    // is no start, and no interval is published until a proven end.
+    let mut lines = vec![
+        user(10, "hello", ""),
+        queue(11),
+        operation(12, "remove"),
+        queued(11, "task-notification", &notice("agent-x", "completed")),
+        assistant(13, "msg_a", "\"end_turn\""),
+    ];
+    let row = run(&lines);
+    assert!(row.claude.ambiguous && !row.turns.current_known);
+    lines.push(system("turn_duration", 20));
+    let row = run(&lines);
+    assert!(!row.turns.valid && row.turns.last.is_none());
 }

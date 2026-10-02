@@ -188,13 +188,15 @@ fn claude_pane_enrich_publishes_caught_up_sample_and_block_row() {
             "usage_source": "claude-transcript", "window": null
         })
     );
+    // The second notification replaces the first one's pending start, which
+    // may be a running turn it joined (D7): only the first turn is known.
     let mut timing = timing;
     timing["observed_at_s"] = json!(0);
     assert_eq!(
         timing,
-        json!({"active": false, "complete": true, "last_duration_s": 2,
+        json!({"active": null, "complete": false, "last_duration_s": 5,
             "last_outcome": "completed", "observed_at_s": 0, "started_at_s": null,
-            "total_finished_duration_s": 7})
+            "total_finished_duration_s": null})
     );
     // A warm pass resumes the block and publishes the same sample.
     let (again, _, warm) = enrich(&mut follower, &cursors);

@@ -20,6 +20,8 @@ pub const WRAPPERS: &[&str] = &[
 ];
 pub const LEAD_NONE: u8 = 0;
 pub const LEAD_COMMAND: u8 = 1;
+/// `local-command-stdout` and `local-command-stderr`.
+pub const LOCAL_OUTPUT: [u8; 2] = [2, 3];
 pub const LEAD_NOTIFICATION: u8 = 7;
 pub const LEAD_OTHER: u8 = WRAPPERS.len() as u8 + 1;
 /// D6 notification statuses; 0 is absent and `STATUS_OTHER` unrecognised.
