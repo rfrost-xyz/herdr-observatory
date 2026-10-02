@@ -1939,28 +1939,37 @@ fn claude_peer_sample_is_not_reemitted_after_a_request_without_its_row() {
     let rows = restarted["result"]["cursors"].as_object().unwrap();
     assert!(rows.len() == 1 && rows.values().all(|v| v["caught_up"] == false));
     // SSH answers from a stub while `stub-peer` exists, then from the real peer.
-    // The stub's caught-up sample comes without its row, as after eviction, so
-    // the next request carries no row.
-    let mut evicted = probe.clone();
-    evicted["result"]["sampled_at"] = json!(common::now());
-    evicted["result"]["agents"][0]["title"] = json!("evicted");
-    evicted["result"]["cursors"] = json!({});
-    write(
-        &f.dir.join("remote-sample.json"),
-        evicted.to_string(),
-        0o600,
-    );
+    // The stub's caught-up sample carries one Claude row, so it is stored, but
+    // under another session's key, as a stale request after pane churn
+    // carries: the next request has a Claude row, yet none for this pane.
+    let mut stored = probe.clone();
+    stored["result"]["sampled_at"] = json!(common::now());
+    stored["result"]["agents"][0]["title"] = json!("stored");
+    let row = probe["result"]["cursors"]
+        .as_object()
+        .unwrap()
+        .values()
+        .next()
+        .unwrap()
+        .clone();
+    stored["result"]["cursors"] = json!({ common::sha256(b"another-session"): row });
+    write(&f.dir.join("remote-sample.json"), stored.to_string(), 0o600);
     let flag = f.dir.join("stub-peer");
     write(&flag, "", 0o600);
     write(&f.dir.join("bin/ssh"),b"#!/bin/sh\nfor arg do last=$arg; done\nbase=\"$ANTON_TEST_PEER/..\"\nif [ -e \"$base/stub-peer\" ]; then\n case $last in\n  *--allowances-probe*) cat > /dev/null; printf '[]\\n';;\n  *--probe*) cat > /dev/null; cat \"$base/remote-sample.json\";;\n  *) exit 91;;\n esac\n exit\nfi\ncase $last in\n *--allowances-probe) mode=--allowances-probe;;\n *--identity-probe) mode=--identity-probe;;\n *--probe*) mode=--probe;;\n *) exit 99;;\nesac\nexec \"$ANTON_TEST_BINARY\" --root \"$ANTON_TEST_PEER\" --state \"$ANTON_TEST_PEER_STATE\" \"$mode\"\n",0o755);
     let mut stream = Stream::new(&f);
-    let stubbed = stream.until(|v| v["hosts"][1]["agents"][0]["title"] == "evicted");
+    let stubbed = stream.until(|v| v["hosts"][1]["agents"][0]["title"] == "stored");
     assert_eq!(*telemetry(&stubbed, 1), caught);
     fs::remove_file(&flag).unwrap();
-    // The real peer restarts without catching up; nothing proves the file is
-    // the one the retained sample measured, so it is not re-emitted.
-    let real = stream.until(|v| pane(v, 1) && v["hosts"][1]["agents"][0]["title"] != "evicted");
-    assert!(telemetry(&real, 1).is_null(), "{}", telemetry(&real, 1));
+    // The real peer replays from the header without catching up; nothing
+    // proves the file is the one the retained sample measured, so it is not
+    // re-emitted.
+    let real = stream.until(|v| pane(v, 1) && v["hosts"][1]["agents"][0]["title"] != "stored");
+    assert!(
+        telemetry(&real, 1).is_null(),
+        "re-emitted: {}",
+        telemetry(&real, 1)
+    );
     stream.close();
 }
 
