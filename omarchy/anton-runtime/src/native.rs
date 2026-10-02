@@ -1982,24 +1982,41 @@ mod tests {
         let state = fixture.root.join("state");
         std::fs::create_dir(&state).unwrap();
         let path = state.join("replay-checkpoints.json");
-        // Each read and parse is its own statement, naming its step and
-        // whether something removed the fixture from outside the test.
+        // Each read and parse is its own statement, naming its step and what
+        // is left of the fixture. A partial external `rm -rf` can leave the
+        // root in place, so its inode and listings are printed too: a new
+        // inode, or entries missing from them, show removal from outside.
+        let inode = std::fs::metadata(&fixture.root).unwrap().ino();
+        let diagnose = || {
+            let list = |dir: &Path| match std::fs::read_dir(dir) {
+                Ok(entries) => format!(
+                    "{:?}",
+                    entries
+                        .flatten()
+                        .map(|v| v.file_name().to_string_lossy().into_owned())
+                        .collect::<BTreeSet<_>>()
+                ),
+                Err(error) => format!("{:?}", error.kind()),
+            };
+            let now = std::fs::metadata(&fixture.root).map(|v| v.ino());
+            format!(
+                "fixture root inode at creation {inode}, now {now:?}; root {}; state {}",
+                list(&fixture.root),
+                list(&state)
+            )
+        };
         let read = |step: &str| {
             std::fs::read(&path).unwrap_or_else(|error| {
                 panic!(
-                    "{step}: read checkpoint: {:?}; fixture root exists: {}",
+                    "{step}: read checkpoint: {:?}; {}",
                     error.kind(),
-                    fixture.root.exists()
+                    diagnose()
                 )
             })
         };
         let parse = |step: &str, bytes: &[u8]| -> CheckpointFile {
-            serde_json::from_slice(bytes).unwrap_or_else(|error| {
-                panic!(
-                    "{step}: parse checkpoint: {error}; fixture root exists: {}",
-                    fixture.root.exists()
-                )
-            })
+            serde_json::from_slice(bytes)
+                .unwrap_or_else(|error| panic!("{step}: parse checkpoint: {error}; {}", diagnose()))
         };
         let empty = BTreeMap::from([("kept".to_owned(), json!({}))]);
         let mut cache = leased(&state, &owner);
