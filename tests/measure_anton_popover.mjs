@@ -539,8 +539,16 @@ const claudeId = (variant, host, i) => `c1a0de00-${variant}${host}00-4000-8000-$
 // response closed by turn_duration. Turn 0 launches an async child that a
 // task-notification completes in turn 1; turn 2 is followed by a compaction. Lines
 // stay under 64 KiB; turns repeat until the transcript reaches target bytes.
+// Records are 2 s apart and every ISO timestamp has the same width, so the
+// record count does not depend on the start. A large transcript starts early
+// enough that its last record is at least a minute old at any allowed size.
 function claudeTranscript(id, target) {
-  let t = Date.now() - 6 * 3600 * 1000, n = 0;
+  const now = Date.now(), usual = now - 6 * 3600 * 1000, first = claudeRecords(id, target, usual);
+  const start = now - 60 * 1000 - 2000 * first.count;
+  return start < usual ? claudeRecords(id, target, start).text : first.text;
+}
+function claudeRecords(id, target, start) {
+  let t = start, n = 0;
   const at = () => new Date(t += 2000).toISOString();
   const uuid = () => `5e0c0000-0000-4000-8000-${(++n).toString(16).padStart(12, '0')}`;
   const base = { isSidechain: false, userType: 'external', cwd: '/synthetic/branch', sessionId: id, session_id: id, version: 'fixture' };
@@ -562,7 +570,7 @@ function claudeTranscript(id, target) {
     push(rec({ type: 'system', subtype: 'turn_duration', durationMs: 8000, isMeta: false }));
     if (i === 2) { push(rec({ type: 'system', subtype: 'compact_boundary', content: 'Conversation compacted', compactMetadata: { trigger: 'auto', preTokens: 50000 } })); push(rec({ type: 'user', isCompactSummary: true, message: { role: 'user', content: 'Synthetic summary' } })); }
   }
-  return lines.join('\n') + '\n';
+  return { text: lines.join('\n') + '\n', count: n };
 }
 function claudeHerdr(prefix, ids) {
   return { protocol: 1, version: 'fixture', workspaces: [{ workspace_id: 'w1', label: 'Synthetic', worktree: { checkout_path: '/synthetic/branch' } }], agents: ids.map((id, i) => ({
