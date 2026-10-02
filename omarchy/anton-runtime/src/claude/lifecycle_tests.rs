@@ -1531,3 +1531,749 @@ fn turns_input_taken_while_a_start_is_pending_is_ambiguous() {
     let row = run(&lines);
     assert!(!row.turns.valid && row.turns.last.is_none());
 }
+
+// Ground-truth turn fuzzer. A generator simulates a Claude Code session whose
+// true turn intervals it knows (start at the trigger, end at `turn_duration`,
+// an abort, the last silent record of a version without `turn_duration`, or
+// a kill), writes the records the D7 model describes and injects lost,
+// unclassifiable, foreign and reordered records. After every record each
+// published value must be the truth, unknown, or unchanged from the value
+// published before it. File mode appends the same session in random byte
+// chunks and checks every caught-up pass the same way, and against the
+// in-memory replay. Two calibrations come from the counts-only corpus replay
+// or plain process facts: taken input keeps the stamp of the time it was
+// queued (every corpus join was stamped before its `remove`), and a killed
+// process writes nothing for at least 2 s while it restarts.
+
+/// A true finished turn: start, end and outcome; `killed` is never published.
+type Interval = (u64, u64, &'static str);
+
+/// The true turn state of the generated session at one point.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct World {
+    running: Option<u64>,
+    last: Option<Interval>,
+    total: u64,
+}
+
+/// What `native::turn_timing` publishes: the current turn, the last interval
+/// and the accumulated total, each `None` while unknown.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Published {
+    current: Option<(bool, Option<u64>)>,
+    last: Option<(u64, String, u64)>,
+    total: Option<u64>,
+}
+impl Published {
+    fn of(turns: &Turns) -> Self {
+        let last = match (turns.last_duration, &turns.last_outcome, turns.last_end) {
+            (Some(duration), Some(outcome), Some(end)) => Some((duration, outcome.clone(), end)),
+            _ => None,
+        };
+        Self {
+            current: turns
+                .current_known
+                .then(|| (turns.active.is_some(), turns.start)),
+            last,
+            total: (turns.valid && turns.supported).then_some(turns.total),
+        }
+    }
+    fn truth(world: &World) -> Self {
+        Self {
+            current: Some((world.running.is_some(), world.running.map(second))),
+            last: world
+                .last
+                .map(|(start, end, outcome)| (end - start, outcome.to_owned(), second(end))),
+            total: Some(world.total),
+        }
+    }
+    /// The fields that are neither the truth, unknown, nor unchanged.
+    fn wrong(&self, previous: &Self, truth: &Self) -> Vec<&'static str> {
+        fn bad<T: PartialEq>(new: &Option<T>, old: &Option<T>, truth: &Option<T>) -> bool {
+            new.is_some() && new != old && new != truth
+        }
+        let mut wrong = vec![];
+        if bad(&self.current, &previous.current, &truth.current) {
+            wrong.push("current");
+        }
+        if bad(&self.last, &previous.last, &truth.last) {
+            wrong.push("last");
+        }
+        if bad(&self.total, &previous.total, &truth.total) {
+            wrong.push("total");
+        }
+        wrong
+    }
+}
+
+/// One generated session: each line (`None` is unparseable), the truth after
+/// it, and a tag naming the shape that wrote it.
+struct Story {
+    random: Seeded,
+    lines: Vec<Option<String>>,
+    truth: Vec<World>,
+    tags: Vec<String>,
+    world: World,
+    at: u64,
+    uuid: u64,
+    message: u64,
+    /// Per-mille rate of injected record faults; 0 for a clean session.
+    faults: u64,
+    /// Lines over `LINE` are only written for file mode.
+    oversized: bool,
+    /// Input still queued when a turn ended starts the next turn.
+    queued_left: bool,
+    /// When the oldest input still in the queue was queued.
+    enqueued: Option<u64>,
+}
+impl Story {
+    fn new(seed: u64, faults: u64, oversized: bool) -> Self {
+        Self {
+            random: Seeded(seed),
+            lines: vec![],
+            truth: vec![],
+            tags: vec![],
+            world: World::default(),
+            at: 100,
+            uuid: 0,
+            message: 0,
+            faults,
+            oversized,
+            queued_left: false,
+            enqueued: None,
+        }
+    }
+    fn chance(&mut self, per_mille: u64) -> bool {
+        self.random.below(1000) < per_mille
+    }
+    /// Advances true time; `idle` allows a long gap.
+    fn tick(&mut self, idle: bool) {
+        self.at += if idle && self.chance(300) {
+            30 + self.random.below(600)
+        } else {
+            self.random.below(4)
+        };
+    }
+    /// A stamp at `at` with a random fraction, which floors to `at`.
+    fn stamp(&mut self, at: u64) -> String {
+        let fraction = self.random.below(1000);
+        stamp(at).replace(".250Z", &format!(".{fraction:03}Z"))
+    }
+    /// A record of `kind` at `at` with a unique uuid and raw extra fields.
+    fn record_at(&mut self, kind: &str, at: u64, fields: &str) -> String {
+        self.uuid += 1;
+        let stamp = self.stamp(at);
+        format!(
+            "{{\"type\":\"{kind}\",\"sessionId\":\"{ID}\",\"uuid\":\"g-{}\",\"timestamp\":\"{stamp}\"{}{fields}}}",
+            self.uuid,
+            if fields.is_empty() { "" } else { "," }
+        )
+    }
+    fn record(&mut self, kind: &str, fields: &str) -> String {
+        self.record_at(kind, self.at, fields)
+    }
+    fn user(&mut self, text: &str, fields: &str) -> String {
+        let content = serde_json::to_string(text).unwrap();
+        let message = format!("\"message\":{{\"role\":\"user\",\"content\":{content}}}");
+        let fields = if fields.is_empty() {
+            message
+        } else {
+            format!("{fields},{message}")
+        };
+        self.record("user", &fields)
+    }
+    /// An assistant line of the current message; `next` starts a new one.
+    fn assistant(&mut self, stop: &str, next: bool) -> String {
+        self.message += u64::from(next);
+        let fields = format!(
+            "\"message\":{{\"id\":\"msg_{}\",\"model\":\"claude-fixture-1\",\"stop_reason\":{stop},\"usage\":{{\"input_tokens\":1,\"output_tokens\":1,\"cache_read_input_tokens\":0,\"cache_creation_input_tokens\":0}},\"content\":[]}}",
+            self.message
+        );
+        self.record("assistant", &fields)
+    }
+    fn system(&mut self, subtype: &str) -> String {
+        self.record("system", &format!("\"subtype\":\"{subtype}\""))
+    }
+    fn operation(&mut self, operation: &str) -> String {
+        self.record("queue-operation", &format!("\"operation\":\"{operation}\""))
+    }
+    fn queued(&mut self, mode: &str, prompt: &str) -> String {
+        let prompt = serde_json::to_string(prompt).unwrap();
+        self.record(
+            "attachment",
+            &format!(
+                "\"attachment\":{{\"type\":\"queued_command\",\"commandMode\":\"{mode}\",\"prompt\":{prompt}}}"
+            ),
+        )
+    }
+}
+
+/// Replaces the `timestamp` value of a generated line.
+fn restamp(line: &str, stamp: &str) -> String {
+    let from = line.find("\"timestamp\":\"").unwrap() + 13;
+    let to = from + line[from..].find('"').unwrap();
+    format!("{}{stamp}{}", &line[..from], &line[to..])
+}
+impl Story {
+    /// Pushes a line with the truth after it, sometimes replaced by a fault
+    /// that loses or corrupts it. A fault never changes the truth.
+    fn push(&mut self, line: String, tag: &str) {
+        let mut tag = tag.to_owned();
+        let mut line = Some(line);
+        if self.faults > 0 && self.chance(self.faults) {
+            let text = line.take().unwrap();
+            let (fault, faulty) = match self.random.below(6) {
+                0 => ("lost", None),
+                1 => ("bad-stamp", Some(restamp(&text, "not-a-time"))),
+                2 => (
+                    "epoch-stamp",
+                    Some(restamp(&text, "1970-01-01T00:00:00.500Z")),
+                ),
+                3 => (
+                    "no-session",
+                    Some(text.replace(&format!("\"sessionId\":\"{ID}\","), "")),
+                ),
+                4 if self.chance(150) => ("foreign", Some(text.replace(ID, "fixture-session-b"))),
+                // An assistant line without its message id, or a user line
+                // whose content has no text.
+                _ if text.contains("\"message\":{\"id\"") => (
+                    "unclassifiable",
+                    Some(text.replacen("\"id\":\"msg_", "\"name\":\"msg_", 1)),
+                ),
+                _ if text.contains("\"role\":\"user\"") => {
+                    let from = text.find("\"content\":").unwrap() + 10;
+                    ("shapeless", Some(format!("{}[]}}}}", &text[..from])))
+                }
+                _ => ("lost", None),
+            };
+            tag = format!("{tag}+{fault}");
+            line = faulty;
+        }
+        self.lines.push(line);
+        self.truth.push(self.world.clone());
+        self.tags.push(tag);
+    }
+    /// Pushes a turn-body line, sometimes stamped before earlier records.
+    fn body(&mut self, line: String, tag: &str) {
+        if self.faults > 0 && self.chance(60) {
+            let early = self.at.saturating_sub(1 + self.random.below(20)).max(1);
+            let stamp = self.stamp(early);
+            return self.push(restamp(&line, &stamp), &format!("body:{tag}+early"));
+        }
+        self.push(line, &format!("body:{tag}"));
+    }
+    /// The running turn ends at the current time.
+    fn end(&mut self, outcome: &'static str) {
+        let start = self.world.running.take().unwrap();
+        self.world.last = Some((start, self.at, outcome));
+        self.world.total += self.at - start;
+    }
+    /// A turn trigger of a random D7 shape, which may be a long prompt.
+    fn trigger(&mut self) -> (String, &'static str) {
+        let image = "\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"image\"}]}";
+        if self.oversized && self.chance(40) {
+            let size = LINE + 10 + self.random.below(LINE as u64) as usize;
+            let prompt = format!("prompt {}", "x".repeat(size));
+            return (self.user(&prompt, ""), "oversized-prompt");
+        }
+        match self.random.below(11) {
+            0 | 1 => (self.user("prompt", ""), "prompt"),
+            2 => (
+                self.user("prompt", "\"origin\":{\"kind\":\"human\"}"),
+                "human",
+            ),
+            3 => (
+                self.record(
+                    "user",
+                    &format!("\"origin\":{{\"kind\":\"human\"}},{image}"),
+                ),
+                "image-human",
+            ),
+            4 => (self.record("user", image), "image"),
+            5 => (
+                self.user(
+                    &notice("agent-x", "completed"),
+                    "\"origin\":{\"kind\":\"task-notification\"}",
+                ),
+                "notification",
+            ),
+            6 => (
+                self.queued("task-notification", &notice("agent-x", "completed")),
+                "queued-notification",
+            ),
+            7 => (
+                self.user("peer", "\"isMeta\":true,\"origin\":{\"kind\":\"peer\"}"),
+                "peer",
+            ),
+            8 => (
+                self.user("plan", "\"origin\":{\"kind\":\"coordinator\"}"),
+                "coordinator",
+            ),
+            _ => (
+                self.user("<command-name>/review</command-name>", ""),
+                "command",
+            ),
+        }
+    }
+    /// An abort of a random shape ends the running turn at its record.
+    fn abort(&mut self) {
+        self.tick(false);
+        self.end("aborted");
+        let (line, tag) = match self.random.below(4) {
+            0 => (self.user("[Request interrupted by user]", ""), "abort"),
+            1 => (
+                self.user("[Request interrupted by user for tool use]", ""),
+                "abort-tool",
+            ),
+            2 => (
+                self.user("stopped", "\"interruptedMessageId\":\"m-1\""),
+                "abort-id",
+            ),
+            _ => {
+                let line = self.assistant("null", true).replacen(
+                    "\"message\"",
+                    "\"isAbortedMidStream\":true,\"message\"",
+                    1,
+                );
+                (line, "abort-stream")
+            }
+        };
+        self.push(line, tag);
+        if self.chance(500) {
+            self.tick(false);
+            let line = self.system("turn_duration");
+            self.push(line, "abort-duration");
+        }
+    }
+    /// The process dies: the running turn ends unrecorded, and a process
+    /// restarted at least 2 s later may write a record of its own.
+    fn kill(&mut self) {
+        self.at += 1 + self.random.below(30);
+        self.end("killed");
+        self.enqueued = None;
+        self.at += 2 + self.random.below(10);
+        self.tick(true);
+        if self.chance(500) {
+            let line = self.record("permission-mode", "\"permissionMode\":\"default\"");
+            self.push(line, "resumed");
+        }
+    }
+}
+impl Story {
+    /// Records between turns that never start or end one, including an idle
+    /// slash-command echo that runs no model.
+    fn idle(&mut self) {
+        for _ in 0..self.random.below(3) {
+            self.tick(true);
+            let (line, tag) = match self.random.below(5) {
+                0 => {
+                    let line = self.user("<command-name>/model</command-name>", "");
+                    self.push(line, "idle-echo");
+                    self.tick(false);
+                    if self.chance(500) {
+                        (self.system("local_command"), "idle-echo-system")
+                    } else {
+                        let text = "<local-command-stdout>ok</local-command-stdout>";
+                        (self.user(text, ""), "idle-echo-output")
+                    }
+                }
+                1 => (self.user("caveat", "\"isMeta\":true"), "idle-meta"),
+                2 => (self.user("<bash-input>ls</bash-input>", ""), "idle-bash"),
+                3 => (self.system("compact_boundary"), "idle-compact"),
+                _ => (self.record("file-history-snapshot", ""), "idle-other"),
+            };
+            self.push(line, tag);
+        }
+    }
+    /// Input queued while a turn runs, stamped when it is queued.
+    fn enqueue(&mut self) {
+        self.enqueued = Some(self.enqueued.unwrap_or(self.at));
+        let line = self.operation("enqueue");
+        self.body(line, "enqueue");
+    }
+    /// Queued input taken into the running turn: as a joining trigger, as a
+    /// `queued_command` attachment, or not yet consumed. A taken record keeps
+    /// the stamp of the time it was queued, as corpus joins do, or sometimes
+    /// the time it is taken.
+    fn take(&mut self) {
+        let queued = self.enqueued.take().unwrap_or(self.at);
+        let operation = if self.chance(500) {
+            "dequeue"
+        } else {
+            "remove"
+        };
+        let line = self.operation(operation);
+        self.body(line, operation);
+        let at = if self.chance(800) { queued } else { self.at };
+        let (line, tag) = match self.random.below(5) {
+            0 => (self.user("more", ""), "join"),
+            1 => (
+                self.queued("task-notification", &notice("agent-y", "completed")),
+                "join-notification",
+            ),
+            2 => (self.queued("prompt", "more"), "queued-prompt"),
+            3 => (
+                self.user("more", "\"origin\":{\"kind\":\"human\"}"),
+                "join-human",
+            ),
+            _ => return,
+        };
+        let stamp = self.stamp(at);
+        self.body(restamp(&line, &stamp), tag);
+    }
+    /// One true turn: a trigger, a body, and an end of a random kind.
+    fn turn(&mut self) {
+        if std::mem::take(&mut self.queued_left) {
+            let line = self.operation("dequeue");
+            self.push(line, "idle-dequeue");
+        }
+        self.tick(true);
+        let (line, tag) = self.trigger();
+        self.world.running = Some(self.at);
+        self.push(line, tag);
+        self.enqueued = None;
+        if tag == "command" && self.chance(500) {
+            let line = self.user("expanded", "\"isMeta\":true");
+            self.push(line, "command-meta");
+        }
+        match self.random.below(100) {
+            0..=5 => return self.abort(),
+            6..=9 => return self.kill(),
+            // Input queued and taken before the first assistant record.
+            10..=13 => {
+                self.tick(false);
+                self.enqueue();
+                self.tick(false);
+                self.take();
+            }
+            // A local command run while the first response is awaited.
+            14..=16 => {
+                self.tick(false);
+                let line = if self.chance(500) {
+                    self.system("local_command")
+                } else {
+                    self.user("<local-command-stdout>ok</local-command-stdout>", "")
+                };
+                self.push(line, "pending-local-output");
+            }
+            _ => {}
+        }
+        self.tick(false);
+        let first = if self.chance(100) {
+            self.assistant("null", true)
+                .replace("claude-fixture-1", "<synthetic>")
+        } else {
+            let stop = if self.chance(500) {
+                "\"tool_use\""
+            } else {
+                "null"
+            };
+            self.assistant(stop, true)
+        };
+        self.push(first, "first-assistant");
+        for _ in 0..self.random.below(9) {
+            self.tick(false);
+            let (line, tag) = match self.random.below(12) {
+                0 | 1 => {
+                    let line = self.assistant("\"tool_use\"", true);
+                    self.body(line, "tool-use");
+                    self.tick(false);
+                    let result = "\"toolUseResult\":{\"stdout\":\"ok\"},\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"content\":\"done\"}]}";
+                    (self.record("user", result), "tool-result")
+                }
+                2 => (self.assistant("null", true), "partial"),
+                3 => (
+                    self.assistant("null", true)
+                        .replace("claude-fixture-1", "<synthetic>"),
+                    "synthetic",
+                ),
+                4 => (self.user("hook", "\"isMeta\":true"), "meta"),
+                5 => {
+                    self.enqueue();
+                    continue;
+                }
+                6 if self.enqueued.is_some() => {
+                    self.take();
+                    continue;
+                }
+                7 => {
+                    // A silent end, then queued input that joins the turn.
+                    let line = self.assistant("\"end_turn\"", true);
+                    self.body(line, "silent-end");
+                    if self.chance(500) {
+                        let line = self.system("stop_hook_summary");
+                        self.body(line, "silent-hook");
+                    }
+                    self.tick(false);
+                    self.enqueue();
+                    self.tick(false);
+                    self.take();
+                    continue;
+                }
+                8 => (
+                    self.queued("task-notification", &notice("agent-y", "completed")),
+                    "notification-mid",
+                ),
+                9 => (
+                    self.user("<local-command-stdout>x</local-command-stdout>", ""),
+                    "wrapper",
+                ),
+                10 => (self.system("compact_boundary"), "compact"),
+                _ if self.oversized && self.chance(100) => {
+                    let pad = "p".repeat(LINE + 10 + self.random.below(LINE as u64) as usize);
+                    (
+                        self.record("progress", &format!("\"data\":\"{pad}\"")),
+                        "oversized",
+                    )
+                }
+                _ => (self.record("progress", "\"data\":\"x\""), "progress"),
+            };
+            self.body(line, tag);
+        }
+        self.finish();
+    }
+}
+impl Story {
+    /// The end of a turn: `turn_duration`, a version without it, an abort or
+    /// a kill, which may come after queued input was taken.
+    fn finish(&mut self) {
+        let queued = self.enqueued.is_some();
+        match self.random.below(100) {
+            0..=54 => {
+                self.tick(false);
+                let line = self.assistant("\"end_turn\"", true);
+                self.body(line, "end-turn");
+                if self.chance(500) {
+                    let line = self.system("stop_hook_summary");
+                    self.body(line, "stop-hook");
+                }
+                self.tick(false);
+                self.end("completed");
+                let line = self.system("turn_duration");
+                self.push(line, "turn-duration");
+                self.queued_left = queued;
+            }
+            55..=69 => {
+                // Without `turn_duration` the turn ends at its last record.
+                self.tick(false);
+                let line = self.assistant("\"end_turn\"", true);
+                if self.chance(500) {
+                    self.body(line, "old-end-turn");
+                    self.tick(false);
+                    self.end("completed");
+                    let line = self.system("stop_hook_summary");
+                    self.push(line, "old-stop-hook");
+                } else {
+                    self.end("completed");
+                    self.push(line, "old-end-turn");
+                }
+                self.queued_left = queued;
+            }
+            70..=84 => self.abort(),
+            _ => {
+                if self.chance(400) {
+                    if !queued {
+                        self.tick(false);
+                        self.enqueue();
+                    }
+                    self.tick(false);
+                    self.take();
+                }
+                self.kill();
+            }
+        }
+    }
+    /// Swaps a few adjacent turn-body lines that share the same truth.
+    fn swap(&mut self) {
+        for _ in 0..self.random.below(4) {
+            let Some(last) = self.lines.len().checked_sub(1).filter(|n| *n > 0) else {
+                return;
+            };
+            let at = self.random.below(last as u64) as usize;
+            if self.tags[at].starts_with("body:")
+                && self.tags[at + 1].starts_with("body:")
+                && self.truth[at] == self.truth[at + 1]
+            {
+                self.lines.swap(at, at + 1);
+                self.tags.swap(at, at + 1);
+                self.tags[at].push_str("+swapped");
+            }
+        }
+    }
+}
+/// A generated session of 2 to 11 turns with idle records between them.
+fn story(seed: u64, faults: u64, oversized: bool) -> Story {
+    let mut story = Story::new(seed, faults, oversized);
+    for _ in 0..2 + story.random.below(10) {
+        story.idle();
+        story.turn();
+    }
+    if faults > 0 {
+        story.swap();
+    }
+    story
+}
+/// Turns and the block pass through serde at a checkpoint, as in `enrich`.
+fn round_trip(row: &mut Row) {
+    row.turns = serde_json::from_value(serde_json::to_value(&row.turns).unwrap()).unwrap();
+    row.claude = serde_json::from_value(serde_json::to_value(&row.claude).unwrap()).unwrap();
+}
+/// Checks one published state against the truth after `index` lines and the
+/// previous published state, recording every wrong field with its trail.
+fn check(
+    row: &Row,
+    previous: &Published,
+    story: &Story,
+    lines: usize,
+    label: &str,
+    found: &mut Vec<String>,
+) -> Published {
+    let published = Published::of(&row.turns);
+    let world = lines
+        .checked_sub(1)
+        .map_or_else(World::default, |at| story.truth[at].clone());
+    let mut wrong = published.wrong(previous, &Published::truth(&world));
+    if !row.gate(now()) {
+        wrong.push("gate");
+    }
+    for field in wrong {
+        let trail = story.tags[lines.saturating_sub(30)..lines].join(" ");
+        found.push(format!(
+            "{label}: {field} after line {lines}: published {published:?}, before {previous:?}, truth {world:?}\n    {trail}"
+        ));
+    }
+    published
+}
+/// Applies every line in memory, checking after each one, and returns the
+/// published state after each line.
+fn replay_memory(story: &Story, label: &str, found: &mut Vec<String>) -> Vec<Published> {
+    let mut row = Row::new([1, 2], 0, now());
+    let mut previous = Published::of(&row.turns);
+    let mut published = vec![];
+    for (index, line) in story.lines.iter().enumerate() {
+        match line
+            .as_deref()
+            .and_then(|line| serde_json::from_str::<Value>(line).ok())
+            .and_then(|value| Record::from_value(&value, ID, now()))
+        {
+            Some(record) => row.apply(&record),
+            None => row.invalid(),
+        }
+        if index % 7 == 3 {
+            round_trip(&mut row);
+        }
+        previous = check(&row, &previous, story, index + 1, label, found);
+        published.push(previous.clone());
+    }
+    published
+}
+/// Appends the session in random byte chunks, splitting lines anywhere, and
+/// runs `resume` passes after each append as `enrich` does, checking every
+/// caught-up pass against the truth, with the state `memory` published
+/// before the last line as the previous value, and against `memory` itself:
+/// a pass boundary never changes a value. Returns the passes that restarted.
+fn replay_file(
+    story: &Story,
+    memory: &[Published],
+    seed: u64,
+    label: &str,
+    found: &mut Vec<String>,
+) -> usize {
+    use std::io::Write;
+    let fixture = super::tests::Fixture::new();
+    let header = format!("{{\"type\":\"permission-mode\",\"sessionId\":\"{ID}\"}}\n");
+    let path = fixture.file("slug-a", &format!("{ID}.jsonl"), &header);
+    let mut body = Vec::new();
+    let mut ends = vec![];
+    for line in &story.lines {
+        // A lost line is a truncated record.
+        body.extend_from_slice(
+            line.as_deref()
+                .unwrap_or("{\"type\":\"user\",\"sessionId\":")
+                .as_bytes(),
+        );
+        body.push(b'\n');
+        ends.push(body.len());
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap();
+    let mut random = Seeded(seed ^ 0x5bd1_e995);
+    let (mut row, mut written, mut restarts) = (None::<Row>, 0, 0);
+    let initial = Published::of(&Turns::default());
+    let after = |lines: usize| lines.checked_sub(1).map_or(&initial, |at| &memory[at]);
+    while written < body.len() {
+        let size = match random.below(8) {
+            0..=2 => 1 + random.below(40),
+            3..=5 => 1 + random.below(1000),
+            6 => 1 + random.below(6000),
+            _ => 1 + random.below(90_000),
+        };
+        let mut next = (written + size as usize).min(body.len());
+        // Half the appends end on a line, so most of those passes catch up.
+        if random.below(2) == 0 {
+            next = ends[ends.partition_point(|end| *end < next)];
+        }
+        file.write_all(&body[written..next]).unwrap();
+        written = next;
+        loop {
+            let offset = row.as_ref().map(|row| row.offset);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let (mut next, resumed) =
+                resume(&fixture.projects, &path, ID, row.take(), now(), deadline).unwrap();
+            restarts += usize::from(offset.is_some() && !resumed);
+            round_trip(&mut next);
+            let done = next.caught_up || Some(next.offset) == offset;
+            if next.caught_up && !next.skipping {
+                let lines = ends.partition_point(|end| *end <= written);
+                let previous = after(lines.saturating_sub(1));
+                let published = check(&next, previous, story, lines, label, found);
+                if lines > 0 && &published != after(lines) {
+                    found.push(format!(
+                        "{label}: pass boundary after line {lines}: {published:?} in memory {:?}",
+                        after(lines)
+                    ));
+                }
+            }
+            row = Some(next);
+            if done {
+                break;
+            }
+        }
+    }
+    restarts
+}
+
+#[test]
+fn turns_ground_truth_fuzz_never_publishes_a_wrong_value() {
+    let started = std::time::Instant::now();
+    let (mut found, mut records, mut restarts) = (vec![], 0, 0);
+    for (base, sessions, file) in [
+        (0x9e37_79b9_7f4a_7c15_u64, 3000, false),
+        (0xc2b2_ae3d_27d4_eb4f, 160, true),
+    ] {
+        for index in 0..sessions {
+            let seed = (base ^ (index + 1_u64).wrapping_mul(0x2545_f491_4f6c_dd1d)) | 1;
+            let faults = [0, 10, 40, 120, 250][index as usize % 5];
+            let story = story(seed, faults, file);
+            records += story.lines.len();
+            let label = format!("seed {seed:#x} faults {faults} file {file}");
+            let memory = replay_memory(&story, &label, &mut found);
+            if file {
+                restarts += replay_file(&story, &memory, seed, &label, &mut found);
+            }
+        }
+    }
+    eprintln!(
+        "ground-truth turn fuzz: {records} records, {} violations, {restarts} restarts in {:?}",
+        found.len(),
+        started.elapsed()
+    );
+    assert!(
+        found.is_empty() && restarts == 0,
+        "{} violations, {restarts} restarts:\n{}",
+        found.len(),
+        found[..found.len().min(8)].join("\n")
+    );
+}
