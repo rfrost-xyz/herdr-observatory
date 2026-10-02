@@ -218,14 +218,61 @@ fn first_session_id(
                 Err(Predecessor::Unknown)
             };
         }
-        let record: Value = serde_json::from_slice(&bytes).map_err(|_| Predecessor::Unknown)?;
-        match record.get("session_id") {
+        let session = match serde_json::from_slice::<Value>(&bytes) {
+            Ok(record) => record.get("session_id").cloned(),
+            Err(_) => lenient_session_id(&bytes, id).ok_or(Predecessor::Unknown)?,
+        };
+        match session {
             None => {}
             Some(Value::String(value)) if value != id => return Ok(Successor::Other),
             Some(_) => return Err(Predecessor::Unknown),
         }
     }
     Err(Predecessor::Unknown)
+}
+
+/// A candidate line serde rejects, as it does an unpaired surrogate escape that
+/// replay reads (D3), is read only for its top-level `session_id` (present or
+/// absent), once the classifier accepts the line as well formed. `None` means
+/// the line cannot be read.
+fn lenient_session_id(bytes: &[u8], id: &str) -> Option<Option<Value>> {
+    struct Record(Option<Value>);
+    impl<'de> Deserialize<'de> for Record {
+        fn deserialize<D: serde::Deserializer<'de>>(
+            deserializer: D,
+        ) -> std::result::Result<Self, D::Error> {
+            struct Fields;
+            impl<'de> serde::de::Visitor<'de> for Fields {
+                type Value = Record;
+                fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                    f.write_str("a record")
+                }
+                fn visit_map<A: serde::de::MapAccess<'de>>(
+                    self,
+                    mut map: A,
+                ) -> std::result::Result<Record, A::Error> {
+                    let mut found = None;
+                    while let Some(key) = map.next_key::<String>()? {
+                        if key != "session_id" {
+                            map.next_value::<serde::de::IgnoredAny>()?;
+                        } else if found.is_some() {
+                            return Err(serde::de::Error::duplicate_field("session_id"));
+                        } else {
+                            found = Some(map.next_value::<Value>()?);
+                        }
+                    }
+                    Ok(Record(found))
+                }
+            }
+            deserializer.deserialize_map(Fields)
+        }
+    }
+    let mut classifier = Classifier::default();
+    if !classifier.feed(bytes, id, common::now()) || matches!(classifier.finish(), Outcome::Invalid)
+    {
+        return None;
+    }
+    serde_json::from_slice::<Record>(bytes).ok().map(|v| v.0)
 }
 
 /// D2: the path must be exactly `<root>/<entry>/<id>.jsonl`, opened without
@@ -1960,6 +2007,55 @@ mod tests {
             predecessor(&bound, ID, &mut budget()),
             Predecessor::Clear { growing: false }
         );
+    }
+    /// An unpaired surrogate escape, which replay reads on both paths, does not
+    /// decide a candidate: only its top-level `session_id` does. Malformed
+    /// JSON and a non-object record are still unknown.
+    #[test]
+    fn predecessor_candidate_with_an_unpaired_surrogate_is_read_for_its_session_id() {
+        let fixture = Fixture::new();
+        let bound = fixture.file("slug-a", &format!("{ID}.jsonl"), &header_line(ID));
+        aged(&bound, 60);
+        let next = fixture.file("slug-a", "fixture-session-c.jsonl", "");
+        let broken = r#""content":"broken \ud83d emoji""#;
+        let cases = [
+            (
+                format!(
+                    "{{\"type\":\"user\",{broken}}}\n{{\"session_id\":\"fixture-session-d\"}}\n"
+                ),
+                Predecessor::Clear { growing: false },
+            ),
+            (
+                format!("{{\"type\":\"user\",{broken},\"session_id\":\"fixture-session-d\"}}\n"),
+                Predecessor::Clear { growing: false },
+            ),
+            (
+                format!("{{\"session_id\":\"{ID}\",{broken}}}\n"),
+                Predecessor::Unknown,
+            ),
+            (
+                format!("{{{broken},\"session_id\":null}}\n"),
+                Predecessor::Unknown,
+            ),
+            (
+                format!("{{\"type\":\"user\",{broken}}}\n"),
+                Predecessor::Clear { growing: true },
+            ),
+            (format!("{{{broken}\n"), Predecessor::Unknown),
+            (format!("[{broken}]\n"), Predecessor::Unknown),
+            (
+                "[\"\\ud83d\",\"fixture-session-d\"]\n".to_owned(),
+                Predecessor::Unknown,
+            ),
+        ];
+        for (text, expected) in cases {
+            std::fs::write(&next, &text).unwrap();
+            assert_eq!(
+                predecessor(&bound, ID, &mut budget()),
+                expected,
+                "{text:.80}"
+            );
+        }
     }
     /// A candidate that cannot be opened for a reason other than a symlink, a
     /// non-file or another owner is an IO error: truncated, so not cached.
