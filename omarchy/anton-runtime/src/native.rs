@@ -748,13 +748,14 @@ fn turn_timing(turns: &Turns, time: f64) -> Value {
 /// Merges a Claude replay object into the agent's metadata telemetry as Codex
 /// usage is merged, adds children from a caught-up `row`, then stamps it with
 /// the largest of the metadata, usage, child and replay `seq` times (D6, D8).
+/// Returns whether a sample was published: none is when no time is usable.
 fn publish_claude(
     agent: &mut Value,
     usage: &Value,
     row: Option<&claude::Row>,
     seq: u64,
     time: f64,
-) {
+) -> bool {
     let previous = telemetry::telemetry_from_agent(agent).unwrap_or_else(|| json!({}));
     let mut value = previous.clone();
     if number(&previous["usage_seq"]).is_none()
@@ -814,7 +815,9 @@ fn publish_claude(
             }
         }
         agent["_native_telemetry"] = view;
+        return true;
     }
+    false
 }
 impl NativeTelemetry {
     fn discover(session: &str, deadline: Instant) -> Option<PathBuf> {
@@ -949,24 +952,40 @@ impl NativeTelemetry {
             return;
         }
         // A peer follower is fresh on every probe, so a bind or verification
-        // failure for a session with a cursor row publishes an all-null sample
-        // at that row's original source time. It replaces the copy the local
-        // retains for the peer (D3).
-        let incoming = cursors
-            .get(&key)
-            .and_then(|v| v.claude.as_ref())
-            .map(|v| v.coverage_seq);
-        let unknown = |agent: &mut Value| {
-            if let Some(seq) = incoming {
-                let usage = claude::Row::new([0, 0], 0, time).usage();
-                publish_claude(agent, &usage, None, seq, time);
+        // failure, or a restart that publishes nothing, for a session with a
+        // cursor row publishes an all-null sample at that row's latest usable
+        // original source time. It replaces the copy the local retains for
+        // the peer (D3). Without a cursor row the local re-emits nothing.
+        let incoming = cursors.get(&key).and_then(|v| {
+            Some([
+                v.claude.as_ref()?.coverage_seq,
+                v.claude.as_ref()?.usage_seq,
+                v.seq,
+            ])
+        });
+        // Returns false only when the row has a source time but none is usable
+        // yet: the caller then withholds the row, so the local cannot re-emit.
+        let unknown = |agent: &mut Value| -> bool {
+            let Some(stamps) = incoming else {
+                return true;
+            };
+            let usage = claude::Row::new([0, 0], 0, time).usage();
+            match stamps
+                .into_iter()
+                .filter(|v| *v > 0 && *v as f64 <= time * 1e6)
+                .max()
+            {
+                Some(seq) => publish_claude(agent, &usage, None, seq, time),
+                None => stamps.iter().all(|v| *v == 0),
             }
         };
         let root = claude::projects_root();
         let path = match self.bind(&root, &session, &key, deadline) {
             Some(Some(path)) => path,
             Some(None) => {
-                unknown(agent);
+                if !unknown(agent) {
+                    cursors.remove(&key);
+                }
                 return;
             }
             // The deadline passed inside discovery or the predecessor scan.
@@ -977,7 +996,7 @@ impl NativeTelemetry {
         };
         let incoming_row = cursors.remove(&key);
         let mut row = incoming_row.clone().and_then(Cursor::into_row);
-        let (mut ran, mut restarted) = (false, false);
+        let (mut ran, mut restarted, mut withhold) = (false, false, false);
         for _ in 0..16 {
             if Instant::now() >= deadline {
                 break;
@@ -993,10 +1012,9 @@ impl NativeTelemetry {
                 // peer publishes the all-null sample at its source time (D3).
                 // Progress made by an earlier pass of this call is discarded.
                 self.claude.remove(&key);
-                if let Some(incoming_row) = incoming_row {
+                if let Some(incoming_row) = incoming_row.filter(|_| unknown(agent)) {
                     cursors.insert(key, incoming_row);
                 }
-                unknown(agent);
                 return;
             };
             ran = true;
@@ -1024,7 +1042,11 @@ impl NativeTelemetry {
                 let usage = row.usage();
                 let seq = row.claude.coverage_seq;
                 let children = Some(&row).filter(|_| !foreign);
-                publish_claude(agent, &usage, children, seq, time);
+                // A restart that publishes nothing, as with no timestamped
+                // record yet, must still replace the local's copy (D3).
+                if !publish_claude(agent, &usage, children, seq, time) && (restarted || foreign) {
+                    withhold = !unknown(agent);
+                }
                 let mut subset = usage;
                 subset.as_object_mut().unwrap().remove("compactions");
                 binding.retained = Some((subset, seq));
@@ -1033,13 +1055,15 @@ impl NativeTelemetry {
             } else if restarted || foreign {
                 // An identity failure replaces the copy a local retains for
                 // a peer, whose fresh follower has nothing to re-emit (D3).
-                unknown(agent);
+                withhold = !unknown(agent);
             }
         } else if let Some((subset, seq)) = &self.claude[&key].retained {
             // The deadline passed after binding, before any replay pass.
             publish_claude(agent, subset, None, *seq, time);
         }
-        cursors.insert(key, Cursor::from_row(row));
+        if !withhold {
+            cursors.insert(key, Cursor::from_row(row));
+        }
     }
     /// One Codex pane: discover, read usage, replay up to 16 bounded passes,
     /// then publish usage, children, compactions and turn timing.

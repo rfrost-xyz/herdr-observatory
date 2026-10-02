@@ -1128,3 +1128,110 @@ fn claude_header_failure_with_a_cursor_row_keeps_it_and_publishes_an_all_null_sa
         assert_eq!(agents[0]["_native_telemetry"], expected);
     }
 }
+
+/// RFC 3339 text for a Unix time in microseconds (civil-from-days).
+fn rfc3339(micros: u64) -> String {
+    let (seconds, fraction) = (micros / 1_000_000, micros % 1_000_000);
+    let z = (seconds / 86_400) as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    let rest = seconds % 86_400;
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{fraction:06}Z",
+        rest / 3600,
+        rest / 60 % 60,
+        rest % 60
+    )
+}
+/// A prompt whose only stamp is half a second after now: the replay horizon
+/// accepts it, but no sample can be stamped with it until that time passes.
+fn ahead() -> (String, u64) {
+    let at = (now() * 1e6) as u64 + 500_000;
+    (prompt(10).replace(&stamp(10), &rfc3339(at)), at)
+}
+
+/// A caught-up restart with no usable source time still replaces the copy
+/// the local retains for a peer: the all-null sample is stamped with the
+/// incoming row's time (D3). Each probe uses a fresh follower, as a peer does.
+#[test]
+fn claude_caught_up_restart_without_a_usable_time_publishes_an_all_null_sample() {
+    assert_eq!(timestamp_us(&rfc3339(micros(23))), Some(micros(23)));
+    let fixture = Fixture::new();
+    let probe = |cursors: &Value| enrich(&mut NativeTelemetry::default(), cursors);
+    let header = body(&[]).len() as u64;
+    for case in ["new inode", "truncated", "ahead"] {
+        // Retried only if the probe began after the record's time.
+        let mut exercised = false;
+        for _ in 0..10 {
+            fixture.write(&session());
+            let (first, _, cursors) = probe(&json!({}));
+            assert_eq!(first["total_output"], 26, "{case}");
+            let mut at = 0;
+            match case {
+                "new inode" => drop(fixture.write(&[])),
+                "truncated" => std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(fixture.path("entry-a", ID))
+                    .unwrap()
+                    .set_len(header)
+                    .unwrap(),
+                _ => {
+                    let (line, stamp) = ahead();
+                    fixture.write(&[line]);
+                    at = stamp;
+                }
+            }
+            let (telemetry, _, kept) = probe(&cursors);
+            if at != 0 && (now() * 1e6) as u64 >= at {
+                continue;
+            }
+            unknown(&telemetry, micros(23));
+            let row = &kept[key()];
+            assert_eq!(row["caught_up"], true, "{case}");
+            assert_eq!(row["claude"]["coverage_seq"], json!(at), "{case}");
+            exercised = true;
+            break;
+        }
+        assert!(exercised, "{case}");
+    }
+}
+/// An incoming row whose `coverage_seq` is not usable yet stamps the all-null
+/// sample with its usable `usage_seq`. With no usable time at all, the row is
+/// withheld, so the local cannot re-emit the replaced file's copy.
+#[test]
+fn claude_restart_with_no_usable_incoming_time_withholds_the_row() {
+    let fixture = Fixture::new();
+    let probe = |cursors: &Value| enrich(&mut NativeTelemetry::default(), cursors);
+    let counted = assistant(13, "msg-1", "\"end_turn\"", [1, 1, 1, 1]);
+    for counted in [Some(counted), None] {
+        let mut exercised = false;
+        for _ in 0..10 {
+            let (line, at) = ahead();
+            fixture.write(&counted.iter().cloned().chain([line]).collect::<Vec<_>>());
+            let (first, _, cursors) = probe(&json!({}));
+            fixture.write(&[]);
+            let (telemetry, _, kept) = probe(&cursors);
+            if (now() * 1e6) as u64 >= at {
+                continue;
+            }
+            assert_eq!(cursors[key()]["claude"]["coverage_seq"], json!(at));
+            if counted.is_some() {
+                assert_eq!(first["seq"], json!(micros(13)));
+                unknown(&telemetry, micros(13));
+                assert_eq!(kept[key()]["caught_up"], true);
+            } else {
+                assert!(first.is_null() && telemetry.is_null());
+                assert!(kept.get(key()).is_none());
+            }
+            exercised = true;
+            break;
+        }
+        assert!(exercised);
+    }
+}

@@ -1465,6 +1465,38 @@ mod tests {
         assert_eq!(telemetry.map(|v| (v.seq, v.total_input)), Some((seq, None)));
         assert!(state.retained["test"].is_empty());
     }
+    /// The all-null sample a restarted peer pass publishes at the incoming
+    /// row's `coverage_seq`, the time the retained copy carries, or at an
+    /// earlier `usage_seq`, drops that copy, which no later pass re-emits.
+    #[test]
+    fn claude_all_null_sample_at_the_retained_time_or_earlier_drops_it() {
+        let now = common::now();
+        let with = |telemetry: Value| {
+            let mut value = sample("working", now);
+            value.agents[0] = claude(7, telemetry);
+            value.cursors = claude_row();
+            value.requested = Some(1);
+            value
+        };
+        let seq = (now as u64 - 60) * 1_000_000;
+        for at in [seq, seq - 1] {
+            let mut state = peer();
+            state.sample("test", Ok(with(caught_up(seq))));
+            assert_eq!(state.retained["test"].len(), 1);
+            state.sample(
+                "test",
+                Ok(with(json!({"seq":at,"event":"session","phase":"ready"}))),
+            );
+            let shown = |state: &State| {
+                let telemetry = state.hosts[0].agents[0].technical.telemetry.as_ref();
+                telemetry.map(|v| v.total_input)
+            };
+            assert!(shown(&state).is_none_or(|v| v.is_none()), "{at}");
+            assert!(state.retained["test"].is_empty(), "{at}");
+            state.sample("test", Ok(with(Value::Null)));
+            assert!(shown(&state).is_none(), "{at}");
+        }
+    }
     /// A peer sample that revalidation rejects is not an absent one: it drops
     /// the retained copy, which is not re-emitted then or on a later pass.
     #[test]
