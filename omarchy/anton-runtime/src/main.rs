@@ -301,17 +301,22 @@ impl State {
     }
 }
 /// Peer agents come from another binary, so their telemetry and turn timing
-/// pass the local views again; an invalid value becomes unknown (D9).
+/// pass the local views again; an invalid value becomes unknown (D9). Peer
+/// times may lead the local clock by the 1 s transport skew `sampled_at`
+/// allows; original timestamps are kept.
 fn revalidate(agent: &mut Agent) {
     fn view<T: Serialize + serde::de::DeserializeOwned>(
         value: Option<T>,
-        check: fn(&Value) -> Option<Value>,
+        check: impl Fn(&Value) -> Option<Value>,
     ) -> Option<T> {
         let value = serde_json::to_value(value?).ok()?;
         serde_json::from_value(check(&value)?).ok()
     }
+    let time = common::now() + 1.0;
     let technical = &mut agent.technical;
-    technical.telemetry = view(technical.telemetry.take(), telemetry::telemetry_view);
+    technical.telemetry = view(technical.telemetry.take(), |raw| {
+        telemetry::telemetry_view_at(raw, time)
+    });
     technical.turn_timing = view(technical.turn_timing.take(), telemetry::turn_timing_view);
 }
 /// D3 local retention of one peer's Claude samples. `rows` counts the
@@ -1382,6 +1387,54 @@ mod tests {
             (timing.total_finished_duration_s, timing.freshness_seconds),
             (Some(7), 15.0)
         );
+    }
+    /// Peer revalidation allows the 1 s transport skew `sampled_at` allows,
+    /// for every harness, and keeps the original timestamps.
+    #[test]
+    fn peer_revalidation_tolerates_one_second_of_clock_skew() {
+        let now = common::now();
+        for (skew, kept) in [(0.5, true), (2.0, false)] {
+            let seq = ((now + skew) * 1e6) as u64;
+            let mut state = peer();
+            let mut value = sample("working", now);
+            value.agents[0] = claude(7, caught_up(seq));
+            value.agents[0].harness = "codex".into();
+            let technical = &mut value.agents[0].technical;
+            technical.telemetry.as_mut().unwrap().usage_source = Some("codex-rollout".into());
+            technical.turn_timing = serde_json::from_value(json!({"active":false,"started_at_s":null,"observed_at_s":now + skew,"complete":true,"last_duration_s":2,"total_finished_duration_s":7,"last_outcome":"completed","freshness_seconds":12.0})).unwrap();
+            state.sample("test", Ok(value));
+            let technical = &state.hosts[0].agents[0].technical;
+            let telemetry = technical.telemetry.as_ref();
+            assert_eq!(
+                telemetry.map(|v| (v.seq, v.usage_seq, v.total_input)),
+                kept.then_some((seq, Some(seq - 1), Some(3461))),
+                "{skew}"
+            );
+            assert_eq!(
+                technical.turn_timing.as_ref().map(|v| v.observed_at_s),
+                kept.then_some(now + skew),
+                "{skew}"
+            );
+        }
+        // A Claude all-null sample within the skew replaces the retained one.
+        let mut state = peer();
+        let with = |telemetry: Value| {
+            let mut value = sample("working", now);
+            value.agents[0] = claude(7, telemetry);
+            value.cursors = claude_row();
+            value.requested = Some(1);
+            value
+        };
+        state.sample("test", Ok(with(caught_up((now as u64 - 60) * 1_000_000))));
+        assert_eq!(state.retained["test"].len(), 1);
+        let seq = ((now + 0.5) * 1e6) as u64;
+        state.sample(
+            "test",
+            Ok(with(json!({"seq":seq,"event":"session","phase":"ready"}))),
+        );
+        let telemetry = state.hosts[0].agents[0].technical.telemetry.as_ref();
+        assert_eq!(telemetry.map(|v| (v.seq, v.total_input)), Some((seq, None)));
+        assert!(state.retained["test"].is_empty());
     }
     #[test]
     fn claude_retention_replaces_reemits_and_drops() {
