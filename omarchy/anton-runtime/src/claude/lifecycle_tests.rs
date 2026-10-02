@@ -1437,3 +1437,34 @@ fn turns_input_taken_before_a_kill_never_joins_the_restarted_prompt() {
         assert!(finished(&row, "user", 10).is_none());
     }
 }
+
+#[test]
+fn turns_input_taken_after_a_record_lost_while_idle_is_ambiguous() {
+    // Found by the ground-truth fuzzer: the lost record was the prompt of a
+    // turn that then took queued input, so the input is no start.
+    let anon = operation(12, "remove").replace(&format!("\"sessionId\":\"{ID}\","), "");
+    for taken in [operation(12, "remove"), anon] {
+        let mut lines: Vec<Option<String>> = [
+            user(1, "hello", ""),
+            assistant(2, "msg_a", "\"end_turn\""),
+            system("turn_duration", 3),
+        ]
+        .map(Some)
+        .to_vec();
+        lines.extend([None, Some(queue(11)), Some(taken)]);
+        lines.extend(
+            [
+                queued(11, "task-notification", &notice("agent-x", "completed")),
+                assistant(13, "msg_b", "\"tool_use\""),
+            ]
+            .map(Some),
+        );
+        let row = steps(&lines);
+        lost(&row, Some("user-1"));
+        assert!(row.claude.ambiguous);
+        lines.push(Some(system("turn_duration", 30)));
+        let row = steps(&lines);
+        lost(&row, Some("user-1"));
+        assert_eq!(row.turns.last_duration, Some(2));
+    }
+}

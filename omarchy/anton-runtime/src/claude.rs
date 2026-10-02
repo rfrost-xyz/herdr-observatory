@@ -1102,7 +1102,9 @@ impl Row {
             KIND_SYSTEM => self.compactions_valid = false,
             KIND_USER | KIND_ATTACHMENT => self.valid = false,
             // A queue record only ever lets a trigger join a turn, so missing
-            // one can only make turns unknown later; it needs no arm.
+            // one can only make turns unknown later, except after a record
+            // lost while idle: it may show the turn that record opened.
+            KIND_QUEUE if self.claude.lost_idle => return self.ambiguous(),
             _ => return,
         }
         self.lose_turn();
@@ -1267,6 +1269,10 @@ impl Row {
             Turn::Queue if [2, 3].contains(&record.operation) => {
                 if (active || block.pending_start.is_some()) && !block.silent_end {
                     block.queued_since_start = block.queued_since_start.max(record.stamp);
+                } else if block.lost_idle {
+                    // Input taken after a record lost while idle: that record
+                    // may have opened the turn that took it.
+                    self.ambiguous();
                 }
             }
             Turn::Queue => {}
