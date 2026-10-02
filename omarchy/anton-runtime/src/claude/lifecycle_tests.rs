@@ -1278,6 +1278,72 @@ fn turns_rejected_start_at_a_pass_boundary_still_catches_up() {
     assert!(resumed);
 }
 
+#[test]
+fn turns_queue_operation_at_unix_second_zero_is_a_missing_stamp() {
+    // A dequeue or remove stamped at the epoch is no join evidence, and the
+    // block stays valid, as for a trigger at second 0.
+    for operation_kind in ["dequeue", "remove"] {
+        let epoch = operation(13, operation_kind).replace(&stamp(13), "1970-01-01T00:00:00Z");
+        let value: Value = serde_json::from_str(&epoch).unwrap();
+        assert_eq!(
+            Record::from_value(&value, ID, now()).unwrap().stamp,
+            Some(0)
+        );
+        let mut lines = vec![
+            user(10, "hello", ""),
+            assistant(11, "msg_a", "\"tool_use\""),
+            queue(12),
+            epoch,
+        ];
+        let row = run(&lines);
+        assert_eq!(row.claude.queued_since_start, None, "{operation_kind}");
+        // Without evidence, the queued prompt cannot join the turn.
+        lines.push(user(12, "more", ""));
+        let row = run(&lines);
+        assert!(row.claude.ambiguous && !row.turns.valid, "{operation_kind}");
+    }
+}
+
+#[test]
+fn turns_epoch_stamped_dequeue_at_a_pass_boundary_still_catches_up() {
+    let fixture = super::tests::Fixture::new();
+    let pad = "p".repeat(8000);
+    let mut lines = vec![record("system", 1, "\"subtype\":\"init\"")];
+    lines.extend([
+        user(10, "hello", ""),
+        assistant(11, "msg_a", "\"tool_use\""),
+        queue(12),
+        dequeue(13).replace(&stamp(13), "1970-01-01T00:00:00Z"),
+    ]);
+    lines.extend((0..100).map(|n| record("progress", 30 + n, &format!("\"data\":\"{pad}\""))));
+    lines.extend([
+        assistant(180, "msg_b", "\"end_turn\""),
+        system("turn_duration", 190),
+        user(200, "again", ""),
+        assistant(201, "msg_c", "\"tool_use\""),
+    ]);
+    let text = lines.join("\n") + "\n";
+    assert!(text.len() > TAIL);
+    let path = fixture.file("slug-a", &format!("{ID}.jsonl"), &text);
+    let deadline = || std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut row = None;
+    let mut restarts = 0;
+    for _ in 0..4 {
+        let (next, resumed) =
+            resume(&fixture.projects, &path, ID, row.take(), now(), deadline()).unwrap();
+        restarts += usize::from(!resumed);
+        row = Some(next);
+    }
+    let row = row.unwrap();
+    assert_eq!(restarts, 1);
+    assert!(row.caught_up && row.offset == text.len() as u64);
+    assert!(row.turns.valid && row.turns.current_known);
+    assert_eq!(row.turns.start, Some(second(200)));
+    assert_eq!(row.turns.total, 180);
+    let (_, resumed) = resume(&fixture.projects, &path, ID, Some(row), now(), deadline()).unwrap();
+    assert!(resumed);
+}
+
 /// A deterministic xorshift sequence, so a failure always reproduces.
 struct Seeded(u64);
 impl Seeded {

@@ -1284,7 +1284,9 @@ impl Row {
             // After a silent end the turn may be over, so none does.
             Turn::Queue if [2, 3].contains(&record.operation) => {
                 if (active || block.pending_start.is_some()) && !block.silent_end {
-                    block.queued_since_start = block.queued_since_start.max(record.stamp);
+                    // A stamp within second 0 is missing, as for a trigger.
+                    let stamp = record.stamp.filter(|stamp| *stamp >= 1_000_000);
+                    block.queued_since_start = block.queued_since_start.max(stamp);
                 } else if block.lost_idle {
                     // Input taken after a record lost while idle: that record
                     // may have opened the turn that took it.
