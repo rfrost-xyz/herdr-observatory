@@ -3149,23 +3149,28 @@ mod replay_tests {
     }
 
     #[test]
-    fn oversized_record_whose_session_id_is_lost_is_never_absent_identity() {
+    fn overlong_session_id_names_another_session_at_every_line_size() {
         let fixture = tests::Fixture::new();
         let good = assistant("msg_a", 1, "\"end_turn\"", [1, 2, 3, 4]);
         let next = assistant("msg_c", 9, "\"end_turn\"", [1, 0, 0, 0]);
-        // A `sessionId` over the classifier's capture bound may name
-        // another session, so it fails like an unparseable line.
+        // A `sessionId` over the classifier's capture bound can never equal
+        // a safe id, so it names another session at every line size, as the
+        // parsed path reads it: nothing is published again after it.
         let progress = format!(
             "{{\"type\":\"progress\",\"sessionId\":\"{}\",\"timestamp\":\"{}\",\"data\":{{}}}}",
             "s".repeat(1100),
             stamp(2)
         );
         for line in [progress.clone(), lead_pad(&progress, LINE)] {
+            let size = line.len();
             let text = header() + &body(&[good.clone(), line, next.clone()]);
             let path = fixture.file("slug", &format!("{ID}.jsonl"), &text);
             let (row, _) = passes(&fixture, &path, None);
             assert!(!row.valid && !row.compactions_valid && !row.turns.valid);
             assert_eq!(totals(&row), [(); 5].map(|_| Value::Null));
+            assert!(row.claude.foreign, "{size}");
+            assert_eq!(get(&row, "context"), Value::Null, "{size}");
+            assert_eq!(get(&row, "model"), Value::Null, "{size}");
         }
     }
 

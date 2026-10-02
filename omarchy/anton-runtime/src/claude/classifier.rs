@@ -270,7 +270,13 @@ impl Classifier {
         }
         let raw = std::mem::take(&mut self.value);
         if raw.len() > CAP {
-            self.lost |= 1 << node;
+            // A `sessionId` this long, or a number, can never equal a safe
+            // id, so it is a mismatch, as the parsed path reads it.
+            if node == 3 {
+                self.record.identity = super::IDENTITY_MISMATCH;
+            } else {
+                self.lost |= 1 << node;
+            }
             return;
         }
         let parsed = if self.lex == 1 {
@@ -628,8 +634,9 @@ impl Classifier {
         self.high = false;
     }
     /// Classifies the complete record once its terminating newline is fed.
-    /// A lost `type` or `sessionId` is invalid for every kind: the record
-    /// may name another session, so its identity is never taken as absent.
+    /// A lost `type` or `sessionId` (one cut by a pass boundary) is invalid
+    /// for every kind: the record may name another session, so its identity
+    /// is never taken as absent.
     pub fn finish(mut self) -> Outcome {
         let identity = 1 << 1 | 1 << 3;
         if self.done == 0 || !self.stack.is_empty() || self.lex != 0 || self.lost & identity != 0 {
@@ -1080,7 +1087,7 @@ mod tests {
     }
 
     #[test]
-    fn classifier_lost_session_id_is_invalid_for_every_kind() {
+    fn classifier_cut_session_id_is_invalid_and_an_overlong_one_mismatches() {
         let lines = lines();
         let progress = format!(
             "{{\"type\":\"progress\",\"sessionId\":\"{ID}\",\"timestamp\":\"{STAMP}\",\"data\":{{}}}}"
@@ -1092,11 +1099,17 @@ mod tests {
         // Plain, forked (which feeds nothing once identity is known), and
         // record kinds outside the coverage table.
         for line in [&lines[0], &lines[10], &progress, &queue, &user] {
-            // A pass boundary inside the value, or a value over `CAP`.
+            // A pass boundary inside the value is invalid.
             let parts = split(line, ID, 3);
             assert_eq!(classify(&parts, true), Outcome::Invalid, "{line:.120}");
+            // A value over `CAP` names another session, as the parsed path
+            // reads it.
             let long = line.replace(ID, &"s".repeat(CAP + 100));
-            assert_eq!(classify(&[long.as_bytes()], false), Outcome::Invalid);
+            let mismatch = expected(&long);
+            assert!(
+                matches!(&mismatch, Outcome::Record(r) if r.identity == super::super::IDENTITY_MISMATCH)
+            );
+            assert_eq!(classify(&[long.as_bytes()], false), mismatch);
             // An intact identity still classifies as the parsed path does.
             assert_eq!(classify(&[line.as_bytes()], false), expected(line));
         }
