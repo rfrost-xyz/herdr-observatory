@@ -1677,6 +1677,7 @@ pub fn retire(state: &Path, owner: &Path) -> Result<()> {
 /// Opens checkpoints as a test expects them: with the lease taken, so a
 /// construction-time conflict fails here under its real cause.
 #[cfg(test)]
+#[track_caller]
 fn leased(state: &Path, owner: &Path) -> Checkpoints {
     let cache = Checkpoints::new(state, owner).unwrap();
     if let Err(error) = &cache.lease {
@@ -1698,7 +1699,7 @@ mod tests {
         fn new() -> Self {
             static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             let root = std::env::temp_dir().join(format!(
-                "anton-native-{}-{}-{}",
+                "anton-native-unit-{}-{}-{}",
                 std::process::id(),
                 now().to_bits(),
                 SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
@@ -1983,6 +1984,25 @@ mod tests {
         let state = fixture.root.join("state");
         std::fs::create_dir(&state).unwrap();
         let path = state.join("replay-checkpoints.json");
+        // Each read and parse is its own statement, naming its step and
+        // whether something removed the fixture from outside the test.
+        let read = |step: &str| {
+            std::fs::read(&path).unwrap_or_else(|error| {
+                panic!(
+                    "{step}: read checkpoint: {:?}; fixture root exists: {}",
+                    error.kind(),
+                    fixture.root.exists()
+                )
+            })
+        };
+        let parse = |step: &str, bytes: &[u8]| -> CheckpointFile {
+            serde_json::from_slice(bytes).unwrap_or_else(|error| {
+                panic!(
+                    "{step}: parse checkpoint: {error}; fixture root exists: {}",
+                    fixture.root.exists()
+                )
+            })
+        };
         let empty = BTreeMap::from([("kept".to_owned(), json!({}))]);
         let mut cache = leased(&state, &owner);
         cache.reconcile(&empty).unwrap();
@@ -2004,23 +2024,25 @@ mod tests {
         let mut loaded = leased(&state, &owner);
         let configured = BTreeMap::from([("kept".to_owned(), loaded.for_host("kept"))]);
         loaded.reconcile(&configured).unwrap();
-        let kept = std::fs::read(&path).unwrap();
-        let saved: CheckpointFile = serde_json::from_slice(&kept).unwrap();
+        let kept = read("first reconcile");
+        let saved = parse("first reconcile", &kept);
         assert_eq!(saved.records.len(), 1);
         assert_eq!(
             saved.records[0].host,
             sha256(b"anton-checkpoint-host-v1:kept")
         );
         loaded.reconcile(&configured).unwrap();
-        assert_eq!(std::fs::read(&path).unwrap(), kept);
+        let again = read("repeated reconcile");
+        assert_eq!(again, kept);
         // An expired-only file must be reconciled even though hydration is empty.
-        let mut expired: Value = serde_json::from_slice(&kept).unwrap();
+        let mut expired: Value = serde_json::from_slice(&kept).expect("kept checkpoint as JSON");
         expired["records"][0]["cursor"]["at"] = json!(now() - 86401.0);
         common::atomic_checkpoint_write(&path, &serde_json::to_vec(&expired).unwrap()).unwrap();
         let mut loaded = leased(&state, &owner);
         assert_eq!(loaded.for_host("kept"), json!({}));
         loaded.reconcile(&empty).unwrap();
-        let saved: CheckpointFile = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let bytes = read("expired reconcile");
+        let saved = parse("expired reconcile", &bytes);
         assert!(saved.records.is_empty());
         // A removed-host-only file also needs clearing with no live cursors.
         cache
@@ -2031,7 +2053,8 @@ mod tests {
             .unwrap();
         let mut loaded = leased(&state, &owner);
         loaded.reconcile(&empty).unwrap();
-        let saved: CheckpointFile = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let bytes = read("removed-host reconcile");
+        let saved = parse("removed-host reconcile", &bytes);
         assert!(saved.records.is_empty());
     }
     /// A sibling thread spawning processes until dropped. Each child holds a
