@@ -1,5 +1,7 @@
 //! Synthetic process acceptance. Every HOME, socket, executable and SSH target is
 //! fixture-owned. No interpreter, live account, remote machine or GPU is used.
+mod support;
+
 use anton_runtime::common;
 use serde_json::{Value, json};
 use std::fs;
@@ -19,6 +21,9 @@ use std::time::{Duration, Instant};
 const BIN: &str = env!("CARGO_BIN_EXE_anton-runtime");
 static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 fn write(path: &Path, bytes: impl AsRef<[u8]>, mode: u32) {
+    if mode & 0o111 != 0 {
+        return support::write_executable(path, bytes.as_ref(), mode);
+    }
     fs::write(path, bytes).unwrap();
     fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
 }
@@ -1427,7 +1432,16 @@ fn retired_hook_repair_cli_and_local_peer_uninstall_preserve_conflicts() {
             b"{\"hosts\":[{\"id\":\"fixture\"}]}",
             0o600,
         );
-        fs::copy(BIN, root.join("anton-runtime")).unwrap();
+        // Copied by a child process for the reason `support::write_executable` gives.
+        assert!(
+            Command::new("cp")
+                .arg("--")
+                .arg(BIN)
+                .arg(root.join("anton-runtime"))
+                .status()
+                .unwrap()
+                .success()
+        );
         fs::set_permissions(
             root.join("anton-runtime"),
             fs::Permissions::from_mode(0o700),
@@ -1898,4 +1912,38 @@ fn claude_peer_sample_is_not_reemitted_after_a_request_without_its_row() {
     let real = stream.until(|v| pane(v, 1) && v["hosts"][1]["agents"][0]["title"] != "evicted");
     assert!(telemetry(&real, 1).is_null(), "{}", telemetry(&real, 1));
     stream.close();
+}
+
+#[test]
+fn executable_fixtures_run_while_sibling_threads_spawn() {
+    let dir = std::env::temp_dir().join(format!(
+        "anton-native-exec-{}-{}-{}",
+        std::process::id(),
+        common::now().to_bits(),
+        FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir(&dir).unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let storm: Vec<_> = (0..2)
+        .map(|_| {
+            let stop = stop.clone();
+            thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    let _ = Command::new("true").status();
+                }
+            })
+        })
+        .collect();
+    let mut failures = 0;
+    for index in 0..150 {
+        let script = dir.join(format!("fixture-{index}"));
+        write(&script, b"#!/bin/sh\nexit 0\n", 0o755);
+        failures += usize::from(Command::new(&script).status().is_err());
+    }
+    stop.store(true, Ordering::Relaxed);
+    for join in storm {
+        join.join().unwrap();
+    }
+    let _ = fs::remove_dir_all(&dir);
+    assert_eq!(failures, 0);
 }
