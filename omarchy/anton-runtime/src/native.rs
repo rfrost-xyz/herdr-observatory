@@ -732,6 +732,9 @@ struct Binding {
     /// Rediscover on the next pass: a truncated scan or a growing candidate.
     rescan: bool,
     path: Option<PathBuf>,
+    /// Predecessor candidates that ended with no `session_id` at the last
+    /// clear scan of `path`; one unchanged since then is not growing (D1).
+    ended: Vec<claude::Ended>,
     /// The usage subset and `seq` of the last caught-up sample, re-emitted only
     /// for an incomplete replay that resumed this bound, identity-checked file.
     retained: Option<(Value, u64)>,
@@ -899,7 +902,8 @@ impl NativeTelemetry {
         None
     }
     /// D1: positive and negative bindings are both rediscovered every 60 s. A
-    /// truncated scan or a growing predecessor candidate is not cached. Any
+    /// truncated scan or a growing predecessor candidate (new, or changed
+    /// since the last scan of this path) is not cached. Any
     /// result other than the same bound path drops the retained sample. A scan
     /// truncated because the shared `deadline` passed returns `None` and
     /// changes nothing: the pane is skipped by the deadline, not unbound.
@@ -919,9 +923,16 @@ impl NativeTelemetry {
         }
         let mut budget =
             claude::Budget::new(deadline.min(Instant::now() + Duration::from_millis(100)));
+        let mut ended = vec![];
         let (path, rescan) = match claude::discover(root, session, &mut budget) {
             claude::Discovery::Found(path) => {
-                match claude::predecessor(&path, session, &mut budget) {
+                // A deadline skip below keeps the binding unchanged.
+                if let Some(binding) = self.claude.get(key)
+                    && binding.path.as_ref() == Some(&path)
+                {
+                    ended.clone_from(&binding.ended);
+                }
+                match claude::predecessor_since(&path, session, &mut budget, &mut ended) {
                     claude::Predecessor::Clear { growing } => (Some(path), growing),
                     claude::Predecessor::Unknown => (None, false),
                     claude::Predecessor::Truncated => (None, true),
@@ -937,6 +948,7 @@ impl NativeTelemetry {
             at: Instant::now(),
             rescan,
             path: None,
+            ended: vec![],
             retained: None,
         });
         if path.is_none() || binding.path != path {
@@ -945,6 +957,7 @@ impl NativeTelemetry {
         binding.at = Instant::now();
         binding.rescan = rescan;
         binding.path = path.clone();
+        binding.ended = ended;
         Some(path)
     }
     /// A pane skipped by the shared deadline: a current binding with its

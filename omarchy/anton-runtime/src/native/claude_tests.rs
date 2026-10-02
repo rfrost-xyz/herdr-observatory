@@ -644,6 +644,50 @@ fn claude_truncated_predecessor_scan_is_rescanned_not_cached() {
     assert_eq!(totals(&telemetry), json!([3461, 111, 3300, 50, 26]));
 }
 
+/// Review round 10: a sibling that ended within the bound without
+/// `session_id` is growing only while it is new or its size or mtime changed
+/// since the previous scan (D1). An unchanging one is not a successor, so the
+/// binding is cached for 60 s and a deadline skip re-emits the retained
+/// sample; a sibling that grows again is rescanned.
+#[test]
+fn claude_unchanging_sibling_without_session_id_is_not_growing() {
+    let fixture = Fixture::new();
+    fixture.write(&session());
+    let sibling = fixture.path("entry-a", "fixture-other");
+    std::fs::write(&sibling, format!("{}\n", prompt(5))).unwrap();
+    let scans = || claude::SCANS.with(std::cell::Cell::get);
+    let before = scans();
+    let mut follower = NativeTelemetry::default();
+    let (first, _, cursors) = enrich(&mut follower, &json!({}));
+    assert_eq!(totals(&first), json!([3461, 111, 3300, 50, 26]));
+    // New at the first scan, so it may be a successor still being written.
+    assert!(follower.claude[&key()].rescan);
+    let (_, _, cursors) = enrich(&mut follower, &cursors);
+    assert!(!follower.claude[&key()].rescan);
+    let cached = scans();
+    assert_eq!(cached - before, 2);
+    for _ in 0..5 {
+        enrich(&mut follower, &cursors);
+    }
+    assert_eq!(scans(), cached);
+    let mut rows = validate_cursors(&cursors);
+    let mut agent = agent();
+    follower.enrich_claude(
+        &mut agent,
+        &mut rows,
+        &mut BTreeSet::new(),
+        now(),
+        [Instant::now(); 2],
+    );
+    assert_eq!(agent["_native_telemetry"], retained(&first));
+    // At the 60 s rescan a sibling that grew is growing again.
+    fixture.append_to(&sibling, &format!("{}\n", prompt(6)));
+    age(&mut follower);
+    enrich(&mut follower, &cursors);
+    assert!(follower.claude[&key()].rescan);
+    assert_eq!(scans(), cached + 1);
+}
+
 /// Fills `row` to the 128-child cap, about 11 KB.
 fn padded(row: &Value) -> Value {
     let mut row = row.clone();

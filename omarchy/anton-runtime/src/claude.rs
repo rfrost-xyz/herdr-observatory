@@ -28,6 +28,8 @@ const LINE: usize = 65536;
 const ENTRIES: usize = 8192;
 const SUCCESSOR_BYTES: usize = 262144;
 const SUCCESSOR_RECORDS: usize = 512;
+/// Ended predecessor candidates remembered per binding between scans.
+const ENDED: usize = 64;
 
 #[cfg(test)]
 thread_local! { pub(crate) static TEST_ROOT: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) }; }
@@ -114,7 +116,8 @@ pub fn discover(root: &Path, id: &str, budget: &mut Budget) -> Discovery {
 #[derive(Debug, PartialEq, Eq)]
 pub enum Predecessor {
     /// No successor names the bound id. `growing` is set when a candidate ended
-    /// within the bound with no `session_id`; that result must not be cached.
+    /// within the bound with no `session_id` and is new or changed since the
+    /// previous scan; that result must not be cached.
     Clear { growing: bool },
     /// A successor names the bound id, a candidate exceeds 256 KiB or 512
     /// records, or the bound file or a candidate is unsafe or unparseable.
@@ -124,10 +127,35 @@ pub enum Predecessor {
     Truncated,
 }
 
+/// A candidate that ended within the bound with no `session_id`, as one scan
+/// saw it. Held in memory per binding only, never checkpointed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Ended {
+    dev: u64,
+    ino: u64,
+    len: u64,
+    mtime: (i64, i64),
+}
+
+/// `predecessor_since` with no earlier scan: every ended candidate is new.
+pub fn predecessor(path: &Path, id: &str, budget: &mut Budget) -> Predecessor {
+    predecessor_since(path, id, budget, &mut Vec::new())
+}
+
 /// D1 predecessor check after `/clear`: every `.jsonl` file in the bound file's
 /// directory that is at least as new as it is scanned to its first record that
-/// carries `session_id`, within 256 KiB and 512 records each.
-pub fn predecessor(path: &Path, id: &str, budget: &mut Budget) -> Predecessor {
+/// carries `session_id`, within 256 KiB and 512 records each. A candidate that
+/// ended with no `session_id` is growing only when it is absent from `seen`,
+/// the ended candidates of the previous scan, with the same size and mtime;
+/// otherwise it is case 1. `seen` is replaced by this scan's ended candidates
+/// on a clear result and emptied on any other.
+pub fn predecessor_since(
+    path: &Path,
+    id: &str,
+    budget: &mut Budget,
+    seen: &mut Vec<Ended>,
+) -> Predecessor {
+    let previous = std::mem::take(seen);
     #[cfg(test)]
     SCANS.with(|value| value.set(value.get() + 1));
     let (Some(directory), Some(own)) = (path.parent(), path.file_name()) else {
@@ -146,7 +174,7 @@ pub fn predecessor(path: &Path, id: &str, budget: &mut Budget) -> Predecessor {
     let Ok(entries) = std::fs::read_dir(directory) else {
         return Predecessor::Truncated;
     };
-    let mut growing = false;
+    let (mut growing, mut ended) = (false, vec![]);
     for entry in entries {
         if !budget.take() {
             return Predecessor::Truncated;
@@ -171,11 +199,27 @@ pub fn predecessor(path: &Path, id: &str, budget: &mut Budget) -> Predecessor {
             continue;
         }
         match first_session_id(&entry.path(), id, budget) {
-            Ok(Successor::Ended) => growing = true,
+            Ok(Successor::Ended) => {
+                let candidate = Ended {
+                    dev: info.dev(),
+                    ino: info.ino(),
+                    len: info.len(),
+                    mtime: (info.mtime(), info.mtime_nsec()),
+                };
+                growing |= !previous.contains(&candidate);
+                // Past the bound a candidate is never remembered, so it
+                // stays growing: rescanned, never cached.
+                if ended.len() < ENDED {
+                    ended.push(candidate);
+                } else {
+                    growing = true;
+                }
+            }
             Ok(Successor::Other) => {}
             Err(result) => return result,
         }
     }
+    *seen = ended;
     Predecessor::Clear { growing }
 }
 
