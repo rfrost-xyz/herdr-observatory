@@ -1578,6 +1578,15 @@ impl Row {
             // other pending trigger may be a turn still awaiting its first
             // response while a local command runs, so its start stays pending.
             Turn::Ignored => {
+                // Queued human input is ignored on the assumption that it
+                // appears only inside a turn (D7 rule 3). With no turn
+                // running or pending, or after a silent end, it may start a
+                // turn whose trigger is never seen, so it fails closed.
+                let prompt =
+                    record.kind == KIND_ATTACHMENT && record.queued && record.mode == MODE_PROMPT;
+                if prompt && (!active && block.pending_start.is_none() || block.silent_end) {
+                    return self.ambiguous();
+                }
                 let lead = record.text.as_ref().map(|text| text.lead);
                 let local = lead.is_some_and(|lead| text::LOCAL_OUTPUT.contains(&lead))
                     || record.kind == KIND_SYSTEM && record.subtype == SUBTYPE_LOCAL_COMMAND;
@@ -1617,6 +1626,9 @@ impl Row {
                 let idle = !active && block.pending_start.is_none();
                 if idle {
                     block.end_floor = block.end_floor.max(second.unwrap_or(0));
+                    // The take starts a turn, so a record after it is no
+                    // longer directly after an abort.
+                    block.abort_adjacent = false;
                 }
                 if block.lost_idle {
                     // Input taken after a record lost while idle: that record

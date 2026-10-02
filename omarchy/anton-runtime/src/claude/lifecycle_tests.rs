@@ -423,7 +423,6 @@ fn turns_ignore_metadata_tool_results_and_wrapper_output() {
         ),
         tool(10, "{\"status\":\"async_launched\"}"),
         user(10, "summary", "\"isCompactSummary\":true"),
-        queued(10, "prompt", "queued human input"),
         user(10, "<local-command-stdout>ok</local-command-stdout>", ""),
         user(10, "<local-command-stderr>no</local-command-stderr>", ""),
         user(10, "<bash-input>ls</bash-input>", ""),
@@ -464,6 +463,95 @@ fn turns_ignore_metadata_tool_results_and_wrapper_output() {
         user(10, "x", "\"origin\":{\"kind\":\"scheduler\"}"),
     ]);
     assert!(!other.turns.valid && other.turns.active.is_none());
+}
+
+/// Rule 3 ignores queued human input on the assumption that it appears only
+/// inside a turn. Outside one, or after a silent end, it may start a turn
+/// whose trigger the reader never sees, so it fails closed (review round
+/// 12). Inside a running turn it is still ignored.
+#[test]
+fn turns_queued_prompt_attachment_outside_a_turn_is_ambiguous() {
+    let prompt = |at| queued(at, "prompt", "queued human input");
+    let row = run(&[prompt(10)]);
+    assert!(!row.turns.valid && row.claude.ambiguous);
+    let row = run(&[
+        user(5, "hello", ""),
+        assistant(6, "msg_a", "\"tool_use\""),
+        dequeue(7),
+        prompt(7),
+        assistant(12, "msg_b", "\"end_turn\""),
+        system("turn_duration", 20),
+    ]);
+    assert!(row.turns.valid && !row.claude.ambiguous);
+    assert_eq!(
+        finished(&row, "user", 5),
+        Some((second(5), second(20), "completed".into()))
+    );
+    let interrupt = |at| user(at, "[Request interrupted by user]", "");
+    // A: the input is taken after `turn_duration`, so its prompt starts a
+    // turn (13 to 15) that no trigger shows.
+    let lines = [
+        user(10, "hello", ""),
+        assistant(11, "msg_a", "\"end_turn\""),
+        queue(11),
+        system("turn_duration", 12),
+        dequeue(13),
+        prompt(11),
+    ];
+    let row = run(&lines);
+    assert!(row.claude.ambiguous && !row.published_turns().current_known);
+    let row = run(&[lines.as_slice(), &[interrupt(15)]].concat());
+    assert!(!row.turns.valid && !row.published_turns().valid);
+    // B: the input is taken after an abort, then its turn runs (13 to 16).
+    let lines = [
+        user(10, "hello", ""),
+        assistant(11, "msg_a", "\"tool_use\""),
+        interrupt(12),
+        dequeue(13),
+        prompt(11),
+        assistant(14, "msg_b", "\"tool_use\""),
+    ];
+    let row = run(&lines);
+    assert!(row.claude.ambiguous && !row.published_turns().current_known);
+    let row = run(&[lines.as_slice(), &[interrupt(16)]].concat());
+    assert!(!row.turns.valid);
+    assert_ne!(row.turns.last_end, Some(second(16)));
+    // C: an older version writes no `turn_duration`, so the turn that ended
+    // silently at 11 must not absorb the idle gap up to the abort at 105.
+    let row = run(&[
+        user(10, "hello", ""),
+        assistant(11, "msg_a", "\"end_turn\""),
+        system("stop_hook_summary", 12),
+        queue(100),
+        dequeue(100),
+        prompt(100),
+        assistant(101, "msg_b", "\"tool_use\""),
+        interrupt(105),
+    ]);
+    assert!(!row.turns.valid && row.turns.finished.is_empty());
+}
+
+/// D7: only an assistant record directly after an abort is neutral. Input
+/// taken with no turn running starts a turn, so the abort-adjacency flag is
+/// cleared and an assistant record after the take shows a turn whose
+/// trigger was not seen (review round 12).
+#[test]
+fn turns_idle_take_after_an_abort_clears_its_adjacency() {
+    let row = run(&[
+        user(10, "hello", ""),
+        assistant(11, "msg_a", "\"tool_use\""),
+        user(12, "[Request interrupted by user]", ""),
+        dequeue(13),
+    ]);
+    assert!(!row.claude.abort_adjacent && row.turns.valid);
+    let row = run(&[
+        user(10, "hello", ""),
+        assistant(11, "msg_a", "\"tool_use\""),
+        user(12, "[Request interrupted by user]", ""),
+        dequeue(13),
+        assistant(14, "msg_b", "\"tool_use\""),
+    ]);
+    assert!(row.claude.ambiguous && !row.turns.valid);
 }
 
 #[test]
@@ -2939,12 +3027,20 @@ impl Story {
             self.tick(true);
         }
         let (mut line, tag) = self.trigger();
+        let mut shape = tag;
         if let Some(queued) = leftover {
+            // Sometimes written as a queued prompt attachment, which D7
+            // rule 3 ignores inside a turn (review round 12).
+            shape = "leftover";
+            if self.chance(250) {
+                line = self.queued("prompt", "more");
+                shape = "leftover-attachment";
+            }
             let stamp = self.stamp(queued);
             line = restamp(&line, &stamp);
         }
         self.world.running = Some(self.at);
-        self.push(line, if leftover.is_some() { "leftover" } else { tag });
+        self.push(line, shape);
         self.unrecorded = false;
         self.enqueued = None;
         if tag == "command" && self.chance(500) {
@@ -3107,7 +3203,12 @@ impl Story {
                 }
                 self.queued_left = queued;
             }
-            70..=84 => self.abort(),
+            70..=84 => {
+                // Input still queued after an abort is taken at once too
+                // (review round 12).
+                self.abort();
+                self.queued_left = queued;
+            }
             _ => {
                 if self.chance(400) {
                     if !queued {
