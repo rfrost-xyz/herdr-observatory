@@ -1018,20 +1018,27 @@ impl NativeTelemetry {
             }
             let offset = row.as_ref().map(|v| v.offset);
             let pass = deadline.min(Instant::now() + Duration::from_millis(600));
-            let Ok((next, resumed)) =
-                claude::resume(&root, &path, &session, row.take(), time, pass)
-            else {
-                // An open, ownership, header or read failure drops the
-                // binding and its retained sample, but keeps the incoming
-                // row, so the host still reports a row for this pane and a
-                // peer publishes the all-null sample at its source time (D3).
-                // Progress made by an earlier pass of this call is discarded.
-                self.claude.remove(&key);
-                if let Some(incoming_row) = incoming_row.filter(|_| unknown(agent)) {
-                    cursors.insert(key, incoming_row);
-                }
-                return;
-            };
+            let (next, resumed) =
+                match claude::resume(&root, &path, &session, row.take(), time, pass) {
+                    Ok(value) => value,
+                    Err(failure) => {
+                        // An open, ownership, header or read failure drops the
+                        // retained sample, but keeps the incoming row, so the host
+                        // still reports a row for this pane and a peer publishes the
+                        // all-null sample at its source time (D3). Progress made by
+                        // an earlier pass of this call is discarded. The binding
+                        // keeps its path and time: only a failure that may be
+                        // transient rediscovers at the next pass, so one that holds
+                        // for the path keeps the 60 s cadence (D1).
+                        let binding = self.claude.get_mut(&key).unwrap();
+                        binding.retained = None;
+                        binding.rescan |= failure.transient;
+                        if let Some(incoming_row) = incoming_row.filter(|_| unknown(agent)) {
+                            cursors.insert(key, incoming_row);
+                        }
+                        return;
+                    }
+                };
             ran = true;
             restarted |= !resumed;
             let done = next.caught_up || Some(next.offset) == offset;

@@ -31,6 +31,9 @@ const SUCCESSOR_RECORDS: usize = 512;
 
 #[cfg(test)]
 thread_local! { pub(crate) static TEST_ROOT: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) }; }
+// Counts `predecessor` scans on this thread, so a test can bound rediscovery.
+#[cfg(test)]
+thread_local! { pub(crate) static SCANS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 pub fn projects_root() -> PathBuf {
     #[cfg(test)]
     if let Some(root) = TEST_ROOT.with(|value| value.borrow().clone()) {
@@ -125,6 +128,8 @@ pub enum Predecessor {
 /// directory that is at least as new as it is scanned to its first record that
 /// carries `session_id`, within 256 KiB and 512 records each.
 pub fn predecessor(path: &Path, id: &str, budget: &mut Budget) -> Predecessor {
+    #[cfg(test)]
+    SCANS.with(|value| value.set(value.get() + 1));
     let (Some(directory), Some(own)) = (path.parent(), path.file_name()) else {
         return Predecessor::Unknown;
     };
@@ -190,13 +195,10 @@ fn first_session_id(
     budget: &Budget,
 ) -> std::result::Result<Successor, Predecessor> {
     let file = common::open_owned(path, false, false).map_err(|_| {
-        // Only a symlink, a non-file or another owner is unsafe; any other
-        // failure (permissions, a file removed since listing) is an IO error.
-        match std::fs::symlink_metadata(path) {
-            Ok(info) if !info.is_file() || info.uid() != unsafe { libc::getuid() } => {
-                Predecessor::Unknown
-            }
-            _ => Predecessor::Truncated,
+        if unsafe_entry(path) {
+            Predecessor::Unknown
+        } else {
+            Predecessor::Truncated
         }
     })?;
     let mut stream = BufReader::new(file);
@@ -343,9 +345,55 @@ fn lenient_session_id(bytes: &[u8], id: &str) -> Option<Option<Value>> {
     serde_json::from_slice::<Record>(bytes).ok().map(|v| v.0)
 }
 
+/// After an open failure: only a symlink, a non-file or another owner is
+/// unsafe; any other failure (permissions, a file removed since listing) is
+/// an IO error.
+fn unsafe_entry(path: &Path) -> bool {
+    matches!(
+        std::fs::symlink_metadata(path),
+        Ok(info) if !info.is_file() || info.uid() != unsafe { libc::getuid() }
+    )
+}
+
+/// Why `resume` could not replay the bound file. A `transient` failure, an
+/// IO error or a file gone from its path, may clear on rediscovery. Any
+/// other, a confinement, ownership, type, header or identity failure, holds
+/// for the path until its next 60 s rediscovery (D1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Failure {
+    pub transient: bool,
+    pub error: String,
+}
+impl Failure {
+    fn transient(error: impl Into<String>) -> Self {
+        Self {
+            transient: true,
+            error: error.into(),
+        }
+    }
+    fn lasting(error: impl Into<String>) -> Self {
+        Self {
+            transient: false,
+            error: error.into(),
+        }
+    }
+}
+impl From<Failure> for String {
+    fn from(failure: Failure) -> Self {
+        failure.error
+    }
+}
+
 /// D2: the path must be exactly `<root>/<entry>/<id>.jsonl`, opened without
 /// following any symlink, owned by this user, with a verified header line.
 pub fn open_session(root: &Path, path: &Path, id: &str) -> Result<(BufReader<File>, Vec<u8>)> {
+    Ok(open_bound(root, path, id)?)
+}
+fn open_bound(
+    root: &Path,
+    path: &Path,
+    id: &str,
+) -> std::result::Result<(BufReader<File>, Vec<u8>), Failure> {
     let confined = safe_id(id, 128)
         && path.file_name() == Some(format!("{id}.jsonl").as_ref())
         && path
@@ -362,18 +410,23 @@ pub fn open_session(root: &Path, path: &Path, id: &str) -> Result<(BufReader<Fil
             )
         });
     if !confined {
-        return Err("Invalid Claude session path".into());
+        return Err(Failure::lasting("Invalid Claude session path"));
     }
-    let mut stream = BufReader::new(common::open_owned(path, false, false)?);
+    let file = common::open_owned(path, false, false).map_err(|error| Failure {
+        transient: !unsafe_entry(path),
+        error,
+    })?;
+    let mut stream = BufReader::new(file);
     let bytes = header(&mut stream, id)?;
     Ok((stream, bytes))
 }
 
 /// The first line: at most 64 KiB, newline-terminated, `sessionId == id`, any type.
-fn header(stream: &mut BufReader<File>, id: &str) -> Result<Vec<u8>> {
-    let bytes = line(stream, LINE + 1).map_err(|_| "Cannot read Claude session header")?;
+fn header(stream: &mut BufReader<File>, id: &str) -> std::result::Result<Vec<u8>, Failure> {
+    let bytes = line(stream, LINE + 1)
+        .map_err(|_| Failure::transient("Cannot read Claude session header"))?;
     if bytes.len() > LINE || bytes.last() != Some(&b'\n') {
-        return Err("Invalid Claude session header".into());
+        return Err(Failure::lasting("Invalid Claude session header"));
     }
     let matched = match parse_line(&bytes) {
         Some(value) => session_identity(&value, id) == Identity::Match,
@@ -385,18 +438,18 @@ fn header(stream: &mut BufReader<File>, id: &str) -> Result<Vec<u8>> {
         None => {
             let mut classifier = Classifier::default();
             if !classifier.feed(&bytes, id, common::now()) {
-                return Err("Invalid Claude session header".into());
+                return Err(Failure::lasting("Invalid Claude session header"));
             }
             let identity = classifier.identity();
             match classifier.finish() {
-                Outcome::Invalid => return Err("Invalid Claude session header".into()),
+                Outcome::Invalid => return Err(Failure::lasting("Invalid Claude session header")),
                 Outcome::Unclassified(_) => identity == IDENTITY_MATCH,
                 Outcome::Record(record) => record.identity == IDENTITY_MATCH,
             }
         }
     };
     if !matched {
-        return Err("Claude session identity mismatch".into());
+        return Err(Failure::lasting("Claude session identity mismatch"));
     }
     Ok(bytes)
 }
@@ -1777,7 +1830,9 @@ pub fn replay(
     time: f64,
     deadline: Instant,
 ) -> Result<Row> {
-    resume(root, path, id, previous, time, deadline).map(|(row, _)| row)
+    resume(root, path, id, previous, time, deadline)
+        .map(|(row, _)| row)
+        .map_err(String::from)
 }
 /// `replay` that also reports whether `previous` was resumed. A pass that
 /// starts after the header instead (no row, replacement, failed bounds) is a
@@ -1789,12 +1844,12 @@ pub fn resume(
     previous: Option<Row>,
     time: f64,
     deadline: Instant,
-) -> Result<(Row, bool)> {
-    let (mut stream, head) = open_session(root, path, id)?;
+) -> std::result::Result<(Row, bool), Failure> {
+    let (mut stream, head) = open_bound(root, path, id)?;
     let info = stream
         .get_ref()
         .metadata()
-        .map_err(|_| "Claude session stat failed")?;
+        .map_err(|_| Failure::transient("Claude session stat failed"))?;
     let (mut row, resumed) = match previous {
         Some(row) if row.resumable(&mut stream, &head, &info, time) => (row, true),
         _ => {
@@ -1813,7 +1868,7 @@ pub fn resume(
         }
     };
     let end = info.len().min(row.offset + TAIL as u64);
-    advance(&mut row, &mut stream, end, id, time, deadline)?;
+    advance(&mut row, &mut stream, end, id, time, deadline).map_err(Failure::transient)?;
     if let Some(classifier) = &mut row.claude.classifier {
         classifier.suspend();
     }
@@ -1823,7 +1878,7 @@ pub fn resume(
         size: info.len(),
         mtime_us: mtime_us(&info),
         header: common::sha256(&head),
-        tail: tail(&mut stream, row.offset)?,
+        tail: tail(&mut stream, row.offset).map_err(Failure::transient)?,
     });
     Ok((row, resumed))
 }

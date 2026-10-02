@@ -479,6 +479,43 @@ fn claude_lost_binding_with_a_cursor_row_publishes_an_all_null_sample() {
     assert_eq!(rows, json!({}));
 }
 
+/// A resume failure keeps the binding's path and time. A failure that
+/// persists for the path, here a header naming another session, is
+/// rediscovered on the 60 s cadence rather than on every probe (D1); a file
+/// gone from its path may be transient, so the next pass rediscovers it.
+#[test]
+fn claude_persistent_resume_failure_keeps_the_rediscovery_cadence() {
+    let fixture = Fixture::new();
+    let path = fixture.path("entry-a", ID);
+    let foreign = format!(
+        "{{\"type\":\"permission-mode\",\"sessionId\":\"fixture-other\"}}\n{}\n",
+        prompt(10)
+    );
+    std::fs::write(&path, foreign).unwrap();
+    let scans = || claude::SCANS.with(std::cell::Cell::get);
+    let before = scans();
+    let mut follower = NativeTelemetry::default();
+    for _ in 0..10 {
+        let (telemetry, _, cursors) = enrich(&mut follower, &json!({}));
+        assert!(telemetry.is_null() && cursors == json!({}));
+    }
+    assert_eq!(scans() - before, 1);
+    let binding = &follower.claude[&key()];
+    assert_eq!(binding.path.as_deref(), Some(path.as_path()));
+    assert!(!binding.rescan && binding.retained.is_none());
+    age(&mut follower);
+    enrich(&mut follower, &json!({}));
+    assert_eq!(scans() - before, 2);
+    // A file gone from its path is rediscovered at the next pass, which
+    // finds nothing and caches that.
+    std::fs::remove_file(&path).unwrap();
+    enrich(&mut follower, &json!({}));
+    assert!(follower.claude[&key()].rescan);
+    enrich(&mut follower, &json!({}));
+    let binding = &follower.claude[&key()];
+    assert!(binding.path.is_none() && !binding.rescan);
+}
+
 #[test]
 fn claude_zero_matches_and_identity_failures_publish_nothing() {
     let fixture = Fixture::new();
