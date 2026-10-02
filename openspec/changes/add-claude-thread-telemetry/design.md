@@ -67,7 +67,7 @@ Existing Codex behaviour, output and checkpoints must not change.
 
   A scan cut short by the entry or time budget, or by an IO error, is unknown and is not cached, like a truncated discovery. Exceeding the 256 KiB or 512-record bound, an unparseable record or an unsafe file is unknown and is cached.
 
-  A negative result is not cached while the candidate is still growing. The fixture's first `session_id` record starts after 16 records and more than 64 KiB. Change 2 adds a synthetic fixture.
+  A negative result is not cached while a candidate is growing. A candidate that ended within the bound with no `session_id` is growing only when it is new or its size or mtime changed since the previous scan of the same bound path. Each binding keeps, in memory only and never checkpointed, the device, inode, size and mtime of at most 64 such candidates from its last clear scan; any other result forgets them, so every candidate is new again, and a candidate beyond the 64 counts as growing. A growing candidate is rescanned at the next probe; an unchanged one is case 1 (not a successor) and the binding is cached for 60 s, so a deadline skip re-emits the retained sample. A peer's fresh follower sees every candidate as new and never caches. The fixture's first `session_id` record starts after 16 records and more than 64 KiB. Change 2 adds a synthetic fixture.
 - Positive bindings are re-scanned every 60 seconds too, unlike today's cache, which re-discovers only missing paths (`native.rs:698-711`). A second match reverts the session to unknown.
 - Never derive the slug, and never use `cwd` or pids.
 
@@ -209,7 +209,7 @@ Wrapper tags are matched on the leading tag of user text:
 | Local-command output (rule 3) | `local-command-stdout`, `local-command-stderr`, and `system` records with subtype `local_command` |
 | Bash mode (rule 3) | `bash-input`, `bash-stdout`, `bash-stderr` |
 
-`local-command-caveat` is ignored through `isMeta`. Any other leading tag falls to rule 4. Local-command output while a start is pending clears that start only when it was opened by a slash-command echo (a user record whose text starts with `command-name`, whatever its origin). It sets no `lost_idle` and leaves coverage unchanged, on the documented assumption that a command whose echo is followed by local-command output ran locally, not the model. Because such a command may still run the model, it sets `local_idle`: the published current turn is unknown until a trigger, `turn_duration` or an abort. An assistant record before then makes coverage ambiguous, and an abort makes accumulated coverage unknown. Only a model-running command that is killed, or whose queued input stamped within the second of its take is taken, before its first response stays undercounted (input stamped earlier than its take is unknown), since neither can be told from a local command followed by the next prompt. A pending start opened by any other trigger is untouched, and local output during a turn stays ignored. Input taken (`dequeue` or `remove`) after a record lost while idle, a second record lost while idle, or a lost queue record makes the turn ambiguous. Change 2 adds a synthetic fixture for each tag.
+`local-command-caveat` is ignored through `isMeta`. Any other leading tag falls to rule 4. Local-command output while a start is pending clears that start only when it was opened by a slash-command echo (a user record whose text starts with `command-name`, whatever its origin). It sets no `lost_idle` and leaves coverage unchanged, on the documented assumption that a command whose echo is followed by local-command output ran locally, not the model. Because such a command may still run the model, it sets `local_idle`: the published current turn is unknown until a trigger, `turn_duration` or an abort. An assistant record before then makes coverage ambiguous, and an abort makes accumulated coverage unknown. Input taken (`dequeue` or `remove`) while a slash-command echo is pending makes the turn ambiguous: at once when the take has no usable second or a queue record is unclassifiable, and otherwise when local-command output follows it, since the input either joined a turn the command ran (starting at the echo) or opened the next turn at its take, while its record keeps the stamp of the time it was queued. Only a model-running command that is killed before its first response, or whose queued input stamped within the second of its take is taken after its local output and before its first response, stays undercounted (input stamped earlier than its take is unknown), since neither can be told from a local command followed by the next prompt. A pending start opened by any other trigger is untouched, and local output during a turn stays ignored. Input taken (`dequeue` or `remove`) after a record lost while idle, a second record lost while idle, or a lost queue record makes the turn ambiguous. Change 2 adds a synthetic fixture for each tag.
 
 **Turn triggers.**
 - With no active turn, a trigger opens a pending start. A trigger that would replace an unconfirmed pending start is ambiguous instead, because the earlier prompt may have been killed or joined. It becomes the turn start only when an assistant record follows before the next trigger, including a `<synthetic>` error record, which confirms a start although D3 ignores its usage. Otherwise the newer trigger replaces it.
@@ -272,8 +272,8 @@ Every block field is required, bounded and revalidated on reuse:
 - `ambiguous`: set at every point where a turn may still be running (D7); while set there is no active turn or pending start and accumulated coverage is unknown;
 - `silent_end`: set by a silent end (D7) while a turn is active; reset by a trigger, `turn_duration`, an abort and unknown turn coverage; only set while a turn is active and `queued_since_start` is false;
 - `lost_idle`: set when a record is lost with no active turn, no pending start and no ambiguity, or by a `turn_duration`, an abort, or a `dequeue` or `remove` with no turn running, that has no usable second (or a queue record lost then); cleared by a `turn_duration` or abort with a usable second, or ambiguity (including any trigger); only set while idle and not ambiguous;
-- `pending_command`: set when a slash-command echo opens a pending start; cleared when that start is confirmed or made unknown, or by local output, which sets `local_idle`; only set while a start is pending;
-- `local_idle`: set when local-command output clears a pending slash-command start; cleared by a trigger, `turn_duration`, an abort or ambiguity; only set while idle and not ambiguous;
+- `pending_command`: set when a slash-command echo opens a pending start; cleared when that start is confirmed or made unknown, or by local output, which sets `local_idle` unless input was taken while it was pending, which makes the turn ambiguous instead; only set while a start is pending;
+- `local_idle`: set when local-command output clears a pending slash-command start with no input taken while it was pending; cleared by a trigger, `turn_duration`, an abort or ambiguity; only set while idle and not ambiguous;
 - `end_floor`: the latest proven end (D7) in Unix seconds, or 0; at most `coverage_seq` in seconds, so within now plus 1 s; a block without it is replayed fresh;
 - `foreign`: set by a record whose `sessionId` differs, never cleared on resume; requires invalid totals and last-response, row `valid`, `compactions_valid` and turn coverage false, and `current_known` false;
 - the Claude envelope classifier state (D3), or none.
@@ -427,7 +427,7 @@ Every block field is required, bounded and revalidated on reuse:
 - **Replay and timing:**
   - a file truncated during an oversized skip;
   - a deadline expiring inside rediscovery;
-  - Claude replay listed before a Codex pane under a short deadline.
+  - Claude replay listed before a Codex pane: Codex panes are enriched first, checked by recorded order under a far deadline.
 - **Peers:**
   - a foreign record in an incomplete peer pass;
   - peer skew at +1.05 s with `sampled_at` +0.95 s;
@@ -436,7 +436,7 @@ Every block field is required, bounded and revalidated on reuse:
 
 **Ground-truth turn fuzzer.** `0ac8792` generates sessions whose true turn intervals are known, using the D7 model. It injects every shape above, plus kills, lost records, reordering, queues, silent ends, foreign records and byte-level pass boundaries with oversized lines.
 
-After every record, and after every caught-up pass in file mode, it asserts (strict oracle, `950f360`) that each published current start and accumulated total is exactly the truth or unknown, and the last interval is the truth, unknown, or an unchanged earlier true interval while accumulated coverage is unknown (the spec allows the last valid interval to remain). An unchanged value is otherwise allowed only across a kill, which writes no record; both allowances are counted. A second abort record, a `<synthetic>` record after an abort, a repeated `turn_duration`, and a slash command that writes local output and then runs the model (ending in `turn_duration`, an abort before or after its first response, or a kill after it) are fuzzed; a kill, or taken input, before its first response is not generated, because it is the local-output assumption itself. Local commands are fuzzed: an idle echo with output; a pending prompt with a local command (echo plus output, or output alone) followed by a notification, abort or kill; and a notification before the first assistant record. The second idle loss is guarded by its unit fixture.
+After every record, and after every caught-up pass in file mode, it asserts (strict oracle, `950f360`) that each published current start and accumulated total is exactly the truth or unknown, and the last interval is the truth, unknown, or an unchanged earlier true interval while accumulated coverage is unknown (the spec allows the last valid interval to remain). An unchanged value is otherwise allowed only across a kill, which writes no record; both allowances are counted. A second abort record, a `<synthetic>` record after an abort, a repeated `turn_duration`, and a slash command that writes local output and then runs the model (ending in `turn_duration`, an abort before or after its first response, or a kill after it) are fuzzed; a kill, or input taken after its local output, before its first response is not generated, because it is the local-output assumption itself; input taken before its local output is generated (review round 10). Local commands are fuzzed: an idle echo with output; a pending prompt with a local command (echo plus output, or output alone) followed by a notification, abort or kill; and a notification before the first assistant record. The second idle loss is guarded by its unit fixture.
 
 Two model calibrations are explicit in the test:
 - queued input is stamped when it was queued;
@@ -510,9 +510,20 @@ Two model calibrations are explicit in the test:
 
 **Added after review round 9:**
 
-- `zz_review_line_over_tail_written_in_two_steps_loses_its_timestamp`;
+- `line_over_tail_written_in_two_steps_reads_as_a_whole_file_replay`;
 - `zz_trigger_before_an_unstamped_end_is_never_published`, covering an unstamped `turn_duration`, an abort and an idle take, each with four unusable stamp forms;
 - a targeted stamp-fault mode in the ground-truth fuzzer for end, abort and idle-take lines.
+
+**Added after review round 10:**
+
+- `turns_input_taken_while_a_slash_command_echo_is_pending_is_ambiguous`. It covers:
+  - a stamped dequeue, followed by stdout output;
+  - a stamped dequeue, followed by `system/local_command` output;
+  - an epoch-stamped dequeue;
+  - a dequeue without a timestamp;
+  - a dequeue without `sessionId`.
+- A fuzzer shape: input queued and taken after a slash-command echo and before its local output, with the taken record stamped at its queue time. The take is one of the targeted stamp-fault lines.
+- `claude_unchanging_sibling_without_session_id_is_not_growing`.
 
 **Corpus check.** As a verification step, this change also runs a local counts-only replay of the real transcript corpus through the implementation. It prints aggregates only, and nothing from it is committed. Prose review could not converge on these rules; replay can.
 

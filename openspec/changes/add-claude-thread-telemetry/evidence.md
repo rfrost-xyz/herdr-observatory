@@ -568,3 +568,22 @@ The four-lens review of `ade3fad` found 1 blocking, 2 non-blocking and 3 nit fin
 **Gates:** fmt, clippy and the full suite (lib 205, main 18, native_navigation 6, native_process 32).
 
 **Known behaviour change (fail-closed):** after an abort with no usable second, a directly following `<synthetic>` record is ambiguous.
+
+## Review round 10 and remediation
+
+The four-lens review of `c85abd2` found 1 blocking, 3 non-blocking and 1 nit finding.
+
+**Blocking.** Input taken while a slash-command echo was pending, followed by local output, left no trace. The next start was then published at the input's queue time.
+- `ec97d37` makes such a take ambiguous.
+- A fixture covers five forms of the take. Each form published a wrong start, last interval and total before the fix.
+- A new fuzzer shape reported 12,625 violations over 319,317 records before the fix and 0 after.
+
+**Other fixes:**
+- **Predecessor scan.** `6df8e19` caches a binding next to an unchanging finished sibling. Before, it rescanned on every probe, and a deadline skip lost the retained sample.
+- **Codex-first ordering test.** `65a92fd` checks the recorded order rather than timing. As a mutation check, swapping the two loops in `enrich_until` made it fail.
+- **Checkpoint test steps.** `b296f4f` names each failing step and adds `#[track_caller]`. `357471e` gives unit fixtures a prefix disjoint from process fixtures.
+- **Test name.** `1397cdb` renames the over-`TAIL` regression test after its guarantee.
+
+**Corpus.** Unchanged. The example scans cold, so the new predecessor caching rule is covered by its unit test, not by the corpus.
+
+**Gates.** fmt and clippy are clean. The full suite passes: lib 207, main 18, native_navigation 6, native_process 32.
