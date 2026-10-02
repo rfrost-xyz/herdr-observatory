@@ -953,6 +953,12 @@ fn step(row: &mut Row, line: Option<&String>, trail: &[Option<String>]) {
         None => row.invalid(),
     }
     assert!(row.gate(now()), "rejected after {trail:#?}");
+    // Nothing is current while a turn may be running from an unknown start.
+    let unknown_start = row.claude.ambiguous || row.claude.lost_idle;
+    assert!(
+        !row.turns.current_known || !unknown_start,
+        "current after {trail:#?}"
+    );
 }
 fn steps(lines: &[Option<String>]) -> Row {
     let mut row = Row::new([1, 2], 0, now());
@@ -1238,6 +1244,18 @@ impl Seeded {
     }
 }
 
+/// The D7 role a fuzzed line plays for the truncation oracle.
+#[derive(Clone, Copy, PartialEq)]
+enum Role {
+    /// A record whose turn role is lost: it may have opened a turn.
+    Lost,
+    Trigger,
+    Assistant,
+    /// `turn_duration` or an abort: a proven end.
+    End,
+    Other,
+}
+
 #[test]
 fn turns_fuzzed_replay_states_stay_resumable() {
     for seed in [
@@ -1249,6 +1267,7 @@ fn turns_fuzzed_replay_states_stay_resumable() {
         for _ in 0..1500 {
             let (mut at, mut message) = (100u64, 0);
             let mut lines: Vec<Option<String>> = vec![];
+            let mut roles = vec![];
             for index in 0..5 + random.below(30) {
                 at = match random.below(6) {
                     0 => at.saturating_sub(random.below(8)),
@@ -1257,38 +1276,71 @@ fn turns_fuzzed_replay_states_stay_resumable() {
                 };
                 message += u64::from(random.below(5) == 0);
                 let id = format!("msg_{message}");
-                let line = match random.below(24) {
-                    0..=2 => user(at, "prompt", ""),
-                    3 => user(at, "[Request interrupted by user]", ""),
-                    4 => assistant(at, &id, "\"tool_use\""),
-                    5 => assistant(at, &id, "\"end_turn\""),
-                    6 => assistant(at, &id, "null"),
-                    7 => system("turn_duration", at),
-                    8 => system("stop_hook_summary", at),
-                    9 => dequeue(at),
-                    10 => queue(at),
-                    11 => operation(at, "remove"),
-                    12 => user(at, "<command-name>/x</command-name>", ""),
-                    13 => queued(at, "prompt", "later"),
-                    14 => notified(at, "agent-x", "completed"),
-                    15 => user(at, "x", "\"origin\":{\"kind\":\"future-kind\"}"),
-                    16 => user(at, "late", "").replace(&stamp(at), "not-a-time"),
-                    17 => user(at, "zero", "").replace(&stamp(at), "1970-01-01T00:00:00.500Z"),
-                    18 => user(at, "anon", "").replace(&format!("\"sessionId\":\"{ID}\","), ""),
-                    19 => assistant(at, &id, "null").replacen(
-                        "\"message\"",
-                        "\"isAbortedMidStream\":true,\"message\"",
-                        1,
+                let (line, role) = match random.below(24) {
+                    0..=2 => (user(at, "prompt", ""), Role::Trigger),
+                    3 => (user(at, "[Request interrupted by user]", ""), Role::End),
+                    4 => (assistant(at, &id, "\"tool_use\""), Role::Assistant),
+                    5 => (assistant(at, &id, "\"end_turn\""), Role::Assistant),
+                    6 => (assistant(at, &id, "null"), Role::Assistant),
+                    7 => (system("turn_duration", at), Role::End),
+                    8 => (system("stop_hook_summary", at), Role::Other),
+                    9 => (dequeue(at), Role::Other),
+                    10 => (queue(at), Role::Other),
+                    11 => (operation(at, "remove"), Role::Other),
+                    12 => (
+                        user(at, "<command-name>/x</command-name>", ""),
+                        Role::Trigger,
                     ),
-                    20 => String::new(),
-                    23 => assistant(at, &id, "\"end_turn\"").replace(
-                        "\"input_tokens\":1,\"output_tokens\":1",
-                        "\"input_tokens\":5000000000000000,\"output_tokens\":5000000000000000",
+                    13 => (queued(at, "prompt", "later"), Role::Other),
+                    14 => (notified(at, "agent-x", "completed"), Role::Trigger),
+                    15 => (
+                        user(at, "x", "\"origin\":{\"kind\":\"future-kind\"}"),
+                        Role::Lost,
                     ),
-                    22 if random.below(4) == 0 => {
-                        user(at, "other", "").replace(ID, "fixture-session-b")
-                    }
-                    _ => user(at, "peer", "\"isMeta\":true,\"origin\":{\"kind\":\"peer\"}"),
+                    16 => (
+                        user(at, "late", "").replace(&stamp(at), "not-a-time"),
+                        Role::Lost,
+                    ),
+                    17 => (
+                        user(at, "zero", "").replace(&stamp(at), "1970-01-01T00:00:00.500Z"),
+                        Role::Lost,
+                    ),
+                    18 => (
+                        user(at, "anon", "").replace(&format!("\"sessionId\":\"{ID}\","), ""),
+                        Role::Lost,
+                    ),
+                    19 => (
+                        assistant(at, &id, "null").replacen(
+                            "\"message\"",
+                            "\"isAbortedMidStream\":true,\"message\"",
+                            1,
+                        ),
+                        Role::End,
+                    ),
+                    20 => (String::new(), Role::Lost),
+                    21 => (
+                        record(
+                            "user",
+                            at,
+                            "\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"image\"}]}",
+                        ),
+                        Role::Lost,
+                    ),
+                    23 => (
+                        assistant(at, &id, "\"end_turn\"").replace(
+                            "\"input_tokens\":1,\"output_tokens\":1",
+                            "\"input_tokens\":5000000000000000,\"output_tokens\":5000000000000000",
+                        ),
+                        Role::Assistant,
+                    ),
+                    22 if random.below(4) == 0 => (
+                        user(at, "other", "").replace(ID, "fixture-session-b"),
+                        Role::Lost,
+                    ),
+                    _ => (
+                        user(at, "peer", "\"isMeta\":true,\"origin\":{\"kind\":\"peer\"}"),
+                        Role::Trigger,
+                    ),
                 };
                 // Unique uuids except an occasional repeat.
                 let line = (!line.is_empty()).then(|| {
@@ -1299,8 +1351,28 @@ fn turns_fuzzed_replay_states_stay_resumable() {
                     }
                 });
                 lines.push(line);
+                roles.push(role);
             }
-            steps(&lines);
+            // Oracle: a lost record, then an assistant record before any
+            // trigger, shows a turn running from an unknown start; nothing
+            // is current until a proven end.
+            let mut row = Row::new([1, 2], 0, now());
+            let (mut lost, mut unknown) = (false, false);
+            for (index, role) in roles.iter().enumerate() {
+                step(&mut row, lines[index].as_ref(), &lines[..=index]);
+                match role {
+                    Role::Lost => lost = true,
+                    Role::Trigger => lost = false,
+                    Role::Assistant => unknown |= lost,
+                    Role::End => (lost, unknown) = (false, false),
+                    Role::Other => {}
+                }
+                assert!(
+                    !unknown || !row.turns.current_known,
+                    "{:#?}",
+                    &lines[..=index]
+                );
+            }
         }
     }
 }
