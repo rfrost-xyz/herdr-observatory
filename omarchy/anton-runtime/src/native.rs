@@ -1168,15 +1168,32 @@ impl NativeTelemetry {
         }
     }
     pub fn enrich(&mut self, agents: &mut [Value], raw_cursors: &Value) -> Value {
+        self.enrich_until(
+            agents,
+            raw_cursors,
+            Instant::now() + Duration::from_millis(750),
+        )
+    }
+    fn enrich_until(
+        &mut self,
+        agents: &mut [Value],
+        raw_cursors: &Value,
+        deadline: Instant,
+    ) -> Value {
         let time = now();
         let mut cursors = validate_cursors(raw_cursors);
         let mut active = BTreeSet::new();
-        let deadline = Instant::now() + Duration::from_millis(750);
+        // Codex panes go first, so Claude replay, which an old local makes
+        // restart from the header on every peer probe, cannot use up the
+        // shared deadline before them.
+        for agent in agents.iter_mut().take(32) {
+            if agent["agent"] != "claude" {
+                self.enrich_codex(agent, &mut cursors, &mut active, time, deadline);
+            }
+        }
         for agent in agents.iter_mut().take(32) {
             if agent["agent"] == "claude" {
                 self.enrich_claude(agent, &mut cursors, &mut active, time, deadline);
-            } else {
-                self.enrich_codex(agent, &mut cursors, &mut active, time, deadline);
             }
         }
         cursors.retain(|key, _| active.contains(key));

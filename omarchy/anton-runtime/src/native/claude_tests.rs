@@ -860,3 +860,72 @@ fn claude_rows_over_the_byte_bound_shrink_and_keep_their_position() {
         assert_eq!(fingerprints.get_or_insert(current.clone()), &current);
     }
 }
+
+/// Codex panes are enriched before Claude panes within the shared deadline,
+/// so Claude replay listed first cannot starve them. Each probe uses a fresh
+/// follower and rows without their `claude` block, as a peer with an old
+/// local does, so every Claude pane replays from the header.
+#[test]
+fn claude_replay_listed_first_never_starves_a_codex_pane() {
+    const PANES: usize = 2;
+    struct Codex;
+    impl Drop for Codex {
+        fn drop(&mut self) {
+            TEST_ROOT.with(|value| *value.borrow_mut() = None);
+        }
+    }
+    let fixture = Fixture::new();
+    let sessions = fixture.root.join("codex-sessions");
+    std::fs::create_dir_all(&sessions).unwrap();
+    let usage = json!({"type":"event_msg","timestamp":"2026-01-01T00:00:30+00:00","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":12,"output_tokens":3,"cached_input_tokens":0,"cache_write_input_tokens":4,"total_tokens":185000},"total_token_usage":{"input_tokens":21700000,"output_tokens":4200,"cached_input_tokens":20000000,"cache_write_input_tokens":0},"model_context_window":258400}}});
+    std::fs::write(
+        sessions.join("rollout-fixture-codex.jsonl"),
+        format!(
+            "{}\n{usage}\n",
+            json!({"type":"session_meta","payload":{"id":"fixture-codex"}})
+        ),
+    )
+    .unwrap();
+    TEST_ROOT.with(|value| *value.borrow_mut() = Some(sessions));
+    let _codex = Codex;
+    // Each Claude pane holds more than the 16 passes of `TAIL` it may replay.
+    let filler = "y".repeat(3000);
+    let ids: Vec<String> = (0..PANES)
+        .map(|index| format!("fixture-heavy-{index}"))
+        .collect();
+    for id in &ids {
+        let mut text = format!("{{\"type\":\"permission-mode\",\"sessionId\":\"{id}\"}}\n");
+        for index in 0.. {
+            if text.len() > 16 * TAIL + TAIL {
+                break;
+            }
+            text.push_str(&format!(
+                "{{\"type\":\"assistant\",\"sessionId\":\"{id}\",\"uuid\":\"u-{index}\",\"timestamp\":\"{}\",\"message\":{{\"id\":\"msg-{index}\",\"model\":\"claude-fixture-1\",\"stop_reason\":\"tool_use\",\"usage\":{{\"input_tokens\":1,\"output_tokens\":1,\"cache_read_input_tokens\":1,\"cache_creation_input_tokens\":1}},\"content\":[{{\"type\":\"text\",\"text\":\"{filler}\"}}]}}}}\n",
+                stamp(index % 3600)
+            ));
+        }
+        let directory = fixture.projects.join(format!("entry-{id}"));
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join(format!("{id}.jsonl")), text).unwrap();
+    }
+    let codex = json!({"agent":"codex","agent_session":{"agent":"codex","source":"herdr:codex","kind":"id","value":"fixture-codex"}});
+    let mut cursors = json!({});
+    for _ in 0..2 {
+        let mut agents: Vec<Value> = ids
+            .iter()
+            .map(|id| json!({"agent":"claude","agent_session":{"agent":"claude","source":"herdr:claude","kind":"id","value":id}}))
+            .collect();
+        agents.push(codex.clone());
+        // A short shared deadline that the Claude replay alone outlasts.
+        let deadline = Instant::now() + Duration::from_millis(150);
+        let next = NativeTelemetry::default().enrich_until(&mut agents, &cursors, deadline);
+        assert_eq!(
+            agents[PANES]["_native_telemetry"]["total_input"],
+            21_700_000
+        );
+        cursors = next;
+        for row in cursors.as_object_mut().unwrap().values_mut() {
+            row.as_object_mut().unwrap().remove("claude");
+        }
+    }
+}
