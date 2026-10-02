@@ -747,3 +747,114 @@ fn claude_record_naming_another_session_keeps_the_binding_unknown() {
     unknown(&telemetry, micros(34));
     assert!(timing.is_null());
 }
+
+/// Seven maximal Claude panes, 512 finished turns and 128 children each, do
+/// not fit `LIMIT` whole. The rows that would overflow shed their finished
+/// intervals instead of being dropped, so every pane keeps its position and
+/// keeps publishing usage on every sample; only their accumulated turn
+/// coverage becomes unknown.
+#[test]
+fn claude_rows_over_the_byte_bound_shrink_and_keep_their_position() {
+    let fixture = Fixture::new();
+    let mut lines: Vec<_> = (0..128)
+        .map(|index| launch(5 + index, &format!("agent-{index}")))
+        .collect();
+    for turn in 0..512 {
+        let second = 200 + turn * 5;
+        lines.push(prompt(second));
+        lines.push(assistant(
+            second + 1,
+            &format!("msg-{turn}"),
+            "\"end_turn\"",
+            [1, 1, 1, 1],
+        ));
+        lines.push(system("turn_duration", second + 2));
+    }
+    let text = body(&lines);
+    let panes: Vec<_> = (0..7)
+        .map(|index| {
+            let id = format!("fixture-session-{index}");
+            let path = fixture.path(&format!("entry-{index}"), &id);
+            std::fs::write(&path, text.replace(ID, &id)).unwrap();
+            let key = sha256(format!("anton-native-session-v1:claude:{id}").as_bytes());
+            (id, path, key)
+        })
+        .collect();
+    let agents = || -> Vec<_> {
+        panes
+            .iter()
+            .map(|(id, _, _)| json!({"agent":"claude","agent_session":{"agent":"claude","source":"herdr:claude","kind":"id","value":id}}))
+            .collect()
+    };
+    let mut follower = NativeTelemetry::default();
+    // The cold replay shares the 750 ms deadline, so a loaded test host may
+    // need more than one sample to catch every pane up.
+    let mut cursors = json!({});
+    for _ in 0..20 {
+        cursors = follower.enrich(&mut agents(), &cursors);
+        let rows = cursors.as_object().unwrap();
+        if panes.iter().all(|(_, path, key)| {
+            rows.get(key).is_some_and(|row| {
+                row["offset"].as_u64() == Some(std::fs::metadata(path).unwrap().len())
+            })
+        }) {
+            break;
+        }
+    }
+    let mut fingerprints = None;
+    for round in 0..3 {
+        let mut agents = agents();
+        cursors = follower.enrich(&mut agents, &cursors);
+        let rows = cursors.as_object().unwrap();
+        assert_eq!(rows.len(), 7, "round {round}");
+        assert!(serde_json::to_vec(&cursors).unwrap().len() <= LIMIT);
+        assert_eq!(
+            serde_json::to_value(validate_cursors(&cursors)).unwrap(),
+            cursors
+        );
+        let mut shrunk = 0;
+        for ((id, path, key), agent) in panes.iter().zip(&agents) {
+            let row = &rows[key];
+            let size = std::fs::metadata(path).unwrap().len();
+            assert_eq!(
+                (row["offset"].as_u64(), &row["caught_up"]),
+                (Some(size), &json!(true))
+            );
+            assert_eq!(
+                totals(&agent["_native_telemetry"]),
+                json!([1536, 512, 512, 512, 512]),
+                "round {round} {id}"
+            );
+            let timing = &agent["_native_turn_timing"];
+            assert_eq!(timing["last_duration_s"], json!(2));
+            if row["turns"]["finished"].as_object().unwrap().len() == 512 {
+                assert_eq!(timing["complete"], json!(true));
+            } else {
+                shrunk += 1;
+                assert_eq!(row["turns"]["finished"].as_object().unwrap().len(), 1);
+                assert_eq!(
+                    (&timing["complete"], &timing["total_finished_duration_s"]),
+                    (&json!(false), &Value::Null)
+                );
+            }
+            // The row resumes from its offset instead of replaying the file.
+            let cursor = validate_cursors(&cursors).remove(key).unwrap();
+            let (next, resumed) = claude::resume(
+                &claude::projects_root(),
+                path,
+                id,
+                cursor.into_row(),
+                now(),
+                Instant::now() + Duration::from_secs(5),
+            )
+            .unwrap();
+            assert!(resumed && next.offset == size, "round {round} {id}");
+        }
+        assert_eq!(shrunk, 2, "round {round}");
+        let current: Vec<_> = rows
+            .values()
+            .map(|row| row["fingerprint"].clone())
+            .collect();
+        assert_eq!(fingerprints.get_or_insert(current.clone()), &current);
+    }
+}

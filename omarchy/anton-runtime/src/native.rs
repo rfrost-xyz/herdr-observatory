@@ -193,6 +193,30 @@ impl Cursor {
     pub fn is_claude(&self) -> bool {
         self.claude.is_some()
     }
+    /// D8: a Claude row over the byte bound sheds its finished intervals, all
+    /// but the last turn's, before it is dropped. Accumulated turn coverage
+    /// becomes unknown for the rest of the binding; the byte cursor,
+    /// fingerprint, block, children and current and last turn stay, so replay
+    /// keeps its position. Returns whether anything was shed.
+    fn shrink(&mut self) -> bool {
+        let (Some(_), Some(turns)) = (&self.claude, &mut self.turns) else {
+            return false;
+        };
+        let last: BTreeMap<_, _> = turns
+            .last
+            .as_ref()
+            .and_then(|key| turns.finished.get_key_value(key))
+            .map(|(key, interval)| (key.clone(), interval.clone()))
+            .into_iter()
+            .collect();
+        if turns.finished.len() <= last.len() {
+            return false;
+        }
+        turns.valid = false;
+        turns.total = last.values().map(|(start, end, _)| end - start).sum();
+        turns.finished = last;
+        true
+    }
     fn invalid(&mut self) {
         self.valid = false;
         self.compactions_valid = false;
@@ -226,7 +250,8 @@ impl Cursor {
 }
 /// Validates peer or checkpoint cursor rows within 32 rows and `LIMIT` bytes.
 /// Codex rows are charged against the byte budget first, in key order, and
-/// Claude rows after them, so Claude rows never displace Codex rows.
+/// Claude rows after them, so Claude rows never displace Codex rows. A Claude
+/// row that would exceed the budget is shrunk before it is dropped.
 pub fn validate_cursors(raw: &Value) -> BTreeMap<String, Cursor> {
     let mut result = BTreeMap::new();
     let Some(rows) = raw.as_object().filter(|v| v.len() <= 32) else {
@@ -255,13 +280,20 @@ pub fn validate_cursors(raw: &Value) -> BTreeMap<String, Cursor> {
     }
     // A stable sort keeps key order within each kind.
     valid.sort_by_key(|(_, cursor)| cursor.is_claude());
-    let mut size = 0;
-    for (key, cursor) in valid {
-        size += serde_json::to_vec(&cursor)
+    let cost = |cursor: &Cursor, key: &str| {
+        serde_json::to_vec(cursor)
             .map(|v| v.len())
             .unwrap_or(LIMIT + 1)
             + key.len()
-            + 8;
+            + 8
+    };
+    let mut size = 0;
+    for (key, mut cursor) in valid {
+        let mut bytes = cost(&cursor, key);
+        if size + bytes > LIMIT && cursor.shrink() {
+            bytes = cost(&cursor, key);
+        }
+        size += bytes;
         if size > LIMIT {
             break;
         }
