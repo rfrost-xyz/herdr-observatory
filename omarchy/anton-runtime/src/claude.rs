@@ -361,7 +361,12 @@ pub struct ClaudeCursor {
     #[serde(deserialize_with = "Option::deserialize")]
     pub pending_start: Option<(String, u64)>,
     pub abort_adjacent: bool,
-    pub queued_since_start: bool,
+    /// The largest stamp of a `dequeue` or `remove` while a turn is active or
+    /// a start is pending and no silent end has been seen (D8). Taken input
+    /// already exists when it is taken, so only a trigger stamped no later
+    /// than this may be that input and join the turn.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub queued_since_start: Option<u64>,
     /// A silent end (D7) was seen during the active turn: until a trigger,
     /// `turn_duration`, an abort or unknown coverage, no queue operation
     /// lets input join it, because the turn may already have ended.
@@ -400,7 +405,7 @@ impl Default for ClaudeCursor {
             compaction_iteration: false,
             pending_start: None,
             abort_adjacent: false,
-            queued_since_start: false,
+            queued_since_start: None,
             silent_end: false,
             ambiguous: false,
             lost_idle: false,
@@ -455,6 +460,7 @@ impl ClaudeCursor {
                 .pending_start
                 .as_ref()
                 .is_none_or(|(key, second)| hex_id(key, 24) && (1..=SAFE).contains(second))
+            && (self.queued_since_start).is_none_or(|at| 0 < at && at <= self.coverage_seq)
             && self.classifier.as_ref().is_none_or(Classifier::validate)
             && (!self.foreign
                 || !self.totals_valid
@@ -1127,7 +1133,7 @@ impl Row {
     fn turns_unknown(&mut self) {
         self.turns.unknown();
         self.claude.pending_start = None;
-        self.claude.queued_since_start = false;
+        self.claude.queued_since_start = None;
         self.claude.silent_end = false;
     }
     fn close_group(&mut self) {
@@ -1259,12 +1265,13 @@ impl Row {
             // turn or pending start; an enqueue alone never permits a join.
             // After a silent end the turn may be over, so none does.
             Turn::Queue if [2, 3].contains(&record.operation) => {
-                block.queued_since_start |=
-                    (active || block.pending_start.is_some()) && !block.silent_end;
+                if (active || block.pending_start.is_some()) && !block.silent_end {
+                    block.queued_since_start = block.queued_since_start.max(record.stamp);
+                }
             }
             Turn::Queue => {}
             Turn::Silent => {
-                block.queued_since_start = false;
+                block.queued_since_start = None;
                 block.silent_end = active;
             }
             Turn::Assistant => {
@@ -1274,7 +1281,7 @@ impl Row {
                 }
                 self.confirm();
                 if record.stop == STOP_END_TURN {
-                    self.claude.queued_since_start = false;
+                    self.claude.queued_since_start = None;
                     self.claude.silent_end = self.turns.active.is_some();
                 }
             }
@@ -1288,10 +1295,15 @@ impl Row {
                     return self.ambiguous();
                 };
                 // Each trigger consumes the queue evidence. Only input taken
-                // into a running turn joins it; with no active turn the
-                // trigger replaces a pending start, which may be an idle
-                // command echo that no assistant record ever confirmed.
-                if std::mem::take(&mut block.queued_since_start) && active {
+                // into a running turn joins it, and only a trigger stamped no
+                // later than the evidence can be that input: a prompt after a
+                // kill and restart is later. With no active turn the trigger
+                // replaces a pending start, which may be an idle command
+                // echo that no assistant record ever confirmed.
+                let taken = (block.queued_since_start.take())
+                    .zip(record.stamp)
+                    .is_some_and(|(at, stamp)| stamp <= at);
+                if taken && active {
                     return;
                 }
                 if active {
@@ -1347,7 +1359,7 @@ impl Row {
         }
         match second {
             Some(second) => {
-                self.claude.queued_since_start = false;
+                self.claude.queued_since_start = None;
                 end(&mut self.turns, second);
             }
             None => self.turns_unknown(),
@@ -1484,8 +1496,9 @@ impl Row {
     fn turn_state(&self) -> bool {
         let active = self.turns.active.is_some();
         let idle = !active && self.claude.pending_start.is_none();
-        (!self.claude.queued_since_start || active || self.claude.pending_start.is_some())
-            && (!self.claude.silent_end || active && !self.claude.queued_since_start)
+        let queued = self.claude.queued_since_start.is_some();
+        (!queued || active || self.claude.pending_start.is_some())
+            && (!self.claude.silent_end || active && !queued)
             && (!self.claude.ambiguous
                 || !active && self.claude.pending_start.is_none() && !self.turns.valid)
             && (self.claude.pending_start.is_none() || !active)

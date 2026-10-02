@@ -563,8 +563,9 @@ fn turns_queued_input_joins_only_after_a_queue_operation() {
         user(10, "hello", ""),
         assistant(11, "msg_a", "\"tool_use\""),
         queue(12),
-        dequeue(12),
-        user(13, "also this", ""),
+        dequeue(13),
+        // Taken input keeps the stamp of the time it was queued.
+        user(12, "also this", ""),
         assistant(14, "msg_b", "\"end_turn\""),
         system("turn_duration", 20),
     ]);
@@ -633,7 +634,7 @@ fn turns_silent_end_followed_by_queued_input_is_unknown() {
         assistant(11, "msg_a", "\"tool_use\""),
         dequeue(12),
         assistant(13, "msg_b", "\"tool_use\""),
-        user(14, "queued", ""),
+        user(12, "queued", ""),
         system("turn_duration", 20),
     ]);
     assert!(row.turns.valid);
@@ -738,7 +739,7 @@ fn turns_state_survives_a_block_round_trip() {
         assistant(11, "msg_a", "\"tool_use\""),
         dequeue(12),
     ]);
-    assert!(row.claude.queued_since_start);
+    assert_eq!(row.claude.queued_since_start, Some(micros(12)));
     let block: ClaudeCursor =
         serde_json::from_value(serde_json::to_value(&row.claude).unwrap()).unwrap();
     assert_eq!(block, row.claude);
@@ -789,9 +790,9 @@ fn turns_block_inconsistent_with_turns_is_rejected() {
         assistant(11, "msg_a", "\"end_turn\""),
     ]);
     assert!(silent.claude.silent_end && silent.turn_state());
-    silent.claude.queued_since_start = true;
+    silent.claude.queued_since_start = Some(micros(11));
     assert!(!silent.turn_state());
-    silent.claude.queued_since_start = false;
+    silent.claude.queued_since_start = None;
     silent.turns.unknown();
     assert!(!silent.turn_state());
     // A record lost while idle holds no running turn and no ambiguity.
@@ -843,7 +844,7 @@ fn turns_join_needs_a_dequeue_or_remove_and_each_join_consumes_it() {
             queue(2),
             operation(2, taken),
             assistant(3, "msg_a", "\"tool_use\""),
-            user(5, "queued", ""),
+            user(2, "queued", ""),
             assistant(6, "msg_b", "\"end_turn\""),
             system("turn_duration", 7),
         ]);
@@ -864,7 +865,7 @@ fn turns_join_needs_a_dequeue_or_remove_and_each_join_consumes_it() {
         assistant(4001, "msg_a", "\"end_turn\""),
         system("turn_duration", 4003),
     ]);
-    assert!(row.turns.valid && !row.claude.queued_since_start);
+    assert!(row.turns.valid && row.claude.queued_since_start.is_none());
     assert_eq!(row.turns.total, 3);
     assert!(finished(&row, "user", 4).is_none());
     // Each join consumes the evidence: a second prompt needs its own.
@@ -872,7 +873,7 @@ fn turns_join_needs_a_dequeue_or_remove_and_each_join_consumes_it() {
         user(10, "hello", ""),
         assistant(11, "msg_a", "\"tool_use\""),
         dequeue(12),
-        user(13, "queued", ""),
+        user(12, "queued", ""),
         user(14, "queued again", ""),
     ]);
     assert!(!row.turns.valid);
@@ -975,7 +976,7 @@ fn lost(row: &Row, last: Option<&str>) {
         row.turns
     );
     assert!(row.turns.active.is_none() && row.turns.start.is_none());
-    assert!(row.claude.pending_start.is_none() && !row.claude.queued_since_start);
+    assert!(row.claude.pending_start.is_none() && row.claude.queued_since_start.is_none());
     let key = last.map(|uuid| turn_key(ID, uuid));
     assert_eq!(row.turns.last, key);
 }
@@ -1404,4 +1405,35 @@ fn turns_two_records_lost_while_idle_may_be_a_running_turn() {
     let row = steps(&lines);
     lost(&row, Some("user-1"));
     assert_eq!(row.turns.last_duration, Some(2));
+}
+
+#[test]
+fn turns_input_taken_before_a_kill_never_joins_the_restarted_prompt() {
+    // Found by the ground-truth fuzzer: input was taken into the turn, by a
+    // queued attachment or not yet written, and the process was killed. The
+    // restarted session's prompt is stamped after the evidence, so it is no
+    // taken input and never absorbs the dead time.
+    for taken in [
+        vec![queue(12), dequeue(13)],
+        vec![queue(12), operation(13, "remove")],
+        vec![
+            queue(12),
+            operation(13, "remove"),
+            queued(12, "prompt", "x"),
+        ],
+    ] {
+        let mut lines = vec![
+            user(10, "hello", ""),
+            assistant(11, "msg_a", "\"tool_use\""),
+        ];
+        lines.extend(taken);
+        lines.extend([
+            user(600, "after a restart", ""),
+            assistant(601, "msg_b", "\"end_turn\""),
+            system("turn_duration", 605),
+        ]);
+        let row = run(&lines);
+        assert!(!row.turns.valid && row.turns.last.is_none());
+        assert!(finished(&row, "user", 10).is_none());
+    }
 }
