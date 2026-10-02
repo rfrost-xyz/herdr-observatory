@@ -111,7 +111,7 @@ The independent four-lens review of `ef2ddc5` found 3 blocking, 9 non-blocking a
 **Blocking:**
 1. **The header record was not replayed** (`2412f2a`).
 2. **A killed turn with only enqueued input absorbed the idle gap.** Joins now need dequeue or remove evidence (`aa9ed0a`, `4b5536d`).
-3. **Claude rows evicted Codex rows** from the shared cursor and checkpoint bounds. Codex is now charged first (`c38efe7`), and ring hashes shrank to 64 bits (`ac47bc9`). A block with a full ring went from 2,702 to 1,118 bytes. That is not the worst case: a row with 512 finished turns and 128 children is about 44 KB.
+3. **Claude rows evicted Codex rows** from the shared cursor and checkpoint bounds. Codex is now charged first (`c38efe7`), and ring hashes shrank to 64 bits (`ac47bc9`). A block with a full ring went from 2,702 to 1,118 bytes (1,212 bytes after later fields were added; the test bound is 1,250). That is not the worst case: a row with 512 finished turns and 128 children is about 44 KB.
 
 **Other fixes:**
 - a trigger at Unix second 0 (`e0e2257`);
@@ -439,3 +439,45 @@ Sessions with at least one violation when a fix is reverted:
 Runtime CPU: 0.095 s for HEAD against 0.089 s for the baseline, per-window 0.088 to 0.098 against 0.087 to 0.090. Peak RSS is noisy in both, swinging between 4.2 and 7.7 MiB.
 
 Claude probe: 4/4 local and 4/4 peer, with all fields, in both variants.
+
+## Review round 6 and remediation
+
+The four-lens review of `085db29` found 1 blocking and 5 other findings. All are fixed.
+
+**Blocking:**
+- **Unverified peer row.** A peer deadline skip returned an unverified cursor row, which the local would re-emit without limit. `87f2625` publishes the all-null sample, or withholds the row, when there is no current binding. The narrower window where the deadline passes after binding but before any pass was found during remediation; `e0e6fc5` routes it through the same skip.
+
+**Other fixes:**
+- a lasting resume failure keeps the 60 s cadence (`43cb273`);
+- an overlong `sessionId` cut after the bound is a mismatch (`d9dc9af`);
+- lock tests for genuine contention and holder release (`7e90254`, `1e48c49`);
+- an assistant record with no turn running is ambiguous (`cf81cbc`);
+- the current turn is masked after a slash command's local output (`0b92ce8`);
+- an abort after local output is unknown (`1f7c77b`);
+- the corpus check counts the published current turn (`75bff6e`).
+
+**Fuzzer.** It ran 240,640 records with 0 violations and 0 restarts, then a temporary 10× seed sweep of 3,157,537 records, also with 0 violations. It counts 4,172 values unchanged across a kill and 63,531 last valid intervals.
+
+**Corpus, counts only.** The only change from the previous build is the published current turn known, which goes from 13 to 12 of 19, because 2 files end with `local_idle` set. Coverage stays 13 of 19.
+
+**Known limit (documented).** A slash command that runs the model, and is killed or has queued input taken before its first response, stays undercounted.
+
+### Verification at `75bff6e` (release sha256 `032fb4a24d080c9eb0a259b35ae2c8d1d1e48cb74cc66fc734c43e0871b24f6f`)
+
+| Gate | Result |
+|---|---|
+| fmt, clippy | clean |
+| `cargo test`, 3 runs | lib 193, main 17, native_navigation 6, native_process 32 |
+| `node --test` | 88 of 88 |
+| QML | 95 of 95 |
+| qmllint | clean |
+| Shell harness | 0 failures |
+
+| Measurement | HEAD | Baseline |
+|---|---|---|
+| Runtime CPU | 0.092 s | 0.094 s |
+| Mean snapshot | 27,677.3 B | 27,675.1 B |
+
+Peak RSS is noisy in both, the same process-overlap pattern as before. The Claude probe reports 4/4 local and 4/4 peer for every field.
+
+`e0e6fc5` was verified afterwards with fmt, clippy and the full Rust suite: lib 193, main 17, native_navigation 6, native_process 32.
