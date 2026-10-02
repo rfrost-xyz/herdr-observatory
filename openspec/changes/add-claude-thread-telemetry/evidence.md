@@ -581,9 +581,31 @@ The four-lens review of `c85abd2` found 1 blocking, 3 non-blocking and 1 nit fin
 **Other fixes:**
 - **Predecessor scan.** `6df8e19` caches a binding next to an unchanging finished sibling. Before, it rescanned on every probe, and a deadline skip lost the retained sample.
 - **Codex-first ordering test.** `65a92fd` checks the recorded order rather than timing. As a mutation check, swapping the two loops in `enrich_until` made it fail.
-- **Checkpoint test steps.** `b296f4f` names each failing step and adds `#[track_caller]`. `357471e` gives unit fixtures a prefix disjoint from process fixtures.
+- **Checkpoint test steps.** `b296f4f` names each failing step and adds `#[track_caller]`. `357471e` gives unit fixtures a prefix disjoint from process fixtures. Both respond to a later read failure in the checkpoint test.
 - **Test name.** `1397cdb` renames the over-`TAIL` regression test after its guarantee.
 
 **Corpus.** Unchanged. The example scans cold, so the new predecessor caching rule is covered by its unit test, not by the corpus.
 
 **Gates.** fmt and clippy are clean. The full suite passes: lib 207, main 18, native_navigation 6, native_process 32.
+
+## Review round 11 and remediation
+
+The four-lens review of `ca52bda` found 2 blocking, 3 non-blocking and 1 nit finding. Lens 1 was **CLEAN**.
+
+**Blocking:**
+1. **Injected triggers after local output.** After a slash command's local output, a task notification, peer or coordinator trigger could open a normal start inside a turn that the command was running.
+   - `e90f4fd` makes these triggers ambiguous.
+   - The fixture failed on HEAD for all four forms.
+   - The fuzzer shape found 8,175 violations before the fix and 0 after (320,010 records).
+   - Corpus cost: accumulated coverage falls from 14 to 13 of 20, with 1 fewer finished turn and 104 s.
+2. **Request-row process test.** The test never reached the gate it was named after. `23a4ef7` replaces the request row count with the request's key set: a response's Claude row keys must be a subset of the request's keys. The process test was rewritten to store a sample first, and both it and a new `main.rs` test failed on HEAD.
+
+**Other fixes:**
+- `faf270a`: the Codex-first test pre-seeds Codex discovery.
+- `51ab736`: process fixtures use their own prefixes and fixtures remove dead-pid siblings they own.
+- `d70898b`: the checkpoint diagnostic prints the root inode and listings.
+- `76d7470`: corrects the bench wording.
+
+**Checkpoint test failure.** The later read failure has a plausible cause that is not confirmed. A clean-up of leaked `/tmp/anton-native-*` directories from a killed run matched the old unit prefix. A sweep reproduced the read failure 150 times in 150 runs under the old prefix, and 0 times in 150 under the new one. Leaked directories from one killed run were present and have been removed. The new diagnostic records enough to confirm the cause if the failure recurs.
+
+**Gates:** fmt and clippy pass. The full suite passes: lib 208, main 19, native_navigation 6, native_process 32.
