@@ -613,8 +613,11 @@ impl Classifier {
         self.scan.clear();
     }
     /// Classifies the complete record once its terminating newline is fed.
+    /// A lost `type` or `sessionId` is invalid for every kind: the record
+    /// may name another session, so its identity is never taken as absent.
     pub fn finish(mut self) -> Outcome {
-        if self.done == 0 || !self.stack.is_empty() || self.lex != 0 || self.lost & 0b10 != 0 {
+        let identity = 1 << 1 | 1 << 3;
+        if self.done == 0 || !self.stack.is_empty() || self.lex != 0 || self.lost & identity != 0 {
             return Outcome::Invalid;
         }
         self.record
@@ -1059,6 +1062,29 @@ mod tests {
         // Fields under `message` of another record type are never consumed.
         let parts = split(user, "\"ignored\"", 2);
         assert_eq!(classify(&parts, true), expected(user));
+    }
+
+    #[test]
+    fn classifier_lost_session_id_is_invalid_for_every_kind() {
+        let lines = lines();
+        let progress = format!(
+            "{{\"type\":\"progress\",\"sessionId\":\"{ID}\",\"timestamp\":\"{STAMP}\",\"data\":{{}}}}"
+        );
+        let queue = format!(
+            "{{\"type\":\"queue-operation\",\"operation\":\"dequeue\",\"sessionId\":\"{ID}\",\"timestamp\":\"{STAMP}\"}}"
+        );
+        let user = user("\"message\":{\"role\":\"user\",\"content\":\"hello\"}");
+        // Plain, forked (which feeds nothing once identity is known), and
+        // record kinds outside the coverage table.
+        for line in [&lines[0], &lines[10], &progress, &queue, &user] {
+            // A pass boundary inside the value, or a value over `CAP`.
+            let parts = split(line, ID, 3);
+            assert_eq!(classify(&parts, true), Outcome::Invalid, "{line:.120}");
+            let long = line.replace(ID, &"s".repeat(CAP + 100));
+            assert_eq!(classify(&[long.as_bytes()], false), Outcome::Invalid);
+            // An intact identity still classifies as the parsed path does.
+            assert_eq!(classify(&[line.as_bytes()], false), expected(line));
+        }
     }
 
     /// The persisted key bytes after feeding `head` and suspending.

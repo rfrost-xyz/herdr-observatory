@@ -2734,6 +2734,27 @@ mod replay_tests {
     }
 
     #[test]
+    fn oversized_record_whose_session_id_is_lost_is_never_absent_identity() {
+        let fixture = tests::Fixture::new();
+        let good = assistant("msg_a", 1, "\"end_turn\"", [1, 2, 3, 4]);
+        let next = assistant("msg_c", 9, "\"end_turn\"", [1, 0, 0, 0]);
+        // A `sessionId` over the classifier's capture bound may name
+        // another session, so it fails like an unparseable line.
+        let progress = format!(
+            "{{\"type\":\"progress\",\"sessionId\":\"{}\",\"timestamp\":\"{}\",\"data\":{{}}}}",
+            "s".repeat(1100),
+            stamp(2)
+        );
+        for line in [progress.clone(), lead_pad(&progress, LINE)] {
+            let text = header() + &body(&[good.clone(), line, next.clone()]);
+            let path = fixture.file("slug", &format!("{ID}.jsonl"), &text);
+            let (row, _) = passes(&fixture, &path, None);
+            assert!(!row.valid && !row.compactions_valid && !row.turns.valid);
+            assert_eq!(totals(&row), [(); 5].map(|_| Value::Null));
+        }
+    }
+
+    #[test]
     fn block_requires_every_field_and_a_consistent_classifier() {
         let fixture = tests::Fixture::new();
         let big = lead_pad(&assistant("msg_a", 1, "\"end_turn\"", [1, 2, 3, 4]), TAIL);
