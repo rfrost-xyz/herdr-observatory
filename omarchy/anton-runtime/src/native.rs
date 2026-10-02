@@ -1990,16 +1990,13 @@ mod tests {
     #[test]
     fn checkpoint_startup_reconciles_expired_and_removed_hosts_without_empty_creation() {
         let fixture = Fixture::new();
-        fixture.write(&[], "fixture-session");
-        let owner = fixture.root.join(".herdr-observatory-install");
-        std::fs::write(&owner, b"herdr.observatory\n").unwrap();
         let state = fixture.root.join("state");
-        std::fs::create_dir(&state).unwrap();
         let path = state.join("replay-checkpoints.json");
-        // Each read and parse is its own statement, naming its step and what
-        // is left of the fixture. A partial external `rm -rf` can leave the
-        // root in place, so its inode and listings are printed too: a new
-        // inode, or entries missing from them, show removal from outside.
+        // A failure at any step prints what is left of the fixture, through
+        // `Diagnosis` while unwinding, and each read and parse names its
+        // step. A partial external `rm -rf` can leave the root in place, so
+        // its inode and listings are printed: a new inode, or entries missing
+        // from them, show removal from outside.
         let inode = std::fs::metadata(&fixture.root).unwrap().ino();
         let diagnose = || {
             let list = |dir: &Path| match std::fs::read_dir(dir) {
@@ -2019,18 +2016,26 @@ mod tests {
                 list(&state)
             )
         };
+        struct Diagnosis<F: Fn() -> String>(F);
+        impl<F: Fn() -> String> Drop for Diagnosis<F> {
+            fn drop(&mut self) {
+                if std::thread::panicking() {
+                    eprintln!("checkpoint fixture: {}", (self.0)());
+                }
+            }
+        }
+        let _diagnosis = Diagnosis(diagnose);
+        fixture.write(&[], "fixture-session");
+        let owner = fixture.root.join(".herdr-observatory-install");
+        std::fs::write(&owner, b"herdr.observatory\n").unwrap();
+        std::fs::create_dir(&state).unwrap();
         let read = |step: &str| {
-            std::fs::read(&path).unwrap_or_else(|error| {
-                panic!(
-                    "{step}: read checkpoint: {:?}; {}",
-                    error.kind(),
-                    diagnose()
-                )
-            })
+            std::fs::read(&path)
+                .unwrap_or_else(|error| panic!("{step}: read checkpoint: {:?}", error.kind()))
         };
         let parse = |step: &str, bytes: &[u8]| -> CheckpointFile {
             serde_json::from_slice(bytes)
-                .unwrap_or_else(|error| panic!("{step}: parse checkpoint: {error}; {}", diagnose()))
+                .unwrap_or_else(|error| panic!("{step}: parse checkpoint: {error}"))
         };
         let empty = BTreeMap::from([("kept".to_owned(), json!({}))]);
         let mut cache = leased(&state, &owner);
