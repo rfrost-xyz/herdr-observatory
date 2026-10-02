@@ -1116,6 +1116,46 @@ impl NativeTelemetry {
             cursors.insert(key, Cursor::from_row(row));
         }
     }
+    /// The Claude panes among the first 32 agents. Each session key is
+    /// enriched once per call, by its first pane: a later pane on the same key
+    /// receives a copy of that outcome, the published telemetry and turn timing
+    /// or their absence, and shares its row or its withholding. Enriching it
+    /// again would resume the row the first pane just wrote as if verified and
+    /// could publish nothing beside the first pane's all-null sample, so the
+    /// local would re-emit a replaced file's copy (D3). `deadlines` gives each
+    /// enriched pane its bind and replay deadlines.
+    fn enrich_claude_panes(
+        &mut self,
+        agents: &mut [Value],
+        cursors: &mut BTreeMap<String, Cursor>,
+        active: &mut BTreeSet<String>,
+        time: f64,
+        mut deadlines: impl FnMut() -> [Instant; 2],
+    ) {
+        const FIELDS: [&str; 2] = ["_native_telemetry", "_native_turn_timing"];
+        let mut outcomes = BTreeMap::<String, [Option<Value>; 2]>::new();
+        for agent in agents.iter_mut().take(32) {
+            if agent["agent"] != "claude" {
+                continue;
+            }
+            let key = claude_session(agent).map(|(_, key)| key);
+            if let Some(outcome) = key.as_ref().and_then(|v| outcomes.get(v)) {
+                // A pane naming "claude" is an object.
+                let object = agent.as_object_mut().unwrap();
+                for (field, value) in FIELDS.into_iter().zip(outcome) {
+                    match value {
+                        Some(value) => object.insert(field.to_owned(), value.clone()),
+                        None => object.remove(field),
+                    };
+                }
+                continue;
+            }
+            self.enrich_claude(agent, cursors, active, time, deadlines());
+            if let Some(key) = key {
+                outcomes.insert(key, FIELDS.map(|field| agent.get(field).cloned()));
+            }
+        }
+    }
     /// One Codex pane: discover, read usage, replay up to 16 bounded passes,
     /// then publish usage, children, compactions and turn timing.
     fn enrich_codex(
@@ -1308,11 +1348,7 @@ impl NativeTelemetry {
                 self.enrich_codex(agent, &mut cursors, &mut active, time, deadline);
             }
         }
-        for agent in agents.iter_mut().take(32) {
-            if agent["agent"] == "claude" {
-                self.enrich_claude(agent, &mut cursors, &mut active, time, [deadline; 2]);
-            }
-        }
+        self.enrich_claude_panes(agents, &mut cursors, &mut active, time, || [deadline; 2]);
         cursors.retain(|key, _| active.contains(key));
         self.discovery.retain(|key, _| active.contains(key));
         self.usage.retain(|key, _| active.contains(key));

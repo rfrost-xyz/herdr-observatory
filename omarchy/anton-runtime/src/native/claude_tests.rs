@@ -1366,3 +1366,115 @@ fn claude_restart_with_no_usable_incoming_time_withholds_the_row() {
         assert!(exercised);
     }
 }
+
+/// Two panes on one session in one peer call, each enriched pane taking
+/// `deadlines` in turn. Returns the panes and the cursor rows sent back.
+fn two_panes(
+    cursors: &Value,
+    deadlines: impl FnMut() -> [Instant; 2],
+) -> (Vec<Value>, BTreeMap<String, Cursor>) {
+    let mut agents = vec![agent(), agent()];
+    let mut rows = validate_cursors(cursors);
+    let mut active = BTreeSet::new();
+    NativeTelemetry::default().enrich_claude_panes(
+        &mut agents,
+        &mut rows,
+        &mut active,
+        now(),
+        deadlines,
+    );
+    assert!(active.contains(&key()));
+    (agents, rows)
+}
+fn far() -> [Instant; 2] {
+    [Instant::now() + Duration::from_secs(5); 2]
+}
+/// The second pane carries exactly the first pane's outcome, absent fields
+/// included.
+fn same_outcome(agents: &[Value]) {
+    for field in ["_native_telemetry", "_native_turn_timing"] {
+        assert_eq!(agents[0].get(field), agents[1].get(field), "{field}");
+    }
+}
+
+/// A file replaced by a new inode that does not catch up: the first pane
+/// restarts and publishes the all-null sample. The second pane must not
+/// resume the row the first just wrote and publish nothing beside it, or
+/// the local re-emits its copy of the replaced file (D3).
+#[test]
+fn claude_two_panes_on_one_session_share_a_restart_that_is_not_caught_up() {
+    let fixture = Fixture::new();
+    fixture.write(&session());
+    let (first, _, cursors) = enrich(&mut NativeTelemetry::default(), &json!({}));
+    assert_eq!(first["total_output"], 26);
+    let (agents, _) = two_panes(&cursors, far);
+    same_outcome(&agents);
+    assert_eq!(agents[1]["_native_telemetry"]["total_output"], 26);
+    let partial = assistant(30, "msg-4", "\"end_turn\"", [7, 7, 7, 7]);
+    let mut bytes = body(&session()).into_bytes();
+    bytes.extend_from_slice(&partial.as_bytes()[..40]);
+    let path = fixture.path("entry-a", ID);
+    std::fs::remove_file(&path).unwrap();
+    std::fs::write(&path, &bytes).unwrap();
+    // Through the shared deadline, as a peer probe runs it.
+    let mut agents = vec![agent(), agent()];
+    let rows = NativeTelemetry::default().enrich_until(&mut agents, &cursors, far()[0]);
+    unknown(&agents[0]["_native_telemetry"], micros(23));
+    same_outcome(&agents);
+    assert_eq!(rows[key()]["caught_up"], false);
+}
+
+/// A restart with no usable incoming time withholds the row on the first
+/// pane. The second pane, finding no row, must not replay afresh and send
+/// one back with nothing published.
+#[test]
+fn claude_two_panes_on_one_session_share_a_withheld_row() {
+    let fixture = Fixture::new();
+    let mut exercised = false;
+    for _ in 0..10 {
+        let (line, at) = ahead();
+        fixture.write(&[line]);
+        let (_, _, cursors) = enrich(&mut NativeTelemetry::default(), &json!({}));
+        fixture.write(&[]);
+        let (agents, rows) = two_panes(&cursors, far);
+        if (now() * 1e6) as u64 >= at {
+            continue;
+        }
+        assert_eq!(cursors[key()]["claude"]["coverage_seq"], json!(at));
+        assert!(agents[0]["_native_telemetry"].is_null());
+        same_outcome(&agents);
+        assert!(!rows.contains_key(&key()));
+        exercised = true;
+        break;
+    }
+    assert!(exercised);
+}
+
+/// A failure that holds for the path drops the first pane to the all-null
+/// sample with the row kept. The deadline then passes before the second
+/// pane, whose skip would find the binding the first pane just made current
+/// and publish nothing beside the row.
+#[test]
+fn claude_two_panes_on_one_session_share_a_lasting_failure_before_the_deadline() {
+    let fixture = Fixture::new();
+    fixture.write(&session());
+    let (first, _, cursors) = enrich(&mut NativeTelemetry::default(), &json!({}));
+    assert_eq!(first["total_output"], 26);
+    let foreign = format!(
+        "{{\"type\":\"permission-mode\",\"sessionId\":\"fixture-other\"}}\n{}\n",
+        prompt(10)
+    );
+    std::fs::write(fixture.path("entry-a", ID), foreign).unwrap();
+    let mut calls = 0;
+    let (agents, rows) = two_panes(&cursors, || {
+        calls += 1;
+        if calls == 1 {
+            far()
+        } else {
+            [Instant::now(); 2]
+        }
+    });
+    unknown(&agents[0]["_native_telemetry"], micros(23));
+    same_outcome(&agents);
+    assert_eq!(serde_json::to_value(&rows[&key()]).unwrap(), cursors[key()]);
+}
