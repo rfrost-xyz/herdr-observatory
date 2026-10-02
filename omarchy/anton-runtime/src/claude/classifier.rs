@@ -624,9 +624,15 @@ impl Classifier {
     }
     /// Ends a pass inside the record. A string or number capture cannot be
     /// persisted, so its field is lost; the record then classifies as unknown.
+    /// A `sessionId` already over `CAP` is decided: as in `capture_done`, it
+    /// can never equal a safe id, so it is a mismatch rather than lost.
     pub fn suspend(&mut self) {
         if [1, 2].contains(&self.lex) && self.capture != NONE {
-            self.lost |= 1 << self.capture;
+            if self.capture == 3 && self.value.len() > CAP {
+                self.record.identity = super::IDENTITY_MISMATCH;
+            } else {
+                self.lost |= 1 << self.capture;
+            }
             self.capture = NONE;
         }
         self.value.clear();
@@ -1115,6 +1121,13 @@ mod tests {
                 matches!(&mismatch, Outcome::Record(r) if r.identity == super::super::IDENTITY_MISMATCH)
             );
             assert_eq!(classify(&[long.as_bytes()], false), mismatch);
+            // A pass boundary after `CAP` bytes of it has already decided the
+            // mismatch; one inside `CAP` has not, so that record is invalid.
+            let marker = "\"sessionId\":\"";
+            let parts = split(&long, marker, marker.len() + CAP + 50);
+            assert_eq!(classify(&parts, true), mismatch, "{line:.120}");
+            let parts = split(&long, marker, marker.len() + 500);
+            assert_eq!(classify(&parts, true), Outcome::Invalid, "{line:.120}");
             // An intact identity still classifies as the parsed path does.
             assert_eq!(classify(&[line.as_bytes()], false), expected(line));
         }
