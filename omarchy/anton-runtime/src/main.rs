@@ -343,11 +343,20 @@ fn retain_claude(
     requested: usize,
     rejected: &BTreeSet<String>,
 ) {
+    // Only panes the peer can give a row count: it enriches the first 32
+    // agents in snapshot order, and panes on one session share one row. A
+    // pane outside that window is neither stored nor re-emitted.
     let bound =
         |agent: &Agent| agent.harness == "claude" && agent.technical.session_generation.is_some();
-    let panes = agents.iter().filter(|v| bound(v)).count();
+    let panes = agents
+        .iter()
+        .take(32)
+        .filter(|v| bound(v))
+        .filter_map(|v| v.technical.session_generation)
+        .collect::<BTreeSet<_>>()
+        .len();
     let mut next = BTreeMap::new();
-    for agent in agents.iter_mut().filter(|v| bound(v)) {
+    for agent in agents.iter_mut().take(32).filter(|v| bound(v)) {
         let generation = agent.technical.session_generation.unwrap();
         match &agent.technical.telemetry {
             Some(sample) => {
@@ -1572,6 +1581,47 @@ mod tests {
         let mut agents = vec![claude(7, Value::Null)];
         retain_claude(&mut retained, &mut agents, 1, 0, &BTreeSet::new());
         assert!(agents[0].technical.telemetry.is_none() && retained.is_empty());
+    }
+    /// Only panes a peer can give a row count: Claude panes among the first
+    /// 32 agents the peer enriches, one per session. A pane past that window
+    /// or a second pane on the same session never stops the others' retention,
+    /// and a pane past the window never re-emits a copy the peer did not cover.
+    #[test]
+    fn claude_retention_counts_only_panes_that_can_have_a_row() {
+        let seq = 1_767_225_623_250_000;
+        let pane = |id: &str, generation: u64, telemetry: Value| {
+            let mut agent = claude(generation, telemetry);
+            agent.id = format!("test:{id}");
+            agent
+        };
+        let host = |a: Value, b: Value, a_at: usize| {
+            let mut agents: Vec<Agent> = (0..34)
+                .map(|index| {
+                    let mut filler = pane(&format!("filler-{index}"), 1, Value::Null);
+                    filler.harness = "codex".into();
+                    filler
+                })
+                .collect();
+            // Two panes on one session share its row; a third session sits
+            // at agent index 32, beyond the peer's window.
+            agents[a_at] = pane("a", 7, a);
+            agents[1] = pane("b", 7, b);
+            agents[32] = pane("c", 9, Value::Null);
+            agents
+        };
+        let shown = |agents: &[Agent], at: usize| agents[at].technical.telemetry.is_some();
+        let mut retained = BTreeMap::new();
+        let mut agents = host(caught_up(seq), caught_up(seq), 0);
+        retain_claude(&mut retained, &mut agents, 1, 1, &BTreeSet::new());
+        assert_eq!(retained.len(), 2);
+        let mut agents = host(Value::Null, Value::Null, 0);
+        retain_claude(&mut retained, &mut agents, 1, 1, &BTreeSet::new());
+        assert!(shown(&agents, 0) && shown(&agents, 1) && !shown(&agents, 32));
+        // A pane that slid past the window was not enriched: no re-emission.
+        let mut agents = host(Value::Null, Value::Null, 33);
+        retain_claude(&mut retained, &mut agents, 1, 1, &BTreeSet::new());
+        assert!(shown(&agents, 1) && !shown(&agents, 33));
+        assert_eq!(retained.keys().collect::<Vec<_>>(), ["test:b"]);
     }
     /// A synthetic caught-up Claude cursor row, as a peer returns it.
     fn claude_row() -> Value {
