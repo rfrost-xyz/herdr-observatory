@@ -563,12 +563,14 @@ function claudeRecords(id, target, start) {
   for (let i = 0; i < 6 || bytes < target; i++) {
     push(i === 1 ? rec({ type: 'user', origin: { kind: 'task-notification' }, message: { role: 'user', content: `<task-notification>\n<task-id>${child}</task-id>\n<status>completed</status>\n<summary>Synthetic child finished</summary>\n</task-notification>` } })
       : rec({ type: 'user', origin: { kind: 'human' }, message: { role: 'user', content: `Synthetic prompt ${i}` } }));
+    const begun = t;
     push(assistant(i, 'a', [{ type: 'text', text: pad }], null));
     push(rec({ type: 'attachment', attachment: { type: 'synthetic_reminder' } }));
     push(assistant(i, 'a', [{ type: 'tool_use', id: `toolu_synthetic_${i}`, name: i === 0 ? 'Agent' : 'Read', input: {} }], 'tool_use'));
     push(rec({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: `toolu_synthetic_${i}`, content: 'ok' }] }, toolUseResult: i === 0 ? { status: 'async_launched', agentId: child } : { stdout: 'ok' } }));
     push(assistant(i, 'b', [{ type: 'text', text: `Synthetic answer ${i}` }], 'end_turn'));
-    push(rec({ type: 'system', subtype: 'turn_duration', durationMs: 8000, isMeta: false }));
+    // durationMs spans prompt to turn_duration (its stamp is t + 2000), so the D7 gate keeps it.
+    push(rec({ type: 'system', subtype: 'turn_duration', durationMs: t + 2000 - begun, isMeta: false }));
     if (i === 2) { push(rec({ type: 'system', subtype: 'compact_boundary', content: 'Conversation compacted', compactMetadata: { trigger: 'auto', preTokens: 50000 } })); push(rec({ type: 'user', isCompactSummary: true, message: { role: 'user', content: 'Synthetic summary' } })); }
   }
   return { text: lines.join('\n') + '\n', count: n };
@@ -626,7 +628,7 @@ async function claudeProbe(base, variant, target, localBinary = binary) {
       claude_agents: per(a => a.length), claude_agents_with_native_telemetry: per(a => a.filter(native).length),
       usage_source_claude_transcript: per(a => a.filter(x => x.technical?.telemetry?.usage_source === 'claude-transcript').length),
       present: { ...Object.fromEntries(CLAUDE_METRICS.map(k => [k, per(a => a.filter(x => Number.isFinite(x.technical?.telemetry?.[k])).length)])),
-                 turn_timing: per(a => a.filter(x => x.technical?.turn_timing !== null && typeof x.technical?.turn_timing === 'object').length) },
+                 turn_timing: per(a => a.filter(x => ['last_duration_s', 'total_finished_duration_s'].some(k => Number.isFinite(x.technical?.turn_timing?.[k]))).length) },
       first_native_ms: reach(false), all_native_ms: reach(true),
       runtime_cpu_seconds: Number.isFinite(user + system) ? round(user + system, 3) : null, peak_rss_kib: peakRss };
   } finally {
@@ -636,7 +638,7 @@ async function claudeProbe(base, variant, target, localBinary = binary) {
 }
 async function claudeMetrics(base) {
   const guard = async (variant, target, local) => { try { return await claudeProbe(base, variant, target, local); } catch (error) { return claudeEmpty(String(error?.message ?? error).slice(0, 400)); } };
-  return { scope: `One ${claudeSeconds}s run per variant, ${claudeCount} Claude agents per host (local and fake-SSH peer). Native telemetry = technical.telemetry present on a Claude agent; the fixture panes carry no Herdr metadata, so only native replay can supply it. present counts agents with a numeric telemetry field (turn_timing: object present) in the last snapshot. CPU is user+sys of the runtime and reaped descendants (fake-SSH peer probes running locally); RSS is sampled every 50 ms over the runtime family. Remote hosts, Qt and GPU are not measured.`,
+  return { scope: `One ${claudeSeconds}s run per variant, ${claudeCount} Claude agents per host (local and fake-SSH peer). Native telemetry = technical.telemetry present on a Claude agent; the fixture panes carry no Herdr metadata, so only native replay can supply it. present counts agents with a numeric telemetry field (turn_timing: a numeric last or total finished duration) in the last snapshot. CPU is user+sys of the runtime and reaped descendants (fake-SSH peer probes running locally); RSS is sampled every 50 ms over the runtime family. Remote hosts, Qt and GPU are not measured.`,
            agents_per_host: claudeCount, window_seconds: claudeSeconds, standard: await guard('standard', 0), large: claudeLargeMb > 0 ? { target_bytes: claudeLargeMb * 1e6, ...await guard('large', claudeLargeMb * 1e6) } : null,
            // Old local, new peer: the old local re-serialises cursor rows without the claude block, so the
            // peer replays every Claude row from the header on each probe. Hashes only; no binary paths.
