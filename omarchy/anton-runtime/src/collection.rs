@@ -64,13 +64,16 @@ pub fn herdr_binary(binary: &str) -> String {
         common::expand_home(binary).to_string_lossy().into_owned()
     }
 }
+/// The overall deadline of the Herdr snapshot call. It also bounds how long
+/// after `sampled_at` a sample's own values can be stamped.
+pub const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(6);
 fn snapshot(host: &Value, cancel: Option<&AtomicBool>) -> Result<Value> {
     if let Some(path) = host["socket_path"].as_str() {
         return common::rpc_with_cancel(
             &common::expand_home(path),
             "session.snapshot",
             json!({}),
-            Duration::from_secs(6),
+            SNAPSHOT_TIMEOUT,
             4 * 1024 * 1024,
             cancel,
         )?
@@ -84,13 +87,7 @@ fn snapshot(host: &Value, cancel: Option<&AtomicBool>) -> Result<Value> {
         command.extend(["--session".into(), session.into()]);
     }
     command.extend(["api".into(), "snapshot".into()]);
-    let bytes = common::run_bounded(
-        &command,
-        &[],
-        Duration::from_secs(6),
-        4 * 1024 * 1024,
-        cancel,
-    )?;
+    let bytes = common::run_bounded(&command, &[], SNAPSHOT_TIMEOUT, 4 * 1024 * 1024, cancel)?;
     let value: Value = serde_json::from_slice(&bytes).map_err(|_| "Invalid Herdr response")?;
     value
         .pointer("/result/snapshot")
