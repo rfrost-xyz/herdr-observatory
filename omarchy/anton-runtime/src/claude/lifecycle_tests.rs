@@ -395,11 +395,6 @@ fn turns_ignore_metadata_tool_results_and_wrapper_output() {
         user(10, "<bash-stderr>b</bash-stderr>", ""),
         system("compact_boundary", 10),
         system("microcompact_boundary", 10),
-        record(
-            "user",
-            10,
-            "\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"image\"}]}",
-        ),
         record("attachment", 10, "\"attachment\":{\"type\":\"fixture\"}"),
     ];
     for line in &ignored {
@@ -1108,6 +1103,34 @@ fn turns_lost_trigger_while_idle_publishes_no_truncated_interval() {
         let row = steps(&lines);
         assert_eq!(row.turns.start, Some(second(110)), "{case}");
     }
+}
+
+#[test]
+fn turns_user_record_without_origin_text_or_flag_is_unknown() {
+    // An image-only prompt from a version that writes no `origin`.
+    let image = record(
+        "user",
+        10,
+        "\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"image\"}]}",
+    );
+    let mut lines = vec![
+        user(1, "hello", ""),
+        assistant(2, "msg_a", "\"end_turn\""),
+        system("turn_duration", 3),
+        image.clone(),
+        assistant(11, "msg_b", "\"tool_use\""),
+        launch(12, "agent-x"),
+        notified(40, "agent-x", "completed"),
+        assistant(41, "msg_c", "\"end_turn\""),
+        system("turn_duration", 100),
+    ];
+    let row = run(&lines);
+    assert!(!row.turns.valid && row.turns.last_duration == Some(2));
+    assert_eq!(row.turns.last, Some(turn_key(ID, "user-1")));
+    // The same shape with a rule-3 flag stays ignored.
+    lines[3] = image.replacen("\"message\"", "\"isMeta\":true,\"message\"", 1);
+    let row = run(&lines);
+    assert!(row.turns.valid && row.turns.last_duration == Some(60));
 }
 
 #[test]

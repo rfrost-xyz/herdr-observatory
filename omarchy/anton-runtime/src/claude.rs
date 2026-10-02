@@ -989,7 +989,8 @@ enum Turn {
     Abort,
     Trigger,
     Ignored,
-    /// A user record whose `origin.kind` is not recognised.
+    /// A user record whose `origin.kind` is not recognised, or one with no
+    /// origin, rule-3 flag or text.
     Unknown,
     Assistant,
     End,
@@ -1016,7 +1017,8 @@ impl Turn {
             KIND_USER if record.meta || record.tool || record.compact_summary => Self::Ignored,
             KIND_USER if record.origin == ORIGIN_OTHER => Self::Unknown,
             // Rule 4: remaining text without a leading tag, a slash-command
-            // echo, or any tag outside the output wrappers.
+            // echo, or any tag outside the output wrappers. A record with no
+            // origin, flag or text (an image-only prompt) may be a trigger.
             KIND_USER => match lead {
                 Some(
                     text::LEAD_NONE
@@ -1024,7 +1026,8 @@ impl Turn {
                     | text::LEAD_NOTIFICATION
                     | text::LEAD_OTHER,
                 ) => Self::Trigger,
-                _ => Self::Ignored,
+                Some(_) => Self::Ignored,
+                None => Self::Unknown,
             },
             _ => Self::Ignored,
         }
