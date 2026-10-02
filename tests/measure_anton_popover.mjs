@@ -527,7 +527,8 @@ function allowanceReadingMetrics(State) {
 
 // ---------------------------------------------------------------- Claude transcripts
 // Added for add-claude-thread-telemetry. Additive only: every definition above is
-// unchanged and the runtime windows above keep their Pi-only configuration. Each
+// unchanged except fixture()'s optional localBinary, which defaults to the
+// measured binary, and the runtime windows above keep their Pi-only configuration. Each
 // variant is one separate run with K Claude panes per host bound by Herdr id to
 // synthetic transcripts under the fixture HOME's .claude/projects (local and fake-SSH
 // peer share that HOME; ids differ per host). The panes carry no Herdr metadata

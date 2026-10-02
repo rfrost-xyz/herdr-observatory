@@ -1690,8 +1690,6 @@ fn telemetry(snapshot: &Value, host: usize) -> &Value {
 fn pane(snapshot: &Value, host: usize) -> bool {
     snapshot["hosts"][host]["online"] == true && snapshot["hosts"][host]["agents"][0].is_object()
 }
-/// The retained numeric subset as the local re-emits it: children and
-/// compactions are null.
 /// A Claude probe omits the window keys (D4), while the snapshot's
 /// telemetry model writes every key, so they appear there as null.
 fn snapshot_form(telemetry: &Value) -> Value {
@@ -1702,6 +1700,8 @@ fn snapshot_form(telemetry: &Value) -> Value {
     }
     value
 }
+/// The retained numeric subset as the local re-emits it: children and
+/// compactions are null.
 fn retained_subset(telemetry: &Value) -> Value {
     let mut value = telemetry.clone();
     for (key, field) in value.as_object_mut().unwrap() {
