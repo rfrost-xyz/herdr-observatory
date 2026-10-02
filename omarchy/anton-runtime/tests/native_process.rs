@@ -1692,6 +1692,16 @@ fn pane(snapshot: &Value, host: usize) -> bool {
 }
 /// The retained numeric subset as the local re-emits it: children and
 /// compactions are null.
+/// A Claude probe omits the window keys (D4), while the snapshot's
+/// telemetry model writes every key, so they appear there as null.
+fn snapshot_form(telemetry: &Value) -> Value {
+    let mut value = telemetry.clone();
+    for key in ["window", "context_percent"] {
+        assert!(value.get(key).is_none(), "{key} in {telemetry}");
+        value[key] = Value::Null;
+    }
+    value
+}
 fn retained_subset(telemetry: &Value) -> Value {
     let mut value = telemetry.clone();
     for (key, field) in value.as_object_mut().unwrap() {
@@ -1849,7 +1859,7 @@ fn claude_peer_retention_follows_invalid_totals_unknown_samples_and_missing_rows
     let f = Fixture::new();
     f.claude(&claude_transcript());
     let probe = f.probe(&json!({}));
-    let caught = probe["result"]["agents"][0]["technical"]["telemetry"].clone();
+    let caught = snapshot_form(&probe["result"]["agents"][0]["technical"]["telemetry"]);
     let rows = probe["result"]["cursors"].clone();
     // Edited copies of a real probe response, served by a stub peer. Each one
     // carries a distinct title, so a snapshot shows when it was accepted.
@@ -1916,7 +1926,7 @@ fn claude_peer_sample_is_not_reemitted_after_a_request_without_its_row() {
     let f = Fixture::new();
     f.claude(&claude_transcript());
     let probe = f.probe(&json!({}));
-    let caught = probe["result"]["agents"][0]["technical"]["telemetry"].clone();
+    let caught = snapshot_form(&probe["result"]["agents"][0]["technical"]["telemetry"]);
     // A partial trailing line: a peer replaying from the header does not catch
     // up, publishes nothing and returns a fresh row.
     let mut file = fs::OpenOptions::new()

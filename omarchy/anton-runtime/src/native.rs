@@ -803,8 +803,17 @@ fn publish_claude(
             value["event"] = json!("session");
             value["phase"] = json!("ready");
         }
-        agent["_native_telemetry"] =
-            telemetry::telemetry_view_at(&value, time).unwrap_or(Value::Null);
+        let mut view = telemetry::telemetry_view_at(&value, time).unwrap_or(Value::Null);
+        // D4: a Claude pane has no window source, so the window and its
+        // percentage are omitted rather than null; a metadata value stays.
+        if let Some(view) = view.as_object_mut() {
+            for key in ["window", "context_percent"] {
+                if view.get(key).is_some_and(Value::is_null) {
+                    view.remove(key);
+                }
+            }
+        }
+        agent["_native_telemetry"] = view;
     }
 }
 impl NativeTelemetry {

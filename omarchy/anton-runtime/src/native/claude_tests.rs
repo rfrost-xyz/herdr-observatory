@@ -177,7 +177,7 @@ fn claude_pane_enrich_publishes_caught_up_sample_and_block_row() {
         telemetry,
         json!({
             "cache_read": 1200, "cache_write": 0, "compactions": 1, "context": 1201,
-            "context_percent": null, "event": "session", "input": 1201,
+            "event": "session", "input": 1201,
             "model": "claude-fixture-1", "output_tokens": 1, "phase": "ready", "result": null,
             "seq": micros(23), "subagent_completed": 1, "subagent_done": 1,
             "subagent_failed": 0, "subagent_interrupted": 0, "subagent_running": 0,
@@ -185,7 +185,7 @@ fn claude_pane_enrich_publishes_caught_up_sample_and_block_row() {
             "subagent_stops": null, "subagent_total": 2, "subagent_unknown": 1, "tool": null,
             "total_cache_read": 3300, "total_cache_write": 50, "total_input": 3461,
             "total_output": 26, "total_uncached_input": 111, "usage_seq": micros(22),
-            "usage_source": "claude-transcript", "window": null
+            "usage_source": "claude-transcript"
         })
     );
     // The second notification replaces the first one's pending start, which
@@ -970,4 +970,47 @@ fn claude_replay_listed_first_never_starves_a_codex_pane() {
             row.as_object_mut().unwrap().remove("claude");
         }
     }
+}
+
+/// The window and its percentage are absent from the published object (D4).
+fn windowless(telemetry: &Value) {
+    let object = telemetry.as_object().expect("published telemetry");
+    for key in ["window", "context_percent"] {
+        assert!(!object.contains_key(key), "{key} in {telemetry}");
+    }
+}
+
+#[test]
+fn claude_published_telemetry_never_carries_window_or_context_percent() {
+    let fixture = Fixture::new();
+    // A caught-up sample with known usage, then a warm pass after an append.
+    fixture.write(&session());
+    let mut follower = NativeTelemetry::default();
+    let (telemetry, _, cursors) = enrich(&mut follower, &json!({}));
+    assert_eq!(telemetry["context"], 1201);
+    windowless(&telemetry);
+    fixture.append(&format!(
+        "{}\n",
+        assistant(30, "msg-4", "\"end_turn\"", [2, 2, 1300, 0])
+    ));
+    let (telemetry, _, cursors) = enrich(&mut follower, &cursors);
+    assert_eq!(telemetry["context"], 1302);
+    windowless(&telemetry);
+    // A retained sample re-emitted for an incomplete replay.
+    fixture.append(&assistant(31, "msg-5", "\"end_turn\"", [7, 7, 7, 7])[..40]);
+    let (telemetry, _, cursors) = enrich(&mut follower, &cursors);
+    assert_eq!(cursors[key()]["caught_up"], false);
+    assert_eq!(telemetry["context"], 1302);
+    windowless(&telemetry);
+    // The all-null sample of a replaced file.
+    let bytes = std::fs::read(fixture.path("entry-a", ID)).unwrap();
+    std::fs::remove_file(fixture.path("entry-a", ID)).unwrap();
+    std::fs::write(fixture.path("entry-a", ID), &bytes).unwrap();
+    let (telemetry, _, _) = enrich(&mut follower, &cursors);
+    unknown(&telemetry, micros(30));
+    windowless(&telemetry);
+    // The all-null sample of a pane with no counted group.
+    fixture.write(&[prompt(10), system("stop_hook_summary", 12)]);
+    let (telemetry, _, _) = enrich(&mut NativeTelemetry::default(), &json!({}));
+    windowless(&telemetry);
 }
