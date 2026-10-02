@@ -1593,34 +1593,8 @@ pub fn resume(
             (row, false)
         }
     };
-    stream
-        .seek(SeekFrom::Start(row.offset))
-        .map_err(|_| "Claude session seek failed")?;
     let end = info.len().min(row.offset + TAIL as u64);
-    while position(&mut stream)? < end && Instant::now() < deadline {
-        let offset = position(&mut stream)?;
-        let bytes = line(&mut stream, (LINE + 1).min((end - offset) as usize))
-            .map_err(|_| "Claude session read failed")?;
-        let terminated = bytes.last() == Some(&b'\n');
-        if row.skipping || bytes.len() > LINE {
-            row.oversized(&bytes, terminated, id, time);
-            row.offset = position(&mut stream)?;
-            continue;
-        }
-        if !terminated {
-            break;
-        }
-        row.offset = position(&mut stream)?;
-        match serde_json::from_slice::<Value>(&bytes) {
-            Ok(value) => match Record::from_value(&value, id, time) {
-                Some(record) => row.apply(&record),
-                None => row.invalid(),
-            },
-            // serde rejects an unpaired surrogate escape, which the classifier
-            // reads, so a line it rejects is classified as an oversized one.
-            Err(_) => row.oversized(&bytes, true, id, time),
-        }
-    }
+    advance(&mut row, &mut stream, end, id, time, deadline)?;
     if let Some(classifier) = &mut row.claude.classifier {
         classifier.suspend();
     }
@@ -1633,6 +1607,45 @@ pub fn resume(
         tail: tail(&mut stream, row.offset)?,
     });
     Ok((row, resumed))
+}
+
+/// Applies the lines from `row.offset` up to `end` until `deadline`.
+fn advance(
+    row: &mut Row,
+    stream: &mut BufReader<File>,
+    end: u64,
+    id: &str,
+    time: f64,
+    deadline: Instant,
+) -> Result<()> {
+    stream
+        .seek(SeekFrom::Start(row.offset))
+        .map_err(|_| "Claude session seek failed")?;
+    while position(stream)? < end && Instant::now() < deadline {
+        let offset = position(stream)?;
+        let bytes = line(stream, (LINE + 1).min((end - offset) as usize))
+            .map_err(|_| "Claude session read failed")?;
+        let terminated = bytes.last() == Some(&b'\n');
+        if row.skipping || bytes.len() > LINE {
+            row.oversized(&bytes, terminated, id, time);
+            row.offset = position(stream)?;
+            continue;
+        }
+        if !terminated {
+            break;
+        }
+        row.offset = position(stream)?;
+        match serde_json::from_slice::<Value>(&bytes) {
+            Ok(value) => match Record::from_value(&value, id, time) {
+                Some(record) => row.apply(&record),
+                None => row.invalid(),
+            },
+            // serde rejects an unpaired surrogate escape, which the classifier
+            // reads, so a line it rejects is classified as an oversized one.
+            Err(_) => row.oversized(&bytes, true, id, time),
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
