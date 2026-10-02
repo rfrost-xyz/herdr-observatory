@@ -849,6 +849,18 @@ fn unknown_claude(agent: &mut Value, stamps: Option<[u64; 3]>, time: f64) -> boo
         None => stamps.iter().all(|v| *v == 0),
     }
 }
+/// The Claude session id of an enrichable pane and its hashed row key.
+fn claude_session(agent: &Value) -> Option<(String, String)> {
+    if telemetry::session_binding(agent).is_none() || agent["agent_session"]["kind"] != "id" {
+        return None;
+    }
+    let session = agent["agent_session"]["value"]
+        .as_str()
+        .filter(|v| safe_id(v, 128))?
+        .to_owned();
+    let key = sha256(format!("anton-native-session-v1:claude:{session}").as_bytes());
+    Some((session, key))
+}
 impl NativeTelemetry {
     fn discover(session: &str, deadline: Instant) -> Option<PathBuf> {
         let mut stack = vec![(session_root(), 0)];
@@ -998,17 +1010,9 @@ impl NativeTelemetry {
         time: f64,
         deadline: Instant,
     ) {
-        if telemetry::session_binding(agent).is_none() || agent["agent_session"]["kind"] != "id" {
-            return;
-        }
-        let Some(session) = agent["agent_session"]["value"]
-            .as_str()
-            .filter(|v| safe_id(v, 128))
-            .map(str::to_owned)
-        else {
+        let Some((session, key)) = claude_session(agent) else {
             return;
         };
-        let key = sha256(format!("anton-native-session-v1:claude:{session}").as_bytes());
         active.insert(key.clone());
         if Instant::now() >= deadline {
             self.skip_claude(agent, &key, cursors, time);
