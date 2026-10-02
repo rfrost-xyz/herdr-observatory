@@ -499,6 +499,10 @@ pub struct ClaudeCursor {
     pub compaction_iteration: bool,
     #[serde(deserialize_with = "Option::deserialize")]
     pub pending_start: Option<(String, u64)>,
+    /// The pending start was opened by a slash-command echo: local-command
+    /// output then shows a local command, which runs no turn (D7). Only set
+    /// while a start is pending.
+    pub pending_command: bool,
     pub abort_adjacent: bool,
     /// The largest stamp of a `dequeue` or `remove` while a turn is active or
     /// a start is pending and no silent end has been seen (D8). Taken input
@@ -515,10 +519,9 @@ pub struct ClaudeCursor {
     /// stamp or key, a rejected start, or a failed record during a turn): no
     /// turn opens until `turn_duration` or an abort proves an end.
     pub ambiguous: bool,
-    /// A record was lost with no turn running, or local-command output
-    /// discarded a pending start, and that record or start may have opened
-    /// the next turn: an assistant record before any trigger then shows that
-    /// turn running from an unknown start, which is ambiguous.
+    /// A record was lost with no turn running, and that record may have
+    /// opened the next turn: an assistant record or a trigger before any
+    /// proven end then shows a turn of unknown start, which is ambiguous.
     pub lost_idle: bool,
     /// A record named another session (D2): every value of this binding
     /// stays unknown, and later records feed nothing, until a fresh replay.
@@ -544,6 +547,7 @@ impl Default for ClaudeCursor {
             compactions: 0,
             compaction_iteration: false,
             pending_start: None,
+            pending_command: false,
             abort_adjacent: false,
             queued_since_start: None,
             silent_end: false,
@@ -600,6 +604,7 @@ impl ClaudeCursor {
                 .pending_start
                 .as_ref()
                 .is_none_or(|(key, second)| hex_id(key, 24) && (1..=SAFE).contains(second))
+            && (!self.pending_command || self.pending_start.is_some())
             && (self.queued_since_start).is_none_or(|at| 0 < at && at <= self.coverage_seq)
             && self.classifier.as_ref().is_none_or(Classifier::validate)
             && (!self.foreign
@@ -1282,6 +1287,7 @@ impl Row {
     fn turns_unknown(&mut self) {
         self.turns.unknown();
         self.claude.pending_start = None;
+        self.claude.pending_command = false;
         self.claude.queued_since_start = None;
         self.claude.silent_end = false;
     }
@@ -1408,16 +1414,17 @@ impl Row {
         let block = &mut self.claude;
         match Turn::of(record) {
             // Local-command output, as a wrapped user record or a system
-            // record, shows a pending command echo was a local command,
-            // which runs no turn. A pending prompt may instead be a turn
-            // still awaiting its first response, as after a lost record.
+            // record, shows a pending slash-command echo was a local command,
+            // which runs no turn (an assumption, D7). Any other pending
+            // trigger may be a turn still awaiting its first response while
+            // a local command runs, so its start stays pending.
             Turn::Ignored => {
                 let lead = record.text.as_ref().map(|text| text.lead);
                 let local = lead.is_some_and(|lead| text::LOCAL_OUTPUT.contains(&lead))
                     || record.kind == KIND_SYSTEM && record.subtype == SUBTYPE_LOCAL_COMMAND;
-                if local && block.pending_start.take().is_some() {
+                if local && std::mem::take(&mut block.pending_command) {
+                    block.pending_start = None;
                     block.queued_since_start = None;
-                    block.lost_idle = true;
                 }
             }
             // An unrecognised origin may be a trigger, or input to a turn.
@@ -1482,6 +1489,10 @@ impl Row {
                     self.claude.ambiguous = true;
                 }
                 if !self.claude.ambiguous {
+                    // A slash-command echo, whatever its origin.
+                    let lead = record.text.as_ref().map(|text| text.lead);
+                    self.claude.pending_command =
+                        record.kind == KIND_USER && lead == Some(text::LEAD_COMMAND);
                     self.claude.pending_start = Some((key, second));
                     self.claude.lost_idle = false;
                 }
@@ -1511,6 +1522,7 @@ impl Row {
     }
     /// A pending start followed by an assistant record or abort becomes the turn.
     fn confirm(&mut self) {
+        self.claude.pending_command = false;
         if let Some((key, second)) = self.claude.pending_start.take() {
             self.turns.begin(key, second);
             // A rejected start (before the previous end, or a repeated key)
@@ -1624,8 +1636,9 @@ impl Row {
     /// The turn state to publish (D7). The row's `Turns` is kept unchanged.
     /// After a silent end the turn may have ended without `turn_duration`, so
     /// neither the current turn nor a total that leaves it out is published.
-    /// A pending start, or one cleared by local-command output, may be a turn
-    /// awaiting its first response, so the current turn is unknown.
+    /// A pending start may be a turn awaiting its first response, and after
+    /// a record lost while idle a turn may be running from an unknown start,
+    /// so the current turn is unknown.
     pub fn published_turns(&self) -> Turns {
         let mut turns = self.turns.clone();
         let block = &self.claude;

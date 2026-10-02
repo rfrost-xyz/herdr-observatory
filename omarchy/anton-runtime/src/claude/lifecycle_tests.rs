@@ -448,9 +448,21 @@ fn turns_pending_start_needs_an_assistant_record_including_synthetic() {
             Some((second(12), second(20), "completed".into()))
         );
     }
-    // Found by the ground-truth fuzzer: local output may also come from a
-    // local command run while a prompt awaits its first response, so an
-    // assistant record before the next trigger shows a turn of unknown start.
+    // The echo ran no turn, so nothing masks the idle state it leaves.
+    let row = run(&[
+        user(1, "hello", ""),
+        assistant(2, "msg_a", "\"end_turn\""),
+        system("turn_duration", 3),
+        echo.clone(),
+        user(11, "<local-command-stdout>ok</local-command-stdout>", ""),
+    ]);
+    assert!(!row.claude.lost_idle && !row.claude.pending_command);
+    let published = row.published_turns();
+    assert!(published.valid && published.current_known && published.active.is_none());
+    // Local output while a prompt awaits its first response comes from a
+    // local command run meanwhile: the prompt's start stays pending, so the
+    // assistant record confirms it and a notification injected into the
+    // running turn without queue evidence is ambiguous.
     let row = run(&[
         user(10, "hello", ""),
         system("local_command", 11),
@@ -500,6 +512,61 @@ fn turns_pending_start_needs_an_assistant_record_including_synthetic() {
     assert_eq!(row.turns.active, Some(turn_key(ID, "user-10")));
     assert_eq!(row.turns.start, Some(second(10)));
     assert!(row.claude.pending_start.is_none());
+}
+
+#[test]
+fn turns_local_output_never_clears_a_pending_prompt() {
+    // Review round 5: local output cleared any pending start without making
+    // coverage unknown, so the prompt's turn was left out of the total.
+    let head = |output: &str| {
+        vec![
+            user(1, "hello", ""),
+            assistant(2, "msg_a", "\"end_turn\""),
+            system("turn_duration", 3),
+            user(10, "prompt", ""),
+            user(11, output, ""),
+        ]
+    };
+    for output in [
+        "<local-command-stdout>ok</local-command-stdout>",
+        "<local-command-stderr>no</local-command-stderr>",
+    ] {
+        let row = run(&head(output));
+        assert_eq!(
+            row.claude.pending_start,
+            Some((turn_key(ID, "user-10"), second(10)))
+        );
+        assert!(!row.claude.lost_idle && !row.published_turns().current_known);
+        // A notification before the first assistant record may be input to
+        // the prompt's turn: never a start of its own.
+        let mut lines = head(output);
+        lines.extend([
+            queued(12, "task-notification", &notice("agent-y", "completed")),
+            assistant(13, "msg_b", "\"tool_use\""),
+            assistant(14, "msg_c", "\"end_turn\""),
+            system("turn_duration", 20),
+        ]);
+        let published = run(&lines).published_turns();
+        assert!(!published.valid && !published.current_known);
+        assert_eq!(published.last_duration, Some(2));
+        // An abort confirms the prompt's start and ends it as aborted.
+        let mut lines = head(output);
+        lines.push(user(15, "[Request interrupted by user]", ""));
+        let row = run(&lines);
+        assert!(row.turns.valid && row.turns.total == 7);
+        assert_eq!(
+            finished(&row, "user", 10),
+            Some((second(10), second(15), "aborted".into()))
+        );
+        // A kill writes nothing: the next prompt replaces an unconfirmed start.
+        let mut lines = head(output);
+        lines.extend([
+            user(40, "again", ""),
+            assistant(41, "msg_b", "\"end_turn\""),
+            system("turn_duration", 45),
+        ]);
+        assert!(!run(&lines).published_turns().valid);
+    }
 }
 
 #[test]
@@ -794,6 +861,18 @@ fn turns_state_survives_a_block_round_trip() {
     tampered["pending_start"][0] = json!("not-a-key");
     let tampered: ClaudeCursor = serde_json::from_value(tampered).unwrap();
     assert!(!tampered.validate(now()));
+    // A pending command echo survives the round trip, and is only valid
+    // while its start is pending.
+    let echo = run(&[user(30, "<command-name>/model</command-name>", "")]);
+    let block = serde_json::to_value(&echo.claude).unwrap();
+    assert_eq!(block["pending_command"], json!(true));
+    let mut tampered = block.clone();
+    tampered["pending_start"] = Value::Null;
+    let tampered: ClaudeCursor = serde_json::from_value(tampered).unwrap();
+    assert!(!tampered.validate(now()));
+    let mut missing = block;
+    missing.as_object_mut().unwrap().remove("pending_command");
+    assert!(serde_json::from_value::<ClaudeCursor>(missing).is_err());
 }
 
 #[test]
@@ -895,13 +974,13 @@ fn turns_join_needs_a_dequeue_or_remove_and_each_join_consumes_it() {
         );
     }
     // With no active turn a trigger never joins, so an idle gap after a
-    // command echo is never absorbed. Input taken while the echo is pending,
-    // or after local-command output, which may also follow a prompt still
-    // awaiting its first response, may have joined a running turn, so the
-    // trigger is ambiguous.
-    for local in [vec![], vec![system("local_command", 5)]] {
+    // command echo is never absorbed. Input taken while the echo is pending
+    // may have joined a running turn, so the trigger is ambiguous. After
+    // local-command output the echo ran no turn (D7), so the input taken
+    // while idle opens the next turn.
+    for local in [false, true] {
         let mut lines = vec![user(4, "<command-name>/model</command-name>", "")];
-        lines.extend(local);
+        lines.extend(local.then(|| system("local_command", 5)));
         lines.extend([
             dequeue(4000),
             user(4000, "queued", ""),
@@ -909,8 +988,13 @@ fn turns_join_needs_a_dequeue_or_remove_and_each_join_consumes_it() {
             system("turn_duration", 4003),
         ]);
         let row = run(&lines);
-        assert!(!row.turns.valid && row.turns.finished.is_empty());
         assert!(row.claude.queued_since_start.is_none());
+        if local {
+            assert!(row.turns.valid && row.turns.total == 3);
+            assert_eq!(finished(&row, "user", 4), None);
+        } else {
+            assert!(!row.turns.valid && row.turns.finished.is_empty());
+        }
     }
     // Each join consumes the evidence: a second prompt needs its own.
     let row = run(&[
@@ -2053,9 +2137,17 @@ impl Story {
                 self.tick(false);
                 self.take();
             }
-            // A local command run while the first response is awaited.
-            14..=16 => {
+            // A local command run while the first response is awaited: its
+            // echo then its output, or the output alone. A slash-command echo
+            // followed by local output is itself a local command, which runs
+            // no turn (D7), so a pending command is never followed by output.
+            14..=16 if tag != "command" => {
                 self.tick(false);
+                if self.chance(500) {
+                    let line = self.user("<command-name>/model</command-name>", "");
+                    self.push(line, "pending-local-echo");
+                    self.tick(false);
+                }
                 let line = if self.chance(500) {
                     self.system("local_command")
                 } else {
