@@ -524,10 +524,12 @@ pub fn ensure_private_directory(path: &Path) -> Result<()> {
     Ok(())
 }
 /// A unique fixture directory name under the temporary directory, after
-/// removing siblings with `prefix` whose embedded process id is dead.
-/// Fixtures clean up on drop, which a killed test process never reaches; this
-/// removes only directories the current user owns whose creating process no
-/// longer exists, so nobody needs to sweep the prefix by hand.
+/// removing stale siblings with `prefix`. Fixtures clean up on drop, which a
+/// killed test process never reaches. A sibling is stale only when the
+/// current user owns it, its embedded process id is dead here and it has not
+/// been modified for an hour: a run in another pid namespace sharing the
+/// temporary directory has ids that look dead here, so the age is what keeps
+/// its live fixtures. A sweep by hand should match the exact prefix and age.
 #[cfg(test)]
 pub(crate) fn fixture_dir(prefix: &str, sequence: u64) -> PathBuf {
     let temp = std::env::temp_dir();
@@ -543,8 +545,16 @@ pub(crate) fn fixture_dir(prefix: &str, sequence: u64) -> PathBuf {
             else {
                 continue;
             };
-            let owned = std::fs::symlink_metadata(entry.path())
-                .is_ok_and(|info| info.is_dir() && info.uid() == unsafe { libc::geteuid() });
+            // A modification time in the future or unreadable is recent.
+            let owned = std::fs::symlink_metadata(entry.path()).is_ok_and(|info| {
+                info.is_dir()
+                    && info.uid() == unsafe { libc::geteuid() }
+                    && info
+                        .modified()
+                        .ok()
+                        .and_then(|at| at.elapsed().ok())
+                        .is_some_and(|age| age.as_secs() >= 3600)
+            });
             // SAFETY: signal 0 only checks whether the process exists.
             let dead = unsafe { libc::kill(pid, 0) } == -1
                 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
@@ -558,4 +568,34 @@ pub(crate) fn fixture_dir(prefix: &str, sequence: u64) -> PathBuf {
         std::process::id(),
         now().to_bits()
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A sibling whose process id is dead here may belong to a live run in
+    /// another pid namespace, so only one also untouched for an hour is
+    /// swept (review round 12).
+    #[test]
+    fn fixture_sweep_removes_only_dead_pid_dirs_untouched_for_an_hour() {
+        let prefix = format!("anton-unit-sweep-{}-", std::process::id());
+        let max: i64 = std::fs::read_to_string("/proc/sys/kernel/pid_max")
+            .ok()
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(4_194_304);
+        let decoy = std::env::temp_dir().join(format!("{prefix}{}-0-0", max + 1));
+        std::fs::create_dir(&decoy).unwrap();
+        fixture_dir(&prefix, 0);
+        let kept = decoy.is_dir();
+        File::open(&decoy)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(3601))
+            .unwrap();
+        fixture_dir(&prefix, 1);
+        let removed = !decoy.exists();
+        let _ = std::fs::remove_dir_all(&decoy);
+        assert!(kept, "a recent dead-pid sibling is kept");
+        assert!(removed, "an hour-old dead-pid sibling is removed");
+    }
 }

@@ -24,11 +24,13 @@ pub fn write_executable(path: &Path, bytes: &[u8], mode: u32) {
     fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
 }
 
-/// Removes fixture directories named `prefix` + process id + `-...` under
-/// the temporary directory whose process no longer exists. Fixtures clean up
-/// on drop, which a killed test process never reaches; only directories the
-/// current user owns, left by a dead process, are removed, so a concurrent
-/// run is never touched and nobody needs to sweep the prefix by hand.
+/// Removes stale fixture directories named `prefix` + process id + `-...`
+/// under the temporary directory. Fixtures clean up on drop, which a killed
+/// test process never reaches. A directory is stale only when the current
+/// user owns it, its process id is dead here and it has not been modified
+/// for an hour: a run in another pid namespace sharing the temporary
+/// directory has ids that look dead here, so the age is what keeps its live
+/// fixtures. A sweep by hand should match the exact prefix and age.
 #[allow(dead_code)] // native_navigation has no such fixture.
 pub fn remove_stale_fixtures(prefix: &str) {
     let Ok(entries) = fs::read_dir(std::env::temp_dir()) else {
@@ -45,8 +47,16 @@ pub fn remove_stale_fixtures(prefix: &str) {
         else {
             continue;
         };
-        let owned = fs::symlink_metadata(entry.path())
-            .is_ok_and(|info| info.is_dir() && info.uid() == unsafe { libc::geteuid() });
+        // A modification time in the future or unreadable is recent.
+        let owned = fs::symlink_metadata(entry.path()).is_ok_and(|info| {
+            info.is_dir()
+                && info.uid() == unsafe { libc::geteuid() }
+                && info
+                    .modified()
+                    .ok()
+                    .and_then(|at| at.elapsed().ok())
+                    .is_some_and(|age| age.as_secs() >= 3600)
+        });
         // SAFETY: signal 0 only checks whether the process exists.
         let dead = unsafe { libc::kill(pid, 0) } == -1
             && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
