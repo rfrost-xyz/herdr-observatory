@@ -82,7 +82,7 @@ This change publishes for 10 of 18 files.
 
 ## Test reliability
 
-- **Allowances test.** The intermittent `allowances.rs:749` failure is fixed in `0b9669e`.
+- **Allowances test.** The intermittent `allowances.rs:749` `create_dir` collision is fixed in `0b9669e`. A second allowances flake ("Command unavailable") is ETXTBSY: a sibling test's spawned child inherited the write descriptor of a freshly written script. `1b2a36b` and `4234e93` write executable fixtures from a child process. The regression tests failed 10 of 10 before the fix and passed 300 of 300 after.
 - **Checkpoint test.** `native::tests::checkpoint_startup_reconciles_expired_and_removed_hosts_without_empty_creation` is a pre-existing test, and it failed once during staging. The root cause, found in review round 1, is the lock: `Checkpoints::new` and `persist` took it with `flock(LOCK_EX|LOCK_NB)` and zero wait.
   - A process spawned concurrently by another test holds the lock's open file description until it calls exec.
   - That left the lease `None`, and `loaded.reconcile(&empty).unwrap()` panicked at `src/native.rs:1704:34`. The `std::fs::read` was not the failing call.
@@ -106,12 +106,12 @@ This change publishes for 10 of 18 files.
 
 ## Review round 1 and remediation
 
-The independent four-lens review of `ef2ddc5` found 3 blocking, 9 non-blocking and 4 nit findings. All are fixed, each with a regression test that failed before its fix.
+The independent four-lens review of `ef2ddc5` found 3 blocking, 9 non-blocking and 4 nit findings. All are fixed. Each code fix has a regression test that failed before its fix; harness and evidence fixes have none.
 
 **Blocking:**
 1. **The header record was not replayed** (`2412f2a`).
 2. **A killed turn with only enqueued input absorbed the idle gap.** Joins now need dequeue or remove evidence (`aa9ed0a`, `4b5536d`).
-3. **Claude rows evicted Codex rows** from the shared cursor and checkpoint bounds. Codex is now charged first (`c38efe7`), and ring hashes shrank to 64 bits (`ac47bc9`). A full block went from 2,702 to 1,118 bytes.
+3. **Claude rows evicted Codex rows** from the shared cursor and checkpoint bounds. Codex is now charged first (`c38efe7`), and ring hashes shrank to 64 bits (`ac47bc9`). A block with a full ring went from 2,702 to 1,118 bytes. That is not the worst case: a row with 512 finished turns and 128 children is about 44 KB.
 
 **Other fixes:**
 - a trigger at Unix second 0 (`e0e2257`);
@@ -172,3 +172,51 @@ Old local with a new peer (`--claude-old-local`, harness `c162861`, local `74f50
 | `run-qml.sh` | 95 of 95 |
 | qmllint | clean outside Panel.qml |
 | Shell harness | 0 failures |
+
+Corpus figures in this file come from different runs of a live corpus. Absolute counts drift between runs, while the stated ratios reproduce.
+
+## Review round 2 and remediation
+
+The four-lens review of `d0eb92a` found 5 blocking and 6 other findings. All are fixed, and each code fix has a regression test that failed before it.
+
+**Blocking:**
+1. **Rejected turn start.** A rejected start left an unresumable state, so a file larger than `TAIL` never caught up. A lost turn was also published truncated. Fixed in `ee2fe7f`: `ambiguous` is now set wherever a turn may still be running, and a fuzz test of 4,500 cases checks every replay state.
+2. **Identity mismatch was not sticky.** Fixed in `fd8015d` with the `foreign` flag.
+3. **Lost-turn paths published truncated turns.** Also fixed in `ee2fe7f`.
+4. **Peer revalidation had zero clock-skew tolerance,** which dropped Codex peer telemetry too. It now allows 1 s (`6be49b5`).
+5. **A sample rejected by revalidation re-emitted stale retained values.** Fixed in `1b154b4`.
+
+**Other:**
+- presence-only classifier fields of any length (`61be52d`);
+- a four-counter sum above 2^53 (`59d6a66`);
+- Claude rows shrink before being dropped at the byte bound (`8e81779`);
+- the doc comment is back in place (`2f74830`);
+- ETXTBSY test fixtures (`1b2a36b`, `4234e93`);
+- evidence wording.
+
+The corpus aggregates did not change.
+
+**Known residual:** `allowances::receive` takes its lock with zero wait. This is pre-existing, outside this change, and was not seen failing.
+
+### Verification at `4234e93` (release sha256 `16807ed38fbc88661e4e99e1a320ce04dd0d21a217ffa6a4aa61c28119ee1374`)
+
+| Gate | Result |
+|---|---|
+| fmt, clippy | clean |
+| `cargo test`, 3 runs | lib 153, main 14, native_navigation 6, native_process 31 |
+| `node --test` | 88 of 88 |
+| QML | 95 of 95 |
+| qmllint | clean outside Panel.qml |
+| Shell harness | 0 failures |
+| History | no wip, fixup or duplicate subjects |
+
+Runtime window, alternating reruns in the same session:
+
+| Rerun | HEAD | Baseline `2d2be90` |
+|---|---|---|
+| 1 | 0.035 s | 0.035 s |
+| 2 | 0.034 s | 0.033 s |
+
+- **Peak RSS:** both binaries range from about 4.3 to 7.5 MiB.
+- **Snapshot size:** unchanged.
+- **Claude probe:** standard and large variants are 4/4 local and 4/4 peer, with all fields, `context` and `turn_timing`.
