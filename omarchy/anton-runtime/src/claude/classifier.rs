@@ -954,8 +954,12 @@ mod tests {
                 "\"toolUseResult\":{result},\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"content\":[{{\"type\":\"text\",\"text\":\"<command-name>x\"}}]}}]}}"
             )));
         }
+        let twice = format!("{}\\n{}", &notice[..notice.len() - 1], &notice[1..]);
+        let spaced = format!("{} \\n\"", &notice[..notice.len() - 1]);
         for text in [
             notice,
+            &twice,
+            &spaced,
             "\"<command-name>/x</command-name>\"",
             "\"<local-command-stdout>x</local-command-stdout>\"",
             "\"<bash-input>ls</bash-input>\"",

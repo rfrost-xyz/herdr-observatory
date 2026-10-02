@@ -922,8 +922,11 @@ pub struct Texts {
 impl Texts {
     fn fold(&mut self, text: Text) {
         self.interrupt |= text.interrupt;
-        if self.first.is_none() {
-            self.first = Some(text);
+        match &mut self.first {
+            None => self.first = Some(text),
+            // A further text value after a notification is unreadable, as
+            // content after its closing tag is (D6).
+            Some(first) => first.task = None,
         }
     }
 }

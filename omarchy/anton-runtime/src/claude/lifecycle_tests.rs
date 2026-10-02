@@ -230,6 +230,42 @@ fn children_notifications_through_origin_command_mode_and_without_origin() {
         ]);
         assert!(!row.valid, "{text:.80}");
     }
+    // Review round 8: content after the first block, such as a second block
+    // naming another child, is unreadable, as text before it is.
+    let two = format!(
+        "{}\n{}",
+        notice("agent-b", "completed"),
+        notice("agent-a", "completed")
+    );
+    let array = format!(
+        "[{{\"type\":\"text\",\"text\":{}}},{{\"type\":\"text\",\"text\":\"more\"}}]",
+        serde_json::to_string(&notice("agent-a", "completed")).unwrap()
+    );
+    for line in [
+        user(20, &two, "\"origin\":{\"kind\":\"task-notification\"}"),
+        queued(20, "task-notification", &two),
+        record(
+            "user",
+            20,
+            &format!(
+                "\"origin\":{{\"kind\":\"task-notification\"}},\"message\":{{\"role\":\"user\",\"content\":{array}}}"
+            ),
+        ),
+    ] {
+        let row = run(&[launch(10, "agent-a"), launch(11, "agent-b"), line.clone()]);
+        assert!(!row.valid, "{line}");
+        assert_eq!(status(&row, "agent-a").as_deref(), Some("running"));
+    }
+    let trailing = format!("{}\n\n", notice("agent-a", "completed"));
+    assert_eq!(
+        done(user(
+            20,
+            &trailing,
+            "\"origin\":{\"kind\":\"task-notification\"}"
+        ))
+        .as_deref(),
+        Some("completed")
+    );
 }
 
 #[test]

@@ -90,6 +90,19 @@ impl Text {
         text.lead = position(WRAPPERS, name).unwrap_or(LEAD_OTHER);
         if text.lead == LEAD_NOTIFICATION {
             text.notification(units, after);
+            // Anything but whitespace after the first closing tag, such as
+            // a second block, is unreadable, as text before the block is
+            // (D6). Past `LIMIT` units nothing is seen.
+            let close = b"</task-notification>";
+            if let Some(end) = units[after..]
+                .windows(close.len())
+                .position(|window| window == close)
+                && units[after + end + close.len()..]
+                    .iter()
+                    .any(|ch| !b" \t\r\n".contains(ch))
+            {
+                text.task = None;
+            }
         }
         text
     }
@@ -242,6 +255,37 @@ mod tests {
         // Tags outside a notification are never read.
         let plain = Text::of("<task-id>a</task-id><status>failed</status>");
         assert!(plain.task.is_none() && plain.status == 0 && plain.lead == LEAD_OTHER);
+    }
+
+    #[test]
+    fn text_notification_with_content_after_its_closing_tag_is_unreadable() {
+        let block = |task: &str| {
+            format!(
+                "<task-notification>\n<task-id>{task}</task-id>\n<status>completed</status>\n</task-notification>"
+            )
+        };
+        for trailer in [
+            block("agent-b"),
+            "x".into(),
+            "<status>failed</status>".into(),
+        ] {
+            let text = Text::of(&format!("{}\n{trailer}", block("agent-a")));
+            assert!(
+                text.validate() && text.lead == LEAD_NOTIFICATION,
+                "{trailer}"
+            );
+            assert_eq!(text.task, None, "{trailer}");
+        }
+        let text = Text::of(&format!("{} \r\n\t", block("agent-a")));
+        assert_eq!(text.task, key("agent-a"));
+        // Only the first `LIMIT` units are read: a closing tag past them
+        // shows nothing after it.
+        let pad = "x".repeat(LIMIT);
+        let far = format!(
+            "<task-notification><task-id>a</task-id><summary>{pad}</summary></task-notification>{}",
+            block("agent-b")
+        );
+        assert_eq!(Text::of(&far).task, key("a"));
     }
 
     #[test]
