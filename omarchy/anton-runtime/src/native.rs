@@ -2058,10 +2058,11 @@ mod tests {
                 .is_ok()
         );
     }
-    /// Each lease and write releases the lock before closing it, so repeated
-    /// cycles never find it held by a child a sibling thread spawned.
+    /// Repeated lease, write and reconcile cycles succeed while sibling threads
+    /// spawn processes. The release itself is checked by
+    /// `checkpoint_lock_is_free_at_once_after_each_holder_while_siblings_spawn`.
     #[test]
-    fn checkpoint_cycles_release_the_lock_while_siblings_spawn() {
+    fn checkpoint_cycles_succeed_while_siblings_spawn() {
         let fixture = Fixture::new();
         let owner = fixture.root.join(".herdr-observatory-install");
         std::fs::write(&owner, b"herdr.observatory\n").unwrap();
