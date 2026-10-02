@@ -673,6 +673,7 @@ fn claude_unchanging_sibling_without_session_id_is_not_growing() {
     follower.enrich_claude(
         &mut agent,
         &mut rows,
+        &BTreeSet::new(),
         &mut BTreeSet::new(),
         now(),
         [Instant::now(); 2],
@@ -776,6 +777,7 @@ fn claude_deadline_skip_reemits_the_retained_sample_of_a_current_binding() {
         follower.enrich_claude(
             &mut agent,
             &mut rows,
+            &BTreeSet::new(),
             &mut active,
             now(),
             [Instant::now(); 2],
@@ -820,6 +822,7 @@ fn claude_deadline_inside_rediscovery_is_a_skip_not_a_drop() {
         follower.enrich_claude(
             &mut agent,
             &mut rows,
+            &BTreeSet::new(),
             &mut BTreeSet::new(),
             now(),
             [deadline; 2],
@@ -867,6 +870,7 @@ fn claude_peer_deadline_skip_never_returns_an_unverified_row() {
         peer.enrich_claude(
             &mut agent,
             &mut rows,
+            &BTreeSet::new(),
             &mut BTreeSet::new(),
             time,
             [Instant::now(); 2],
@@ -908,6 +912,7 @@ fn claude_deadline_after_bind_never_returns_an_unverified_row() {
         follower.enrich_claude(
             &mut pane,
             &mut rows,
+            &BTreeSet::new(),
             &mut BTreeSet::new(),
             time,
             [far, Instant::now()],
@@ -1429,10 +1434,12 @@ fn two_panes(
 ) -> (Vec<Value>, BTreeMap<String, Cursor>) {
     let mut agents = vec![agent(), agent()];
     let mut rows = validate_cursors(cursors);
+    let requested = cursors.as_object().unwrap().keys().cloned().collect();
     let mut active = BTreeSet::new();
     NativeTelemetry::default().enrich_claude_panes(
         &mut agents,
         &mut rows,
+        &requested,
         &mut active,
         now(),
         deadlines,
@@ -1531,4 +1538,51 @@ fn claude_two_panes_on_one_session_share_a_lasting_failure_before_the_deadline()
     unknown(&agents[0]["_native_telemetry"], micros(23));
     same_outcome(&agents);
     assert_eq!(serde_json::to_value(&rows[&key()]).unwrap(), cursors[key()]);
+}
+
+/// A request row the peer's own validation rejects, here because its clock
+/// stepped back so the row's `at` is ahead, leaves a restart with no
+/// incoming row and so no source time for the all-null sample. The raw
+/// request carried the key, so the row is withheld and the local drops its
+/// copy rather than re-emit one whose file the peer could not check (D3,
+/// review round 12). Controls: the same row with a usable `at`, and the
+/// next probe, which sends no row, both return it.
+#[test]
+fn claude_restart_after_a_rejected_request_row_withholds_it() {
+    let fixture = Fixture::new();
+    let probe = |cursors: &Value| enrich(&mut NativeTelemetry::default(), cursors);
+    fixture.write(&session());
+    fixture.append("{\"type\":");
+    let (first, _, cursors) = probe(&json!({}));
+    assert!(first.is_null());
+    assert_eq!(cursors[key()]["caught_up"], false);
+    let (telemetry, _, kept) = probe(&cursors);
+    assert!(telemetry.is_null() && kept.get(key()).is_some());
+    let mut ahead_row = cursors.clone();
+    ahead_row[key()]["at"] = json!(now() + 2.0);
+    assert!(validate_cursors(&ahead_row).is_empty());
+    let (telemetry, timing, returned) = probe(&ahead_row);
+    assert!(telemetry.is_null() && timing.is_null());
+    assert!(returned.get(key()).is_none());
+    let (_, _, next) = probe(&returned);
+    assert_eq!(next[key()]["offset"], cursors[key()]["offset"]);
+    // The same rule when the restart catches up but has no usable time.
+    let mut exercised = false;
+    for _ in 0..10 {
+        let (line, at) = ahead();
+        fixture.write(&[line]);
+        let (first, _, cursors) = probe(&json!({}));
+        let mut ahead_row = cursors.clone();
+        ahead_row[key()]["at"] = json!(now() + 2.0);
+        let (telemetry, _, returned) = probe(&ahead_row);
+        if (now() * 1e6) as u64 >= at {
+            continue;
+        }
+        assert!(first.is_null() && telemetry.is_null());
+        assert_eq!(cursors[key()]["caught_up"], true);
+        assert!(returned.get(key()).is_none());
+        exercised = true;
+        break;
+    }
+    assert!(exercised);
 }

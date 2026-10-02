@@ -1025,6 +1025,7 @@ impl NativeTelemetry {
         &mut self,
         agent: &mut Value,
         cursors: &mut BTreeMap<String, Cursor>,
+        requested: &BTreeSet<String>,
         active: &mut BTreeSet<String>,
         time: f64,
         [deadline, passes]: [Instant; 2],
@@ -1057,6 +1058,9 @@ impl NativeTelemetry {
             }
         };
         let incoming_row = cursors.remove(&key);
+        // The request carried a row that validation rejected, so the local
+        // holds a copy this call cannot stamp an all-null sample for (D3).
+        let rejected = incoming_row.is_none() && requested.contains(&key);
         let mut row = incoming_row.clone().and_then(Cursor::into_row);
         let (mut ran, mut restarted, mut withhold) = (false, false, false);
         for _ in 0..16 {
@@ -1114,7 +1118,7 @@ impl NativeTelemetry {
                 // A restart that publishes nothing, as with no timestamped
                 // record yet, must still replace the local's copy (D3).
                 if !publish_claude(agent, &usage, children, seq, time) && (restarted || foreign) {
-                    withhold = !unknown(agent);
+                    withhold = !unknown(agent) || rejected;
                 }
                 let mut subset = usage;
                 subset.as_object_mut().unwrap().remove("compactions");
@@ -1124,7 +1128,9 @@ impl NativeTelemetry {
             } else if restarted || foreign {
                 // An identity failure replaces the copy a local retains for
                 // a peer, whose fresh follower has nothing to re-emit (D3).
-                withhold = !unknown(agent);
+                // A restart after a rejected request row has no source time,
+                // so its row is withheld for the local to drop its copy.
+                withhold = !unknown(agent) || rejected;
             }
         } else {
             cursors.insert(key.clone(), Cursor::from_row(row));
@@ -1147,6 +1153,7 @@ impl NativeTelemetry {
         &mut self,
         agents: &mut [Value],
         cursors: &mut BTreeMap<String, Cursor>,
+        requested: &BTreeSet<String>,
         active: &mut BTreeSet<String>,
         time: f64,
         mut deadlines: impl FnMut() -> [Instant; 2],
@@ -1169,7 +1176,7 @@ impl NativeTelemetry {
                 }
                 continue;
             }
-            self.enrich_claude(agent, cursors, active, time, deadlines());
+            self.enrich_claude(agent, cursors, requested, active, time, deadlines());
             if let Some(key) = key {
                 outcomes.insert(key, FIELDS.map(|field| agent.get(field).cloned()));
             }
@@ -1359,6 +1366,11 @@ impl NativeTelemetry {
         deadline: Instant,
     ) -> Value {
         let time = now();
+        // Keys the request carried, before validation drops any (D3).
+        let requested: BTreeSet<String> = raw_cursors
+            .as_object()
+            .map(|rows| rows.keys().filter(|key| hex_id(key, 64)).cloned().collect())
+            .unwrap_or_default();
         let mut cursors = validate_cursors(raw_cursors);
         let mut active = BTreeSet::new();
         // Codex panes go first, so Claude replay, which an old local makes
@@ -1369,7 +1381,9 @@ impl NativeTelemetry {
                 self.enrich_codex(agent, &mut cursors, &mut active, time, deadline);
             }
         }
-        self.enrich_claude_panes(agents, &mut cursors, &mut active, time, || [deadline; 2]);
+        self.enrich_claude_panes(agents, &mut cursors, &requested, &mut active, time, || {
+            [deadline; 2]
+        });
         cursors.retain(|key, _| active.contains(key));
         self.discovery.retain(|key, _| active.contains(key));
         self.usage.retain(|key, _| active.contains(key));
