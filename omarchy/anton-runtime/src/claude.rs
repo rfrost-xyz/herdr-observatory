@@ -231,6 +231,73 @@ fn first_session_id(
     Err(Predecessor::Unknown)
 }
 
+/// Parses one line of 64 KiB or less as serde does, except that an object
+/// repeating a key is rejected. A rejected line goes to the classifier, which
+/// loses a repeated consumed key rather than keep its last value, so a record
+/// is classified the same way at any line size (D3).
+pub fn parse_line(bytes: &[u8]) -> Option<Value> {
+    struct Strict(Value);
+    impl<'de> Deserialize<'de> for Strict {
+        fn deserialize<D: serde::Deserializer<'de>>(
+            deserializer: D,
+        ) -> std::result::Result<Self, D::Error> {
+            deserializer.deserialize_any(Values).map(Strict)
+        }
+    }
+    struct Values;
+    impl<'de> serde::de::Visitor<'de> for Values {
+        type Value = Value;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a JSON value")
+        }
+        fn visit_bool<E>(self, value: bool) -> std::result::Result<Value, E> {
+            Ok(Value::Bool(value))
+        }
+        fn visit_i64<E>(self, value: i64) -> std::result::Result<Value, E> {
+            Ok(Value::from(value))
+        }
+        fn visit_u64<E>(self, value: u64) -> std::result::Result<Value, E> {
+            Ok(Value::from(value))
+        }
+        fn visit_f64<E>(self, value: f64) -> std::result::Result<Value, E> {
+            Ok(Value::from(value))
+        }
+        fn visit_str<E>(self, value: &str) -> std::result::Result<Value, E> {
+            Ok(Value::String(value.to_owned()))
+        }
+        fn visit_string<E>(self, value: String) -> std::result::Result<Value, E> {
+            Ok(Value::String(value))
+        }
+        fn visit_unit<E>(self) -> std::result::Result<Value, E> {
+            Ok(Value::Null)
+        }
+        fn visit_seq<A: serde::de::SeqAccess<'de>>(
+            self,
+            mut seq: A,
+        ) -> std::result::Result<Value, A::Error> {
+            let mut values = vec![];
+            while let Some(Strict(value)) = seq.next_element()? {
+                values.push(value);
+            }
+            Ok(Value::Array(values))
+        }
+        fn visit_map<A: serde::de::MapAccess<'de>>(
+            self,
+            mut map: A,
+        ) -> std::result::Result<Value, A::Error> {
+            let mut values = serde_json::Map::new();
+            while let Some(key) = map.next_key::<String>()? {
+                let Strict(value) = map.next_value()?;
+                if values.insert(key, value).is_some() {
+                    return Err(serde::de::Error::custom("repeated key"));
+                }
+            }
+            Ok(Value::Object(values))
+        }
+    }
+    serde_json::from_slice::<Strict>(bytes).ok().map(|v| v.0)
+}
+
 /// A candidate line serde rejects, as it does an unpaired surrogate escape that
 /// replay reads (D3), is read only for its top-level `session_id` (present or
 /// absent), once the classifier accepts the line as well formed. `None` means
@@ -307,11 +374,12 @@ fn header(stream: &mut BufReader<File>, id: &str) -> Result<Vec<u8>> {
     if bytes.len() > LINE || bytes.last() != Some(&b'\n') {
         return Err("Invalid Claude session header".into());
     }
-    let matched = match serde_json::from_slice::<Value>(&bytes) {
-        Ok(value) => session_identity(&value, id) == Identity::Match,
+    let matched = match parse_line(&bytes) {
+        Some(value) => session_identity(&value, id) == Identity::Match,
         // serde rejects an unpaired surrogate escape, which the classifier
-        // reads, so the header is verified as the body would classify it.
-        Err(_) => {
+        // reads, and a repeated key, which it loses, so the header is
+        // verified as the body would classify it.
+        None => {
             let mut classifier = Classifier::default();
             if !classifier.feed(&bytes, id, common::now()) {
                 return Err("Invalid Claude session header".into());
@@ -1715,13 +1783,13 @@ pub fn resume(
             // D2 tolerates any first record, so a fresh pass applies the
             // header as the first record; a resumed pass never re-applies it.
             let mut row = Row::new([info.dev(), info.ino()], head.len() as u64, time);
-            match serde_json::from_slice::<Value>(&head) {
-                Ok(value) => match Record::from_value(&value, id, time) {
+            match parse_line(&head) {
+                Some(value) => match Record::from_value(&value, id, time) {
                     Some(record) => row.apply(&record),
                     None => row.invalid(),
                 },
                 // As in `advance`: the classifier reads what serde rejects.
-                Err(_) => row.oversized(&head, true, id, time),
+                None => row.oversized(&head, true, id, time),
             }
             (row, false)
         }
@@ -1772,14 +1840,15 @@ fn advance(
             break;
         }
         row.offset = position(stream)?;
-        match serde_json::from_slice::<Value>(&bytes) {
-            Ok(value) => match Record::from_value(&value, id, time) {
+        match parse_line(&bytes) {
+            Some(value) => match Record::from_value(&value, id, time) {
                 Some(record) => row.apply(&record),
                 None => row.invalid(),
             },
             // serde rejects an unpaired surrogate escape, which the classifier
-            // reads, so a line it rejects is classified as an oversized one.
-            Err(_) => row.oversized(&bytes, true, id, time),
+            // reads, and `parse_line` a repeated key, which the classifier
+            // loses, so a line rejected here is classified as an oversized one.
+            None => row.oversized(&bytes, true, id, time),
         }
     }
     Ok(())
@@ -3111,6 +3180,89 @@ mod replay_tests {
             );
             let (row, _) = passes(&fixture, &path, None);
             assert!(!row.valid && totals(&row)[0].is_null(), "{bad}");
+        }
+    }
+
+    /// A repeated consumed key is lost on both paths, as the classifier loses
+    /// it, rather than serde keeping the last value on a short line. A repeated
+    /// key outside the schema changes nothing at either size.
+    #[test]
+    fn duplicate_keys_are_read_alike_at_every_line_size() {
+        let fixture = tests::Fixture::new();
+        let good = assistant("msg_a", 1, "\"end_turn\"", [1, 2, 3, 4]);
+        let next = assistant("msg_c", 9, "\"end_turn\"", [1, 0, 0, 0]);
+        let line = assistant("msg_b", 2, "\"end_turn\"", [5, 1, 7, 3]);
+        let session = format!("\"sessionId\":\"{ID}\"");
+        let cases = [
+            (
+                line.replacen(
+                    &session,
+                    &format!("\"sessionId\":\"fixture-session-b\",{session}"),
+                    1,
+                ),
+                false,
+            ),
+            (
+                line.replacen(
+                    "\"type\":\"assistant\"",
+                    "\"type\":\"user\",\"type\":\"assistant\"",
+                    1,
+                ),
+                false,
+            ),
+            (
+                line.replacen("\"id\":\"msg_b\"", "\"id\":\"msg_x\",\"id\":\"msg_b\"", 1),
+                false,
+            ),
+            (line.replacen('{', "{\"extra\":1,\"extra\":2,", 1), true),
+        ];
+        let observed = |row: &Row| {
+            json!([
+                row.usage(),
+                row.turns,
+                row.valid,
+                row.compactions_valid,
+                row.claude.totals_valid,
+                row.claude.foreign
+            ])
+        };
+        // Without a repeated key it reads exactly what serde reads.
+        for plain in [
+            &good,
+            &line,
+            &user(3),
+            &header(),
+            "[1,-2,3.5e300,18446744073709551616,null,{}]",
+        ] {
+            let value = serde_json::from_str::<Value>(plain).unwrap();
+            assert_eq!(parse_line(plain.as_bytes()), Some(value), "{plain}");
+        }
+        for (duplicated, counted) in cases {
+            let mut seen = vec![];
+            for line in [duplicated.clone(), lead_pad(&duplicated, LINE)] {
+                let lines = [good.clone(), line, next.clone()];
+                let path =
+                    fixture.file("slug", &format!("{ID}.jsonl"), &(header() + &body(&lines)));
+                let (row, _) = passes(&fixture, &path, None);
+                assert_eq!(
+                    totals(&row)[0],
+                    if counted { json!(24) } else { Value::Null },
+                    "{duplicated:.120}"
+                );
+                seen.push(observed(&row));
+            }
+            assert_eq!(seen[0], seen[1], "{duplicated:.120}");
+        }
+        // A header repeating `sessionId` never binds, whichever value is last.
+        for text in [
+            format!("{{\"type\":\"mode\",\"sessionId\":\"fixture-session-b\",{session}}}\n"),
+            format!("{{\"type\":\"mode\",{session},\"sessionId\":\"fixture-session-b\"}}\n"),
+        ] {
+            let path = fixture.file("slug", &format!("{ID}.jsonl"), &text);
+            assert!(
+                open_session(&fixture.projects, &path, ID).is_err(),
+                "{text}"
+            );
         }
     }
 

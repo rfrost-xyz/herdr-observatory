@@ -196,9 +196,9 @@ fn scan(path: &Path, id: &str, counts: &mut Counts) -> Option<Row> {
         if bytes.last() != Some(&b'\n') {
             counts.tick("lines.unterminated");
         }
-        // The replay classifies a line over `LINE`, or one serde rejects.
+        // The replay classifies a line over `LINE`, or one `parse_line` rejects.
         let oversized = bytes.len() > LINE;
-        if oversized || serde_json::from_slice::<Value>(&bytes).is_err() {
+        if oversized || claude::parse_line(&bytes).is_none() {
             let class = if oversized {
                 "lines.oversized"
             } else {
@@ -233,9 +233,8 @@ fn scan(path: &Path, id: &str, counts: &mut Counts) -> Option<Row> {
             assistant |= record.kind == KIND_ASSISTANT && !record.synthetic;
             continue;
         }
-        let Some(record) = serde_json::from_slice::<Value>(&bytes)
-            .ok()
-            .and_then(|value| Record::from_value(&value, id, time))
+        let Some(record) =
+            claude::parse_line(&bytes).and_then(|value| Record::from_value(&value, id, time))
         else {
             counts.tick("lines.invalid_json");
             let before = flags(&shadow);
