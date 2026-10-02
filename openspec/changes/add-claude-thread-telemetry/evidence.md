@@ -275,3 +275,36 @@ CPU was 0.034 to 0.035 s for both binaries.
 **Interpretation.** The harness sums RSS over the runtime's process family, which includes the fake-SSH peer probes, and samples it every 50 ms. Values are two-valued: about 4.3 MiB, or about 7.6 MiB when a second `anton-runtime` process overlaps at the sampled instant. The baseline also reached that state in earlier sessions (7,280, 7,396 and 7,564 KiB). HEAD reaches it more often in its first window. Its steady-state windows are within 0.5 MiB of the baseline.
 
 **Binary size.** The release binary grew from 1,853,520 to 2,093,472 bytes.
+
+## Ground-truth turn fuzzing (before review round 4)
+
+The new fuzzer (`0ac8792`) found five root causes that published wrong turn numbers. Violations counted against the final fuzzer by reverting one fix at a time (the counts overlap):
+
+| Shape | Violations | Fix |
+|---|---|---|
+| A trigger replaces an unconfirmed start | 322 | replacing a pending start is ambiguous (`75012fd`) |
+| Local command while a prompt is pending | 177 | clears the pending start and sets `lost_idle` |
+| Input taken, then a kill, then the restarted session's prompt | 27 | a join needs the trigger stamped no later than the evidence (`1467ba3`) |
+| A record lost while idle, then a dequeue or remove | 6 | ambiguous (`97e442a`) |
+| A second record lost while idle | 2 | ambiguous (`42b3118`) |
+
+After the fixes the fuzzer reports 0 violations. Each fix has a minimised regression test, and one existing native fixture that was already wrong against the truth was corrected.
+
+`4a01b0d` omits `window` and `context_percent` from bound Claude telemetry in `enrich()` and peer responses. The local snapshot struct still renders them as null.
+
+**Coverage cost.** From the counts-only corpus replay, accepted under AGENTS.md (incomplete accumulated coverage stays unknown; never invent):
+
+| Metric | Before | After |
+|---|---|---|
+| Sessions with a valid accumulated total | 18 of 19 | 12 of 19 |
+| Finished turns | 221 | 215 |
+| Turn seconds | 23,071 | 22,415 |
+| Sessions with the current turn known | 15 | 14 |
+
+The current and last turn values still publish after a proven end.
+
+All 36 real joins in the corpus still join.
+
+**A separate no-join experiment** (on the pre-fuzzer build) removed joins entirely. It also gave 12 of 19 sessions valid, with the same files lost, so the join logic is kept.
+
+**Test counts:** lib 171, main 14, native_navigation 6, native_process 32.

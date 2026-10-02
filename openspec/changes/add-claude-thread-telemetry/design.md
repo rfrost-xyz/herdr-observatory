@@ -203,15 +203,15 @@ Wrapper tags are matched on the leading tag of user text:
 | Role | Tags |
 |---|---|
 | Slash-command echo (rule 4) | `command-name` |
-| Local-command output (rule 3) | `local-command-stdout`, `local-command-stderr` |
+| Local-command output (rule 3) | `local-command-stdout`, `local-command-stderr`, and `system` records with subtype `local_command` |
 | Bash mode (rule 3) | `bash-input`, `bash-stdout`, `bash-stderr` |
 
-`local-command-caveat` is ignored through `isMeta`. Any other leading tag falls to rule 4. Change 2 adds a synthetic fixture for each tag.
+`local-command-caveat` is ignored through `isMeta`. Any other leading tag falls to rule 4. Local-command output while a start is pending clears the pending start and sets `lost_idle`, because a custom command can run the model. Input taken (`dequeue` or `remove`) after a record lost while idle, a second record lost while idle, or a lost queue record makes the turn ambiguous. Change 2 adds a synthetic fixture for each tag.
 
 **Turn triggers.**
-- With no active turn, a trigger opens a pending start. It becomes the turn start only when an assistant record follows before the next trigger, including a `<synthetic>` error record, which confirms a start although D3 ignores its usage. Otherwise the newer trigger replaces it.
+- With no active turn, a trigger opens a pending start. A trigger that would replace an unconfirmed pending start is ambiguous instead, because the earlier prompt may have been killed or joined. It becomes the turn start only when an assistant record follows before the next trigger, including a `<synthetic>` error record, which confirms a start although D3 ignores its usage. Otherwise the newer trigger replaces it.
 - The first classified trigger or turn end sets `Turns.supported`, so `complete` can be published.
-- With an active turn, a trigger joins that turn only when a `queue-operation` record with operation `dequeue` or `remove` has appeared since the turn's trigger or the last join, while that turn was active or its start was pending [obs shape, inf semantics]. An `enqueue` alone never permits a join, so a killed turn whose queued input was never taken cannot absorb the idle gap. Every trigger consumes the evidence. With no active turn a trigger never joins; it replaces any pending start (joining a pending start added idle time in corpus replay).
+- With an active turn, a trigger joins that turn only when a `queue-operation` record with operation `dequeue` or `remove` has appeared since the turn's trigger or the last join, while that turn was active or its start was pending [obs shape, inf semantics]. An `enqueue` alone never permits a join, so a killed turn whose queued input was never taken cannot absorb the idle gap. Every trigger consumes the evidence. With no active turn a trigger never joins; it replaces any pending start (joining a pending start added idle time in corpus replay). The joining trigger must also be stamped no later than that evidence, so input queued before a kill can never join a turn started after the restart.
 - Without the evidence, accumulated coverage becomes unknown. The same holds at every point where a turn may still be running: an unjoined trigger during a turn, an unrecognised origin, a trigger with no stamp or key, a start that `Turns::begin` rejects (before the previous end, or a repeated key), and an unparseable, foreign or unclassifiable record while a turn is active or a start is pending. Because the input may instead have joined a still-running turn, no pending start opens and the current and last values stay unchanged (`current_known` false) until `system/turn_duration` or an abort proves an end; the next trigger after that opens a pending start normally. Silent ends do not clear this state; an abort clears it even when the start it confirms is rejected. A record lost while no turn is running (unparseable, unclassifiable, or a user record without `sessionId`) may itself have opened a turn: an assistant record that follows before any trigger makes coverage ambiguous until `turn_duration` or an abort; a trigger before that assistant record replaces the lost start as usual.
 - An abort while a start is pending confirms that start and ends the turn as aborted at the abort timestamp. An `isAbortedMidStream` assistant record confirms a pending start before it is handled as an abort.
 - An abort with no active turn and no pending start is ignored, apart from setting the abort-adjacency flag. The next trigger, assistant record or `turn_duration` clears that flag.
@@ -262,7 +262,7 @@ Every block field is required, bounded and revalidated on reuse:
 - the compaction boundary count and the compaction-iteration flag;
 - the pending turn start: key hash and Unix second, or none;
 - the abort-adjacency flag;
-- `queued_since_start`: set by a `dequeue` or `remove` queue-operation while a turn is active or a start is pending and no silent end has been seen; kept when the pending start is confirmed; consumed by every trigger; reset when a turn ends, on a silent end (D7) and when turn coverage becomes unknown; false unless a turn is active or a start is pending;
+- `queued_since_start` (the evidence stamp, `Option<u64>`): set by a `dequeue` or `remove` queue-operation while a turn is active or a start is pending and no silent end has been seen; kept when the pending start is confirmed; consumed by every trigger; reset when a turn ends, on a silent end (D7) and when turn coverage becomes unknown; false unless a turn is active or a start is pending;
 - `ambiguous`: set at every point where a turn may still be running (D7); while set there is no active turn or pending start and accumulated coverage is unknown;
 - `silent_end`: set by a silent end (D7) while a turn is active; reset by a trigger, `turn_duration`, an abort and unknown turn coverage; only set while a turn is active and `queued_since_start` is false;
 - `lost_idle`: set when a record is lost with no active turn, no pending start and no ambiguity; cleared by a pending start, `turn_duration`, an abort or ambiguity; only set while idle and not ambiguous;
@@ -404,6 +404,14 @@ Every block field is required, bounded and revalidated on reuse:
   - peer skew at +1.05 s with `sampled_at` +0.95 s;
   - values just inside and just past the revalidation bound.
 - **Locks:** each lock is free at once after release while siblings spawn.
+
+**Ground-truth turn fuzzer.** `0ac8792` generates sessions whose true turn intervals are known, using the D7 model. It injects every shape above, plus kills, lost records, reordering, queues, silent ends, foreign records and byte-level pass boundaries with oversized lines.
+
+After every record, and after every caught-up pass in file mode, it asserts that each published current start, last interval and accumulated total is either exactly the truth or unknown. It runs in about 8 s.
+
+Two model calibrations are explicit in the test:
+- queued input is stamped when it was queued;
+- a killed process writes nothing for at least 2 s.
 
 **Corpus check.** As a verification step, this change also runs a local counts-only replay of the real transcript corpus through the implementation. It prints aggregates only, and nothing from it is committed. Prose review could not converge on these rules; replay can.
 
