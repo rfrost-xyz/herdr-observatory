@@ -635,7 +635,7 @@ The round 13 review of `5a2fb76` found three blocking findings. Lens 3 was CLEAN
 **Turn timing on real transcripts** (counts-only corpus measurement):
 - 13 of 260 finished intervals (5%) had a published start differing from the start implied by `durationMs` by more than 2 s. 12 of those differed by more than 10 s.
 - 11 of the 13 showed signs of background agents.
-- 10 of the 13 implied a start before the previous recorded end, which means the replay split one Claude turn into two.
+- 10 of the 13 implied a start before the previous recorded end. Round 14 corrected the interpretation (see below): these are turn-end records whose `durationMs` Claude measures from the first turn of a pending run, not split turns.
 
 **User decision: gate and mask.** Given the measurement and 13 rounds that kept reopening D7, the user chose "Gate + mask, then ship". Implemented in these commits:
 - `097908b`: the `durationMs` gate. It only rejects intervals and never replaces a bound.
@@ -664,6 +664,41 @@ All commits are signed. Each new unit test failed before its fix.
 | Finished intervals | 283 | 204 |
 | Running turns with a published start | 7,500 of 8,441 records | 2,722 of 7,393 records |
 
-The drop in finished intervals is mostly a cascade: after a rejected `turn_duration`, `local_idle` makes later injected triggers ambiguous. A lever would keep 262 intervals, but it was declined, because a rejected `turn_duration` is usually the deferred flush and a turn is then still running.
+The drop in finished intervals is mostly a cascade: after a rejected `turn_duration`, `local_idle` makes later injected triggers ambiguous. A lever that kept 262 intervals was first declined on the premise that a rejected `turn_duration` is a deferred flush. Round 14 disproved that premise, and the lever was then applied (see below).
 
 **Gates:** fmt and clippy are clean. The full suite passes: lib 221, main 19, native_navigation 6, native_process 32.
+
+## Review round 14 and remediation
+
+The four-lens review of `af69645` found 2 blocking findings, both small, and several non-blocking ones.
+
+**Blocking:**
+1. **Compaction iteration on a `<synthetic>` record.** It was ignored. Fixed in `5a1940d`.
+2. **Contract text versus behaviour.** The contract said the current turn is published only after a checked end, but the session's first turn is also published. `113f5fb` corrects the wording in the spec and AGENTS.md, and allows a dated aborted interval as `last`.
+
+**Producer correction (lens 2).** Evidence from the Claude Code bundle and counts-only corpus queries:
+- 0 of 289 `turn_duration` records appear mid-turn. Each is written at its own turn's end.
+- A record with nothing pending, written after a pending run, measures `durationMs` from the run's first turn.
+
+So a rejected record is a real turn end. `2283b41` ends the turn at a rejected record without setting `local_idle`. This is the lever that round 13 declined on a wrong premise, and it stays within the user's gate-and-mask decision.
+
+| Corpus measure | Before | After |
+|---|---|---|
+| Finished intervals | 207 | 265 |
+| Gate | kept 206, rejected 18 | kept 264, rejected 19 |
+| Coverage valid | 12 of 20 | 12 of 20 |
+| Published current turn | 12 of 20 | 12 of 20 |
+
+**Remaining limitation:** the 19 rejected records are real ends whose intervals are probably correct. They stay unknown, which fails closed. Accepting them would need the pending run to be modelled, which is recorded as a possible refinement.
+
+**Other fixes:**
+- `6f57c3d`: the fuzzer models pending runs, background-agent turns and a hostile mid-turn `turn_duration`. With the gate it reports 0 violations over 327,091 records; with the gate disabled it reports 11,834.
+- `bc2c348`: older non-file siblings are skipped in the predecessor scan.
+- `bc3bb34`: synthetic turns in the popover measurement take their `durationMs` from their span, and `turn_timing` counts only with a numeric duration.
+- `615b9f9`: the Codex-first test is made deterministic.
+- `ddc7a29`: the rediscovery test is made robust to load.
+- `6f8a3fa`: the checkpoint test names the load step that finds no file.
+
+**Pre-existing follow-up, not in this change:** a fresh Codex cursor's `seq = (time*1e6) as u64` can round above `time` in `telemetry_view_at`, which leaves a one-probe gap after a fresh Codex binding with no child records. It is present on origin/main, and production Codex code is unchanged here.
+
+**Gates:** fmt and clippy are clean. The full suite passes: lib 223, main 19, native_navigation 6, native_process 32.
