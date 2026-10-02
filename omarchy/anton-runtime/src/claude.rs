@@ -348,7 +348,9 @@ pub fn parse_line(bytes: &[u8]) -> Option<Value> {
 /// escape that replay reads (D3) and a repeated key, is read only for its
 /// top-level `session_id` (present or absent), once the classifier accepts the
 /// line as well formed. A repeated `session_id` or a line that cannot be read
-/// gives `None`.
+/// gives `None`. A line nested past the classifier's depth bound is accepted
+/// (D3), and serde skips the other values without a depth limit, so depth
+/// alone never makes a candidate unknown.
 fn lenient_session_id(bytes: &[u8], id: &str) -> Option<Option<Value>> {
     struct Record(Option<Value>);
     impl<'de> Deserialize<'de> for Record {
@@ -2432,6 +2434,57 @@ mod tests {
             );
         }
     }
+    /// A candidate nested past the classifier's depth bound is read for its
+    /// top-level `session_id` like any other line serde rejects: its depth
+    /// alone never makes it unknown (review round 12).
+    #[test]
+    fn predecessor_candidate_nested_past_the_classifier_bound_is_read_for_its_session_id() {
+        let fixture = Fixture::new();
+        let bound = fixture.file("slug-a", &format!("{ID}.jsonl"), &header_line(ID));
+        aged(&bound, 60);
+        let next = fixture.file("slug-a", "fixture-session-c.jsonl", "");
+        let deep = format!("\"toolUseResult\":{}1{}", "[".repeat(200), "]".repeat(200));
+        let other = "\"session_id\":\"fixture-session-d\"";
+        let cases = [
+            (
+                format!("{{\"type\":\"user\",{deep}}}\n{{{other}}}\n"),
+                Predecessor::Clear { growing: false },
+            ),
+            (
+                format!("{{\"type\":\"user\",{deep},{other}}}\n"),
+                Predecessor::Clear { growing: false },
+            ),
+            (
+                format!("{{\"type\":\"user\",{deep}}}\n"),
+                Predecessor::Clear { growing: true },
+            ),
+            (
+                format!("{{\"session_id\":\"{ID}\",{deep}}}\n"),
+                Predecessor::Unknown,
+            ),
+            // A repeated `session_id`, and one that is not a string.
+            (
+                format!("{{\"session_id\":\"{ID}\",{deep},{other}}}\n"),
+                Predecessor::Unknown,
+            ),
+            (
+                format!(
+                    "{{\"session_id\":{}\"x\"{},{deep}}}\n",
+                    "[".repeat(200),
+                    "]".repeat(200)
+                ),
+                Predecessor::Unknown,
+            ),
+        ];
+        for (text, expected) in cases {
+            std::fs::write(&next, &text).unwrap();
+            assert_eq!(
+                predecessor(&bound, ID, &mut budget()),
+                expected,
+                "{text:.80}"
+            );
+        }
+    }
     /// A candidate that cannot be opened for a reason other than a symlink, a
     /// non-file or another owner is an IO error: truncated, so not cached.
     #[test]
@@ -3590,6 +3643,38 @@ mod replay_tests {
         assert_eq!(get(&whole, "total_input"), json!(8 + 15 + 1));
         assert_eq!(coverage(&row), coverage(&whole));
         assert_eq!(coverage(&row), coverage(&run(&lines)));
+    }
+
+    /// A user record nested past the classifier's depth bound, at both line
+    /// sizes, is unclassified rather than invalid (review round 12): totals,
+    /// last-response values and compactions stay known, and only children
+    /// and turns become unknown, as the D3 coverage table requires.
+    #[test]
+    fn user_record_nested_past_the_classifier_bound_follows_the_coverage_table() {
+        let fixture = tests::Fixture::new();
+        let deep = user(2).replace(
+            "\"message\"",
+            &format!(
+                "\"toolUseResult\":{{\"data\":{}1{}}},\"message\"",
+                "[".repeat(200),
+                "]".repeat(200)
+            ),
+        );
+        let path = fixture.file("slug", &format!("{ID}.jsonl"), &header());
+        for line in [deep.clone(), lead_pad(&deep, LINE)] {
+            let lines = [
+                assistant("msg_a", 1, "\"end_turn\"", [10, 2, 3, 4]),
+                line,
+                assistant("msg_b", 3, "\"end_turn\"", [1, 2, 3, 4]),
+            ];
+            std::fs::write(&path, header() + &body(&lines)).unwrap();
+            let (row, _) = passes(&fixture, &path, None);
+            assert_eq!(get(&row, "total_input"), json!(25));
+            assert_eq!(get(&row, "context"), json!(8));
+            assert_eq!(get(&row, "compactions"), json!(0));
+            assert!(row.claude.totals_valid && row.compactions_valid);
+            assert!(!row.valid && !row.turns.valid);
+        }
     }
 
     #[test]

@@ -30,6 +30,8 @@ const NAME: usize = {
     6 * longest + 1
 };
 const DEPTH: usize = 128;
+/// Containers counted, unread, past `DEPTH` (D3).
+const DEEP: u32 = 1 << 20;
 /// Nodes whose non-null, non-false value only signals presence, so a string
 /// of any length is recorded at its start and never buffered.
 const PRESENCE: [u8; 5] = [FORKED, COMPACT_SUMMARY, ORIGIN, TOOL, INTERRUPTED];
@@ -81,6 +83,12 @@ pub struct Classifier {
     seen: u64,
     /// Nodes whose value was cut by a pass boundary, overlong or duplicated.
     lost: u64,
+    /// Open containers past `DEPTH`, which hold no consumed node: only their
+    /// count and their strings are checked, never their bracket kinds or
+    /// separators.
+    deep: u32,
+    /// The record nested past `DEPTH`, so it is unclassified (D3).
+    overflow: bool,
     message_object: bool,
     record: Record,
     iterations: Iterations,
@@ -122,6 +130,8 @@ impl Default for Classifier {
             capture: NONE,
             seen: 0,
             lost: 0,
+            deep: 0,
+            overflow: false,
             message_object: false,
             record: Record::default(),
             iterations: Iterations::default(),
@@ -418,6 +428,9 @@ impl Classifier {
             }
         } else if ch == b'\\' {
             self.escape = 1;
+        } else if ch == b'"' && self.deep > 0 {
+            self.lex = 0;
+            return Ok(());
         } else if ch == b'"' {
             let last = self.stack.len().checked_sub(1).ok_or(())?;
             if self.key != 0 {
@@ -531,6 +544,9 @@ impl Classifier {
         if self.done != 0 {
             return Err(());
         }
+        if self.deep > 0 {
+            return self.deep_byte(ch);
+        }
         let Some(last) = self.stack.len().checked_sub(1) else {
             if self.started != 0 || ch != b'{' {
                 return Err(());
@@ -592,6 +608,13 @@ impl Classifier {
                     }
                     b'{' | b'[' => {
                         let child = self.open(node, ch == b'{', id, time);
+                        // A container past the bound holds no consumed node,
+                        // so it is only counted (D3).
+                        if self.stack.len() >= DEPTH && child == NONE {
+                            self.deep = 1;
+                            self.overflow = true;
+                            return Ok(());
+                        }
                         self.push(if ch == b'{' { 0 } else { 5 }, child)?;
                     }
                     b't' | b'f' | b'n' => {
@@ -622,6 +645,29 @@ impl Classifier {
         }
         Ok(())
     }
+    /// One structural byte inside the containers past `DEPTH`: strings are
+    /// read in full, other bytes must belong to JSON's token alphabet, and
+    /// the bracket that closes the outermost of them completes a value of
+    /// the container at `DEPTH`.
+    fn deep_byte(&mut self, ch: u8) -> Result<(), ()> {
+        match ch {
+            b'"' => {
+                self.lex = 1;
+                self.key = 0;
+            }
+            b'{' | b'[' if self.deep < DEEP => self.deep += 1,
+            b'}' | b']' => {
+                self.deep -= 1;
+                if self.deep == 0 {
+                    self.value_done();
+                }
+            }
+            b',' | b':' | b'-' | b'+' | b'.' | b'0'..=b'9' => {}
+            _ if b"truefalsn".contains(&ch) || ch == b'E' => {}
+            _ => return Err(()),
+        }
+        Ok(())
+    }
     /// Ends a pass inside the record. A string or number capture cannot be
     /// persisted, so its field is lost; the record then classifies as unknown.
     /// A `sessionId` already over `CAP` is decided: as in `capture_done`, it
@@ -638,6 +684,10 @@ impl Classifier {
         self.value.clear();
         self.scan.clear();
         self.high = false;
+    }
+    /// The record nested past `DEPTH`, so part of it was only counted.
+    pub fn overflowed(&self) -> bool {
+        self.overflow
     }
     /// The record's `sessionId` reading so far. It is meaningful only when
     /// `finish` does not return `Outcome::Invalid`.
@@ -660,7 +710,8 @@ impl Classifier {
         // A mismatched identity fails the session whatever else was lost; a
         // forked record feeds nothing either way.
         let decided = self.record.identity == super::IDENTITY_MISMATCH || self.record.forked;
-        if self.lost != 0 && !decided {
+        // A record nested past the bound was not read in full.
+        if (self.lost != 0 || self.overflow) && !decided {
             return Outcome::Unclassified(self.record.kind);
         }
         Outcome::Record(Box::new(self.record))
@@ -734,7 +785,18 @@ impl Classifier {
             && (self.lex == 0 || depth > 0)
             && (self.lex == 1 || self.escape == 0 && self.hex == 0 && self.utf == 0)
             && (self.lex == 1 || self.key == 0)
-            && (self.lex != 3 || (self.index as usize) < WORDS[self.literal as usize].len());
+            && (self.lex != 3 || (self.index as usize) < WORDS[self.literal as usize].len())
+            && self.deep <= DEEP
+            && (self.deep == 0 || self.overflow)
+            // Inside the region past the bound only a string is ever open.
+            && (self.deep == 0
+                || depth == DEPTH
+                    && self.lex <= 1
+                    && self.key == 0
+                    && self.capture == NONE
+                    && self.name.is_empty()
+                    && !self.miss
+                    && [3, 5, 6].contains(&self.stack[DEPTH - 1]));
         let record = &self.record;
         let fields = record.kind as usize <= super::KINDS.len()
             && record.subtype as usize <= super::SUBTYPES.len()
@@ -1225,8 +1287,68 @@ mod tests {
         classify(&[line], false)
     }
 
+    /// `{"a":` then `depth` nested arrays around `inner`, then `}`: `depth + 1`
+    /// containers in all.
+    fn nested(depth: usize, inner: &str) -> String {
+        format!(
+            "{{\"a\":{}{inner}{}}}",
+            "[".repeat(depth),
+            "]".repeat(depth)
+        )
+    }
+    /// A user record whose tool result nests past `DEPTH` keeps its `type`: it
+    /// is unclassified, so only the D3 coverage table applies, at every
+    /// chunking and across pass boundaries. Inside the region past the bound
+    /// strings and the token alphabet are still checked, and the bracket
+    /// count must balance; bracket kinds and separators there are not.
     #[test]
-    fn classifier_rejects_malformed_json_and_nesting_beyond_its_bound() {
+    fn classifier_reads_nesting_beyond_its_bound_as_unclassified() {
+        let deep = |inner: &str| {
+            format!(
+                "{{\"type\":\"user\",\"sessionId\":\"{ID}\",\"uuid\":\"u-1\",\"timestamp\":\"{STAMP}\",\"toolUseResult\":{{\"data\":{}{inner}{}}},\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"content\":\"done\"}}]}}}}",
+                "[{\"k\":".repeat(DEPTH),
+                "}]".repeat(DEPTH)
+            )
+        };
+        let line = deep("[\"s\\u00e9\\\"]\",-1.5e3,true,null,{\"x\":false}]");
+        let bytes = line.as_bytes();
+        // Pass boundaries fall only inside the nested value, so no consumed
+        // capture is cut; inside it they cut strings and escapes anywhere.
+        let from = line.find("\"data\":").unwrap() + 7;
+        let to = line.find("},\"message\"").unwrap();
+        for size in [1, 3, 64, bytes.len()] {
+            let chunks: Vec<&[u8]> = bytes.chunks(size).collect();
+            let unclassified = Outcome::Unclassified(super::super::KIND_USER);
+            assert_eq!(classify(&chunks, false), unclassified, "{size}");
+            let mut cut = vec![&bytes[..from]];
+            cut.extend(bytes[from..to].chunks(size));
+            cut.push(&bytes[to..]);
+            assert_eq!(classify(&cut, true), unclassified, "{size}");
+        }
+        assert_eq!(
+            whole(nested(DEPTH, "1").as_bytes()),
+            Outcome::Unclassified(super::super::KIND_OTHER)
+        );
+        for inner in ["\"\\x\"", "\"\x01\"", "\"\\u12\"", "@", "[1"] {
+            assert_eq!(whole(deep(inner).as_bytes()), Outcome::Invalid, "{inner}");
+        }
+        let mut broken = deep("\"x\"").into_bytes();
+        let at = broken.iter().rposition(|c| *c == b'x').unwrap();
+        broken[at] = 0xff;
+        assert_eq!(whole(&broken), Outcome::Invalid);
+        // An unterminated region, and a bracket closing past the region.
+        assert_eq!(
+            whole(format!("{{\"a\":{}", "[".repeat(DEPTH + 4)).as_bytes()),
+            Outcome::Invalid
+        );
+        assert_eq!(
+            whole(format!("{}]", nested(DEPTH, "1")).as_bytes()),
+            Outcome::Invalid
+        );
+    }
+
+    #[test]
+    fn classifier_rejects_malformed_json_and_reads_nesting_within_its_bound() {
         let user = format!("{{\"type\":\"user\",\"sessionId\":\"{ID}\"");
         let malformed: Vec<Vec<u8>> = vec![
             format!("{user}}} x").into(),
@@ -1249,7 +1371,6 @@ mod tests {
             b"{\"a\":[1,]}".to_vec(),
             b"{,}".to_vec(),
             b"{\"type\":\"user\",\"type\":\"user\"}".to_vec(),
-            format!("{{\"a\":{}1{}}}", "[".repeat(DEPTH), "]".repeat(DEPTH)).into(),
         ];
         for line in malformed {
             assert_eq!(
@@ -1259,12 +1380,10 @@ mod tests {
                 String::from_utf8_lossy(&line)
             );
         }
-        let deep = format!(
-            "{{\"a\":{}1{}}}",
-            "[".repeat(DEPTH - 1),
-            "]".repeat(DEPTH - 1)
-        );
-        assert!(matches!(whole(deep.as_bytes()), Outcome::Record(_)));
+        assert!(matches!(
+            whole(nested(DEPTH - 1, "1").as_bytes()),
+            Outcome::Record(_)
+        ));
     }
 
     #[test]
@@ -1368,8 +1487,30 @@ mod tests {
             ("name", json!(vec![b'a'; NAME + 1])),
             ("name", json!(b"type")),
             ("miss", json!(true)),
+            // A counted region needs the bound reached and its flag.
+            ("deep", json!(1)),
         ];
         for (field, value) in tampered {
+            let mut state = state.clone();
+            state[field] = value;
+            let restored: Classifier = serde_json::from_value(state).unwrap();
+            assert!(!restored.validate(), "{field}");
+        }
+        // Inside the counted region past `DEPTH`, cut inside an escape.
+        let mut classifier = Classifier::default();
+        let head = format!("{{\"a\":{}\"\\u00", "[".repeat(DEPTH + 2));
+        assert!(classifier.feed(head.as_bytes(), ID, now()));
+        classifier.suspend();
+        let state = serde_json::to_value(&classifier).unwrap();
+        assert_eq!(state["deep"], json!(3));
+        let restored: Classifier = serde_json::from_value(state.clone()).unwrap();
+        assert!(restored.validate());
+        for (field, value) in [
+            ("deep", json!(DEEP + 1)),
+            ("overflow", json!(false)),
+            ("lex", json!(2)),
+            ("capture", json!(1)),
+        ] {
             let mut state = state.clone();
             state[field] = value;
             let restored: Classifier = serde_json::from_value(state).unwrap();
