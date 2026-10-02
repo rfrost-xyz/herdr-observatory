@@ -1329,6 +1329,29 @@ fn turns_current_turn_is_published_only_from_a_clean_state() {
         lines.push(tool(12, result));
         assert_eq!(current(&lines), None, "{result}");
     }
+    // A successful resume masks the current turn even for an agent this file
+    // did not launch, and so does a notification taken into the turn without
+    // a final status (a resume by the user or another agent) or with an
+    // unreadable task id.
+    let resume = tool(
+        12,
+        "{\"success\":true,\"message\":\"synthetic\",\"resumedAgentId\":\"agent-z\"}",
+    );
+    let unstated = "<task-notification>\n<task-id>agent-z</task-id>\n<summary>synthetic</summary>\n</task-notification>";
+    let unreadable = "<task-notification>\n<summary>synthetic</summary>\n</task-notification>";
+    for tail in [
+        vec![resume],
+        vec![dequeue(12), queued(12, "task-notification", unstated)],
+        vec![dequeue(12), queued(12, "task-notification", unreadable)],
+    ] {
+        let mut lines = head();
+        next(&mut lines, 10, user(10, "next", human));
+        assert_eq!(current(&lines), Some(Some(second(10))));
+        lines.extend(tail);
+        assert_eq!(current(&lines), None, "{lines:?}");
+        lines.push(assistant(13, "msg_z", "\"tool_use\""));
+        assert_eq!(current(&lines), None, "{lines:?}");
+    }
     let zero = ended(3, 1).replace(
         "\"durationMs\"",
         "\"pendingBackgroundAgentCount\":0,\"pendingWorkflowCount\":0,\"durationMs\"",

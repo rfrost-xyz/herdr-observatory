@@ -1585,12 +1585,15 @@ impl Row {
                     self.child(agent, "completed", true, record.stamp);
                 }
             }
+            // A successful resume runs an agent in the background whether or
+            // not this file launched it, so it masks the current turn.
             if let Some(resumed) = record.resumed.as_deref()
                 && record.success
-                && self.children.contains_key(resumed)
             {
                 self.claude.clean = false;
-                self.child(resumed, "running", false, record.stamp);
+                if self.children.contains_key(resumed) {
+                    self.child(resumed, "running", false, record.stamp);
+                }
             }
         }
         let notification = user && record.origin == ORIGIN_NOTIFICATION
@@ -1606,15 +1609,21 @@ impl Row {
             .and_then(|text| text.task.as_deref())
         else {
             self.valid = false;
+            self.claude.clean = false;
             return;
         };
+        let status = match record.text.as_ref().map_or(0, |text| text.status) {
+            1 => "completed",
+            2 => "errored",
+            3 => "interrupted",
+            _ => "unknown",
+        };
+        // A notification without a final status (such as a resume by the
+        // user or another agent) may report work running again.
+        if status == "unknown" {
+            self.claude.clean = false;
+        }
         if self.children.contains_key(task) {
-            let status = match record.text.as_ref().map_or(0, |text| text.status) {
-                1 => "completed",
-                2 => "errored",
-                3 => "interrupted",
-                _ => "unknown",
-            };
             self.child(task, status, false, record.stamp);
         }
     }
