@@ -1822,6 +1822,9 @@ impl Row {
         let (Some(id), Some(stamp)) = (record.message.clone(), record.stamp) else {
             return self.unclassified(KIND_ASSISTANT);
         };
+        // A compaction iteration on any classified assistant record of the
+        // session, counted or not, makes `compactions` unknown (D5).
+        self.claude.compaction_iteration |= record.compaction_iteration;
         if self.claude.open.as_ref().is_none_or(|group| group.id != id) {
             self.close_group();
             if self.claude.closed.contains(&id) {
@@ -2853,6 +2856,23 @@ mod replay_tests {
         assert_eq!(get(&row, "compactions"), Value::Null);
         assert_eq!(get(&row, "context"), json!(6));
         assert_eq!(get(&row, "total_input"), json!(215));
+    }
+    #[test]
+    fn compaction_iteration_on_a_reopened_group_makes_compactions_unknown() {
+        let list = iterations(&[("compaction", [1, 1, 1, 1]), ("message", [2, 2, 2, 2])]);
+        let row = run(&[
+            system("compact_boundary", 1),
+            assistant("msg_a", 2, "\"end_turn\"", [1, 1, 1, 1]),
+            assistant("msg_b", 3, "\"end_turn\"", [1, 1, 1, 1]),
+            assistant_with(
+                "msg_a",
+                4,
+                "\"end_turn\"",
+                &(counters([5, 30, 200, 10]) + &list),
+                "",
+            ),
+        ]);
+        assert_eq!(get(&row, "compactions"), Value::Null);
     }
     #[test]
     fn usage_unclassified_assistant_makes_compactions_unknown() {
