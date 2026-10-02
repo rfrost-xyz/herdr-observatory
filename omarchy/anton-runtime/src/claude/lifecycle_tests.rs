@@ -1028,6 +1028,37 @@ fn turns_silent_end_followed_by_queued_input_is_unknown() {
     assert!(!row.turns.valid && row.turns.finished.is_empty());
 }
 
+/// Review round 13: a final response that stops for any reason other than
+/// tool use (`max_tokens`, `refusal`, a `<synthetic>` error) ends the turn
+/// as `end_turn` does, so leftover input taken at once never joins it.
+#[test]
+fn turns_final_stop_other_than_tool_use_is_a_silent_end() {
+    let synthetic =
+        assistant(105, "msg_b", "\"stop_sequence\"").replace("claude-fixture-1", "<synthetic>");
+    for last in [
+        assistant(105, "msg_b", "\"max_tokens\""),
+        assistant(105, "msg_b", "\"refusal\""),
+        synthetic,
+    ] {
+        let mut lines = vec![
+            user(100, "first", ""),
+            assistant(101, "msg_a", "\"tool_use\""),
+            queue(103),
+            last.clone(),
+            dequeue(106),
+            user(103, "more", "\"origin\":{\"kind\":\"human\"}"),
+            assistant(107, "msg_c", "\"tool_use\""),
+        ];
+        // The second turn runs from 106: nothing dates it from 100.
+        let row = run(&lines);
+        let turns = row.published_turns();
+        assert!(!turns.current_known && turns.start.is_none(), "{last}");
+        lines.push(system("turn_duration", 121));
+        let turns = run(&lines).published_turns();
+        assert!(!turns.valid && turns.last_duration.is_none(), "{last}");
+    }
+}
+
 #[test]
 fn turns_queue_operation_after_a_silent_end_never_joins_the_idle_gap() {
     for taken in ["remove", "dequeue"] {

@@ -1279,7 +1279,8 @@ enum Turn {
     Unknown,
     Assistant,
     End,
-    /// `system/stop_hook_summary`; an `end_turn` assistant line is the other.
+    /// `system/stop_hook_summary`; an assistant line whose stop is neither
+    /// null nor `tool_use` is the other.
     Silent,
     Queue,
 }
@@ -1660,7 +1661,9 @@ impl Row {
                     return self.ambiguous();
                 }
                 self.confirm();
-                if record.stop == STOP_END_TURN {
+                // Any final stop but tool use (`max_tokens`, `refusal`, or a
+                // `<synthetic>` error) may end the turn as `end_turn` does.
+                if [STOP_END_TURN, STOP_OTHER].contains(&record.stop) {
                     self.claude.queued_since_start = None;
                     self.claude.silent_end = self.turns.active.is_some();
                 }
