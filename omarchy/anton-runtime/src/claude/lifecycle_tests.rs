@@ -1117,11 +1117,10 @@ fn turns_final_stop_other_than_tool_use_is_a_silent_end() {
     }
 }
 
-/// Review round 13: Claude Code defers a turn's `turn_duration` while
-/// background agents run and may write it in the middle of a later turn. A
-/// `turn_duration` that ended no turn therefore proves no idle point: an
-/// injected notification after it may enter a running turn, as after local
-/// output.
+/// A `turn_duration` that ended no turn proves no idle point. Claude Code
+/// was not seen writing one mid-turn (review round 14), but nothing shows
+/// which turn it ended, so an injected notification after it may enter a
+/// running turn, as after local output.
 #[test]
 fn turns_injected_trigger_after_a_turn_duration_that_ended_no_turn_is_ambiguous() {
     let human = "\"origin\":{\"kind\":\"human\"}";
@@ -1136,7 +1135,7 @@ fn turns_injected_trigger_after_a_turn_duration_that_ended_no_turn_is_ambiguous(
             assistant(110, "msg_b", "\"end_turn\""),
             user(120, "second", human),
             assistant(121, "msg_c", "\"tool_use\""),
-            // The first turn's deferred `turn_duration`, written mid-turn.
+            // A `turn_duration` with no active turn, written mid-turn.
             system("turn_duration", 150),
         ];
         let row = run(&lines);
@@ -2945,12 +2944,15 @@ struct Story {
     oversized: bool,
     /// Input still queued when a turn ended starts the next turn.
     queued_left: bool,
-    /// A background agent launched and not yet reported finished, while
-    /// its turn's `turn_duration` is deferred (review round 13).
+    /// A background agent launched and not yet reported finished; its
+    /// turn's `turn_duration` reports it pending (review round 14).
     agent: Option<String>,
     agents: u64,
     /// A finished background agent whose notification opens the next turn.
     notify: Option<String>,
+    /// The start of the first turn of a run whose `turn_duration` records
+    /// reported background work pending (review round 14).
+    run: Option<u64>,
     /// A kill ended the last turn and no trigger has followed it.
     unrecorded: bool,
     /// When the oldest input still in the queue was queued.
@@ -2975,6 +2977,7 @@ impl Story {
             agent: None,
             agents: 0,
             notify: None,
+            run: None,
             unrecorded: false,
             enqueued: None,
         }
@@ -3033,15 +3036,32 @@ impl Story {
     fn operation(&mut self, operation: &str) -> String {
         self.record("queue-operation", &format!("\"operation\":\"{operation}\""))
     }
-    /// The `turn_duration` of the turn that just ended, whose `durationMs`
-    /// Claude Code measures from its own start: within 1.5 s of the truth.
+    /// The `turn_duration` Claude Code writes at the end of the turn that
+    /// just ended, sometimes with a workflow pending.
     fn duration(&mut self) -> String {
+        let pending = self.chance(300).then_some("pendingWorkflowCount");
+        self.pending_duration(pending)
+    }
+    /// A `turn_duration` with `pending` work reported or none. A record with
+    /// work pending measures `durationMs` from its own turn's start and
+    /// starts or continues a run; the first with nothing pending after a run
+    /// measures from the run's first turn (review round 14, counts only), so
+    /// the gate rejects it. Otherwise it is within 1.5 s of the truth.
+    fn pending_duration(&mut self, pending: Option<&str>) -> String {
         let (start, _, _) = self.world.last.unwrap();
+        let from = match pending {
+            Some(_) => {
+                self.run = self.run.or(Some(start));
+                start
+            }
+            None => self.run.take().unwrap_or(start),
+        };
         let jitter = self.random.below(3001) as i64 - 1500;
-        let elapsed = ((self.at - start) as i64 * 1000 + jitter).max(0);
+        let elapsed = ((self.at - from) as i64 * 1000 + jitter).max(0);
+        let pending = pending.map_or(String::new(), |key| format!("\"{key}\":1,"));
         self.record(
             "system",
-            &format!("\"subtype\":\"turn_duration\",\"durationMs\":{elapsed}"),
+            &format!("\"subtype\":\"turn_duration\",{pending}\"durationMs\":{elapsed}"),
         )
     }
     fn queued(&mut self, mode: &str, prompt: &str) -> String {
@@ -3247,8 +3267,9 @@ impl Story {
         self.end("killed");
         self.unrecorded = true;
         self.enqueued = None;
-        // Background agents die with the process.
+        // Background agents die with the process, and so does its run.
         self.agent = None;
+        self.run = None;
         self.at += 2 + self.random.below(10);
         self.tick(true);
         if self.chance(500) {
@@ -3518,6 +3539,25 @@ impl Story {
             self.assistant(stop, true)
         };
         self.push(first, "first-assistant");
+        // A `turn_duration` written while the turn runs, whose `durationMs`
+        // puts its start at least 4 s before the turn's. Claude Code was not
+        // seen writing one mid-turn (review round 14): it is hostile input
+        // that only the gate keeps from ending the turn at its stamp. The
+        // turn's next record is an assistant one, so a trigger never follows
+        // the rejected record as if the turn had ended.
+        if self.chance(40) {
+            let start = self.world.running.unwrap();
+            self.tick(false);
+            let elapsed = (self.at - start) * 1000 + 5000 + self.random.below(60_000);
+            let line = self.record(
+                "system",
+                &format!("\"subtype\":\"turn_duration\",\"durationMs\":{elapsed}"),
+            );
+            self.push(line, "stray-duration");
+            self.tick(false);
+            let line = self.assistant("\"tool_use\"", true);
+            self.push(line, "stray-assistant");
+        }
         for _ in 0..self.random.below(9) {
             self.tick(false);
             let (line, tag) = match self.random.below(12) {
@@ -3594,7 +3634,7 @@ impl Story {
     fn finish(&mut self) {
         let queued = self.enqueued.is_some();
         match self.random.below(100) {
-            0..=54 if self.agent.is_some() && !queued => self.deferred(),
+            0..=54 if self.agent.is_some() && !queued => self.background(),
             0..=54 => {
                 self.tick(false);
                 let line = self.final_line();
@@ -3704,49 +3744,47 @@ impl Story {
             _ => self.assistant("\"end_turn\"", true),
         }
     }
-    /// A turn that ends while a background agent runs: Claude Code defers
-    /// its `turn_duration` until no agent runs, measured from the turn's own
-    /// start, and nothing resets that when a new turn starts (review round
-    /// 13). Either the agent finishes while idle, the deferred record dates
-    /// the turn to then, and its notification opens the next turn; or a new
-    /// prompt starts a turn, the deferred record is written in it and the
-    /// notification enters it.
-    fn deferred(&mut self) {
+    /// A turn that ends while a background agent runs. Claude Code writes
+    /// its `turn_duration` at the turn's own end, after the final response
+    /// and sometimes its stop hook, with the agent pending and the turn's own
+    /// `durationMs` (review round 14, counts only). The agent's notification
+    /// then opens the next turn, or enters a turn a human prompt opened.
+    fn background(&mut self) {
         let agent = self.agent.take().unwrap();
         self.tick(false);
         let line = self.final_line();
-        self.body(line, "deferred-end");
+        self.body(line, "background-end");
         if self.chance(500) {
-            self.tick(true);
-            self.end("completed");
-            let line = self.duration();
-            self.push(line, "deferred-duration");
+            let line = self.system("stop_hook_summary");
+            self.body(line, "background-hook");
+        }
+        self.tick(false);
+        self.end("completed");
+        let line = self.pending_duration(Some("pendingBackgroundAgentCount"));
+        self.push(line, "background-duration");
+        if self.chance(500) {
             self.notify = Some(agent);
             return;
         }
-        self.end("completed");
         self.tick(true);
         let line = self.user("prompt", "\"origin\":{\"kind\":\"human\"}");
         self.world.running = Some(self.at);
-        self.push(line, "deferred-next");
+        self.push(line, "background-next");
         self.unrecorded = false;
+        self.enqueued = None;
         self.tick(false);
         let line = self.assistant("\"tool_use\"", true);
-        self.push(line, "deferred-next-assistant");
-        self.tick(false);
-        // The earlier turn's record, dated from that turn's start.
-        let line = self.duration();
-        self.push(line, "deferred-duration-mid");
+        self.push(line, "background-next-assistant");
         self.tick(false);
         let line = self.result("{\"stdout\":\"ok\"}");
         self.body(line, "tool-result");
         self.tick(false);
         if self.chance(300) {
             let line = self.operation("dequeue");
-            self.body(line, "deferred-take");
+            self.body(line, "background-take");
         }
         let line = self.notification(&agent);
-        self.push(line, "deferred-notification");
+        self.push(line, "background-notification");
         self.tick(false);
         let line = self.assistant("\"tool_use\"", true);
         self.body(line, "tool-use");
