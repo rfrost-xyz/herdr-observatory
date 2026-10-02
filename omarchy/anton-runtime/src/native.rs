@@ -846,20 +846,22 @@ impl NativeTelemetry {
     }
     /// D1: positive and negative bindings are both rediscovered every 60 s. A
     /// truncated scan or a growing predecessor candidate is not cached. Any
-    /// result other than the same bound path drops the retained sample.
+    /// result other than the same bound path drops the retained sample. A scan
+    /// truncated because the shared `deadline` passed returns `None` and
+    /// changes nothing: the pane is skipped by the deadline, not unbound.
     fn bind(
         &mut self,
         root: &Path,
         session: &str,
         key: &str,
         deadline: Instant,
-    ) -> Option<PathBuf> {
+    ) -> Option<Option<PathBuf>> {
         if let Some(binding) = self
             .claude
             .get(key)
             .filter(|v| !v.rescan && v.at.elapsed() < Duration::from_secs(60))
         {
-            return binding.path.clone();
+            return Some(binding.path.clone());
         }
         let mut budget =
             claude::Budget::new(deadline.min(Instant::now() + Duration::from_millis(100)));
@@ -874,6 +876,9 @@ impl NativeTelemetry {
             claude::Discovery::Truncated => (None, true),
             claude::Discovery::None | claude::Discovery::Ambiguous => (None, false),
         };
+        if path.is_none() && rescan && Instant::now() >= deadline {
+            return None;
+        }
         let binding = self.claude.entry(key.to_owned()).or_insert(Binding {
             at: Instant::now(),
             rescan,
@@ -886,7 +891,27 @@ impl NativeTelemetry {
         binding.at = Instant::now();
         binding.rescan = rescan;
         binding.path = path.clone();
-        path
+        Some(path)
+    }
+    /// A pane skipped by the shared deadline: a current binding with its
+    /// cursor row re-emits the retained sample, as an incomplete replay does.
+    fn skip_claude(
+        &self,
+        agent: &mut Value,
+        key: &str,
+        cursors: &BTreeMap<String, Cursor>,
+        time: f64,
+    ) {
+        let current = self
+            .claude
+            .get(key)
+            .filter(|v| !v.rescan && v.path.is_some() && v.at.elapsed() < Duration::from_secs(60));
+        if let Some((subset, seq)) = current
+            .and_then(|v| v.retained.as_ref())
+            .filter(|_| cursors.get(key).is_some_and(Cursor::is_claude))
+        {
+            publish_claude(agent, subset, None, *seq, time);
+        }
     }
     /// One Claude pane: bind, replay up to 16 bounded passes, then publish the
     /// caught-up sample, or re-emit the retained one for an incomplete replay.
@@ -911,17 +936,7 @@ impl NativeTelemetry {
         let key = sha256(format!("anton-native-session-v1:claude:{session}").as_bytes());
         active.insert(key.clone());
         if Instant::now() >= deadline {
-            // Skipped by the shared deadline: a current binding with its cursor
-            // row re-emits the retained sample, as an incomplete replay does.
-            let current = self.claude.get(&key).filter(|v| {
-                !v.rescan && v.path.is_some() && v.at.elapsed() < Duration::from_secs(60)
-            });
-            if let Some((subset, seq)) = current
-                .and_then(|v| v.retained.as_ref())
-                .filter(|_| cursors.get(&key).is_some_and(Cursor::is_claude))
-            {
-                publish_claude(agent, subset, None, *seq, time);
-            }
+            self.skip_claude(agent, &key, cursors, time);
             return;
         }
         // A peer follower is fresh on every probe, so a bind or verification
@@ -939,9 +954,17 @@ impl NativeTelemetry {
             }
         };
         let root = claude::projects_root();
-        let Some(path) = self.bind(&root, &session, &key, deadline) else {
-            unknown(agent);
-            return;
+        let path = match self.bind(&root, &session, &key, deadline) {
+            Some(Some(path)) => path,
+            Some(None) => {
+                unknown(agent);
+                return;
+            }
+            // The deadline passed inside discovery or the predecessor scan.
+            None => {
+                self.skip_claude(agent, &key, cursors, time);
+                return;
+            }
         };
         let mut row = cursors.remove(&key).and_then(Cursor::into_row);
         let (mut ran, mut restarted) = (false, false);

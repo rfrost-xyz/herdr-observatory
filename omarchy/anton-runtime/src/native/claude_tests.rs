@@ -714,6 +714,46 @@ fn claude_deadline_skip_reemits_the_retained_sample_of_a_current_binding() {
     assert_eq!(skipped(&mut follower, &cursors), (Value::Null, true));
 }
 
+/// A rediscovery that the shared deadline cuts short is a deadline skip,
+/// not a truncated discovery: nothing is published, the cursor row is kept
+/// and a retained sample survives for the next pass. The pad entries stay
+/// well under the entry budget, so only the deadline truncates the scan.
+#[test]
+fn claude_deadline_inside_rediscovery_is_a_skip_not_a_drop() {
+    let fixture = Fixture::new();
+    fixture.write(&session());
+    for index in 0..6000 {
+        std::fs::create_dir(fixture.projects.join(format!("pad-{index:05}"))).unwrap();
+    }
+    let (first, _, cursors) = enrich(&mut NativeTelemetry::default(), &json!({}));
+    assert_eq!(first["total_output"], 26);
+    let expiring = |follower: &mut NativeTelemetry| {
+        let mut rows = validate_cursors(&cursors);
+        let mut agent = agent();
+        let deadline = Instant::now() + Duration::from_micros(300);
+        follower.enrich_claude(&mut agent, &mut rows, &mut BTreeSet::new(), now(), deadline);
+        (
+            agent["_native_telemetry"].clone(),
+            rows.contains_key(&key()),
+        )
+    };
+    // A peer: a fresh follower with the caught-up row the local sent back.
+    let mut peer = NativeTelemetry::default();
+    assert_eq!(expiring(&mut peer), (Value::Null, true));
+    assert!(peer.claude.is_empty());
+    // A local binding due for rediscovery keeps its retained sample, which
+    // the next incomplete pass re-emits.
+    let mut follower = NativeTelemetry::default();
+    let (_, _, cursors) = enrich(&mut follower, &cursors);
+    age(&mut follower);
+    assert_eq!(expiring(&mut follower), (Value::Null, true));
+    assert!(follower.claude[&key()].retained.is_some());
+    fixture.append("{\"type\":");
+    let (telemetry, _, rows) = enrich(&mut follower, &cursors);
+    assert_eq!(rows[key()]["caught_up"], false);
+    assert_eq!(telemetry, retained(&first));
+}
+
 #[test]
 fn claude_record_naming_another_session_keeps_the_binding_unknown() {
     let fixture = Fixture::new();
