@@ -512,7 +512,7 @@ The four-lens review of `ad1ddd0` found 3 blocking, 2 non-blocking and 2 nit fin
 - `14c6684`: large bench transcripts end a minute in the past.
 - A stale test name is corrected.
 
-**In progress:** the lens 1 finding about lines between 64 KiB and `TAIL` cut at a pass end or mid-write is being fixed separately; see below.
+**Lens 1 finding, lines between 64 KiB and `TAIL`.** Such a line, cut at a pass end or while being written, lost coverage for the rest of the binding. `a20e5c2` fixes it: the line is rewound and read whole on a later pass. Three new tests failed before the fix: a static cut at `TAIL`, a line being written, and a user record. Three existing tests that encoded the bug now use lines longer than `TAIL`. The full suite passes: lib 203, main 18, native_navigation 6, native_process 32. The ground-truth fuzzer passes, and the counts-only corpus output is unchanged.
 
 **Fuzzer:** 240,491 records, 0 violations, 0 restarts.
 
