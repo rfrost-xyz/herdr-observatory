@@ -305,6 +305,6 @@ The current and last turn values still publish after a proven end.
 
 All 36 real joins in the corpus still join.
 
-**A separate no-join experiment** (on the pre-fuzzer build) removed joins entirely. It also gave 12 of 19 sessions valid, with the same files lost, so the join logic is kept.
+**A separate no-join experiment** (on the pre-fuzzer build) removed joins entirely. It also gave 12 of 19 sessions valid. Whether it lost the same files was not compared. Removing joins would buy no extra coverage, so the join logic is kept.
 
 **Test counts:** lib 171, main 14, native_navigation 6, native_process 32.
