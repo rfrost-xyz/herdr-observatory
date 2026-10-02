@@ -2037,8 +2037,26 @@ mod tests {
             serde_json::from_slice(bytes)
                 .unwrap_or_else(|error| panic!("{step}: parse checkpoint: {error}"))
         };
+        // Each load that must find the file names its step, with why it
+        // could not be read: absent, or an open failure such as `EMFILE`,
+        // which `Checkpoints::new` treats as no file.
+        let load = |step: &str| {
+            let cache = leased(&state, &owner);
+            assert!(
+                cache.loaded,
+                "{step}: checkpoint not loaded: metadata {:?}, read {:?}",
+                std::fs::metadata(&path)
+                    .map(|v| v.len())
+                    .map_err(|e| e.kind()),
+                common::read_owned(&path, LIMIT, true)
+                    .err()
+                    .map(|e| e.to_string())
+            );
+            cache
+        };
         let empty = BTreeMap::from([("kept".to_owned(), json!({}))]);
         let mut cache = leased(&state, &owner);
+        assert!(!cache.loaded, "startup: no checkpoint file yet");
         cache.reconcile(&empty).unwrap();
         assert!(!path.exists(), "startup must not create an empty cache");
         let cursor = replay(
@@ -2055,7 +2073,8 @@ mod tests {
             ("removed".to_owned(), json!({session.clone():cursor})),
         ]);
         cache.update(&values, true).unwrap();
-        let mut loaded = leased(&state, &owner);
+        let mut loaded = load("first load");
+        assert_ne!(loaded.for_host("kept"), json!({}), "first load: kept host");
         let configured = BTreeMap::from([("kept".to_owned(), loaded.for_host("kept"))]);
         loaded.reconcile(&configured).unwrap();
         let kept = read("first reconcile");
@@ -2072,7 +2091,7 @@ mod tests {
         let mut expired: Value = serde_json::from_slice(&kept).expect("kept checkpoint as JSON");
         expired["records"][0]["cursor"]["at"] = json!(now() - 86401.0);
         common::atomic_checkpoint_write(&path, &serde_json::to_vec(&expired).unwrap()).unwrap();
-        let mut loaded = leased(&state, &owner);
+        let mut loaded = load("expired load");
         assert_eq!(loaded.for_host("kept"), json!({}));
         loaded.reconcile(&empty).unwrap();
         let bytes = read("expired reconcile");
@@ -2085,7 +2104,7 @@ mod tests {
                 true,
             )
             .unwrap();
-        let mut loaded = leased(&state, &owner);
+        let mut loaded = load("removed-host load");
         loaded.reconcile(&empty).unwrap();
         let bytes = read("removed-host reconcile");
         let saved = parse("removed-host reconcile", &bytes);
