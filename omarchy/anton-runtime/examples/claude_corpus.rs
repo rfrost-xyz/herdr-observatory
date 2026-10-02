@@ -228,7 +228,9 @@ fn scan(path: &Path, id: &str, counts: &mut Counts) -> Option<Row> {
             };
             counts.tick(format!("{class}.record"));
             let before = flags(&shadow);
+            let turn = Join::of(&shadow);
             shadow.apply(&record);
+            turn.count(&shadow, counts);
             flips(before, &shadow, &category(&record), counts);
             assistant |= record.kind == KIND_ASSISTANT && !record.synthetic;
             continue;
@@ -248,7 +250,9 @@ fn scan(path: &Path, id: &str, counts: &mut Counts) -> Option<Row> {
         assistant |= record.kind == KIND_ASSISTANT && !record.synthetic;
         attribute(&record, counts);
         let before = flags(&shadow);
+        let turn = Join::of(&shadow);
         shadow.apply(&record);
+        turn.count(&shadow, counts);
         let name = category(&record);
         flips(before, &shadow, &name, counts);
         durations |= record.kind == KIND_SYSTEM && record.subtype == SUBTYPE_TURN_DURATION;
@@ -292,6 +296,35 @@ fn scan(path: &Path, id: &str, counts: &mut Counts) -> Option<Row> {
         ));
     }
     (!unclassified).then_some(shadow)
+}
+
+/// The running turn and its queue evidence before a record is applied.
+struct Join {
+    active: Option<String>,
+    start: Option<u64>,
+    queued: bool,
+}
+impl Join {
+    fn of(row: &Row) -> Self {
+        Self {
+            active: row.turns.active.clone(),
+            start: row.turns.start,
+            queued: row.claude.queued_since_start.is_some(),
+        }
+    }
+    /// Counts `turns.joins`: a trigger joined the running turn when the record
+    /// consumed the queue evidence and left that turn running, with no silent
+    /// end and no ambiguity. Every other consumer ends the turn, marks a
+    /// silent end or makes coverage ambiguous.
+    fn count(self, row: &Row, counts: &mut Counts) {
+        let running = self.active.is_some()
+            && row.turns.active == self.active
+            && row.turns.start == self.start;
+        let consumed = self.queued && row.claude.queued_since_start.is_none();
+        if running && consumed && !row.claude.silent_end && !row.claude.ambiguous {
+            counts.tick("turns.joins");
+        }
+    }
 }
 
 /// Whether the line-by-line shadow replay publishes what bounded passes do.
