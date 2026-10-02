@@ -966,6 +966,28 @@ impl NativeTelemetry {
             publish_claude(agent, subset, None, *seq, time);
         }
     }
+    /// The deadline passed after binding, before any replay pass, so the file
+    /// was not opened in this call. `bind` has just made the binding current,
+    /// so only a sample retained from an earlier verified pass may be
+    /// re-emitted. Without one, which is always the case on a peer's fresh
+    /// follower, the incoming row takes the all-null sample or is withheld
+    /// (D1, D3).
+    fn skip_after_bind(
+        &self,
+        agent: &mut Value,
+        key: &str,
+        cursors: &mut BTreeMap<String, Cursor>,
+        time: f64,
+    ) {
+        if let Some((subset, seq)) = self.claude.get(key).and_then(|v| v.retained.as_ref()) {
+            publish_claude(agent, subset, None, *seq, time);
+            return;
+        }
+        let stamps = incoming_stamps(cursors, key);
+        if stamps.is_some() && !unknown_claude(agent, stamps, time) {
+            cursors.remove(key);
+        }
+    }
     /// One Claude pane: bind, replay up to 16 bounded passes, then publish the
     /// caught-up sample, or re-emit the retained one for an incomplete replay.
     fn enrich_claude(
@@ -1080,10 +1102,8 @@ impl NativeTelemetry {
                 withhold = !unknown(agent);
             }
         } else {
-            // The deadline passed after binding, before any replay pass: the
-            // file was not opened, so this is a deadline skip (D1, D3).
             cursors.insert(key.clone(), Cursor::from_row(row));
-            self.skip_claude(agent, &key, cursors, time);
+            self.skip_after_bind(agent, &key, cursors, time);
             return;
         }
         if !withhold {

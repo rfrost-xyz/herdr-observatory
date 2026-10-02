@@ -835,6 +835,37 @@ fn claude_peer_deadline_skip_never_returns_an_unverified_row() {
 }
 
 #[test]
+fn claude_deadline_after_bind_never_returns_an_unverified_row() {
+    let fixture = Fixture::new();
+    fixture.write(&session());
+    let mut local = NativeTelemetry::default();
+    let (first, _, cursors) = enrich(&mut local, &json!({}));
+    assert_eq!(first["total_output"], 26);
+    let root = claude::projects_root();
+    let far = Instant::now() + Duration::from_secs(5);
+    // A peer's fresh follower binds in this call, then its deadline passes
+    // before any pass: nothing verified the file, so the row takes the
+    // all-null sample.
+    let mut peer = NativeTelemetry::default();
+    assert!(matches!(peer.bind(&root, ID, &key(), far), Some(Some(_))));
+    let mut rows = validate_cursors(&cursors);
+    let mut pane = agent();
+    peer.skip_after_bind(&mut pane, &key(), &mut rows, now());
+    unknown(&pane["_native_telemetry"], micros(23));
+    assert_eq!(serde_json::to_value(&rows[&key()]).unwrap(), cursors[key()]);
+    // Before any of the row's times nothing can be stamped: it is withheld.
+    let mut rows = validate_cursors(&cursors);
+    let mut pane = agent();
+    peer.skip_after_bind(&mut pane, &key(), &mut rows, (BASE + 20) as f64);
+    assert!(pane["_native_telemetry"].is_null() && !rows.contains_key(&key()));
+    // A local follower with a sample retained from a verified pass re-emits it.
+    let mut rows = validate_cursors(&cursors);
+    let mut pane = agent();
+    local.skip_after_bind(&mut pane, &key(), &mut rows, now());
+    assert_eq!(pane["_native_telemetry"]["total_output"], 26);
+}
+
+#[test]
 fn claude_record_naming_another_session_keeps_the_binding_unknown() {
     let fixture = Fixture::new();
     fixture.write(&session());
