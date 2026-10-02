@@ -297,14 +297,17 @@ pub fn telemetry_from_agent(agent: &Value) -> Option<Value> {
     telemetry_view(&raw)
 }
 pub fn turn_timing_view(raw: &Value) -> Option<Value> {
-    let time = now();
+    turn_timing_view_at(raw, now() + 1.0)
+}
+/// `turn_timing_view` with `observed_at_s` allowed up to `limit`.
+pub fn turn_timing_view_at(raw: &Value, limit: f64) -> Option<Value> {
     let observed = raw["observed_at_s"].as_f64()?;
     let active = raw["active"].as_bool();
     let start = number(&raw["started_at_s"]);
     let complete = raw["complete"].as_bool()?;
     if !observed.is_finite()
         || observed <= 0.0
-        || observed > time + 1.0
+        || observed > limit
         || (!raw["active"].is_null() && active.is_none())
         || (!raw["started_at_s"].is_null() && start.is_none())
         || start.is_some_and(|v| v == 0 || v as f64 > observed)

@@ -232,7 +232,7 @@ impl State {
                 let mut rejected = BTreeSet::new();
                 for agent in &mut sample.agents {
                     agent.navigation = state.navigation.clone();
-                    if !local && revalidate(agent) {
+                    if !local && revalidate(agent, sample.sampled_at) {
                         rejected.insert(agent.id.clone());
                     }
                     let previous = if state.online {
@@ -303,10 +303,11 @@ impl State {
 }
 /// Peer agents come from another binary, so their telemetry and turn timing
 /// pass the local views again; an invalid value becomes unknown (D9). Peer
-/// times may lead the local clock by the 1 s transport skew `sampled_at`
-/// allows; original timestamps are kept. Returns whether telemetry was
-/// present and rejected.
-fn revalidate(agent: &mut Agent) -> bool {
+/// times may lead the later of the local clock and `sampled_at` by the 1 s
+/// transport skew `sampled_at` allows plus the snapshot timeout, which bounds
+/// how long after `sampled_at` the peer stamps its values; original
+/// timestamps are kept. Returns whether telemetry was present and rejected.
+fn revalidate(agent: &mut Agent, sampled_at: f64) -> bool {
     fn view<T: Serialize + serde::de::DeserializeOwned>(
         value: Option<T>,
         check: impl Fn(&Value) -> Option<Value>,
@@ -314,13 +315,15 @@ fn revalidate(agent: &mut Agent) -> bool {
         let value = serde_json::to_value(value?).ok()?;
         serde_json::from_value(check(&value)?).ok()
     }
-    let time = common::now() + 1.0;
+    let time = common::now().max(sampled_at) + 1.0 + collection::SNAPSHOT_TIMEOUT.as_secs_f64();
     let technical = &mut agent.technical;
     let present = technical.telemetry.is_some();
     technical.telemetry = view(technical.telemetry.take(), |raw| {
         telemetry::telemetry_view_at(raw, time)
     });
-    technical.turn_timing = view(technical.turn_timing.take(), telemetry::turn_timing_view);
+    technical.turn_timing = view(technical.turn_timing.take(), |raw| {
+        telemetry::turn_timing_view_at(raw, time)
+    });
     present && technical.telemetry.is_none()
 }
 /// D3 local retention of one peer's Claude samples. `rows` counts the
@@ -1395,14 +1398,25 @@ mod tests {
         );
     }
     /// Peer revalidation allows the 1 s transport skew `sampled_at` allows,
-    /// for every harness, and keeps the original timestamps.
+    /// plus the peer's own gap between stamping `sampled_at` and stamping its
+    /// values, which the Herdr snapshot timeout bounds, for every harness. It
+    /// keeps the original timestamps.
     #[test]
-    fn peer_revalidation_tolerates_one_second_of_clock_skew() {
+    fn peer_revalidation_tolerates_clock_skew_and_the_stamping_gap() {
         let now = common::now();
-        for (skew, kept) in [(0.5, true), (2.0, false)] {
+        let gap = collection::SNAPSHOT_TIMEOUT.as_secs_f64();
+        // (`sampled_at` lead, value lead, kept). A sample just inside the
+        // `sampled_at` gate keeps values stamped just over 1 s ahead.
+        for (at, skew, kept) in [
+            (0.0, 0.5, true),
+            (0.95, 1.05, true),
+            (0.95, 1.94 + gap, true),
+            (0.0, 1.5 + gap, false),
+            (0.95, 2.0 + gap, false),
+        ] {
             let seq = ((now + skew) * 1e6) as u64;
             let mut state = peer();
-            let mut value = sample("working", now);
+            let mut value = sample("working", now + at);
             value.agents[0] = claude(7, caught_up(seq));
             value.agents[0].harness = "codex".into();
             let technical = &mut value.agents[0].technical;
@@ -1414,12 +1428,12 @@ mod tests {
             assert_eq!(
                 telemetry.map(|v| (v.seq, v.usage_seq, v.total_input)),
                 kept.then_some((seq, Some(seq - 1), Some(3461))),
-                "{skew}"
+                "{at} {skew}"
             );
             assert_eq!(
                 technical.turn_timing.as_ref().map(|v| v.observed_at_s),
                 kept.then_some(now + skew),
-                "{skew}"
+                "{at} {skew}"
             );
         }
         // A Claude all-null sample within the skew replaces the retained one.
@@ -1454,7 +1468,7 @@ mod tests {
             value.requested = Some(1);
             value
         };
-        let skewed = ((now + 2.0) * 1e6) as u64;
+        let skewed = ((now + 60.0) * 1e6) as u64;
         for rejected in [
             json!({"seq":skewed,"event":"session","phase":"ready"}),
             caught_up(skewed),
