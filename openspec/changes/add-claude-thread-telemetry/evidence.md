@@ -87,7 +87,7 @@ This change publishes for 10 of 18 files.
   - A process spawned concurrently by another test holds the lock's open file description until it calls exec.
   - That left the lease `None`, and `loaded.reconcile(&empty).unwrap()` panicked at `src/native.rs:1704:34`. The `std::fs::read` was not the failing call.
   - A reviewer repro failed 97 of 300 times under concurrent spawns. `893ab77` adds a 250 ms bounded wait.
-  - The new test `checkpoint_lock_waits_out_concurrent_process_spawns` failed 20 of 20 runs before the fix and passed 20 of 20 after.
+  - The new spawn-storm test (since renamed `checkpoint_cycles_succeed_while_siblings_spawn`) failed 20 of 20 runs before the fix and passed 20 of 20 after. The wait is now guarded by `checkpoint_lease_and_write_wait_out_a_brief_holder`, and the release by `checkpoint_lock_is_free_at_once_after_each_holder_while_siblings_spawn`.
 
 ## Traceability
 
@@ -445,7 +445,7 @@ Claude probe: 4/4 local and 4/4 peer, with all fields, in both variants.
 The four-lens review of `085db29` found 1 blocking and 5 other findings. All are fixed.
 
 **Blocking:**
-- **Unverified peer row.** A peer deadline skip returned an unverified cursor row, which the local would re-emit without limit. `87f2625` publishes the all-null sample, or withholds the row, when there is no current binding. The narrower window where the deadline passes after binding but before any pass was found during remediation; `e0e6fc5` routes it through the same skip.
+- **Unverified peer row.** A peer deadline skip returned an unverified cursor row, which the local would re-emit without limit. `87f2625` publishes the all-null sample, or withholds the row, when there is no current binding. The narrower window, where the deadline passes after binding but before any pass, was found during remediation. `e0e6fc5` routed it through the same skip, but round 7 showed that had no effect on a peer, because `bind` had just made the binding current. `0abe129` fixes it properly.
 
 **Other fixes:**
 - a lasting resume failure keeps the 60 s cadence (`43cb273`);
@@ -481,3 +481,18 @@ The four-lens review of `085db29` found 1 blocking and 5 other findings. All are
 Peak RSS is noisy in both, the same process-overlap pattern as before. The Claude probe reports 4/4 local and 4/4 peer for every field.
 
 `e0e6fc5` was verified afterwards with fmt, clippy and the full Rust suite: lib 193, main 17, native_navigation 6, native_process 32.
+
+## Review round 7 and remediation
+
+The four-lens review of `461c716` found 2 blocking, 1 non-blocking and 2 nit findings.
+
+**Blocking:**
+1. **Unrecognised origin with `isMeta` was ignored.** A user record with an unrecognised `origin` and `isMeta` was ignored instead of unknown, which turned unknown into a complete undercount. `8fb42b2` swaps the classification order. Its regression test failed before the fix.
+2. **`e0e6fc5` had no effect on peers.** When the deadline passed right after a fresh bind, `skip_claude` saw the binding `bind` had just made current, so a peer still returned an unverified row. `0abe129` adds `skip_after_bind`: it re-emits only a retained sample, and otherwise publishes all-null or withholds the row. A direct test after `bind` on a fresh follower failed under the old behaviour and passes now.
+
+**Other:**
+- the checkpoint cycle test's doc comment and name now state what it checks (`4ab7901`);
+- the test names in this file are corrected;
+- the over-bound consumed-string difference is documented in D3 as fail-closed.
+
+**Verification:** fmt and clippy are clean. The full Rust suite passes: lib 195, main 17, native_navigation 6, native_process 32.

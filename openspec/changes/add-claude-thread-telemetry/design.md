@@ -58,7 +58,7 @@ Existing Codex behaviour, output and checkpoints must not change.
 
 **Lookup.**
 - Look for `<root>/<entry>/<id>.jsonl` at depth exactly two, within the Codex discovery entry and time budgets.
-- Require exactly one match. Zero or several matches leave telemetry unknown, and so does a scan truncated by the entry or the 100 ms discovery budget (`native.rs:651-670`). A discovery or predecessor scan cut short because the shared probe deadline passed is a deadline skip: it keeps the binding and the retained sample. With a current binding it keeps the cursor row and publishes nothing beyond re-emission (D3). Without one, which is always the case on a peer, the incoming row takes the all-null sample at its latest usable source time, or is withheld when none is usable yet. A deadline that passes after binding but before the first replay pass is the same skip. A replay failure on a bound file keeps the binding's path and time; only a failure that may be transient (an IO error, an open failure that is not a symlink, non-file or foreign owner, or a header read error) rediscovers at the next pass, and a path confinement, header or identity failure waits for the 60 s rescan.
+- Require exactly one match. Zero or several matches leave telemetry unknown, and so does a scan truncated by the entry or the 100 ms discovery budget (`native.rs:651-670`). A discovery or predecessor scan cut short because the shared probe deadline passed is a deadline skip: it keeps the binding and the retained sample. With a current binding it keeps the cursor row and publishes nothing beyond re-emission (D3). Without one, which is always the case on a peer, the incoming row takes the all-null sample at its latest usable source time, or is withheld when none is usable yet. A deadline that passes after binding but before the first replay pass leaves the file unopened in this call: only a sample retained from an earlier verified pass is re-emitted, and otherwise (always on a peer's fresh follower, whose `bind` has just made the binding current) the incoming row takes the all-null sample or is withheld. A replay failure on a bound file keeps the binding's path and time; only a failure that may be transient (an IO error, an open failure that is not a symlink, non-file or foreign owner, or a header read error) rediscovers at the next pass, and a path confinement, header or identity failure waits for the 60 s rescan.
 - **Predecessor after `/clear`.** If Herdr reports an id whose file has ended because a successor exists, the binding would show a stale session. Change 2 first settles from the binary which id SessionStart(clear) delivers. Until that is proven, the fallback is fail-closed. Within the discovery budget, files in the same directory that are newer than the bound file's last record are scanned to their first record carrying `session_id`, bounded at 256 KiB and 512 records. In observed successors it first appears at 0-based record 16 to 19, in a record ending 69 to 76 KiB into the file. There are four cases, with two results:
   1. End of file within the bound with no `session_id`: not a successor.
   2. Bound exhausted first: unknown (fail closed).
@@ -128,6 +128,7 @@ Existing Codex behaviour, output and checkpoints must not change.
 - An oversized line (over 64 KiB) goes through a new bounded Claude envelope classifier. The Codex `Envelope` (`envelope.rs`) cannot extract these fields.
 - The classifier extracts only the fields D3, D5, D6 and D7 consume: `type`, `subtype`, `sessionId`, `uuid`, `timestamp`, `isMeta`, `origin.kind`, `commandMode`, `message.id`, `stop_reason`, `model`, `usage`, `toolUseResult.{status, agentId, resumedAgentId, success, totalDurationMs}`, `interruptedMessageId`, `isAbortedMidStream`, the presence of `forkedFrom` and `isCompactSummary`, the bounded `task-id` and `status` tags, the leading wrapper tag of user text, and `operation` (queue-operation records).
 - `forkedFrom`, `isCompactSummary`, `origin`, `toolUseResult` and `interruptedMessageId` are presence-only: a string value is recorded at its first byte, never buffered, and survives a pass boundary.
+- Known fail-closed difference: any other consumed string value longer than the 1 KiB capture bound (`type`, `model`, `stop_reason` and similar) is lost on the oversized path, while the parsed path reads it as an unrecognised value. Only hostile input produces such values, and the oversized path then makes the dependent coverage unknown, never a different number.
 - A `sessionId` over the capture bound can never equal a safe id, so the record is a mismatch (`foreign`), as the parsed path reads it, including when a pass boundary cuts the value after the bound; only a cut within the bound is lost. A lost `type` or `sessionId` (cut by a pass boundary, or repeated) makes the record invalid for every kind, so identity is never taken as absent.
 - An unpaired `\uD800`–`\uDFFF` escape reads as one replacement character, and a surrogate pair as one character, on both paths.
 - Persisted classifier state keeps the raw bytes of a key only while they remain a prefix, written plainly or with `\uXXXX` escapes, of a consumed key at that parent; otherwise the bytes are dropped and the key is marked non-matching.
@@ -473,7 +474,7 @@ Two model calibrations are explicit in the test:
 
 - **Peers and rebinding:**
   - a peer deadline skip of an ambiguous binding;
-  - a deadline after binding before any pass. This shares the tested skip path, because the microsecond window is not reproducible in a test.
+  - a deadline after binding before any pass, tested directly through `skip_after_bind` on a fresh follower after `bind`, because the microsecond window is not reproducible by timing.
   - the rediscovery cadence after a lasting resume failure.
 - **Classifier:** an overlong `sessionId` cut after `CAP`.
 - **Checkpoint lock:** genuine contention with a brief holder.
@@ -481,6 +482,12 @@ Two model calibrations are explicit in the test:
   - an assistant record with no turn running;
   - a command that runs the model after its local output;
   - the idle echo with output, which now masks the current turn.
+
+**Added after review round 7:**
+
+- a user record with an unrecognised `origin` and `isMeta`, which is unknown;
+- the same record with a recognised `peer` origin, which is still a trigger;
+- a deadline after a fresh bind, on a peer and on a local follower.
 
 **Corpus check.** As a verification step, this change also runs a local counts-only replay of the real transcript corpus through the implementation. It prints aggregates only, and nothing from it is committed. Prose review could not converge on these rules; replay can.
 
