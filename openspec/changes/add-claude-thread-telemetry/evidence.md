@@ -753,3 +753,70 @@ The four-lens review of `1386117` produced:
 **Lens 4, nit.** The checkpoint test summary above now points to the reproduced `NotFound` cause.
 
 **Gates:** fmt and clippy are clean. The full suite passes: lib 223, main 19, native_navigation 6, native_process 32.
+
+## Review round 17 and remediation
+
+The four-lens review of `857fbe0` produced:
+- lenses 1 and 3: CLEAN;
+- lens 4: no blocking findings;
+- lens 2: 2 blocking findings in the current-turn mask.
+
+Neither finding published a wrong number: the start shown is Claude Code's own, and the next turn end reports the work as pending. In each, though, the current turn stayed published while background work ran.
+
+1. **Resume of an agent not launched in this file.**
+   - Claude Code writes `resumedAgentId` only when it resumes on the background path.
+   - Corpus (counts only): 2 such resumes, against 3 of known children.
+2. **Task notification without a final status.**
+   - A resume by the user or by another agent is written as a notification with no `<status>`, which says the agent is running again. For a known child it set the status `unknown`, which `running()` does not count.
+   - The corpus has none of these (counts only).
+
+**Fix.** The rule is now conservative for every child-related signal. `clean` is cleared by:
+- any successful resume, known child or not;
+- any task notification that does not report a final status;
+- a task notification whose task id cannot be read.
+
+The next gated end with nothing pending restores `clean`. Three cases were added to `turns_current_turn_is_published_only_from_a_clean_state`. The resume and status-less cases failed before the fix. The unreadable-task-id case was already masked through invalid children (round 18 correction), so its redundant `clean` line was removed.
+
+**Corpus impact:** none. Published running records stay at 2703, the gate kept 267 and rejected 19, coverage is valid in 12 of 20 and the current turn is known in 12 of 20.
+
+**Lens 4, non-blocking.** This repeats the round 15 finding about the fixture sweep's liveness check: pid plus age is unreliable across pid namespaces and clock jumps. The `flock` liveness check stays a follow-up. The review workflow now runs every cargo test with a private `TMPDIR`, which removes cross-run sharing.
+
+**Gates:** fmt and clippy are clean. The full suite passes: lib 223, main 19, native_navigation 6, native_process 32.
+
+## Review round 18 and remediation
+
+The four-lens review of `b3d587d` produced:
+- lenses 1 and 3: CLEAN;
+- lens 4: one non-blocking finding, the round 17 claim corrected above;
+- lens 2: 5 blocking mask findings, none with a wrong number.
+
+For round 18, lens 2 was briefed to list every producer shape that starts or resumes background work in one pass, instead of one per round.
+
+**Fixed (`c95427a`):**
+- **B1: `/fork` and `/subtask`.** These start a background agent and write only `system/local_command` records. Such a record now clears `clean`. The corpus has 1 instance of this shape (counts only).
+- **B2: Skill `status: "forked"`.** It runs in the background by default and now counts as a launch for the mask. The corpus has 0 instances; the binary is the evidence.
+
+Both cases were added to `turns_current_turn_is_published_only_from_a_clean_state`, and each fails with its fix removed.
+
+**Spec narrowed, residuals recorded under Risks:**
+- **B3 and B4.** A SendMessage resume of an agent owned by another agent, or of an evicted teammate, carries no `resumedAgentId`. The only signal is message text (0 of each in the corpus).
+- **B5.** Claude Code does not count remote tasks as pending, so a later gated end restores the mask.
+
+The spec now promises a mask only for work the transcript records in a structured field. None of these cases publishes a wrong number.
+
+**Non-blocking:**
+- Forked-skill agents are not counted as children. D6 now says so.
+- The `stopped` status maps to `unknown`.
+
+**Lens 2 sweep dispositions.** These were checked against the binary:
+- **Covered:** all launch statuses and `resumedAgentId`.
+- **Fail closed:** notifications without a final status or task id, main-session backgrounding (an abort), and detached tool calls (a silent end).
+- **Not affecting `durationMs`:** background Bash and Monitor tasks.
+
+**Corpus (counts only):**
+- Running records published: 2693, down from 2703.
+- Gate: kept 268, rejected 19.
+- Coverage valid: 12 of 20 files.
+- Current turn known: 12 of 20 files.
+
+**Gates:** fmt and clippy are clean. The full suite passes: lib 223, main 19, native_navigation 6, native_process 32.
