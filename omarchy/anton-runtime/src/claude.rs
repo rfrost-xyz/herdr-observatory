@@ -218,9 +218,9 @@ fn first_session_id(
                 Err(Predecessor::Unknown)
             };
         }
-        let session = match serde_json::from_slice::<Value>(&bytes) {
-            Ok(record) => record.get("session_id").cloned(),
-            Err(_) => lenient_session_id(&bytes, id).ok_or(Predecessor::Unknown)?,
+        let session = match parse_line(&bytes) {
+            Some(record) => record.get("session_id").cloned(),
+            None => lenient_session_id(&bytes, id).ok_or(Predecessor::Unknown)?,
         };
         match session {
             None => {}
@@ -298,10 +298,11 @@ pub fn parse_line(bytes: &[u8]) -> Option<Value> {
     serde_json::from_slice::<Strict>(bytes).ok().map(|v| v.0)
 }
 
-/// A candidate line serde rejects, as it does an unpaired surrogate escape that
-/// replay reads (D3), is read only for its top-level `session_id` (present or
-/// absent), once the classifier accepts the line as well formed. `None` means
-/// the line cannot be read.
+/// A candidate line `parse_line` rejects, as it does an unpaired surrogate
+/// escape that replay reads (D3) and a repeated key, is read only for its
+/// top-level `session_id` (present or absent), once the classifier accepts the
+/// line as well formed. A repeated `session_id` or a line that cannot be read
+/// gives `None`.
 fn lenient_session_id(bytes: &[u8], id: &str) -> Option<Option<Value>> {
     struct Record(Option<Value>);
     impl<'de> Deserialize<'de> for Record {
@@ -2126,6 +2127,11 @@ mod tests {
                 Predecessor::Clear { growing: true },
             ),
             (format!("{{{broken}\n"), Predecessor::Unknown),
+            // A repeated `session_id` is never read as its last value.
+            (
+                format!("{{\"session_id\":\"{ID}\",\"session_id\":\"fixture-session-d\"}}\n"),
+                Predecessor::Unknown,
+            ),
             (format!("[{broken}]\n"), Predecessor::Unknown),
             (
                 "[\"\\ud83d\",\"fixture-session-d\"]\n".to_owned(),
