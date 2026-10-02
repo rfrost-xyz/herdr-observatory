@@ -814,16 +814,23 @@ fn claude_deadline_skip_reemits_the_retained_sample_of_a_current_binding() {
 /// survives for the next pass. Nothing verified the file, so the row takes
 /// the all-null sample, and a peer's local never re-emits an unverified copy.
 /// The pad entries stay well under the entry budget, so only the deadline
-/// truncates the scan.
+/// truncates the scan. They exist only for the expiring passes, so the
+/// passes that must bind never race the discovery budget under load.
 #[test]
 fn claude_deadline_inside_rediscovery_is_a_skip_not_a_drop() {
     let fixture = Fixture::new();
     fixture.write(&session());
-    for index in 0..6000 {
-        std::fs::create_dir(fixture.projects.join(format!("pad-{index:05}"))).unwrap();
-    }
     let (first, _, cursors) = enrich(&mut NativeTelemetry::default(), &json!({}));
     assert_eq!(first["total_output"], 26);
+    // A local follower bound before the pad entries exist.
+    let mut follower = NativeTelemetry::default();
+    let (_, _, local) = enrich(&mut follower, &cursors);
+    let pads: Vec<_> = (0..6000)
+        .map(|index| fixture.projects.join(format!("pad-{index:05}")))
+        .collect();
+    for pad in &pads {
+        std::fs::create_dir(pad).unwrap();
+    }
     let expiring = |follower: &mut NativeTelemetry| {
         let mut rows = validate_cursors(&cursors);
         let mut agent = agent();
@@ -848,14 +855,15 @@ fn claude_deadline_inside_rediscovery_is_a_skip_not_a_drop() {
     assert!(kept && peer.claude.is_empty());
     // A local binding due for rediscovery keeps its retained sample, which
     // the next incomplete pass re-emits.
-    let mut follower = NativeTelemetry::default();
-    let (_, _, cursors) = enrich(&mut follower, &cursors);
     age(&mut follower);
     let (telemetry, kept) = expiring(&mut follower);
     unknown(&telemetry, micros(23));
     assert!(kept && follower.claude[&key()].retained.is_some());
+    for pad in &pads {
+        std::fs::remove_dir(pad).unwrap();
+    }
     fixture.append("{\"type\":");
-    let (telemetry, _, rows) = enrich(&mut follower, &cursors);
+    let (telemetry, _, rows) = enrich(&mut follower, &local);
     assert_eq!(rows[key()]["caught_up"], false);
     assert_eq!(telemetry, retained(&first));
 }
