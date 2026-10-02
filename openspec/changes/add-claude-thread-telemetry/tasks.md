@@ -29,6 +29,6 @@ Change 2 of 4 in the Claude Code parity programme. Lanes run in order, A then B,
 ## 5. Verify, review, publish
 
 - [x] 5.1 Locked offline fmt, clippy (`-D warnings`) and tests, plus the JS, QML, qmllint and Omarchy shell harness suites. Record the after measurements with `--repeat 3`.
-- [ ] 5.2 Independent adversarial review until clean.
+- [x] 5.2 Independent adversarial review until clean (round 19 at `8d5d66c`: lenses 1-3 CLEAN, lens 4 two doc nits fixed in `68a8249` and confirmed by an independent docs check).
 - [ ] 5.3 Live installed check: install the plugin, verify a real Claude thread shows telemetry in the popover (the user clicks), private state preserved, source hashes, owner restart, and the shell harness against the installed modules.
 - [ ] 5.4 Sync specs, archive, publish, merge with a merge commit.
