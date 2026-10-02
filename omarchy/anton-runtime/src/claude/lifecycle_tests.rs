@@ -643,7 +643,8 @@ fn turns_silent_end_followed_by_queued_input_is_unknown() {
     ]);
     assert!(row.turns.valid);
     assert_eq!(finished(&row, "user", 10).map(|t| t.1), Some(second(20)));
-    // A queue operation after the silent end lets input join again.
+    // A queue operation after the silent end is no join evidence: the turn
+    // may have ended, so the input takes the unknown path.
     let row = run(&[
         user(10, "hello", ""),
         assistant(11, "msg_a", "\"end_turn\""),
@@ -651,7 +652,36 @@ fn turns_silent_end_followed_by_queued_input_is_unknown() {
         user(13, "queued", ""),
         system("turn_duration", 20),
     ]);
-    assert!(row.turns.valid && row.turns.finished.len() == 1);
+    assert!(!row.turns.valid && row.turns.finished.is_empty());
+}
+
+#[test]
+fn turns_queue_operation_after_a_silent_end_never_joins_the_idle_gap() {
+    for taken in ["remove", "dequeue"] {
+        let mut lines = vec![
+            user(10, "hello", ""),
+            assistant(15, "msg_a", "\"tool_use\""),
+            assistant(20, "msg_b", "\"end_turn\""),
+            system("stop_hook_summary", 20),
+            queue(137),
+            operation(144, taken),
+            user(288, "much later", ""),
+            assistant(300, "msg_c", "\"tool_use\""),
+        ];
+        // While the second turn runs, nothing dates it from second 10.
+        let row = run(&lines);
+        assert!(
+            !row.turns.current_known && row.turns.start.is_none(),
+            "{taken}"
+        );
+        lines.extend([
+            assistant(310, "msg_d", "\"end_turn\""),
+            system("turn_duration", 311),
+        ]);
+        let row = run(&lines);
+        assert!(!row.turns.valid, "{taken}");
+        assert!(row.turns.finished.is_empty() && row.turns.last_duration.is_none());
+    }
 }
 
 #[test]
@@ -758,6 +788,17 @@ fn turns_block_inconsistent_with_turns_is_rejected() {
     assert!(ambiguous.turn_state());
     ambiguous.claude.pending_start = Some((turn_key(ID, "user-20"), second(20)));
     assert!(!ambiguous.turn_state());
+    // A silent end belongs to an active turn without queue evidence.
+    let mut silent = run(&[
+        user(10, "hello", ""),
+        assistant(11, "msg_a", "\"end_turn\""),
+    ]);
+    assert!(silent.claude.silent_end && silent.turn_state());
+    silent.claude.queued_since_start = true;
+    assert!(!silent.turn_state());
+    silent.claude.queued_since_start = false;
+    silent.turns.unknown();
+    assert!(!silent.turn_state());
 }
 
 #[test]

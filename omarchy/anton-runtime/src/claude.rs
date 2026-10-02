@@ -362,6 +362,10 @@ pub struct ClaudeCursor {
     pub pending_start: Option<(String, u64)>,
     pub abort_adjacent: bool,
     pub queued_since_start: bool,
+    /// A silent end (D7) was seen during the active turn: until a trigger,
+    /// `turn_duration`, an abort or unknown coverage, no queue operation
+    /// lets input join it, because the turn may already have ended.
+    pub silent_end: bool,
     /// Turn coverage was lost where a turn may still be running (an unjoined
     /// trigger during a turn, an unrecognised origin, a trigger without a
     /// stamp or key, a rejected start, or a failed record during a turn): no
@@ -393,6 +397,7 @@ impl Default for ClaudeCursor {
             pending_start: None,
             abort_adjacent: false,
             queued_since_start: false,
+            silent_end: false,
             ambiguous: false,
             foreign: false,
             classifier: None,
@@ -1105,6 +1110,7 @@ impl Row {
         self.turns.unknown();
         self.claude.pending_start = None;
         self.claude.queued_since_start = false;
+        self.claude.silent_end = false;
     }
     fn close_group(&mut self) {
         let Some(group) = self.claude.open.take() else {
@@ -1233,20 +1239,27 @@ impl Row {
             Turn::Unknown => self.ambiguous(),
             // Only a dequeue or remove shows input taken into the running
             // turn or pending start; an enqueue alone never permits a join.
+            // After a silent end the turn may be over, so none does.
             Turn::Queue if [2, 3].contains(&record.operation) => {
-                block.queued_since_start |= active || block.pending_start.is_some();
+                block.queued_since_start |=
+                    (active || block.pending_start.is_some()) && !block.silent_end;
             }
             Turn::Queue => {}
-            Turn::Silent => block.queued_since_start = false,
+            Turn::Silent => {
+                block.queued_since_start = false;
+                block.silent_end = active;
+            }
             Turn::Assistant => {
                 block.abort_adjacent = false;
                 self.confirm();
                 if record.stop == STOP_END_TURN {
                     self.claude.queued_since_start = false;
+                    self.claude.silent_end = self.turns.active.is_some();
                 }
             }
             Turn::Trigger => {
                 block.abort_adjacent = false;
+                block.silent_end = false;
                 self.turns.supported = true;
                 // Second 0 is no valid start (`Turns::begin`): a missing stamp.
                 let (Some(key), Some(second)) = (record.uuid.clone(), second.filter(|s| *s > 0))
@@ -1275,6 +1288,7 @@ impl Row {
                 self.confirm();
                 // A proven end, even when `confirm` rejected the start.
                 self.claude.ambiguous = false;
+                self.claude.silent_end = false;
                 self.claude.abort_adjacent = true;
                 self.end(second, Turns::abort);
             }
@@ -1282,6 +1296,7 @@ impl Row {
                 self.turns.supported = true;
                 let adjacent = std::mem::take(&mut block.abort_adjacent);
                 block.ambiguous = false;
+                block.silent_end = false;
                 if active {
                     self.end(second, Turns::finish);
                 } else if !adjacent || block.pending_start.is_some() {
@@ -1437,11 +1452,13 @@ impl Row {
             "compactions": compactions,
         })
     }
-    /// D8: queue evidence belongs to an active turn or a pending start, and a
-    /// pending start only exists with no active turn.
+    /// D8: queue evidence belongs to an active turn or a pending start, a
+    /// silent end to an active turn without queue evidence, and a pending
+    /// start only exists with no active turn.
     fn turn_state(&self) -> bool {
         let active = self.turns.active.is_some();
         (!self.claude.queued_since_start || active || self.claude.pending_start.is_some())
+            && (!self.claude.silent_end || active && !self.claude.queued_since_start)
             && (!self.claude.ambiguous
                 || !active && self.claude.pending_start.is_none() && !self.turns.valid)
             && (self.claude.pending_start.is_none() || !active)
