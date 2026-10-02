@@ -160,7 +160,7 @@ Old local with a new peer (`--claude-old-local`, harness `c162861`, local `74f50
 | Standard, old local | 0/4 | 37 ms | 0.095 s | 7,384 KiB |
 | Large, old local | 0/4 | 150 ms | 0.866 s | 11,720 KiB |
 
-**Bench default:** `tests/bench_anton_native.mjs` now defaults to 0 Claude agents. Bench figures recorded earlier with the old default of 4 are therefore not default-run figures.
+**Bench default:** `tests/bench_anton_native.mjs` now defaults to 0 Claude agents. Separately, `a984f7f` fixed the bench's fake-SSH peer match (`*--probe*)`). On origin/main the remote peer never came up, so the origin/main bench cannot produce a baseline. Bench figures recorded earlier with the old default of 4 are therefore not default-run figures.
 
 **Gates at `faab8bf`:**
 
@@ -543,3 +543,28 @@ The four-lens review of `ad1ddd0` found 3 blocking, 2 non-blocking and 2 nit fin
 | Runtime CPU | 0.033 s | 0.033 s |
 
 Peak RSS is the known two-valued process-overlap noise.
+
+## Review round 9 and remediation
+
+The four-lens review of `ade3fad` found 1 blocking, 2 non-blocking and 3 nit findings.
+
+**Blocking: an end with no usable timestamp.** A `turn_duration` or abort whose timestamp was missing, unparseable, epoch-stamped or in the future did not raise the proven-end floor. A later trigger stamped before it could then be published.
+- `1e228fb` leaves turn starts unknown after such an end.
+- `1aff002` handles the same hole for idle takes with no usable second.
+- `zz_trigger_before_an_unstamped_end_is_never_published` gave 50 wrong values before these fixes.
+
+**Other fixes:**
+- **Lines longer than `TAIL`:** `999bcaa` cuts them only at `TAIL` multiples from their start, so a line observed mid-write reads as the whole file does. Its regression test failed before the fix.
+- **Old local:** stripped Claude rows can evict Codex rows from an old local's checkpoint. This is now documented in D8 and D9.
+- **Comments:** two test comments are corrected (`0f790eb`).
+- **Bench:** the bench peer-match fix is now recorded.
+
+**Housekeeping:** about 12 GB of reviewer build copies in the shared scratch space were removed, because `/tmp` had reached 77%.
+
+**Fuzzer:** 314,561 records, including a targeted stamp-fault mode, with 0 violations and 0 restarts.
+
+**Corpus:** byte-identical to `ade3fad`.
+
+**Gates:** fmt, clippy and the full suite (lib 205, main 18, native_navigation 6, native_process 32).
+
+**Known behaviour change (fail-closed):** after an abort with no usable second, a directly following `<synthetic>` record is ambiguous.
