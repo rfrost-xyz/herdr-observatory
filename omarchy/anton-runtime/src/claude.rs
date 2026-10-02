@@ -1625,6 +1625,10 @@ fn advance(
         let offset = position(stream)?;
         let bytes = line(stream, (LINE + 1).min((end - offset) as usize))
             .map_err(|_| "Claude session read failed")?;
+        // A file truncated during the pass reads empty before `end`.
+        if bytes.is_empty() {
+            break;
+        }
         let terminated = bytes.last() == Some(&b'\n');
         if row.skipping || bytes.len() > LINE {
             row.oversized(&bytes, terminated, id, time);
@@ -2802,6 +2806,28 @@ mod replay_tests {
             let (row, _) = passes(&fixture, &path, None);
             assert!(!row.valid && totals(&row)[0].is_null(), "{bad}");
         }
+    }
+
+    #[test]
+    fn file_truncated_during_an_oversized_skip_ends_the_pass() {
+        let fixture = tests::Fixture::new();
+        let partial = padded_user(2, LINE * 2);
+        let text = header() + &partial[..LINE + 100];
+        let path = fixture.file("slug", &format!("{ID}.jsonl"), &text);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut row = replay(&fixture.projects, &path, ID, None, now(), deadline).unwrap();
+        assert!(row.skipping && row.offset == text.len() as u64);
+        // The file shrinks after the pass took its length.
+        let (mut stream, _) = open_session(&fixture.projects, &path, ID).unwrap();
+        std::fs::write(&path, header()).unwrap();
+        let start = Instant::now();
+        let (deadline, end) = (start + Duration::from_secs(2), row.offset + 1000);
+        advance(&mut row, &mut stream, end, ID, now(), deadline).unwrap();
+        assert!(start.elapsed() < Duration::from_secs(1));
+        assert!(row.skipping && row.offset == text.len() as u64);
+        let (_, resumed) =
+            resume(&fixture.projects, &path, ID, Some(row), now(), deadline).unwrap();
+        assert!(!resumed);
     }
 
     #[test]
