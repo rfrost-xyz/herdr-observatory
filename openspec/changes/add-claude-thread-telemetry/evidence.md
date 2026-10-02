@@ -386,3 +386,56 @@ Per-window CPU was 0.088 to 0.093 s for HEAD and 0.085 to 0.091 s for the baseli
 The Claude probe reports 4/4 local and 4/4 peer, with all 9 fields, in both variants.
 
 **Safety-classifier note.** The automated safety classifier timed out on one fix agent. The coordinator checked its actions: the worktree is clean, nothing was pushed, `openspec` and AGENTS.md are untouched, and the installed plugin is unchanged.
+
+## Review round 5 and remediation
+
+The four-lens review of `1d91cc2` found 3 blocking and 6 other findings. All are fixed, and each code fix has a regression test that failed before it.
+
+**Blocking:**
+1. **Local-command output left coverage valid.** When local-command output cleared a pending start, coverage stayed valid. `0816e74` simplifies the rule: local output clears only a pending command echo and never opens `lost_idle`. This rests on an assumption, now recorded: a command whose echo is followed by local output ran locally.
+2. **Trigger after a record lost while idle.** Such a trigger opened a normal start. Fixed in `e9a6dc0`: it is now ambiguous.
+3. **Peer replacement re-showed old totals.** A caught-up peer restart could publish nothing, so the local re-showed the replaced file's totals. Fixed in `4e6e3e2`: an all-null sample is published, or the row is withheld.
+
+**Other fixes:**
+- an overlong `sessionId` is foreign at both line sizes (`0b5b161`);
+- a header that loses only a non-identity field binds (`0ada82a`);
+- a reporter lock spawn test (`18083fe`);
+- a startup lease failure is reported (`8f11ece`);
+- spec wording on the last valid interval;
+- the retention scope is documented.
+
+**Ground-truth fuzzer.** The run covers 215,289 records with 0 violations, 0 restarts, 4,432 values unchanged across a kill and 51,755 last valid intervals.
+
+Sessions with at least one violation when a fix is reverted:
+
+| Reverted | Sessions with a violation |
+|---|---|
+| Local-output rule only | 8 |
+| Lost-idle trigger only | 2 |
+| Both | 36 |
+
+**Counts-only corpus.** Same snapshot, run back to back:
+
+| Metric | `1d91cc2` | Fixed |
+|---|---|---|
+| Coverage valid | 12 of 19 | 13 of 19 |
+| Current turn known | 14 of 19 | 14 of 19 |
+| Finished turns | 237 | 238 |
+| Joins | 19 | 19 |
+| Publishable | 11 | 11 |
+
+### Verification at `8f11ece` (release sha256 `17cbd0f8e1811630a34b17254a2709ddae5c7bfa4e55133ffa7c5280d1f35e2b`)
+
+| Gate | Result |
+|---|---|
+| fmt, clippy | clean |
+| `cargo test`, 3 runs | lib 188, main 16, native_navigation 6, native_process 32 |
+| `node --test` | 88 of 88 |
+| QML | 95 of 95 |
+| qmllint | clean outside Panel.qml |
+| Shell harness | 0 failures |
+| History | 108 commits, clean |
+
+Runtime CPU: 0.095 s for HEAD against 0.089 s for the baseline, per-window 0.088 to 0.098 against 0.087 to 0.090. Peak RSS is noisy in both, swinging between 4.2 and 7.7 MiB.
+
+Claude probe: 4/4 local and 4/4 peer, with all fields, in both variants.
