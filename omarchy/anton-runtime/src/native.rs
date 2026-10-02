@@ -2033,8 +2033,10 @@ mod tests {
                 .is_ok()
         );
     }
+    /// Each lease and write releases the lock before closing it, so repeated
+    /// cycles never find it held by a child a sibling thread spawned.
     #[test]
-    fn checkpoint_lock_waits_out_concurrent_process_spawns() {
+    fn checkpoint_cycles_release_the_lock_while_siblings_spawn() {
         let fixture = Fixture::new();
         let owner = fixture.root.join(".herdr-observatory-install");
         std::fs::write(&owner, b"herdr.observatory\n").unwrap();
@@ -2051,6 +2053,45 @@ mod tests {
             failures += usize::from(result.is_err());
         }
         assert_eq!(failures, 0);
+    }
+    /// Genuine contention: another holder keeps the checkpoint lock for about
+    /// 100 ms, then releases it. The lease and the write each wait it out
+    /// within `LOCK_WAIT`; with no wait, `new` would record a busy lease.
+    #[test]
+    fn checkpoint_lease_and_write_wait_out_a_brief_holder() {
+        let fixture = Fixture::new();
+        let owner = fixture.root.join(".herdr-observatory-install");
+        std::fs::write(&owner, b"herdr.observatory\n").unwrap();
+        let state = fixture.root.join("state");
+        std::fs::create_dir(&state).unwrap();
+        let path = state.join("replay-checkpoints.lock");
+        // Holds the lock on its own open file description, so it conflicts
+        // with this thread's, until about 100 ms after it is taken.
+        let hold = || {
+            let (ready, taken) = std::sync::mpsc::channel();
+            let shared = path.clone();
+            let holder = std::thread::spawn(move || {
+                let file = common::open_owned(&shared, true, true).unwrap();
+                lock(&file, true, Duration::ZERO).unwrap();
+                let _unlock = common::Unlock(&file);
+                ready.send(()).unwrap();
+                std::thread::sleep(Duration::from_millis(100));
+            });
+            taken.recv().unwrap();
+            let probe = common::open_owned(&path, true, false).unwrap();
+            let _unlock = common::Unlock(&probe);
+            assert!(lock(&probe, true, Duration::ZERO).is_err());
+            holder
+        };
+        let holder = hold();
+        let started = Instant::now();
+        let mut cache = leased(&state, &owner);
+        assert!(started.elapsed() >= Duration::from_millis(50));
+        holder.join().unwrap();
+        let holder = hold();
+        assert!(cache.update(&BTreeMap::new(), true).is_ok());
+        holder.join().unwrap();
+        assert!(state.join("replay-checkpoints.json").exists());
     }
     /// Clears the per-run cursor fields so a golden comparison is stable.
     fn normalised(cursors: &Value) -> Value {
