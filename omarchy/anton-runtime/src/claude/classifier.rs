@@ -94,6 +94,10 @@ pub struct Classifier {
     /// The `\uXXXX` escape being decoded in a text value.
     #[serde(skip)]
     code: u16,
+    /// The last unit of this string was a high surrogate escape, so a low
+    /// one next completes its pair. A pass boundary loses the text anyway.
+    #[serde(skip)]
+    high: bool,
 }
 impl Default for Classifier {
     fn default() -> Self {
@@ -125,6 +129,7 @@ impl Default for Classifier {
             value: vec![],
             scan: vec![],
             code: 0,
+            high: false,
         }
     }
 }
@@ -369,6 +374,7 @@ impl Classifier {
     }
     fn string_byte(&mut self, ch: u8, id: &str, time: f64) -> Result<(), ()> {
         let mut unit = None;
+        let mut high = false;
         if self.utf != 0 {
             if !(self.lo..=self.hi).contains(&ch) {
                 return Err(());
@@ -383,11 +389,15 @@ impl Classifier {
             if self.hex == 4 {
                 self.hex = 0;
                 self.escape = 0;
+                // A pair is one character and one `WIDE` unit, as parsed; an
+                // unpaired surrogate is one replacement unit of its own.
+                let paired = std::mem::take(&mut self.high);
                 unit = match self.code {
                     0..=0x7f => Some(self.code as u8),
-                    0xdc00..=0xdfff => None,
+                    0xdc00..=0xdfff if paired => None,
                     _ => Some(WIDE),
                 };
+                high = (0xd800..=0xdbff).contains(&self.code);
             }
         } else if self.escape != 0 {
             if ch == b'u' {
@@ -413,6 +423,7 @@ impl Classifier {
             }
             self.lex = 0;
             self.key = 0;
+            self.high = false;
             return Ok(());
         } else if ch < 32 {
             return Err(());
@@ -436,6 +447,9 @@ impl Classifier {
             };
         } else {
             unit = Some(ch);
+        }
+        if unit.is_some() {
+            self.high = high;
         }
         if let Some(unit) = unit.filter(|_| self.key == 0) {
             self.unit(unit);
@@ -611,6 +625,7 @@ impl Classifier {
         }
         self.value.clear();
         self.scan.clear();
+        self.high = false;
     }
     /// Classifies the complete record once its terminating newline is fed.
     /// A lost `type` or `sessionId` is invalid for every kind: the record
@@ -1085,6 +1100,52 @@ mod tests {
             // An intact identity still classifies as the parsed path does.
             assert_eq!(classify(&[line.as_bytes()], false), expected(line));
         }
+    }
+
+    #[test]
+    fn classifier_reads_an_unpaired_surrogate_as_one_character() {
+        let tag = "<local-command-stdout>x</local-command-stdout>";
+        let text = |lead: &str| content(&format!("\"{lead}{tag}\""));
+        // serde rejects the unpaired forms; each reads as a replacement
+        // character, so the output tag after it is never the leading tag.
+        for (lead, parsed) in [
+            ("\\udc00", "\\ufffd"),
+            ("\\ud83d", "\\ufffd"),
+            ("\\ude00\\ud83d", "\\ufffd\\ufffd"),
+            ("\\ud83dx\\ude00", "\\ufffdx\\ufffd"),
+            ("\\ud83d\\ud83d\\ude00", "\\ufffd\\ud83d\\ude00"),
+            ("\\ud83d\\ude00", "\\ud83d\\ude00"),
+        ] {
+            let line = text(lead);
+            assert_eq!(whole(line.as_bytes()), expected(&text(parsed)), "{lead}");
+            // Up to the tag, one unit per parsed character.
+            let mut classifier = Classifier::default();
+            assert!(classifier.feed(&line.as_bytes()[..line.find(tag).unwrap()], ID, now()));
+            let chars: String = serde_json::from_str(&format!("\"{parsed}\"")).unwrap();
+            assert_eq!(
+                classifier.scan,
+                crate::claude::text::units(&chars).collect::<Vec<_>>()
+            );
+            // A pair split between chunks of one pass is still one character.
+            let at = line.rfind("\\u").unwrap();
+            for at in [at, at + 3] {
+                let (head, tail) = line.as_bytes().split_at(at);
+                let outcome = classify(&[head, tail], false);
+                assert_eq!(outcome, expected(&text(parsed)), "{lead}");
+            }
+        }
+        assert_ne!(expected(&text("")), expected(&text("\\ufffd")));
+        // A high surrogate ending one string pairs with nothing in the next.
+        let after = |end: &str, lead: &str| {
+            user(&format!(
+                "\"x\":\"{end}\",\"message\":{{\"role\":\"user\",\"content\":\"{lead}{tag}\"}}"
+            ))
+        };
+        let line = after("\\ud83d", "\\udc00");
+        assert_eq!(
+            whole(line.as_bytes()),
+            expected(&after("\\ufffd", "\\ufffd"))
+        );
     }
 
     /// The persisted key bytes after feeding `head` and suspending.
