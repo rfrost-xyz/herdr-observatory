@@ -196,8 +196,15 @@ fn scan(path: &Path, id: &str, counts: &mut Counts) -> Option<Row> {
         if bytes.last() != Some(&b'\n') {
             counts.tick("lines.unterminated");
         }
-        if bytes.len() > LINE {
-            counts.tick("lines.oversized");
+        // The replay classifies a line over `LINE`, or one serde rejects.
+        let oversized = bytes.len() > LINE;
+        if oversized || serde_json::from_slice::<Value>(&bytes).is_err() {
+            let class = if oversized {
+                "lines.oversized"
+            } else {
+                "lines.fallback"
+            };
+            counts.tick(class);
             let mut classifier = Classifier::default();
             let outcome = if classifier.feed(&bytes, id, time) {
                 classifier.finish()
@@ -207,19 +214,19 @@ fn scan(path: &Path, id: &str, counts: &mut Counts) -> Option<Row> {
             let record = match outcome {
                 Outcome::Record(record) => *record,
                 Outcome::Unclassified(kind) => {
-                    counts.tick(format!("lines.oversized.unclassified.{kind}"));
+                    counts.tick(format!("{class}.unclassified.{kind}"));
                     unclassified = true;
                     continue;
                 }
                 Outcome::Invalid => {
-                    counts.tick("lines.oversized.invalid");
+                    counts.tick(format!("{class}.invalid"));
                     let before = flags(&shadow);
                     shadow.invalid();
                     flips(before, &shadow, "oversized_invalid", counts);
                     continue;
                 }
             };
-            counts.tick("lines.oversized.record");
+            counts.tick(format!("{class}.record"));
             let before = flags(&shadow);
             shadow.apply(&record);
             flips(before, &shadow, &category(&record), counts);

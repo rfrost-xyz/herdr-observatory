@@ -1358,8 +1358,9 @@ impl Row {
             self.claude.coverage_seq
         }
     }
-    /// Feeds one chunk of a line over `LINE` to the classifier. Malformed JSON
-    /// fails closed at once and the rest of the line is skipped unread.
+    /// Feeds one chunk of a line over `LINE`, or a whole line serde rejects, to
+    /// the classifier. Malformed JSON fails closed at once and the rest of the
+    /// line is skipped unread.
     fn oversized(&mut self, bytes: &[u8], terminated: bool, id: &str, time: f64) {
         let fresh = !self.skipping;
         self.skipping = !terminated;
@@ -1610,12 +1611,14 @@ pub fn resume(
             break;
         }
         row.offset = position(&mut stream)?;
-        match serde_json::from_slice::<Value>(&bytes)
-            .ok()
-            .and_then(|value| Record::from_value(&value, id, time))
-        {
-            Some(record) => row.apply(&record),
-            None => row.invalid(),
+        match serde_json::from_slice::<Value>(&bytes) {
+            Ok(value) => match Record::from_value(&value, id, time) {
+                Some(record) => row.apply(&record),
+                None => row.invalid(),
+            },
+            // serde rejects an unpaired surrogate escape, which the classifier
+            // reads, so a line it rejects is classified as an oversized one.
+            Err(_) => row.oversized(&bytes, true, id, time),
         }
     }
     if let Some(classifier) = &mut row.claude.classifier {
@@ -2751,6 +2754,40 @@ mod replay_tests {
             let (row, _) = passes(&fixture, &path, None);
             assert!(!row.valid && !row.compactions_valid && !row.turns.valid);
             assert_eq!(totals(&row), [(); 5].map(|_| Value::Null));
+        }
+    }
+
+    #[test]
+    fn unpaired_surrogate_escapes_are_read_alike_at_every_line_size() {
+        let fixture = tests::Fixture::new();
+        let good = assistant("msg_a", 1, "\"end_turn\"", [1, 2, 3, 4]);
+        let next = assistant("msg_c", 9, "\"end_turn\"", [1, 0, 0, 0]);
+        // Text cut inside a surrogate pair, as JS truncation can write it.
+        for text in ["a\\ud83d", "\\udc00a", "\\ud83dx\\ude00", "\\ude00\\ud83d"] {
+            let cut = user(2).replace("synthetic", text);
+            for line in [cut.clone(), lead_pad(&cut, LINE)] {
+                let lines = [good.clone(), line, next.clone()];
+                let path =
+                    fixture.file("slug", &format!("{ID}.jsonl"), &(header() + &body(&lines)));
+                let (row, _) = passes(&fixture, &path, None);
+                assert!(row.valid && row.compactions_valid, "{text}");
+                assert_eq!(totals(&row)[0], json!(9), "{text}");
+            }
+        }
+        // Lines both paths reject still fail closed at 64 KiB or less.
+        for bad in [
+            "{\"type\":\"user\",\"a\":01}",
+            "{\"type\":\"user\"} x",
+            "",
+            " ",
+        ] {
+            let path = fixture.file(
+                "slug",
+                &format!("{ID}.jsonl"),
+                &(header() + &body(&[good.clone(), bad.into()])),
+            );
+            let (row, _) = passes(&fixture, &path, None);
+            assert!(!row.valid && totals(&row)[0].is_null(), "{bad}");
         }
     }
 
