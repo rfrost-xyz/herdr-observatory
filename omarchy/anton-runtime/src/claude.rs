@@ -1574,6 +1574,12 @@ impl Row {
                 }
             }
             Turn::Abort => {
+                // After a slash command's local output, an abort with no
+                // turn running shows the command ran the model: its interval
+                // is unseen, so accumulated coverage is unknown.
+                if self.claude.local_idle {
+                    self.turns_unknown();
+                }
                 self.confirm();
                 // A proven end, even when `confirm` rejected the start.
                 self.claude.ambiguous = false;

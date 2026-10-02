@@ -474,7 +474,7 @@ fn turns_pending_start_needs_an_assistant_record_including_synthetic() {
     for (next, valid) in [
         (user(20, "second", ""), true),
         (system("turn_duration", 20), false),
-        (user(20, "[Request interrupted by user]", ""), true),
+        (user(20, "[Request interrupted by user]", ""), false),
     ] {
         let mut lines = ended.to_vec();
         lines.push(next.clone());
@@ -1827,6 +1827,37 @@ fn turns_input_taken_after_a_record_lost_while_idle_is_ambiguous() {
 }
 
 #[test]
+fn turns_command_running_the_model_after_its_local_output_is_unknown() {
+    let ended = vec![
+        user(1, "hello", ""),
+        assistant(2, "msg_a", "\"end_turn\""),
+        system("turn_duration", 3),
+        user(10, "<command-name>/review</command-name>", ""),
+        user(11, "<local-command-stdout>ok</local-command-stdout>", ""),
+    ];
+    // An abort with no turn running ends the command's unseen turn.
+    let mut lines = ended.clone();
+    lines.push(user(20, "[Request interrupted by user]", ""));
+    let row = run(&lines);
+    assert!(!row.turns.valid && !row.claude.local_idle && row.claude.abort_adjacent);
+    assert_eq!(row.turns.last_duration, Some(2));
+    // The documented limit: input queued and taken after the output, before
+    // any assistant record, cannot be told from input queued before a local
+    // command, so it opens the next turn
+    // (`turns_join_needs_a_dequeue_or_remove_and_each_join_consumes_it`).
+    let mut lines = ended;
+    lines.extend([
+        queue(12),
+        operation(13, "remove"),
+        user(12, "more", ""),
+        assistant(14, "msg_b", "\"tool_use\""),
+    ]);
+    let row = run(&lines);
+    assert!(!row.claude.ambiguous && row.turns.valid);
+    assert_eq!(row.turns.start, Some(second(12)));
+}
+
+#[test]
 fn turns_input_taken_while_a_start_is_pending_is_ambiguous() {
     // Found by the ground-truth fuzzer: a notification queued and taken
     // before the first assistant record is input to the pending turn, so it
@@ -2237,6 +2268,13 @@ impl Story {
         self.tick(false);
         let line = self.user("<local-command-stdout>ok</local-command-stdout>", "");
         self.push(line, "model-echo-output");
+        // An abort before its first assistant record. A kill there leaves no
+        // record of the model running, and input taken there cannot be told
+        // from input queued before a local command, which opens the next
+        // turn: both are the D7 assumption itself, so neither is generated.
+        if self.chance(100) {
+            return self.abort();
+        }
         for _ in 0..1 + self.random.below(3) {
             self.tick(false);
             let line = self.assistant("\"tool_use\"", true);
@@ -2247,6 +2285,11 @@ impl Story {
             self.enqueue();
             self.tick(false);
             self.take();
+        }
+        match self.random.below(10) {
+            0 => return self.abort(),
+            1 => return self.kill(),
+            _ => {}
         }
         self.tick(false);
         let line = self.assistant("\"end_turn\"", true);
