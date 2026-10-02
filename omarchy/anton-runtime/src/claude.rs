@@ -1885,7 +1885,9 @@ fn position(stream: &mut BufReader<File>) -> Result<u64> {
 /// starts after the header. A pass reads at most `TAIL` bytes and stops at
 /// `deadline`. A line it cannot finish, at the `TAIL` bound, the end of the
 /// file or the deadline, waits for the next pass, which reads it whole; only
-/// a line that begins a pass and spans `TAIL` bytes is split across passes.
+/// a line that begins a pass and spans `TAIL` bytes is split across passes,
+/// and only at `TAIL` multiples from its start, so a line observed while
+/// being written reads as a replay of the whole file does.
 pub fn replay(
     root: &Path,
     path: &Path,
@@ -1950,7 +1952,10 @@ pub fn resume(
 /// Applies the lines from `row.offset` up to `end` until `deadline`. A line
 /// over `LINE` this pass begins but cannot finish is rewound, so the next pass
 /// reads it whole, unless it began the pass and already spans `TAIL` bytes;
-/// only then does its classifier state cross the pass boundary (D3).
+/// only then does its classifier state cross the pass boundary (D3). A line
+/// this pass continues and cannot finish within `TAIL` bytes (at the end of
+/// the file or the deadline) keeps the offset and classifier state the pass
+/// found, so the line is only ever cut at `TAIL` multiples from its start.
 fn advance(
     row: &mut Row,
     stream: &mut BufReader<File>,
@@ -1963,6 +1968,11 @@ fn advance(
         .seek(SeekFrom::Start(row.offset))
         .map_err(|_| "Claude session seek failed")?;
     let first = row.offset;
+    // A line over `TAIL` this pass continues, as the previous pass left it.
+    let continued = row
+        .skipping
+        .then(|| row.claude.classifier.clone())
+        .flatten();
     // The start of the line over `LINE` that this pass began, while unfinished.
     let mut open = None;
     while position(stream)? < end && Instant::now() < deadline {
@@ -2007,6 +2017,17 @@ fn advance(
             row.offset = start;
             row.skipping = false;
             row.claude.classifier = None;
+        }
+    }
+    // A continued line that ends this pass before `TAIL` bytes (at the end of
+    // the file or the deadline) is restored to where the pass found it, so
+    // its cuts fall only at `TAIL` multiples from its start, as in a replay
+    // of the whole file.
+    if let Some(classifier) = continued {
+        let unfinished = open.is_none() && row.skipping && row.claude.classifier.is_some();
+        if unfinished && row.offset - first < TAIL as u64 {
+            row.offset = first;
+            row.claude.classifier = Some(classifier);
         }
     }
     Ok(())
@@ -3424,6 +3445,44 @@ mod replay_tests {
         assert_eq!(get(&row, "total_input"), json!(8 + 15 + 1));
         assert_eq!(coverage(&row), coverage(&run(&lines)));
         assert_eq!(coverage(&row), coverage(&passes(&fixture, &path, None).0));
+    }
+
+    /// A line over `TAIL` observed mid-write is cut only at `TAIL` multiples
+    /// from its start, so it reads as a whole-file replay does.
+    #[test]
+    fn zz_review_line_over_tail_written_in_two_steps_loses_its_timestamp() {
+        let fixture = tests::Fixture::new();
+        let late = assistant("msg_b", 2, "\"end_turn\"", [5, 5, 5, 5]);
+        // Every consumed key sits after a leading pad that spans `TAIL`.
+        let big = lead_pad(&late, TAIL + 1000 - late.len() - "\"pad\":\"\",".len());
+        assert_eq!(big.len(), TAIL + 1000);
+        let lines = [
+            user(0),
+            assistant("msg_a", 1, "\"end_turn\"", [1, 2, 3, 4]),
+            big.clone(),
+            assistant("msg_c", 9, "\"end_turn\"", [1, 0, 0, 0]),
+        ];
+        let text = header() + &body(&lines);
+        let start = (header().len() + body(&lines[..2]).len()) as u64;
+        let partial = start as usize + big.find(&stamp(2)).unwrap() + 5;
+        let path = fixture.file("slug", &format!("{ID}.jsonl"), &text[..partial]);
+        // The first pass rewinds the line it began, the second splits it at
+        // `TAIL`, and later passes wait at that cut while the file ends
+        // inside the timestamp.
+        let row = pass(&fixture, &path, None);
+        assert_eq!(row.offset, start);
+        let mut row = pass(&fixture, &path, Some(row));
+        for _ in 0..2 {
+            assert_eq!(row.offset, start + TAIL as u64);
+            assert!(row.skipping && row.claude.classifier.is_some() && !row.caught_up);
+            row = pass(&fixture, &path, Some(row));
+        }
+        std::fs::write(&path, &text).unwrap();
+        let (row, _) = passes(&fixture, &path, Some(row));
+        let whole = passes(&fixture, &path, None).0;
+        assert_eq!(get(&whole, "total_input"), json!(8 + 15 + 1));
+        assert_eq!(coverage(&row), coverage(&whole));
+        assert_eq!(coverage(&row), coverage(&run(&lines)));
     }
 
     #[test]
