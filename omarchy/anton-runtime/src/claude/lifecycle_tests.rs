@@ -572,6 +572,61 @@ fn turns_pending_start_needs_an_assistant_record_including_synthetic() {
     assert!(row.claude.pending_start.is_none());
 }
 
+/// After a slash command's local output the command may still be running
+/// the model. A task notification, peer or coordinator message can enter
+/// that turn without queue evidence, so it is ambiguous (review round 11).
+/// Human and shape prompts are queued and taken, so they still open a turn.
+#[test]
+fn turns_injected_trigger_after_local_output_is_ambiguous() {
+    let note = notice("agent-y", "completed");
+    let lines = |trigger: String| {
+        vec![
+            user(1, "hello", ""),
+            assistant(2, "msg_a", "\"end_turn\""),
+            system("turn_duration", 3),
+            user(10, "<command-name>/review</command-name>", ""),
+            user(11, "<local-command-stdout>ok</local-command-stdout>", ""),
+            trigger,
+            assistant(14, "msg_b", "\"tool_use\""),
+            assistant(19, "msg_c", "\"end_turn\""),
+            system("turn_duration", 20),
+        ]
+    };
+    for trigger in [
+        user(12, &note, "\"origin\":{\"kind\":\"task-notification\"}"),
+        queued(12, "task-notification", &note),
+        user(
+            12,
+            "synthetic",
+            "\"isMeta\":true,\"origin\":{\"kind\":\"peer\"}",
+        ),
+        user(12, "synthetic", "\"origin\":{\"kind\":\"coordinator\"}"),
+    ] {
+        let all = lines(trigger.clone());
+        // The command turn runs 10..20: no start at 12 is ever published.
+        let row = run(&all[..7]);
+        let published = row.published_turns();
+        assert!(!published.current_known, "{trigger}");
+        assert!(row.claude.ambiguous && !row.claude.local_idle, "{trigger}");
+        let row = run(&all);
+        assert!(!row.turns.valid && !row.claude.ambiguous, "{trigger}");
+        assert_eq!(row.turns.last_duration, Some(2), "{trigger}");
+        assert!(row.turns.finished.len() == 1, "{trigger}");
+    }
+    for trigger in [
+        user(12, "second", ""),
+        user(12, "second", "\"origin\":{\"kind\":\"human\"}"),
+    ] {
+        let row = run(&lines(trigger.clone()));
+        assert!(row.turns.valid, "{trigger}");
+        assert_eq!(
+            finished(&row, "user", 12),
+            Some((second(12), second(20), "completed".into())),
+            "{trigger}"
+        );
+    }
+}
+
 #[test]
 fn turns_local_output_never_clears_a_pending_prompt() {
     // Review round 5: local output cleared any pending start without making
@@ -2747,6 +2802,25 @@ impl Story {
         // turn: both are the D7 assumption itself, so neither is generated.
         if self.chance(100) {
             return self.abort();
+        }
+        // A notification, peer or coordinator message entering the running
+        // command turn before its first response, with no queue record
+        // (review round 11).
+        if self.chance(300) {
+            self.tick(false);
+            let line = match self.random.below(4) {
+                0 => self.queued("task-notification", &notice("agent-y", "completed")),
+                1 => self.user(
+                    &notice("agent-y", "completed"),
+                    "\"origin\":{\"kind\":\"task-notification\"}",
+                ),
+                2 => self.user(
+                    "synthetic",
+                    "\"isMeta\":true,\"origin\":{\"kind\":\"peer\"}",
+                ),
+                _ => self.user("synthetic", "\"origin\":{\"kind\":\"coordinator\"}"),
+            };
+            self.push(line, "model-echo-injected");
         }
         for _ in 0..1 + self.random.below(3) {
             self.tick(false);

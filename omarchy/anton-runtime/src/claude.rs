@@ -632,8 +632,11 @@ pub struct ClaudeCursor {
     /// Local-command output cleared a pending slash-command start (D7). The
     /// command is taken to have run locally, but it may still be running
     /// the model, so the current turn is unknown until a trigger,
-    /// `turn_duration`, an abort or ambiguity. Only set while idle and not
-    /// ambiguous.
+    /// `turn_duration`, an abort or ambiguity. A task notification (user
+    /// origin or queued attachment), peer or coordinator trigger can enter
+    /// that turn with no queue record, so while this is set it is ambiguous;
+    /// a human-origin or shape prompt opens a pending start normally. Only
+    /// set while idle and not ambiguous.
     pub local_idle: bool,
     /// A record named another session (D2): every value of this binding
     /// stays unknown, and later records feed nothing, until a fresh replay.
@@ -952,6 +955,7 @@ pub(crate) const fn consumed(kind: u8) -> u64 {
 }
 const ORIGINS: &[&str] = &["human", "task-notification", "peer", "coordinator"];
 pub const ORIGIN_OTHER: u8 = ORIGINS.len() as u8 + 1;
+pub const ORIGIN_HUMAN: u8 = 1;
 pub const ORIGIN_NOTIFICATION: u8 = 2;
 const MODES: &[&str] = &["prompt", "task-notification"];
 /// `queue-operation` operations; a dequeue or remove takes queued input.
@@ -1650,8 +1654,17 @@ impl Row {
             Turn::Trigger => {
                 block.abort_adjacent = false;
                 block.silent_end = false;
-                block.local_idle = false;
+                let local = std::mem::take(&mut block.local_idle);
                 self.turns.supported = true;
+                // After local output the command may still run the model. A
+                // task notification, peer or coordinator message can enter
+                // that turn with no queue record, so its start is unknown.
+                // Human and shape prompts are queued and taken instead.
+                let injected = record.kind == KIND_USER && record.origin > ORIGIN_HUMAN
+                    || record.kind == KIND_ATTACHMENT;
+                if local && injected {
+                    return self.ambiguous();
+                }
                 // Second 0 is no valid start (`Turns::begin`): a missing stamp.
                 let (Some(key), Some(second)) = (record.uuid.clone(), second.filter(|s| *s > 0))
                 else {
