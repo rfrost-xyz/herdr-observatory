@@ -823,7 +823,8 @@ pub struct Record {
     /// `toolUseResult.status` is `async_launched`.
     pub launch: bool,
     /// `toolUseResult.status` starts background work: `async_launched`,
-    /// `teammate_spawned` or `remote_launched`.
+    /// `teammate_spawned`, `remote_launched` or `forked` (a forked skill,
+    /// backgrounded by default).
     pub spawn: bool,
     /// sha256 of a valid `agentId` or `resumedAgentId`; `*_bad` marks one
     /// present with any other value.
@@ -1171,7 +1172,7 @@ impl Record {
                 self.launch = value == "async_launched";
                 self.spawn = matches!(
                     value.as_str(),
-                    Some("async_launched" | "teammate_spawned" | "remote_launched")
+                    Some("async_launched" | "teammate_spawned" | "remote_launched" | "forked")
                 );
             }
             29 => (self.agent, self.agent_bad) = agent(value),
@@ -1609,7 +1610,6 @@ impl Row {
             .and_then(|text| text.task.as_deref())
         else {
             self.valid = false;
-            self.claude.clean = false;
             return;
         };
         let status = match record.text.as_ref().map_or(0, |text| text.status) {
@@ -1663,6 +1663,12 @@ impl Row {
                 // turn the command ran or, after a local command, opened
                 // the next turn at its take: its record keeps the stamp of
                 // the time it was queued, so its start is unknown either way.
+                // `/fork` and `/subtask` write only `system/local_command`
+                // records and start a background agent, so such a record
+                // masks the current turn.
+                if record.kind == KIND_SYSTEM && record.subtype == SUBTYPE_LOCAL_COMMAND {
+                    block.clean = false;
+                }
                 if local && block.pending_command && block.queued_since_start.is_some() {
                     return self.ambiguous();
                 }

@@ -1322,6 +1322,7 @@ fn turns_current_turn_is_published_only_from_a_clean_state() {
         "{\"status\":\"async_launched\",\"taskId\":\"w1\",\"taskType\":\"local_workflow\"}",
         "{\"status\":\"teammate_spawned\",\"agent_id\":\"mate-a\",\"teammate_id\":\"mate-a\"}",
         "{\"status\":\"remote_launched\",\"taskId\":\"r1\"}",
+        "{\"success\":true,\"commandName\":\"s\",\"status\":\"forked\",\"agentId\":\"agent-f\",\"background\":true}",
     ] {
         let mut lines = head();
         next(&mut lines, 10, user(10, "next", human));
@@ -1331,8 +1332,8 @@ fn turns_current_turn_is_published_only_from_a_clean_state() {
     }
     // A successful resume masks the current turn even for an agent this file
     // did not launch, and so does a notification taken into the turn without
-    // a final status (a resume by the user or another agent) or with an
-    // unreadable task id.
+    // a final status (a resume by the user or another agent); one with an
+    // unreadable task id is masked through invalid children.
     let resume = tool(
         12,
         "{\"success\":true,\"message\":\"synthetic\",\"resumedAgentId\":\"agent-z\"}",
@@ -1352,6 +1353,23 @@ fn turns_current_turn_is_published_only_from_a_clean_state() {
         lines.push(assistant(13, "msg_z", "\"tool_use\""));
         assert_eq!(current(&lines), None, "{lines:?}");
     }
+    // `/fork` or `/subtask` writes only `system/local_command` records and may
+    // start a background agent, so local output masks the next turn too.
+    let mut lines = head();
+    lines.extend([
+        record(
+            "system",
+            5,
+            "\"subtype\":\"local_command\",\"content\":\"<command-name>/fork</command-name>\"",
+        ),
+        record(
+            "system",
+            5,
+            "\"subtype\":\"local_command\",\"content\":\"<local-command-stdout>synthetic</local-command-stdout>\"",
+        ),
+    ]);
+    next(&mut lines, 10, user(10, "next", human));
+    assert_eq!(current(&lines), None);
     let zero = ended(3, 1).replace(
         "\"durationMs\"",
         "\"pendingBackgroundAgentCount\":0,\"pendingWorkflowCount\":0,\"durationMs\"",
