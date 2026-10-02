@@ -609,3 +609,18 @@ The four-lens review of `ca52bda` found 2 blocking, 3 non-blocking and 1 nit fin
 **Checkpoint test failure.** The later read failure has a plausible cause that is not confirmed. A clean-up of leaked `/tmp/anton-native-*` directories from a killed run matched the old unit prefix. A sweep reproduced the read failure 150 times in 150 runs under the old prefix, and 0 times in 150 under the new one. Leaked directories from one killed run were present and have been removed. The new diagnostic records enough to confirm the cause if the failure recurs.
 
 **Gates:** fmt and clippy pass. The full suite passes: lib 208, main 19, native_navigation 6, native_process 32.
+
+## Review round 12 and remediation
+
+The four-lens review of `a97f2ac` found **no blocking findings**: 4 non-blocking and 1 nit. All are fixed, and each fix has a regression test that failed before it.
+- **Classifier depth bound** (`b34b526`). A well-formed record nested past the 128-container bound was rejected wholesale. It now follows the coverage table, so totals stay published.
+- **Queued prompt attachments outside a turn** (`2b56810`). These are now ambiguous, and an idle take clears abort adjacency. The fuzzer gave 311 violations with this fix reverted and 0 with it (319,933 records).
+- **Request row rejected by the peer** (`b8bb423`). When the peer's own validation rejects the request row (a peer clock step), the row is withheld.
+- **Fixture sweep** (`f36b7c2`). It now also needs an hour of inactivity, which is safe across pid namespaces.
+- **Checkpoint diagnosis** (`5a2fb76`). It is printed at every failing step.
+
+**Corpus:** unchanged (0 of 59 lines).
+
+**Gates:** fmt and clippy are clean. The full suite passes: lib 215, main 19, native_navigation 6, native_process 32.
+
+**Commit signing:** these five commits were made unsigned by the fix agent, because 1Password SSH signing failed ("agent returned an error"). They were re-signed once signing worked again.
