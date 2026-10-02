@@ -1622,8 +1622,8 @@ struct World {
     total: u64,
 }
 
-/// What `native::turn_timing` publishes: the current turn, the last interval
-/// and the accumulated total, each `None` while unknown.
+/// What `native::turn_timing` publishes for a Claude row: the current turn,
+/// the last interval and the accumulated total, each `None` while unknown.
 #[derive(Clone, Debug, Default, PartialEq)]
 struct Published {
     current: Option<(bool, Option<u64>)>,
@@ -1631,7 +1631,8 @@ struct Published {
     total: Option<u64>,
 }
 impl Published {
-    fn of(turns: &Turns) -> Self {
+    fn of(row: &Row) -> Self {
+        let turns = row.published_turns();
         let last = match (turns.last_duration, &turns.last_outcome, turns.last_end) {
             (Some(duration), Some(outcome), Some(end)) => Some((duration, outcome.clone(), end)),
             _ => None,
@@ -1653,31 +1654,60 @@ impl Published {
             total: Some(world.total),
         }
     }
-    /// The fields that are neither the truth, unknown, nor unchanged.
-    fn wrong(&self, previous: &Self, truth: &Self) -> Vec<&'static str> {
-        fn bad<T: PartialEq>(new: &Option<T>, old: &Option<T>, truth: &Option<T>) -> bool {
-            new.is_some() && new != old && new != truth
+    /// The fields that are neither the truth nor unknown, and the values
+    /// allowed although they are not the truth: one unchanged from
+    /// `previous` across a kill, which writes no record, and an unchanged
+    /// last valid interval of an `earlier` truth while accumulated coverage
+    /// is unknown.
+    fn wrong(
+        &self,
+        previous: &Self,
+        truth: &Self,
+        killed: bool,
+        earlier: &[World],
+    ) -> (Vec<&'static str>, [usize; 2]) {
+        let (mut wrong, mut allowed) = (vec![], [0; 2]);
+        let real = || earlier.iter().any(|w| Self::truth(w).last == self.last);
+        for (field, differs, unchanged) in [
+            (
+                "current",
+                self.current.is_some() && self.current != truth.current,
+                self.current == previous.current,
+            ),
+            (
+                "last",
+                self.last.is_some() && self.last != truth.last,
+                self.last == previous.last,
+            ),
+            (
+                "total",
+                self.total.is_some() && self.total != truth.total,
+                self.total == previous.total,
+            ),
+        ] {
+            if !differs {
+                continue;
+            }
+            if killed && unchanged {
+                allowed[0] += 1;
+            } else if field == "last" && unchanged && self.total.is_none() && real() {
+                allowed[1] += 1;
+            } else {
+                wrong.push(field);
+            }
         }
-        let mut wrong = vec![];
-        if bad(&self.current, &previous.current, &truth.current) {
-            wrong.push("current");
-        }
-        if bad(&self.last, &previous.last, &truth.last) {
-            wrong.push("last");
-        }
-        if bad(&self.total, &previous.total, &truth.total) {
-            wrong.push("total");
-        }
-        wrong
+        (wrong, allowed)
     }
 }
 
 /// One generated session: each line (`None` is unparseable), the truth after
-/// it, and a tag naming the shape that wrote it.
+/// it, whether a kill left it unrecorded, and a tag naming the shape that
+/// wrote it.
 struct Story {
     random: Seeded,
     lines: Vec<Option<String>>,
     truth: Vec<World>,
+    killed: Vec<bool>,
     tags: Vec<String>,
     world: World,
     at: u64,
@@ -1689,6 +1719,8 @@ struct Story {
     oversized: bool,
     /// Input still queued when a turn ended starts the next turn.
     queued_left: bool,
+    /// A kill ended the last turn and no trigger has followed it.
+    unrecorded: bool,
     /// When the oldest input still in the queue was queued.
     enqueued: Option<u64>,
 }
@@ -1698,6 +1730,7 @@ impl Story {
             random: Seeded(seed),
             lines: vec![],
             truth: vec![],
+            killed: vec![],
             tags: vec![],
             world: World::default(),
             at: 100,
@@ -1706,6 +1739,7 @@ impl Story {
             faults,
             oversized,
             queued_left: false,
+            unrecorded: false,
             enqueued: None,
         }
     }
@@ -1791,10 +1825,14 @@ impl Story {
             let (fault, faulty) = match self.random.below(6) {
                 0 => ("lost", None),
                 1 => ("bad-stamp", Some(restamp(&text, "not-a-time"))),
-                2 => (
-                    "epoch-stamp",
-                    Some(restamp(&text, "1970-01-01T00:00:00.500Z")),
-                ),
+                2 => {
+                    let stamp = if self.chance(500) {
+                        "1970-01-01T00:00:00Z"
+                    } else {
+                        "1970-01-01T00:00:00.500Z"
+                    };
+                    ("epoch-stamp", Some(restamp(&text, stamp)))
+                }
                 3 => (
                     "no-session",
                     Some(text.replace(&format!("\"sessionId\":\"{ID}\","), "")),
@@ -1817,6 +1855,7 @@ impl Story {
         }
         self.lines.push(line);
         self.truth.push(self.world.clone());
+        self.killed.push(self.unrecorded);
         self.tags.push(tag);
     }
     /// Pushes a turn-body line, sometimes stamped before earlier records.
@@ -1916,6 +1955,7 @@ impl Story {
     fn kill(&mut self) {
         self.at += 1 + self.random.below(30);
         self.end("killed");
+        self.unrecorded = true;
         self.enqueued = None;
         self.at += 2 + self.random.below(10);
         self.tick(true);
@@ -1997,6 +2037,7 @@ impl Story {
         let (line, tag) = self.trigger();
         self.world.running = Some(self.at);
         self.push(line, tag);
+        self.unrecorded = false;
         self.enqueued = None;
         if tag == "command" && self.chance(500) {
             let line = self.user("expanded", "\"isMeta\":true");
@@ -2184,6 +2225,18 @@ fn round_trip(row: &mut Row) {
     row.turns = serde_json::from_value(serde_json::to_value(&row.turns).unwrap()).unwrap();
     row.claude = serde_json::from_value(serde_json::to_value(&row.claude).unwrap()).unwrap();
 }
+/// Every wrong field with its trail, and the counts of values allowed
+/// across a kill and as the last valid interval (`Published::wrong`).
+#[derive(Default)]
+struct Found {
+    wrong: Vec<String>,
+    allowed: [usize; 2],
+}
+impl Found {
+    fn push(&mut self, wrong: String) {
+        self.wrong.push(wrong);
+    }
+}
 /// Checks one published state against the truth after `index` lines and the
 /// previous published state, recording every wrong field with its trail.
 fn check(
@@ -2192,13 +2245,18 @@ fn check(
     story: &Story,
     lines: usize,
     label: &str,
-    found: &mut Vec<String>,
+    found: &mut Found,
 ) -> Published {
-    let published = Published::of(&row.turns);
-    let world = lines
+    let published = Published::of(row);
+    let (world, killed) = lines
         .checked_sub(1)
-        .map_or_else(World::default, |at| story.truth[at].clone());
-    let mut wrong = published.wrong(previous, &Published::truth(&world));
+        .map_or((World::default(), false), |at| {
+            (story.truth[at].clone(), story.killed[at])
+        });
+    let truth = Published::truth(&world);
+    let (mut wrong, allowed) = published.wrong(previous, &truth, killed, &story.truth[..lines]);
+    found.allowed[0] += allowed[0];
+    found.allowed[1] += allowed[1];
     if !row.gate(now()) {
         wrong.push("gate");
     }
@@ -2212,9 +2270,9 @@ fn check(
 }
 /// Applies every line in memory, checking after each one, and returns the
 /// published state after each line.
-fn replay_memory(story: &Story, label: &str, found: &mut Vec<String>) -> Vec<Published> {
+fn replay_memory(story: &Story, label: &str, found: &mut Found) -> Vec<Published> {
     let mut row = Row::new([1, 2], 0, now());
-    let mut previous = Published::of(&row.turns);
+    let mut previous = Published::of(&row);
     let mut published = vec![];
     for (index, line) in story.lines.iter().enumerate() {
         match line
@@ -2243,7 +2301,7 @@ fn replay_file(
     memory: &[Published],
     seed: u64,
     label: &str,
-    found: &mut Vec<String>,
+    found: &mut Found,
 ) -> usize {
     use std::io::Write;
     let fixture = super::tests::Fixture::new();
@@ -2267,7 +2325,7 @@ fn replay_file(
         .unwrap();
     let mut random = Seeded(seed ^ 0x5bd1_e995);
     let (mut row, mut written, mut restarts) = (None::<Row>, 0, 0);
-    let initial = Published::of(&Turns::default());
+    let initial = Published::default();
     let after = |lines: usize| lines.checked_sub(1).map_or(&initial, |at| &memory[at]);
     while written < body.len() {
         let size = match random.below(8) {
@@ -2314,7 +2372,7 @@ fn replay_file(
 #[test]
 fn turns_ground_truth_fuzz_never_publishes_a_wrong_value() {
     let started = std::time::Instant::now();
-    let (mut found, mut records, mut restarts) = (vec![], 0, 0);
+    let (mut found, mut records, mut restarts) = (Found::default(), 0, 0);
     for (base, sessions, file) in [
         (0x9e37_79b9_7f4a_7c15_u64, 3000, false),
         (0xc2b2_ae3d_27d4_eb4f, 160, true),
@@ -2331,15 +2389,18 @@ fn turns_ground_truth_fuzz_never_publishes_a_wrong_value() {
             }
         }
     }
+    let wrong = &found.wrong;
+    let [killed, last] = found.allowed;
     eprintln!(
-        "ground-truth turn fuzz: {records} records, {} violations, {restarts} restarts in {:?}",
-        found.len(),
+        "ground-truth turn fuzz: {records} records, {} violations, {restarts} restarts, \
+         {killed} unchanged across a kill, {last} last valid intervals in {:?}",
+        wrong.len(),
         started.elapsed()
     );
     assert!(
-        found.is_empty() && restarts == 0,
+        wrong.is_empty() && restarts == 0,
         "{} violations, {restarts} restarts:\n{}",
-        found.len(),
-        found[..found.len().min(8)].join("\n")
+        wrong.len(),
+        wrong[..wrong.len().min(8)].join("\n")
     );
 }
