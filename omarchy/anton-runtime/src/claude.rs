@@ -1505,9 +1505,17 @@ impl Row {
                 block.queued_since_start = None;
                 block.silent_end = active;
             }
+            // An assistant record with no turn running and no pending start
+            // shows a turn whose trigger was not seen (a record lost while
+            // idle, or a command that ran the model after its local output),
+            // so a turn of unknown start may be running. A `<synthetic>`
+            // record written directly after an abort shows nothing.
             Turn::Assistant => {
-                block.abort_adjacent = false;
-                if block.lost_idle && !active && block.pending_start.is_none() {
+                let adjacent = std::mem::take(&mut block.abort_adjacent);
+                if (block.lost_idle || !adjacent && !block.ambiguous)
+                    && !active
+                    && block.pending_start.is_none()
+                {
                     return self.ambiguous();
                 }
                 self.confirm();
@@ -2713,7 +2721,8 @@ mod replay_tests {
             system("compact_boundary", 3).replace("\"system\",", "\"system\",\"forkedFrom\":{},");
         let snapshot =
             "{\"type\":\"file-history-snapshot\",\"messageId\":\"m\",\"snapshot\":{}}".to_owned();
-        let row = run(&[good.clone(), fork, compact, snapshot]);
+        // A prompt opens the turn, so its assistant record confirms a start.
+        let row = run(&[user(0), good.clone(), fork, compact, snapshot]);
         assert_eq!(
             totals(&row),
             [json!(8), json!(2), json!(3), json!(4), json!(1)]
@@ -3151,8 +3160,11 @@ mod replay_tests {
     fn oversized_records_crossing_tail_are_classified_across_passes() {
         let fixture = tests::Fixture::new();
         let selected = iterations(&[("message", [1, 1, 1, 1]), ("advisor_message", [9, 9, 9, 9])]);
+        // A complete first turn, so the oversized prompt opens the next one.
         let lines = vec![
+            user(0),
             assistant("msg_a", 1, "\"end_turn\"", [1, 2, 3, 4]),
+            system("turn_duration", 1),
             lead_pad(&padded_user(2, LINE), TAIL),
             content_pad(
                 &assistant_with(

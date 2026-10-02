@@ -398,9 +398,14 @@ fn turns_ignore_metadata_tool_results_and_wrapper_output() {
         record("attachment", 10, "\"attachment\":{\"type\":\"fixture\"}"),
     ];
     for line in &ignored {
-        let row = run(&[line.clone(), assistant(12, "msg_a", "\"end_turn\"")]);
+        let row = run(std::slice::from_ref(line));
         assert!(row.turns.valid && !row.turns.supported, "{line}");
         assert!(row.turns.active.is_none() && row.claude.pending_start.is_none());
+        // No start opened, so an assistant record that follows confirms
+        // nothing: it shows a turn whose trigger was not seen (D7).
+        let row = run(&[line.clone(), assistant(12, "msg_a", "\"end_turn\"")]);
+        assert!(!row.turns.valid && !row.turns.supported, "{line}");
+        assert!(row.turns.active.is_none() && row.claude.ambiguous);
         // Inside a turn they neither end it nor start another.
         let row = run(&[
             user(5, "hello", ""),
@@ -660,6 +665,76 @@ fn turns_orphan_abort_and_orphan_turn_duration() {
     ] {
         let row = run(&lines);
         assert!(!row.turns.valid && row.turns.supported, "{lines:?}");
+    }
+}
+
+#[test]
+fn turns_assistant_record_with_no_turn_running_is_ambiguous() {
+    let ended = [
+        user(1, "hello", ""),
+        assistant(2, "msg_a", "\"end_turn\""),
+        system("turn_duration", 3),
+    ];
+    // After a proven end, an assistant record with no trigger shows a turn
+    // whose start was not seen: nothing about it is published.
+    let mut lines = ended.to_vec();
+    lines.push(assistant(10, "msg_b", "\"tool_use\""));
+    let row = run(&lines);
+    assert!(row.claude.ambiguous && !row.turns.valid);
+    let published = row.published_turns();
+    assert!(!published.current_known && published.last_duration == Some(2));
+    // Its end clears the ambiguity, and the next turn is published again,
+    // never the total.
+    lines.extend([
+        assistant(40, "msg_c", "\"end_turn\""),
+        system("turn_duration", 41),
+    ]);
+    let row = run(&lines);
+    assert!(!row.claude.ambiguous && !row.turns.valid);
+    assert_eq!(row.turns.last, Some(turn_key(ID, "user-1")));
+    lines.extend([user(50, "next", ""), assistant(51, "msg_d", "\"tool_use\"")]);
+    let row = run(&lines);
+    assert!(row.published_turns().current_known && !row.turns.valid);
+    assert_eq!(row.turns.start, Some(second(50)));
+    // A slash command that writes local output and then runs the model, with
+    // input joined to it: neither its interval nor the total is published.
+    let mut lines = ended.to_vec();
+    lines.extend([
+        user(10, "<command-name>/review</command-name>", ""),
+        user(11, "<local-command-stdout>ok</local-command-stdout>", ""),
+        assistant(12, "msg_b", "\"tool_use\""),
+        queue(20),
+        dequeue(30),
+        user(20, "more", ""),
+        assistant(31, "msg_c", "\"tool_use\""),
+        assistant(50, "msg_d", "\"end_turn\""),
+        system("turn_duration", 51),
+    ]);
+    let row = run(&lines);
+    assert!(!row.turns.valid && row.turns.last_duration == Some(2));
+    // A `<synthetic>` record written directly after an abort shows nothing,
+    // with or without a second abort record.
+    let synthetic =
+        assistant(21, "msg_s", "\"stop_sequence\"").replace("claude-fixture-1", "<synthetic>");
+    let marker = user(20, "[Request interrupted by user]", "");
+    let again = user(20, "stopped", "\"interruptedMessageId\":\"m-1\"");
+    for aborted in [vec![marker.clone()], vec![marker, again]] {
+        let mut lines = ended.to_vec();
+        lines.extend([user(10, "next", ""), assistant(11, "msg_b", "\"tool_use\"")]);
+        lines.extend(aborted);
+        lines.extend([
+            synthetic.clone(),
+            user(30, "third", ""),
+            assistant(31, "msg_c", "\"end_turn\""),
+            system("turn_duration", 40),
+        ]);
+        let row = run(&lines);
+        assert!(row.turns.valid && !row.claude.ambiguous);
+        assert_eq!(row.turns.total, 2 + 10 + 10);
+        // A second one is not adjacent to the abort.
+        lines.insert(lines.len() - 3, synthetic.replace("msg_s", "msg_t"));
+        let row = run(&lines);
+        assert!(!row.turns.valid && row.turns.last_duration == Some(10));
     }
 }
 
@@ -1311,8 +1386,13 @@ fn turns_user_record_without_origin_text_or_flag_is_unknown() {
     let row = run(&lines);
     assert!(!row.turns.valid && row.turns.last_duration == Some(2));
     assert_eq!(row.turns.last, Some(turn_key(ID, "user-1")));
-    // The same shape with a rule-3 flag stays ignored.
+    // The same shape with a rule-3 flag stays ignored: it opens no start, so
+    // the assistant record after it shows a turn whose trigger was not seen.
     lines[3] = image.replacen("\"message\"", "\"isMeta\":true,\"message\"", 1);
+    let row = run(&lines);
+    assert!(!row.turns.valid && row.turns.last_duration == Some(2));
+    // Without that record, the flagged line changes nothing.
+    lines.remove(4);
     let row = run(&lines);
     assert!(row.turns.valid && row.turns.last_duration == Some(60));
 }
@@ -2077,6 +2157,18 @@ impl Story {
             }
         };
         self.push(line, tag);
+        // A second abort record, and a `<synthetic>` record written directly
+        // after the abort, show no turn.
+        if self.chance(200) {
+            let line = self.user("stopped", "\"interruptedMessageId\":\"m-1\"");
+            self.push(line, "abort-again");
+        }
+        if self.chance(200) {
+            let line = self
+                .assistant("\"stop_sequence\"", true)
+                .replace("claude-fixture-1", "<synthetic>");
+            self.push(line, "abort-synthetic");
+        }
         if self.chance(500) {
             self.tick(false);
             let line = self.system("turn_duration");
@@ -2320,6 +2412,12 @@ impl Story {
                 self.end("completed");
                 let line = self.system("turn_duration");
                 self.push(line, "turn-duration");
+                // A repeated `turn_duration` shows a turn whose start was
+                // not seen: coverage becomes unknown, never wrong.
+                if self.chance(100) {
+                    let line = self.system("turn_duration");
+                    self.push(line, "turn-duration-again");
+                }
                 self.queued_left = queued;
             }
             55..=69 => {
