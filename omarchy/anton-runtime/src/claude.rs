@@ -1744,8 +1744,9 @@ impl Row {
                 if taken && active {
                     return;
                 }
-                // Injected input may enter a turn deferred while background
-                // agents ran, so a turn it opens is never dated (D7).
+                // Injected input may follow a turn whose background work is
+                // still pending, whose `turn_duration` is then measured from
+                // an earlier turn, so a turn it opens is never dated (D7).
                 block.clean &= !injected;
                 // A pending start that local-command output did not show to
                 // be a local command may be a turn killed before its first
@@ -1819,12 +1820,14 @@ impl Row {
                     self.claude.clean =
                         ended && !record.background && self.valid && !self.running();
                 } else if active {
-                    // Its saved bounds disagree with Claude Code's own
-                    // duration: it may be a deferred `turn_duration` of an
-                    // earlier turn written in this one, so no interval is
-                    // published and this one may still be running.
+                    // Claude Code writes `turn_duration` at its turn's own
+                    // end, but after a run of turns with background work
+                    // pending it measures `durationMs` from the run's first
+                    // turn. The turn has ended, so no later trigger is
+                    // ambiguous, but its saved bounds are unchecked: no
+                    // interval is recorded, the previous one stays last and
+                    // the current turn stays masked until a gated end (D7).
                     self.turns_unknown();
-                    self.claude.local_idle = true;
                 } else {
                     if !adjacent || block.pending_start.is_some() {
                         self.turns_unknown();
@@ -1847,7 +1850,8 @@ impl Row {
         self.children.values().any(|status| status == "running")
     }
     /// The current turn's start, or the idle state, may be published: the
-    /// state is clean and no child may still defer a `turn_duration` (D7).
+    /// state is clean and no child runs whose pending work dates the next
+    /// `turn_duration` from an earlier turn (D7).
     fn dated(&self) -> bool {
         self.claude.clean && self.valid && !self.running()
     }
@@ -2001,7 +2005,7 @@ impl Row {
             turns.valid = false;
         }
         // The current turn is dated only from a clean state with no child
-        // that may still defer a `turn_duration` (D7).
+        // still running (D7).
         let undated = !self.dated();
         if block.silent_end
             || block.pending_start.is_some()

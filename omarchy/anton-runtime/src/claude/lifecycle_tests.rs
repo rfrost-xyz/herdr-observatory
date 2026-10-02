@@ -1225,16 +1225,24 @@ fn turns_duration_ms_rejects_an_interval_whose_saved_bounds_disagree() {
             assert!(row.turns.active.is_none() && finished(&row, "user", 10).is_none());
             assert_eq!(turns.last, Some(turn_key(ID, "user-1")), "{fields}");
             assert_eq!(turns.last_duration, Some(2));
-            assert!(row.claude.local_idle && !turns.current_known);
+            // The record still proves the turn's end at its own stamp; only
+            // its interval is unchecked, and the current turn stays masked.
+            assert!(!row.claude.local_idle && !row.claude.ambiguous, "{fields}");
+            assert!(!row.claude.clean && !turns.current_known, "{fields}");
+            assert_eq!(row.claude.end_floor, second(20), "{fields}");
         }
     }
-    // The record may be a deferred `turn_duration` of an earlier turn, so
-    // the turn may still run: an injected notification is ambiguous, while
-    // a human prompt opens the next turn, whose own end is checked again.
+    // Claude Code writes `turn_duration` at its turn's own end, so the turn
+    // is over: an injected notification opens the next turn's pending start,
+    // as a human prompt does, and that turn's own end is checked again.
     let mut lines = with(",\"durationMs\":19000");
     let note = queued(30, "task-notification", &notice("agent-y", "completed"));
     lines.apply(&Record::from_value(&serde_json::from_str(&note).unwrap(), ID, now()).unwrap());
-    assert!(lines.claude.ambiguous && lines.turns.active.is_none());
+    assert!(!lines.claude.ambiguous && lines.turns.active.is_none());
+    assert_eq!(
+        lines.claude.pending_start,
+        Some((turn_key(ID, "attachment-30"), second(30)))
+    );
     let mut lines = first.to_vec();
     lines.extend([
         ended(20, 1),
@@ -1297,10 +1305,17 @@ fn turns_current_turn_is_published_only_from_a_clean_state() {
         lines[2] = ended(3, 1).replace("\"durationMs\"", &format!("{pending},\"durationMs\""));
         next(&mut lines, 10, user(10, "next", human));
         assert_eq!(current(&lines), None, "{pending}");
+        // Claude Code writes each `turn_duration` at its turn's end. The
+        // first with nothing pending after a pending run measures from the
+        // run's first turn, so the gate rejects it: the turn still ends, and
+        // the background work's notification then opens the next turn.
+        lines.extend([assistant(12, "msg_b", "\"end_turn\""), ended(13, 1)]);
+        next(&mut lines, 20, notified(20, "agent-x", "completed"));
+        assert_eq!(current(&lines), None, "{pending}");
         // The next gated end with nothing pending dates the turn after it.
-        lines.extend([assistant(12, "msg_b", "\"end_turn\""), ended(13, 10)]);
-        next(&mut lines, 20, user(20, "then", human));
-        assert_eq!(current(&lines), Some(Some(second(20))), "{pending}");
+        lines.extend([assistant(22, "msg_c", "\"end_turn\""), ended(23, 20)]);
+        next(&mut lines, 30, user(30, "then", human));
+        assert_eq!(current(&lines), Some(Some(second(30))), "{pending}");
     }
     let zero = ended(3, 1).replace(
         "\"durationMs\"",
