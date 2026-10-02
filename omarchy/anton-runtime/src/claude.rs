@@ -307,9 +307,23 @@ fn header(stream: &mut BufReader<File>, id: &str) -> Result<Vec<u8>> {
     if bytes.len() > LINE || bytes.last() != Some(&b'\n') {
         return Err("Invalid Claude session header".into());
     }
-    let value: Value =
-        serde_json::from_slice(&bytes).map_err(|_| "Invalid Claude session header")?;
-    if session_identity(&value, id) != Identity::Match {
+    let matched = match serde_json::from_slice::<Value>(&bytes) {
+        Ok(value) => session_identity(&value, id) == Identity::Match,
+        // serde rejects an unpaired surrogate escape, which the classifier
+        // reads, so the header is verified as the body would classify it.
+        Err(_) => {
+            let mut classifier = Classifier::default();
+            if !classifier.feed(&bytes, id, common::now()) {
+                return Err("Invalid Claude session header".into());
+            }
+            match classifier.finish() {
+                Outcome::Invalid => return Err("Invalid Claude session header".into()),
+                Outcome::Unclassified(_) => false,
+                Outcome::Record(record) => record.identity == IDENTITY_MATCH,
+            }
+        }
+    };
+    if !matched {
         return Err("Claude session identity mismatch".into());
     }
     Ok(bytes)
@@ -1701,12 +1715,13 @@ pub fn resume(
             // D2 tolerates any first record, so a fresh pass applies the
             // header as the first record; a resumed pass never re-applies it.
             let mut row = Row::new([info.dev(), info.ino()], head.len() as u64, time);
-            match serde_json::from_slice::<Value>(&head)
-                .ok()
-                .and_then(|value| Record::from_value(&value, id, time))
-            {
-                Some(record) => row.apply(&record),
-                None => row.invalid(),
+            match serde_json::from_slice::<Value>(&head) {
+                Ok(value) => match Record::from_value(&value, id, time) {
+                    Some(record) => row.apply(&record),
+                    None => row.invalid(),
+                },
+                // As in `advance`: the classifier reads what serde rejects.
+                Err(_) => row.oversized(&head, true, id, time),
             }
             (row, false)
         }
@@ -2786,6 +2801,46 @@ mod replay_tests {
         let (row, _) = resume(&fixture.projects, &path, ID, None, now(), deadline()).unwrap();
         assert_eq!(row.claude.coverage_seq, 0);
         assert!(row.turns.valid && !row.turns.supported);
+    }
+    /// A header serde rejects for an unpaired surrogate escape is verified by
+    /// the classifier, as it is in the body, and is applied the same way on a
+    /// fresh pass: the result equals that of a paired-surrogate header.
+    #[test]
+    fn header_with_an_unpaired_surrogate_binds_and_is_applied_like_the_body() {
+        let fixture = tests::Fixture::new();
+        let deadline = || Instant::now() + Duration::from_secs(5);
+        let rest = body(&[
+            assistant("msg_a", 2, "\"end_turn\"", [5, 1, 7, 3]),
+            system("turn_duration", 3),
+        ]);
+        let replayed = |first: &str| {
+            let text = format!("{}\n{rest}", user(1).replace("synthetic", first));
+            let path = fixture.file("entry", &format!("{ID}.jsonl"), &text);
+            resume(&fixture.projects, &path, ID, None, now(), deadline())
+        };
+        let (paired, _) = replayed(r"hi 😀").unwrap();
+        let (lone, resumed) = replayed(r"hi \ud83d").unwrap();
+        assert!(!resumed && lone.caught_up);
+        assert_eq!(get(&lone, "total_input"), json!(15));
+        assert_eq!(lone.usage(), paired.usage());
+        assert_eq!(
+            serde_json::to_value(&lone.turns).unwrap(),
+            serde_json::to_value(&paired.turns).unwrap()
+        );
+        assert!(lone.turns.valid && lone.turns.total == 2);
+        // Identity is still required, and malformed JSON is still rejected.
+        for text in [
+            user(1)
+                .replace("synthetic", r"hi \ud83d")
+                .replace(ID, "fixture-session-b"),
+            user(1).replace("synthetic", r"hi \ud83d").replace('}', ""),
+        ] {
+            let path = fixture.file("entry", &format!("{ID}.jsonl"), &format!("{text}\n{rest}"));
+            assert!(
+                open_session(&fixture.projects, &path, ID).is_err(),
+                "{text}"
+            );
+        }
     }
     #[test]
     fn replay_resumes_byte_cursor_across_tail_bounded_passes() {
