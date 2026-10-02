@@ -1103,9 +1103,13 @@ impl Row {
     }
     /// Turn coverage is lost where a turn may still be running: no later
     /// trigger may open a turn until `turn_duration` or an abort proves an end.
-    /// With no turn running, the lost record may itself have opened one.
+    /// With no turn running, the lost record may itself have opened one; a
+    /// second lost record may then have been the assistant record that
+    /// confirmed it, so a turn may be running.
     fn lose_turn(&mut self) {
-        let running = self.turns.active.is_some() || self.claude.pending_start.is_some();
+        let running = self.turns.active.is_some()
+            || self.claude.pending_start.is_some()
+            || self.claude.lost_idle;
         self.turns_unknown();
         if running {
             self.ambiguous();

@@ -1376,3 +1376,32 @@ fn turns_fuzzed_replay_states_stay_resumable() {
         }
     }
 }
+
+#[test]
+fn turns_two_records_lost_while_idle_may_be_a_running_turn() {
+    // Found by the ground-truth fuzzer: the lost prompt and its lost first
+    // assistant record leave a turn running, so a queued notification that
+    // joins it is no start, and no interval is published until a proven end.
+    let mut lines: Vec<Option<String>> = [
+        user(1, "hello", ""),
+        assistant(2, "msg_a", "\"end_turn\""),
+        system("turn_duration", 3),
+    ]
+    .map(Some)
+    .to_vec();
+    lines.extend([None, None]);
+    lines.extend(
+        [
+            queued(14, "task-notification", &notice("agent-x", "completed")),
+            assistant(15, "msg_b", "\"tool_use\""),
+        ]
+        .map(Some),
+    );
+    let row = steps(&lines);
+    lost(&row, Some("user-1"));
+    assert!(row.claude.ambiguous);
+    lines.push(Some(system("turn_duration", 30)));
+    let row = steps(&lines);
+    lost(&row, Some("user-1"));
+    assert_eq!(row.turns.last_duration, Some(2));
+}
