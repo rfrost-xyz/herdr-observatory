@@ -965,6 +965,22 @@ fn turns_state_survives_a_block_round_trip() {
     let mut missing = block;
     missing.as_object_mut().unwrap().remove("pending_command");
     assert!(serde_json::from_value::<ClaudeCursor>(missing).is_err());
+    // The latest proven end is required, and never later than the latest
+    // stamp replayed: a block without it is replayed fresh.
+    let ended = run(&[
+        user(10, "hello", ""),
+        assistant(11, "msg_a", "\"end_turn\""),
+        system("turn_duration", 12),
+    ]);
+    let block = serde_json::to_value(&ended.claude).unwrap();
+    assert_eq!(block["end_floor"], json!(second(12)));
+    let mut tampered = block.clone();
+    tampered["end_floor"] = json!(second(13));
+    let tampered: ClaudeCursor = serde_json::from_value(tampered).unwrap();
+    assert!(!tampered.validate(now()));
+    let mut missing = block;
+    missing.as_object_mut().unwrap().remove("end_floor");
+    assert!(serde_json::from_value::<ClaudeCursor>(missing).is_err());
 }
 
 #[test]
@@ -1872,20 +1888,24 @@ fn turns_command_running_the_model_after_its_local_output_is_unknown() {
     let row = run(&lines);
     assert!(!row.turns.valid && !row.claude.local_idle && row.claude.abort_adjacent);
     assert_eq!(row.turns.last_duration, Some(2));
-    // The documented limit: input queued and taken after the output, before
-    // any assistant record, cannot be told from input queued before a local
-    // command, so it opens the next turn
+    // Input queued and taken after the output, before any assistant record,
+    // starts a turn when it is taken, but keeps the stamp of the time it was
+    // queued: stamped before the take, its start is unknown. The documented
+    // limit: stamped within the second of the take, it cannot be told from
+    // input queued before a local command, so it opens the next turn
     // (`turns_join_needs_a_dequeue_or_remove_and_each_join_consumes_it`).
-    let mut lines = ended;
-    lines.extend([
-        queue(12),
-        operation(13, "remove"),
-        user(12, "more", ""),
-        assistant(14, "msg_b", "\"tool_use\""),
-    ]);
-    let row = run(&lines);
-    assert!(!row.claude.ambiguous && row.turns.valid);
-    assert_eq!(row.turns.start, Some(second(12)));
+    for (taken, opens) in [(13, false), (12, true)] {
+        let mut lines = ended.clone();
+        lines.extend([
+            queue(12),
+            operation(taken, "remove"),
+            user(12, "more", ""),
+            assistant(14, "msg_b", "\"tool_use\""),
+        ]);
+        let row = run(&lines);
+        assert_eq!(!row.claude.ambiguous && row.turns.valid, opens, "{taken}");
+        assert_eq!(row.turns.start, opens.then(|| second(12)), "{taken}");
+    }
 }
 
 #[test]
@@ -1905,6 +1925,111 @@ fn turns_input_taken_while_a_start_is_pending_is_ambiguous() {
     lines.push(system("turn_duration", 20));
     let row = run(&lines);
     assert!(!row.turns.valid && row.turns.last.is_none());
+}
+
+/// Review round 8: an end the reader proves while a turn is ambiguous, or
+/// with no turn running, never reached `Turns::last_end`, so a trigger
+/// stamped before it (leftover queued input keeps its queue time, or the
+/// clock stepped back) was published as the start of the next turn.
+#[test]
+fn zz_trigger_before_a_proven_end_after_ambiguity_is_never_published() {
+    let a = |at, message: &str, stop: &str| Some(assistant(at, message, stop));
+    let s = |line: String| Some(line);
+    let marker = "[Request interrupted by user]";
+    // The next turn, opened by a trigger stamped at `at`.
+    let next = |at: u64| {
+        vec![
+            s(user(at, "stamped before the end", "")),
+            a(60, "msg_y", "\"tool_use\""),
+            a(64, "msg_z", "\"end_turn\""),
+            s(system("turn_duration", 65)),
+        ]
+    };
+    let ended = || {
+        vec![
+            s(user(10, "hello", "")),
+            a(11, "msg_a", "\"end_turn\""),
+            s(system("turn_duration", 12)),
+        ]
+    };
+    let running = || vec![s(user(31, "next", "")), a(32, "msg_b", "\"tool_use\"")];
+    // Each path ends a turn the reader saw no start of, or could not
+    // publish, at second 50; the following trigger is stamped at 45.
+    let mut paths: Vec<(&str, Vec<Option<String>>)> = vec![];
+    // Made ambiguous by a notification without queue evidence, then ended
+    // by `turn_duration` or by an abort.
+    let mut lines = running();
+    lines.extend([
+        s(notified(33, "agent-x", "completed")),
+        a(36, "msg_c", "\"end_turn\""),
+        s(system("turn_duration", 50)),
+    ]);
+    paths.push(("ambiguous turn, turn_duration", lines));
+    let mut lines = running();
+    lines.extend([
+        s(notified(33, "agent-x", "completed")),
+        s(user(50, marker, "")),
+    ]);
+    paths.push(("ambiguous turn, abort", lines));
+    // An assistant record with no turn running.
+    let mut lines = ended();
+    lines.extend([
+        a(40, "msg_b", "\"end_turn\""),
+        s(system("turn_duration", 50)),
+    ]);
+    paths.push(("assistant with no turn running", lines));
+    // An orphan `turn_duration`.
+    let mut lines = ended();
+    lines.push(s(system("turn_duration", 50)));
+    paths.push(("orphan turn_duration", lines));
+    // A record lost while idle.
+    let mut lines = ended();
+    lines.extend([None, s(system("turn_duration", 50))]);
+    paths.push(("record lost while idle", lines));
+    // Input taken with no turn running starts a turn at the take.
+    let mut lines = ended();
+    lines.push(s(dequeue(50)));
+    paths.push(("input taken with no turn running", lines));
+    // Control: a published end rejects the same trigger already.
+    let mut lines = running();
+    lines.extend([
+        a(36, "msg_c", "\"end_turn\""),
+        s(system("turn_duration", 50)),
+    ]);
+    paths.push(("control: published end", lines));
+    let proven = second(50);
+    let mut wrong = vec![];
+    for (name, mut lines) in paths {
+        let from = lines.len();
+        lines.extend(next(45));
+        let mut row = Row::new([1, 2], 0, now());
+        for (index, line) in lines.iter().enumerate() {
+            step(&mut row, line.as_ref(), &lines[..=index]);
+            if index + 1 < from {
+                continue;
+            }
+            let published = Published::of(&row);
+            if let Some((true, Some(start))) = published.current
+                && start < proven
+            {
+                wrong.push(format!("{name}: current start {start} before {proven}"));
+            }
+            if let Some((duration, _, end)) = published.last
+                && end > proven
+                && end - duration < proven
+            {
+                wrong.push(format!("{name}: last {duration} s overlaps {proven}"));
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+    // A pending start is confirmed only at or after the latest proven end.
+    let mut row = run(&[user(45, "pending", "")]);
+    row.claude.end_floor = second(50);
+    let value: Value = serde_json::from_str(&assistant(60, "msg_a", "\"tool_use\"")).unwrap();
+    row.apply(&Record::from_value(&value, ID, now()).unwrap());
+    assert!(row.claude.ambiguous && row.turns.active.is_none());
+    assert!(!row.published_turns().current_known);
 }
 
 // Ground-truth turn fuzzer. A generator simulates a Claude Code session whose
@@ -2409,14 +2534,26 @@ impl Story {
     }
     /// One true turn: a trigger, a body, and an end of a random kind.
     fn turn(&mut self) {
+        // Input still queued when the last turn ended is sometimes taken at
+        // once and starts this turn: it keeps the stamp of the time it was
+        // queued, which is before that end (review round 8).
+        let leftover = (self.enqueued)
+            .filter(|_| self.queued_left)
+            .filter(|_| self.chance(500));
         if std::mem::take(&mut self.queued_left) {
             let line = self.operation("dequeue");
             self.push(line, "idle-dequeue");
         }
-        self.tick(true);
-        let (line, tag) = self.trigger();
+        if leftover.is_none() {
+            self.tick(true);
+        }
+        let (mut line, tag) = self.trigger();
+        if let Some(queued) = leftover {
+            let stamp = self.stamp(queued);
+            line = restamp(&line, &stamp);
+        }
         self.world.running = Some(self.at);
-        self.push(line, tag);
+        self.push(line, if leftover.is_some() { "leftover" } else { tag });
         self.unrecorded = false;
         self.enqueued = None;
         if tag == "command" && self.chance(500) {

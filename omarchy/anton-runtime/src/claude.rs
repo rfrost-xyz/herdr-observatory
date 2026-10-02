@@ -589,6 +589,12 @@ pub struct ClaudeCursor {
     /// A record named another session (D2): every value of this binding
     /// stays unknown, and later records feed nothing, until a fresh replay.
     pub foreign: bool,
+    /// The largest Unix second of every `turn_duration` and abort replayed,
+    /// whether or not it ended a published turn, and of every `dequeue` or
+    /// `remove` with no turn running or pending, or 0 (D7). A turn opened
+    /// after it started no earlier, so a trigger stamped before it is
+    /// ambiguous.
+    pub end_floor: u64,
     /// The oversized-record classifier while a line over `LINE` is being read.
     #[serde(deserialize_with = "Option::deserialize")]
     pub classifier: Option<Classifier>,
@@ -618,6 +624,7 @@ impl Default for ClaudeCursor {
             lost_idle: false,
             local_idle: false,
             foreign: false,
+            end_floor: 0,
             classifier: None,
         }
     }
@@ -670,6 +677,8 @@ impl ClaudeCursor {
                 .is_none_or(|(key, second)| hex_id(key, 24) && (1..=SAFE).contains(second))
             && (!self.pending_command || self.pending_start.is_some())
             && (self.queued_since_start).is_none_or(|at| 0 < at && at <= self.coverage_seq)
+            // Every end raising it is a replayed stamp, so within now plus 1 s.
+            && self.end_floor <= self.coverage_seq / 1_000_000
             && self.classifier.as_ref().is_none_or(Classifier::validate)
             && (!self.foreign
                 || !self.totals_valid
@@ -1478,6 +1487,9 @@ impl Row {
     fn turn(&mut self, record: &Record) {
         let second = record.stamp.map(|stamp| stamp / 1_000_000);
         let active = self.turns.active.is_some();
+        // The latest end proven, published or not: no later turn started
+        // before it.
+        let floor = self.turns.last_end.unwrap_or(0).max(self.claude.end_floor);
         let block = &mut self.claude;
         match Turn::of(record) {
             // Local-command output, as a wrapped user record or a system
@@ -1506,7 +1518,15 @@ impl Row {
                     // A stamp within second 0 is missing, as for a trigger.
                     let stamp = record.stamp.filter(|stamp| *stamp >= 1_000_000);
                     block.queued_since_start = block.queued_since_start.max(stamp);
-                } else if block.lost_idle {
+                    return;
+                }
+                // Input taken with no turn running starts one now, but its
+                // record keeps the stamp of the time it was queued: a
+                // trigger stamped before the take has an unknown start.
+                if !active && block.pending_start.is_none() {
+                    block.end_floor = block.end_floor.max(second.unwrap_or(0));
+                }
+                if block.lost_idle {
                     // Input taken after a record lost while idle: that record
                     // may have opened the turn that took it.
                     self.ambiguous();
@@ -1560,7 +1580,9 @@ impl Row {
                 // be a local command may be a turn killed before its first
                 // assistant record, or a running turn this input joined. A
                 // record lost while idle may have opened such a turn too.
-                if active || block.pending_start.is_some() || block.lost_idle {
+                // A trigger stamped before the latest proven end is input
+                // queued before it, or a clock step: its start is unknown.
+                if active || block.pending_start.is_some() || block.lost_idle || second < floor {
                     // The turn may have ended without a record, or the input
                     // joined it: never absorb the gap, and never publish an
                     // interval whose start is a guess.
@@ -1583,7 +1605,9 @@ impl Row {
                     self.turns_unknown();
                 }
                 self.confirm();
-                // A proven end, even when `confirm` rejected the start.
+                // A proven end, even when `confirm` rejected the start, and
+                // only after it, so it never rejects the start it ends.
+                self.claude.end_floor = self.claude.end_floor.max(second.unwrap_or(0));
                 self.claude.ambiguous = false;
                 self.claude.silent_end = false;
                 self.claude.lost_idle = false;
@@ -1594,6 +1618,7 @@ impl Row {
             Turn::End => {
                 self.turns.supported = true;
                 let adjacent = std::mem::take(&mut block.abort_adjacent);
+                block.end_floor = block.end_floor.max(second.unwrap_or(0));
                 block.ambiguous = false;
                 block.silent_end = false;
                 block.lost_idle = false;
@@ -1610,9 +1635,11 @@ impl Row {
     fn confirm(&mut self) {
         self.claude.pending_command = false;
         if let Some((key, second)) = self.claude.pending_start.take() {
-            self.turns.begin(key, second);
-            // A rejected start (before the previous end, or a repeated key)
-            // may still be a running turn, with its queue evidence.
+            if second >= self.claude.end_floor {
+                self.turns.begin(key, second);
+            }
+            // A rejected start (before the latest proven end, or a repeated
+            // key) may still be a running turn, with its queue evidence.
             if self.turns.active.is_none() {
                 self.ambiguous();
             }
