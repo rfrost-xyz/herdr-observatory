@@ -136,7 +136,7 @@ Existing Codex behaviour, output and checkpoints must not change.
 
   | Record type | Coverage made unknown |
   |---|---|
-  | assistant | totals, turns and `last_valid` |
+  | assistant | totals, compactions, turns and `last_valid` |
   | system | compactions and turns |
   | user or attachment | children and turns |
 
@@ -156,6 +156,8 @@ Existing Codex behaviour, output and checkpoints must not change.
 
 - Count `system/compact_boundary` records, excluding `microcompact_boundary`. Only count with complete coverage from the header and a known `usage_seq`, as for Codex.
 - If any counted group has a usage iteration of type `compaction`, `compactions` becomes unknown. That path has no boundary record, and its meaning is unverified.
+
+An assistant record that cannot be classified makes `compactions` unknown, because its usage may carry a compaction iteration.
 
 ### D6. Children and completion
 
@@ -217,14 +219,16 @@ Wrapper tags are matched on the leading tag of user text:
 - An abort with no active turn and no pending start is ignored, apart from setting the abort-adjacency flag. The next trigger, assistant record or `turn_duration` clears that flag.
 - The turn key is `sha256("anton-turn-v1:" + session + ":" + uuid)[..24]` of the record that opened the turn, which satisfies `Turns::validate`.
 
+**Publication.** `native.rs` publishes Claude turn timing through `Row::published_turns()`, a masked copy; `Turns` and the block are unchanged. While a start is pending, or after local-command output cleared one (`lost_idle`), the published current turn is unknown. While `silent_end` is set, the current turn, accumulated total and `complete` are unknown.
+
 **Ending a turn.**
 - `system/turn_duration` completes the active turn at its own timestamp.
-- A silent end clears `queued_since_start`. A silent end is `system/stop_hook_summary`, or an assistant line with `stop_reason: end_turn` and no pending tool use, while a turn is active. A later trigger with no `turn_duration` then takes the unknown path rather than joining the stale turn and absorbing the idle gap. In a reviewer's replay, the older-version file becomes honestly unknown, and the largest remaining joined gap fell from 66,701 s to 764 s. Change 2 adds a fixture for a silent end followed by queued input. Until a trigger, `turn_duration`, an abort or unknown coverage, a later `dequeue` or `remove` is no join evidence.
+- A silent end clears `queued_since_start`. A silent end is `system/stop_hook_summary`, or an assistant line with `stop_reason: end_turn` and no pending tool use, while a turn is active. A later trigger with no `turn_duration` then takes the unknown path rather than joining the stale turn and absorbing the idle gap. In a reviewer's replay, the older-version file becomes honestly unknown, and the largest remaining joined gap fell from 66,701 s to 764 s. Change 2 adds a fixture for a silent end followed by queued input. Until a trigger, `turn_duration`, an abort or unknown coverage, a later `dequeue` or `remove` is no join evidence. While `silent_end` is set, the published current turn, accumulated total and `complete` are unknown; a later `turn_duration` restores them.
 - An abort ends the active turn as aborted at the abort record's timestamp.
 - A `turn_duration` with no active turn is ignored when it directly follows an abort. Otherwise it makes accumulated coverage unknown.
 
 **Timestamps.**
-- Timestamps convert to Unix seconds by floor, for both bounds. A trigger whose timestamp floors to Unix second 0 is treated as missing its timestamp.
+- Timestamps convert to Unix seconds by floor, for both bounds. A trigger or queue operation whose timestamp floors to Unix second 0 is treated as missing its timestamp.
 - A start earlier than the previous end, or an end earlier than its start, makes accumulated coverage unknown through `Turns::unknown`.
 - The current or last valid interval stays available, as the spec allows.
 
@@ -262,7 +266,7 @@ Every block field is required, bounded and revalidated on reuse:
 - the compaction boundary count and the compaction-iteration flag;
 - the pending turn start: key hash and Unix second, or none;
 - the abort-adjacency flag;
-- `queued_since_start` (the evidence stamp, `Option<u64>`): set by a `dequeue` or `remove` queue-operation while a turn is active or a start is pending and no silent end has been seen; kept when the pending start is confirmed; consumed by every trigger; reset when a turn ends, on a silent end (D7) and when turn coverage becomes unknown; false unless a turn is active or a start is pending;
+- `queued_since_start` (the evidence stamp, `Option<u64>`): set, from a stamp of at least 1 s, by a `dequeue` or `remove` queue-operation while a turn is active or a start is pending and no silent end has been seen; kept when the pending start is confirmed; consumed by every trigger; reset when a turn ends, on a silent end (D7) and when turn coverage becomes unknown; false unless a turn is active or a start is pending;
 - `ambiguous`: set at every point where a turn may still be running (D7); while set there is no active turn or pending start and accumulated coverage is unknown;
 - `silent_end`: set by a silent end (D7) while a turn is active; reset by a trigger, `turn_duration`, an abort and unknown turn coverage; only set while a turn is active and `queued_since_start` is false;
 - `lost_idle`: set when a record is lost with no active turn, no pending start and no ambiguity; cleared by a pending start, `turn_duration`, an abort or ambiguity; only set while idle and not ambiguous;
@@ -274,6 +278,20 @@ Every block field is required, bounded and revalidated on reuse:
 **Resume and replacement.**
 - A resume that appends to the same file keeps the binding. Dev/inode, header hash, tail hash and size or mtime still detect replacement.
 - A resume that writes a new file elsewhere produces two matches at the next re-scan, so the session becomes unknown.
+
+**Refinements after review round 4.**
+- **D1 predecessor scan.**
+  - A candidate that cannot be opened is an IO error, which is unknown and not cached, unless the candidate is a symlink, not a regular file, or owned by another user.
+  - A repeated `session_id` is unknown and is cached.
+  - A candidate line that serde rejects, or that repeats a key, is read only for its top-level `session_id`, once the classifier accepts it as well formed.
+- **D2 header.**
+  - A header line that serde rejects, or that repeats a key, is verified through the classifier, which must find `sessionId == id`. A repeated `sessionId` never matches.
+  - A fresh pass applies such a header through the classifier.
+- **D3 short lines.** A line of 64 KiB or less whose objects repeat a key goes through the classifier, so a repeated consumed key is lost at any line size.
+- **D3 peers.**
+  - When replay cannot open, verify or read the bound file, the incoming cursor row is kept unchanged and the all-null sample is published at its `coverage_seq`. Progress from an earlier pass of that probe is discarded.
+  - Retention counts as bound only the Claude agents with a session generation among the first 32 agents of the response, which is the window a peer enriches. Panes sharing a generation count once.
+  - The local cannot see the session kind or whether the id is safe, so a Claude pane of kind `path` or with an unsafe id is still counted. This fails closed.
 
 ### D9. Peers and compatibility
 
@@ -407,11 +425,30 @@ Every block field is required, bounded and revalidated on reuse:
 
 **Ground-truth turn fuzzer.** `0ac8792` generates sessions whose true turn intervals are known, using the D7 model. It injects every shape above, plus kills, lost records, reordering, queues, silent ends, foreign records and byte-level pass boundaries with oversized lines.
 
-After every record, and after every caught-up pass in file mode, it asserts that each published current start, last interval and accumulated total is either exactly the truth or unknown. It runs in about 8 s.
+After every record, and after every caught-up pass in file mode, it asserts (strict oracle, `950f360`) that each published current start and accumulated total is exactly the truth or unknown, and the last interval is the truth, unknown, or an unchanged earlier true interval while accumulated coverage is unknown (the spec allows the last valid interval to remain). An unchanged value is otherwise allowed only across a kill, which writes no record; both allowances are counted. The local-command and second-idle-loss shapes are guarded by their unit fixtures, not by the fuzzer.
 
 Two model calibrations are explicit in the test:
 - queued input is stamped when it was queued;
 - a killed process writes nothing for at least 2 s.
+
+**Added after review round 4:**
+- **Turn timing:**
+  - an epoch-stamped dequeue or remove, in memory and across a pass boundary;
+  - published masking for a pending start, `lost_idle` and a silent end;
+  - the strict oracle.
+- **Compactions:** an unclassified assistant record with a compaction iteration. Variants: no timestamp, no `sessionId`, no message id, and an oversized line cut inside the type.
+- **Peers and retention:**
+  - a header or identity failure with an incoming row;
+  - a Claude pane beyond agent 32;
+  - two panes on one session.
+- **Predecessor scan and header:**
+  - an unreadable predecessor candidate;
+  - a lone-surrogate or repeated-`session_id` candidate;
+  - a lone-surrogate header;
+  - repeated keys at both line sizes.
+- **Fixtures and corpus:**
+  - the State.js and shell Claude fixtures use the native shape: null starts, stops and `subagent_seq`, so children is null, with completion present;
+  - the corpus example prints a counts-only `turns.joins`.
 
 **Corpus check.** As a verification step, this change also runs a local counts-only replay of the real transcript corpus through the implementation. It prints aggregates only, and nothing from it is committed. Prose review could not converge on these rules; replay can.
 

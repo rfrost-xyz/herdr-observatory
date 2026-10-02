@@ -276,7 +276,7 @@ CPU was 0.034 to 0.035 s for both binaries.
 
 **Binary size.** The release binary grew from 1,853,520 to 2,093,472 bytes.
 
-## Ground-truth turn fuzzing (before review round 4)
+## Ground-truth turn fuzzing (first oracle; superseded counts below)
 
 The new fuzzer (`0ac8792`) found five root causes that published wrong turn numbers. Violations counted against the final fuzzer by reverting one fix at a time (the counts overlap):
 
@@ -303,8 +303,86 @@ After the fixes the fuzzer reports 0 violations. Each fix has a minimised regres
 
 The current and last turn values still publish after a proven end.
 
-All 36 real joins in the corpus still join.
+The corpus has 18 real joins (`turns.joins`). An earlier figure of 36 counted each join twice, once in the shadow scan and once in the bounded replay.
 
 **A separate no-join experiment** (on the pre-fuzzer build) removed joins entirely. It also gave 12 of 19 sessions valid. Whether it lost the same files was not compared. Removing joins would buy no extra coverage, so the join logic is kept.
 
 **Test counts:** lib 171, main 14, native_navigation 6, native_process 32.
+
+## Review round 4 and remediation
+
+The four-lens review of `41e5a07` found 4 blocking and 7 other findings. All are fixed. Each code fix has a regression test that failed before it.
+
+**Blocking:**
+1. **Compactions from unclassifiable records.** An unclassifiable assistant record left `compactions` published. Fixed in `5652aca`.
+2. **Silent ends shown as running.** A silent end published a running turn and a complete total through the idle gap. Fixed in `4666632` by masking publication through `published_turns()`.
+3. **Lenient oracle.** The fuzzer oracle accepted values that were unchanged but stale. Fixed in `950f360` with the strict oracle.
+4. **Epoch-stamped queue records.** These left an unresumable row. Fixed in `a56cbaf`.
+
+**Other fixes:**
+- a pending start and `lost_idle` publish an unknown current turn (`4666632`);
+- a resume failure keeps the row and publishes all-null (`a77f804`);
+- retention counts only panes that can have a row (`0d4abf5`);
+- predecessor candidate open errors are truncated (`d3323da`);
+- serde-rejected predecessor lines, headers and repeated keys go through the classifier (`8351109`, `6916e66`, `353b8dd`, `e239375`);
+- native-shape State.js and shell fixtures (`8a89b8a`);
+- a counts-only join counter (`677a34b`).
+
+### Strict oracle (`950f360`)
+
+The run covers 217,723 records with 0 restarts. Before the fixes the buckets were: current 3,147 pending, 1,163 silent end, 90 `lost_idle`; total 393 silent end; gate 7 epoch.
+
+Final result: **0 violations**. The two allowances were counted: 4,372 values unchanged across a kill, and 54,006 last valid intervals.
+
+Violations with each fix reverted by hand on HEAD:
+
+| Revert | Violations |
+|---|---|
+| `75012fd` (a trigger replaces a pending start) | 2,764 |
+| Local command while a prompt is pending | 0 (guarded by its unit fixture) |
+| `1467ba3` (stamp order, approximate revert) | 832 |
+| `97e442a` (an idle loss, then a queue operation) | 9 |
+| `42b3118` (a second idle loss) | 0 (guarded by its unit fixture) |
+
+### Counts-only corpus (`677a34b`)
+
+| Measure | Result |
+|---|---|
+| Files | 19 |
+| Joins | 18 |
+| Publishable | 11 of 19 |
+| Accumulated coverage valid | 12 of 19 |
+| Current turn known | 14 of 19 (raw `Turns`, not the published mask) |
+| Turn timing supported | 17 of 19 |
+| Predecessor | 14 clear, 3 growing, 2 unknown |
+| Oversized lines classified | 24 of 24 |
+| Shadow agreement | 19 of 19 |
+| Finished turns | 231 |
+| Turn seconds | 22,573 |
+
+The corpus is live. The totals grew because it grew, not because of a code change.
+
+### Verification at `677a34b` (release sha256 `507f24e441dacd0539f8edf908e866bc55f8eb08cca12f27a6ece9a704f7dafe`)
+
+| Gate | Result |
+|---|---|
+| fmt, clippy | clean |
+| `cargo test`, 3 runs | lib 181, main 15, native_navigation 6, native_process 32 |
+| `node --test` | 88 of 88 |
+| QML | 95 of 95 |
+| qmllint | clean outside Panel.qml |
+| Shell harness | 0 failures |
+| History | clean |
+
+Runtime medians, measured in the same session:
+
+| Metric | HEAD | Baseline |
+|---|---|---|
+| CPU | 0.093 s | 0.086 s |
+| Peak RSS | 4,612 KiB | 4,348 KiB |
+
+Per-window CPU was 0.088 to 0.093 s for HEAD and 0.085 to 0.091 s for the baseline. Both have one roughly 7.7 MiB process-overlap window.
+
+The Claude probe reports 4/4 local and 4/4 peer, with all 9 fields, in both variants.
+
+**Safety-classifier note.** The automated safety classifier timed out on one fix agent. The coordinator checked its actions: the worktree is clean, nothing was pushed, `openspec` and AGENTS.md are untouched, and the installed plugin is unchanged.
