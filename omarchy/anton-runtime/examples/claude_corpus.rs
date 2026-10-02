@@ -148,6 +148,11 @@ fn outcome(row: &Row, counts: &mut Counts) {
         ("children.valid", row.valid),
         ("turns.coverage_valid", row.turns.valid),
         ("turns.current_known", row.turns.current_known),
+        (
+            "turns.published_current_known",
+            row.published_turns().current_known,
+        ),
+        ("turns.local_idle", row.claude.local_idle),
     ];
     for (key, value) in flags {
         counts.tick(format!("{key}.{}", if value { "yes" } else { "no" }));
