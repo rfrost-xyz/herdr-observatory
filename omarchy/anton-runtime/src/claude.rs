@@ -192,11 +192,12 @@ pub fn predecessor_since(
         if info.is_dir() {
             continue;
         }
-        if !info.is_file() {
-            return Predecessor::Unknown;
-        }
+        // Only a sibling at least as new as the bound file can be unsafe.
         if (info.mtime(), info.mtime_nsec()) < since {
             continue;
+        }
+        if !info.is_file() {
+            return Predecessor::Unknown;
         }
         match first_session_id(&entry.path(), id, budget) {
             Ok(Successor::Ended) => {
@@ -2693,6 +2694,37 @@ mod tests {
             predecessor(&alias.join(format!("slug-a/{ID}.jsonl")), ID, &mut budget()),
             Predecessor::Unknown
         );
+    }
+    /// Only siblings at least as new as the bound file are scanned (D1), so
+    /// an older symlink or other non-file `*.jsonl` entry is skipped; a newer
+    /// one is still unknown.
+    #[test]
+    fn predecessor_scan_skips_an_older_non_file_sibling() {
+        use std::os::unix::ffi::OsStrExt;
+        let fixture = Fixture::new();
+        let bound = fixture.file("slug-a", &format!("{ID}.jsonl"), &header_line(ID));
+        let elsewhere = fixture.file("slug-b", "fixture-session-c.jsonl", "{}\n");
+        let link = fixture.projects.join("slug-a/old-link.jsonl");
+        std::os::unix::fs::symlink(&elsewhere, &link).unwrap();
+        // The link's own mtime, not its target's, is set to 1970.
+        let path = std::ffi::CString::new(link.as_os_str().as_bytes()).unwrap();
+        let times = [libc::timespec {
+            tv_sec: 1,
+            tv_nsec: 0,
+        }; 2];
+        let flags = libc::AT_SYMLINK_NOFOLLOW;
+        assert_eq!(
+            unsafe { libc::utimensat(libc::AT_FDCWD, path.as_ptr(), times.as_ptr(), flags) },
+            0
+        );
+        assert_eq!(
+            predecessor(&bound, ID, &mut budget()),
+            Predecessor::Clear { growing: false }
+        );
+        aged(&bound, 60);
+        std::os::unix::fs::symlink(&elsewhere, fixture.projects.join("slug-a/new-link.jsonl"))
+            .unwrap();
+        assert_eq!(predecessor(&bound, ID, &mut budget()), Predecessor::Unknown);
     }
     #[test]
     fn record_identity_and_fork_helpers() {
