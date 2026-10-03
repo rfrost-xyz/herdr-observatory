@@ -411,7 +411,23 @@ fn a_refresh_keeps_the_directories_and_uninstall_leaves_no_mod_tree() {
 fn install_refuses_targets_it_cannot_prove_are_its_own() {
     use std::os::unix::fs::symlink;
     type Setup = fn(&mut Mod);
-    let cases: [(&str, &str, Setup); 16] = [
+    let cases: [(&str, &str, Setup); 17] = [
+        (
+            "changed root",
+            "Conflicting Claude Code mod directory",
+            |m| {
+                // A whole mod tree beside a receipt with no `claude_mod`, as a
+                // second plugin root (another XDG_CONFIG_HOME) sees it.
+                m.install().unwrap();
+                let mut receipt = m.f.receipt();
+                receipt.as_object_mut().unwrap().remove("claude_mod");
+                common::atomic_owned_write(
+                    &m.f.root.join(".hooks-receipt.json"),
+                    &serde_json::to_vec(&receipt).unwrap(),
+                )
+                .unwrap();
+            },
+        ),
         (
             "unowned directory",
             "Conflicting Claude Code mod directory",
