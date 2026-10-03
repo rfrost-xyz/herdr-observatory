@@ -1140,6 +1140,84 @@ re-ran the gates on a `git archive` copy of `103ac9b` in a private
 `node --test` 115 passed. Task 5.2 is complete: rounds 1 to 6 plus this
 check, with no outstanding findings.
 
+## Fix found by the live check: manifest author
+
+`claude plugin validate --strict --json` on a staged copy of the installed
+mod failed with no errors and one warning, "No author information provided".
+Strict mode treats warnings as failures. `9b562b2` adds
+`"author":{"name":"Herdr Observatory"}`, matching the Omarchy plugin
+manifest, updates D1 and extends `tests/test_native_distribution.mjs`, which
+fails on the old manifest (4 pass, 1 fail) and passes on the new one.
+Gates at `9b562b2`: `cargo fmt --check` and `cargo clippy --all-targets
+--locked -- -D warnings` clean; `cargo test --locked --offline` 271 + 22 + 6
++ 48 passed; `node --test` 115 passed; `openspec validate --all --strict` 4
+passed. An independent read-only review of `git diff 656b477 9b562b2`
+returned **CLEAN**: nothing pins the old manifest bytes, the installer
+rewrites only the changed `plugin.json` on refresh (covered by the existing
+build-variant test), and the author holds no personal data. The reviewer
+re-ran the gates on a `git archive` copy and strict validation passed there.
+
 ## Live installed check
 
-_Pending (task 5.3)._
+Run on 2026-10-03 with Claude Code 2.1.287. At the user's request the agent
+drove the session through Herdr pane commands (`pane split`, `pane run`,
+`pane send-keys`) instead of the user clicking; nothing else deviated from the
+task.
+
+- **Install.** The installed runtime was updated to the `9b562b2` build with
+  `.config.json`, `.accounts.json`, `.peers.json`,
+  `.hooks-before-native.json` and the owner marker inode preserved, and the
+  collector restarted on the new binary. `--install-claude-mod` exited 0 and
+  wrote three files under `~/.claude/skills/anton-observatory/`; the settings
+  file hash was noted first.
+- **Strict validation.** On a staged copy, run with an empty environment
+  (no Herdr or Claude session variables) and a temporary `CLAUDE_CONFIG_DIR`
+  so it could bind no pane and write no real configuration: `success: true`,
+  no errors or warnings for the manifest or hooks. Notes list the four hooks,
+  calls to `$.clock.now`, `$.env.get`, `$.process.run`, `$.session.id` and
+  `$.session.usage`, no environment writes, and reads of `HERDR_ENV` and
+  `HERDR_PANE_ID` only.
+- **Installed types.** The build's own `claude-code.d.ts`, embedded in the
+  binary and extracted read-only: `ProcessRunInit.timeoutMs?: number`, "How
+  long the child may run before it is killed and the call rejects, in
+  milliseconds; 30 seconds when absent, ten minutes at most."; `clock.now`,
+  "Resolves milliseconds since the epoch, now."; `'session.measure'`, "Fires
+  when the engine measures the session and a unit moved: after each
+  main-thread turn, and when a rate-limit window moves a whole point."
+- **Load and binding.** A new session in a trusted folder in a fresh Herdr
+  pane. `/plugin` shows "1 mod active · anton-observatory". After the first
+  turn the pane metadata had `obs_bind` equal to
+  `sha256("claude:id:" + agent_session.value)` (recomputed and compared) and
+  the window 1000000 in `obs_n1`, so the reported id equals Herdr's session
+  value (open question 1). The second turn left `obs_bind`, `obs_n1` and
+  `obs_seq` unchanged, as the D3 guard 7 no-change check intends.
+- **`/model`.** Sonnet 5.5 also reports a 1000000 window, so it does not
+  exercise a change. After `/model haiku` (Haiku 4.5) and one prompt,
+  `obs_n1` became 200000 and `obs_seq` increased.
+- **Subagent.** On the 1000000-window main model, a prompt that started a
+  Haiku 4.5 subagent ran to completion; `obs_n1` and `obs_seq` did not
+  change (open question 9 confirmed against the installed build).
+- **`/reload-plugins`.** After the reload, `/model opus` and one prompt,
+  `obs_n1` returned to 1000000 with a higher `obs_seq`, so a report after a
+  reload is accepted. With an unchanged window a reload produces no write, so
+  the check needs a window change to observe acceptance.
+- **Popover.** Opened over IPC and captured: the test thread shows a context
+  percentage (7%) and its subagent count (1/1). A Claude thread started
+  before the mod was installed and never reloaded shows no percentage, as
+  designed.
+- **Herdr restart.** Not exercised: restarting Herdr would interrupt every
+  running pane, including the session running this check.
+- **After the session.** The mod directory holds only the recorded entries
+  (three files, three directories). A second `--install-claude-mod` exited 0
+  with the receipt bytes and every file inode unchanged. Each `/model` switch
+  saved a default model into `~/.claude/settings.json` and Claude Code
+  rewrote the key order; the file was restored and its hash equals the value
+  noted before installing. These are Claude Code's own writes, not the
+  mod's. The 21 installed plugin files match the source, and
+  `tests/run-shell-harness.sh` reports 0 failures with 6 runtime
+  invocations and no `--open-thread`. No live Codex or Pi thread was running
+  on this host during the check; their behaviour is covered by the harness
+  and the unchanged test suites.
+
+For future live checks: a `/model` switch persists a default in the user's
+settings file, so record the file first and restore it afterwards.
