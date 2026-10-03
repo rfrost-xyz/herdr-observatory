@@ -23,8 +23,8 @@ omarchy/herdr.observatory/README.md for current operation.
 - No Python or Docker subprocess, web listener, independent daemon or autostart
   service is part of the supported plugin. QML owns the Rust collector lifetime.
   Peers are invoked over existing authenticated SSH and exit after bounded work.
-  The reporter child the Claude Code mod starts is bounded and short-lived, one
-  run at a time per session, not a daemon.
+  The reporter child the Claude Code mod starts is bounded and short-lived, and
+  the mod skips a sample while a recent run is in flight; it is not a daemon.
 - Never parse authentication files. Account observations use native read-only
   Codex account RPCs. No login/reset/redemption mutation. Verify hashed mapping
   before displaying an email; private email identity never enters normal snapshots.
