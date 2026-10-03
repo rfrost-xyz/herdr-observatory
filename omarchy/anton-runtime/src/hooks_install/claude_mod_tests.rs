@@ -1115,6 +1115,50 @@ fn removal_keeps_unrecorded_files_and_reports_success() {
     assert!(m.f.receipt().get("claude_mod").is_none());
 }
 
+/// Review round 5: only a directory that still holds entries is kept. A
+/// recorded directory that cannot be removed for another reason (here a
+/// read-only mod root) fails the removal and keeps the receipt, and a retry
+/// succeeds once the mode is restored.
+#[test]
+fn removal_failing_to_remove_a_directory_keeps_the_receipt() {
+    if unsafe { libc::geteuid() } == 0 {
+        return; // Root ignores the directory mode.
+    }
+    let read_only = |m: &Mod, mode: u32| {
+        std::fs::set_permissions(m.root(), std::fs::Permissions::from_mode(mode)).unwrap();
+    };
+    let message = |m: &Mod| {
+        Err(format!(
+            "Claude Code mod removal failed: cannot remove {}; the receipt is unchanged, fix it and retry",
+            m.file(".claude-plugin").display()
+        ))
+    };
+    let m = Mod::new();
+    m.install().unwrap();
+    let entry = m.entry();
+    read_only(&m, 0o500);
+    let result = m.uninstall_mod();
+    read_only(&m, 0o700);
+    assert_eq!(result, message(&m));
+    assert_eq!(m.entry(), entry, "the receipt entry is kept");
+    assert!(m.file("hooks").is_dir() && m.file(".claude-plugin").is_dir());
+    m.uninstall_mod().unwrap();
+    assert!(!m.root().exists());
+    assert!(m.f.receipt().get("claude_mod").is_none());
+
+    let m = everything();
+    let receipt = m.f.receipt();
+    read_only(&m, 0o500);
+    let result = m.uninstall_all();
+    read_only(&m, 0o700);
+    assert_eq!(result, message(&m));
+    assert_eq!(m.f.receipt(), receipt, "the receipt is kept");
+    assert!(paths(&m.f.home).1.exists() && m.f.shell().exists());
+    m.uninstall_all().unwrap();
+    assert!(!m.root().exists());
+    assert!(!m.f.root.join(".hooks-receipt.json").exists());
+}
+
 #[test]
 fn removal_runs_the_chezmoi_check_only() {
     let m = Mod::new();

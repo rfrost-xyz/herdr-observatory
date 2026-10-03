@@ -609,6 +609,8 @@ pub(super) fn removal(home: &Path, receipt: &Value, env: &ClaudeEnv) -> Result<O
 /// D5 removal step 2, after the preflight: the recorded files, any debris,
 /// then each recorded directory, deepest first, if it is empty. A kept mod
 /// directory holds files Anton never wrote; it is reported, not an error.
+/// Any other failure to remove a recorded directory is an error, returned
+/// before the caller changes the receipt.
 pub(super) fn remove(home: &Path, recorded: &Recorded) -> Result<()> {
     remove_with(home, recorded, &mut |path| sync_directory(path))
 }
@@ -634,12 +636,25 @@ pub(super) fn remove_with(
     let mut directories: Vec<&PathBuf> = recorded.directories.iter().collect();
     directories.sort_by_key(|directory| std::cmp::Reverse(directory.components().count()));
     for directory in &directories {
-        let _ = std::fs::remove_dir(directory);
-        if directory.starts_with(&mod_root) && std::fs::symlink_metadata(directory).is_ok() {
-            eprintln!(
-                "Kept {}: it holds files the Claude Code mod installer did not write",
-                directory.display()
-            );
+        match std::fs::remove_dir(directory) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            // Only a directory that still holds entries is kept.
+            Err(e) if e.kind() == std::io::ErrorKind::DirectoryNotEmpty => {
+                if directory.starts_with(&mod_root) {
+                    eprintln!(
+                        "Kept {}: it holds files the Claude Code mod installer did not write",
+                        directory.display()
+                    );
+                }
+            }
+            // Any other failure keeps the receipt entry, so a retry works.
+            Err(_) => {
+                return Err(format!(
+                    "Claude Code mod removal failed: cannot remove {}; the receipt is unchanged, fix it and retry",
+                    directory.display()
+                ));
+            }
         }
     }
     let mut synced = std::collections::BTreeSet::new();
