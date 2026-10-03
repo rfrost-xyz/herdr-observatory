@@ -430,7 +430,7 @@ fn a_refresh_keeps_the_directories_and_uninstall_leaves_no_mod_tree() {
 fn install_refuses_targets_it_cannot_prove_are_its_own() {
     use std::os::unix::fs::symlink;
     type Setup = fn(&mut Mod);
-    let cases: [(&str, &str, Setup); 20] = [
+    let cases: [(&str, &str, Setup); 21] = [
         (
             "changed root",
             "Conflicting Claude Code mod directory",
@@ -492,6 +492,15 @@ fn install_refuses_targets_it_cannot_prove_are_its_own() {
             m.install().unwrap();
             symlink(m.file("hooks/hooks.json"), m.file("hooks").join(DEBRIS)).unwrap();
         }),
+        (
+            "debris-named file in the mod root",
+            ".anton-write-4242",
+            |m| {
+                // Only `.claude-plugin/` and `hooks/` receive atomic writes.
+                m.install().unwrap();
+                common::atomic_owned_write(&m.root().join(DEBRIS), b"x").unwrap();
+            },
+        ),
         ("non-debris temporary name", ".anton-write-", |m| {
             m.install().unwrap();
             for name in [".anton-write-12", ".anton-write-1-2x", ".anton-write--2"] {
@@ -748,6 +757,40 @@ fn removal_of_a_changed_file_refuses_before_any_deletion() {
             assert_eq!(m.snapshot(), before, "{what}: everything is kept");
         }
     }
+}
+
+/// Review round 2: debris is deleted only in `.claude-plugin/` and `hooks/`,
+/// the directories that receive atomic writes. A debris-named file in a
+/// recorded `skills/` or in the mod root cannot be Anton's, so install and
+/// both removals keep it.
+#[test]
+fn debris_names_outside_the_written_directories_are_kept() {
+    let skills_debris = |m: &Mod| {
+        let path = m.f.home.join(".claude/skills").join(DEBRIS);
+        common::atomic_owned_write(&path, b"not Anton's").unwrap();
+        path
+    };
+    let m = Mod::new();
+    m.install().unwrap();
+    assert!(m.entry()["directories"][0] == json!(m.f.home.join(".claude/skills")));
+    let path = skills_debris(&m);
+    m.install().unwrap();
+    assert!(path.is_file(), "install keeps it");
+    m.uninstall_mod().unwrap();
+    assert!(path.is_file(), "--uninstall-claude-mod keeps it");
+    assert!(!m.root().exists());
+    let m = everything();
+    let path = skills_debris(&m);
+    m.uninstall_all().unwrap();
+    assert!(path.is_file(), "--uninstall-hooks keeps it");
+    // In the mod root: removal keeps it and so the mod directory.
+    let m = Mod::new();
+    m.install().unwrap();
+    let path = m.root().join(DEBRIS);
+    common::atomic_owned_write(&path, b"not Anton's").unwrap();
+    m.uninstall_mod().unwrap();
+    assert!(path.is_file(), "removal keeps it");
+    assert!(!m.file("hooks").exists());
 }
 
 #[test]

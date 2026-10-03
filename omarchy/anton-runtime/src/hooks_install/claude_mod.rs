@@ -234,10 +234,14 @@ fn debris_name(name: &OsStr) -> bool {
         .is_some_and(|(pid, bits)| digits(pid) && digits(bits))
 }
 /// Deletes installer debris (D5): regular, user-owned, non-symlink files
-/// with a debris name in the recorded directories that exist. A symlink or
-/// another type with such a name is kept and later refused as unrecorded.
-fn delete_debris(directories: &[PathBuf]) -> Result<()> {
-    for directory in directories {
+/// with a debris name in the recorded mod directories that receive atomic
+/// writes, `.claude-plugin/` and `hooks/`, when they exist. A debris-named
+/// entry anywhere else, or a symlink or another type with such a name, is
+/// not Anton's: it is kept, and inside the mod directory refused as
+/// unrecorded.
+fn delete_debris(mod_root: &Path, directories: &[PathBuf]) -> Result<()> {
+    let written = [mod_root.join(".claude-plugin"), mod_root.join("hooks")];
+    for directory in directories.iter().filter(|d| written.contains(d)) {
         if !real_directory(directory)? {
             continue;
         }
@@ -410,7 +414,7 @@ pub(super) fn install_mod(
     };
     let recorded = prior.as_ref().map(Recorded::read);
     if let Some(recorded) = &recorded {
-        delete_debris(&recorded.directories)?;
+        delete_debris(&mod_root, &recorded.directories)?;
     }
     let present = inspect(&mod_root, recorded.as_ref())?;
     let files = payload(&runtime)?;
@@ -542,8 +546,8 @@ pub(super) fn remove(home: &Path, recorded: &Recorded) -> Result<()> {
             Err(_) => return Err("Claude Code mod removal failed".into()),
         }
     }
-    delete_debris(&recorded.directories)?;
     let mod_root = claude_mod_root(home);
+    delete_debris(&mod_root, &recorded.directories)?;
     // Deepest first: a refresh can record a recreated parent after its children.
     let mut directories: Vec<&PathBuf> = recorded.directories.iter().collect();
     directories.sort_by_key(|directory| std::cmp::Reverse(directory.components().count()));
