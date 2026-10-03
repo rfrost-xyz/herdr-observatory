@@ -11,8 +11,8 @@ with `CLAUDE_CONFIG_DIR` removed. Run every `openspec` command with
 
 ## 1. Baseline (coordinator, before code)
 
-- [ ] 1.1 Add `claude_agents_with_window` and `claude_agents_with_context_percent` (local and peer) to the Claude probe of `tests/measure_anton_popover.mjs`, with synthetic bound and mismatched v2 window reports (design D7), in its own `test(bench)` commit, without changing existing definitions.
-- [ ] 1.2 Build the unchanged `80f6295` release binary and record in evidence.md its sha256, `--repeat 3` CPU, RSS and snapshot size, the new Claude metrics and the suite results.
+- [x] 1.1 Add `claude_agents_with_window` and `claude_agents_with_context_percent` (local and peer) to the Claude probe of `tests/measure_anton_popover.mjs`, with synthetic bound and mismatched v2 window reports (design D7), in its own `test(bench)` commit, without changing existing definitions.
+- [x] 1.2 Build the unchanged `80f6295` release binary and record in evidence.md its sha256, `--repeat 3` CPU, RSS and snapshot size, the new Claude metrics and the suite results.
 
 ## 2. Runtime (lane A)
 

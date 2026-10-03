@@ -5,18 +5,50 @@ data or snapshots are recorded here.
 
 ## Baseline
 
-To be recorded by task 1.2 before any runtime change, from the unchanged
-`origin/main` binary at `80f6295`:
+Tasks 1.1 and 1.2, before any runtime change.
 
-- release binary sha256: _pending_;
-- `tests/measure_anton_popover.mjs --repeat 3`: runtime CPU, peak RSS and mean
-  snapshot size: _pending_;
-- Claude probe with the new additive metrics (task 1.1):
-  `claude_agents_with_window` and `claude_agents_with_context_percent`, local
-  and peer: _pending_. Expected on the old binary: local windows pass through
-  from bound metadata (change 2 lets a metadata window stay), local percentage
-  0, peer window present for bound peer panes, peer percentage 0;
-- suites green: _pending_.
+- Harness: `tests/measure_anton_popover.mjs` at `db0eae2`
+  (`test(bench): count claude agents with a window and context percent`).
+  Additive only: a new `window` Claude variant (standard transcripts, 4 panes
+  per host) gives panes 1 and 2 of each host a bound v2 window report (the
+  design D3 16-key wire, `obs_n1` `,200000,,`) and pane 4 a report bound to
+  another synthetic id. Every variant now reports `claude_agents_with_window`
+  and `claude_agents_with_context_percent` (local and peer); the window
+  variant also reports the mismatched pane's own window and percentage. The
+  `standard`, `large` and old-local fixtures and every existing metric
+  definition are unchanged.
+- Binary: the supplied release build of `80f6295`, sha256
+  `608c8b6efc99144ca8c97f64610c3f9fbab02e64be24d50aa5e49af8ebbe56be`. It was
+  built earlier by the coordinator and not rebuilt here; `git diff 80f6295
+  db0eae2 -- omarchy` is empty, so suites on this tree stand for `80f6295`.
+- Command: `node tests/measure_anton_popover.mjs --binary <80f6295 build>
+  --seconds 15 --repeat 3` (other options default: 32 agents per host, Claude
+  probes 4 agents per host, 30 s, 6 MB large), with `TMPDIR` a private
+  `mktemp -d /tmp/c3-XXXX` directory and `CLAUDE_CONFIG_DIR` unset. The after
+  run (task 5.1) must use the same flags.
+- Runtime (medians of 3 windows): CPU 0.020 s (0.020, 0.021, 0.019), peak RSS
+  4572 KiB (4556, 4572, 7836), mean snapshot 24493.2 bytes, 6 snapshots,
+  8 local Herdr samples, 0 `colors.toml` opens (inotify).
+- Claude probe (last snapshot, local/peer; one 30 s run per variant, not
+  repeated, so CPU and RSS differences between variants are noise-level):
+
+  | Variant | CPU s | Peak RSS KiB | Native | Window | Percentage |
+  |---|---|---|---|---|---|
+  | standard | 0.045 | 5136 | 4/4 | 0/0 | 0/0 |
+  | large | 0.223 | 16024 | 4/4 | 0/0 | 0/0 |
+  | window | 0.049 | 5104 | 4/4 | 2/2 | 0/0 |
+
+  Window variant: mismatched pane seen 1/1, with window 0/0, with percentage
+  0/0. This matches the expectation for the old binary: bound local windows
+  pass through, local percentage 0, peer window present for the bound peer
+  panes, peer percentage 0, mismatched pane none. Expected after the change:
+  local percentage 2, peer window and percentage 0/0, mismatched 0.
+- Suites on this tree: `cargo test --locked --offline` 223 + 19 + 6 + 32
+  passed, 0 failed; `node --test` State, Pi hooks and distribution: 88 passed,
+  0 failed; `run-qml.sh` 95 passed, 0 failed; `run-qmllint.sh` no warnings
+  outside Panel.qml; `run-shell-harness.sh` failures 0. `cargo fmt --check`
+  and `cargo clippy --all-targets --locked -- -D warnings` clean (local
+  toolchain).
 
 ## Claude Code mods documentation (Claude Code 2.1.287)
 
