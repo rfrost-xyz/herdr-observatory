@@ -405,7 +405,7 @@ fn a_refresh_keeps_the_directories_and_uninstall_leaves_no_mod_tree() {
 fn install_refuses_targets_it_cannot_prove_are_its_own() {
     use std::os::unix::fs::symlink;
     type Setup = fn(&mut Mod);
-    let cases: [(&str, &str, Setup); 17] = [
+    let cases: [(&str, &str, Setup); 20] = [
         (
             "changed root",
             "Conflicting Claude Code mod directory",
@@ -482,6 +482,20 @@ fn install_refuses_targets_it_cannot_prove_are_its_own() {
         ("Git file marker", "Git repository", |m| {
             common::atomic_owned_write(&m.f.home.join(".claude/.git"), b"gitdir: /elsewhere\n")
                 .unwrap();
+        }),
+        ("symlinked Git directory marker", "Git repository", |m| {
+            let real = m.f.home.join("dotfiles.git");
+            common::ensure_private_directory(&real).unwrap();
+            common::atomic_owned_write(&real.join("HEAD"), b"ref: refs/heads/main\n").unwrap();
+            symlink(&real, m.f.home.join(".git")).unwrap();
+        }),
+        ("symlinked Git file marker", "Git repository", |m| {
+            let real = m.f.home.join("gitdir-file");
+            common::atomic_owned_write(&real, b"gitdir: /elsewhere\n").unwrap();
+            symlink(&real, m.f.home.join(".claude/.git")).unwrap();
+        }),
+        ("dangling Git marker symlink", "Git repository", |m| {
+            symlink(m.f.home.join("missing"), m.f.home.join(".claude/.git")).unwrap();
         }),
         ("CLAUDE_CONFIG_DIR elsewhere", "CLAUDE_CONFIG_DIR", |m| {
             m.env.config_dir = Some(m.f.home.join("other-claude").into_os_string());

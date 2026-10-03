@@ -466,9 +466,12 @@ refuses a peer root (`herdr.observatory-peer`) as a second guard.
     `entries`, for example a `mise` without `dotfiles`.
   - **Git.** Any directory from the mod directory up to and including the
     home directory holds a real repository marker: a `.git` directory that
-    contains a regular file `HEAD`, or a regular `.git` file whose first line
-    starts with `gitdir:`. Any other `.git` entry, such as an empty `.git`
-    directory, does not count. The development host has an empty `~/.git`
+    contains a regular file `HEAD`, a regular `.git` file whose first line
+    starts with `gitdir:`, or a `.git` symlink of any kind. Git follows a
+    symlinked `.git` (for example a dotfiles setup that links the Git
+    directory in), so a `.git` symlink counts as a marker whether it resolves
+    or not; the check never follows it. Any other `.git` entry, such as an
+    empty `.git` directory, does not count. The development host has an empty `~/.git`
     directory that Git itself does not treat as a repository (evidence.md),
     so a bare `.git` existence test would refuse every install there. Bare
     dotfile repositories driven by `--git-dir`/`--work-tree` leave no marker
@@ -734,7 +737,8 @@ New behaviour (must fail on `80f6295`):
   file, symlinked `~/.claude`, `skills` or target; chezmoi; a fake `mise` on
   `PATH` printing a covering entry; a fake `mise` that fails and one that
   hangs past 3 s; a `.git` directory with a regular `HEAD` and a `.git` file
-  starting `gitdir:` in an ancestor; a fake `mise` listing the target only in
+  starting `gitdir:` in an ancestor, and a `.git` symlink to such a directory,
+  to such a file, and one that does not resolve; a fake `mise` listing the target only in
   `incomplete`, `invalid`, `nested` or `omitted`; `CLAUDE_CONFIG_DIR`
   elsewhere; peer root; a file named like debris that is a symlink or does not
   match the pattern (kept and refused as unrecorded).
