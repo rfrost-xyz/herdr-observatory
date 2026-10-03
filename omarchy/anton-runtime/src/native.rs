@@ -1114,7 +1114,7 @@ impl NativeTelemetry {
                 }
                 let usage = row.usage();
                 let seq = row.claude.coverage_seq;
-                let children = Some(&row).filter(|_| !foreign);
+                let children = (!foreign).then_some(&row);
                 // A restart that publishes nothing, as with no timestamped
                 // record yet, must still replace the local's copy (D3).
                 if !publish_claude(agent, &usage, children, seq, time) && (restarted || foreign) {

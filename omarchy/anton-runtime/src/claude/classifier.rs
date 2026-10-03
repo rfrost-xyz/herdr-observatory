@@ -909,7 +909,7 @@ mod tests {
             format!(
                 "{{\"type\":\"attachment\",\"operation\":\"dequeue\",\"sessionId\":\"{ID}\",\"timestamp\":\"{STAMP}\"}}"
             ),
-            format!("{{\"type\":7,\"sessionId\":5,\"uuid\":[],\"timestamp\":{{}}}}"),
+            "{\"type\":7,\"sessionId\":5,\"uuid\":[],\"timestamp\":{}}".to_owned(),
             "{}".to_owned(),
             // An empty key names no consumed field, even past `CAP`.
             assistant(&format!("\"\":\"{pad}\","), ""),
