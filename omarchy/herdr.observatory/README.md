@@ -33,9 +33,50 @@ The unchanged popover shows context, input/output, cache composition, subagent
 outcomes and turn time. Missing data stays unknown. Codex and Claude Code
 collection do not need Observatory hooks; Herdr's native integration supplies
 session identity. Claude Code transcripts are read from
-`$CLAUDE_CONFIG_DIR/projects` or `~/.claude/projects`; their context dial stays
-unknown because transcripts carry no context window.
+`$CLAUDE_CONFIG_DIR/projects` or `~/.claude/projects`. Transcripts carry no
+context window, so the Claude Code context dial needs the Claude Code mod below;
+without it the window and percentage stay unknown.
 The optional Pi extension calls the native reporter for supported live metrics.
+
+## Claude Code context window mod
+
+The local install adds a small Claude Code mod, `anton-observatory`, as a
+personal skills-directory plugin in `~/.claude/skills/anton-observatory/`
+(`.claude-plugin/plugin.json`, `hooks/hooks.json` and `hooks/register.js`). It
+needs Claude Code 2.1.287 or later, which loads it as
+`anton-observatory@skills-dir` with no `settings.json` or `enabledPlugins` edit.
+After each turn and at session start it runs the installed `anton-runtime` with
+the Herdr pane, a sequence, the session id and the context window as arguments.
+It sends no model, prompt, message, cost, rate limit or account data, never
+blocks or changes the event, and runs only inside a Herdr pane. The reporter
+writes the window to that pane's metadata only when Herdr binds the pane to the
+same Claude Code session; the collector then shows the replay context as a
+percentage of that window. Peers never install the mod, so remote Claude Code
+threads show no window or percentage.
+
+The mod loads only at the next session start or after `/reload-plugins`. A
+session that was already running stays unknown until it reloads, as does any
+session in which mods are off (for example an untrusted workspace,
+`disableAllHooks`, `--bare` or `--safe-mode`).
+
+The files and their hashes are recorded in the plugin's `.hooks-receipt.json`.
+Installation refuses a target it cannot prove absent or owned, symlinks, a set
+`CLAUDE_CONFIG_DIR` other than `~/.claude`, and a target managed by chezmoi, mise
+dotfiles or a Git repository with a real `.git` marker. A refusal leaves the
+plugin installed and the dial unknown. To remove only the mod:
+
+```sh
+~/.config/omarchy/plugins/herdr.observatory/anton-runtime --uninstall-claude-mod
+```
+
+Removal refuses, keeping every file and the receipt, when a recorded file was
+changed; restore or delete that file and retry. A directory holding a file Anton
+did not write is kept and reported. The complete uninstall below also removes
+the mod.
+
+If mods are withdrawn or cannot load, the documented fallback is a Claude Code
+`statusLine` wrapper that passes the session id and context window size to the
+same reporter. It is not built, because it needs an edit to `settings.json`.
 
 ## Popover structure
 
@@ -84,6 +125,9 @@ ANTON_CONFIG=/absolute/private/config.json omarchy/herdr.observatory/install.sh
 
 Installation refuses an existing plugin. Updates must preserve `.config.json`,
 `.accounts.json`, `.peers.json`, private state and the existing owner marker inode.
+After updating the installed runtime, run
+`~/.config/omarchy/plugins/herdr.observatory/anton-runtime --install-claude-mod`
+to install or refresh the Claude Code mod; an unchanged mod is left as it is.
 The example below uses synthetic paths. Set host IDs to the actual configured
 Herdr machine IDs so navigation resolves the same exact machine. Enable automatic
 fleet discovery to follow saved enabled profiles without restarting the plugin.
@@ -272,8 +316,10 @@ using the command.
 ```
 
 This first removes receipt-recorded native peers, then disables the local plugin,
-removes its still-owned Pi extension, retires checkpoint writers and removes only
-known plugin/state files. It preserves unrelated hooks, files and applications.
+removes its still-owned Pi extension and Claude Code mod, retires checkpoint
+writers and removes only known plugin/state files. A changed mod or Pi extension
+file stops removal with the plugin and receipt intact, so the command can be
+retried. It preserves unrelated hooks, files and applications.
 An unreachable or conflicting peer stops removal and retains the local plugin and
 remaining receipt so the same command can be retried. Unknown local files also
 stop removal. No remote container or unrelated Anton installation is deleted.
@@ -290,7 +336,7 @@ For a separately provisioned peer, its explicit standalone removal command is:
 cargo fmt --manifest-path omarchy/anton-runtime/Cargo.toml --check
 cargo clippy --manifest-path omarchy/anton-runtime/Cargo.toml --locked --offline --all-targets -- -D warnings
 cargo test --manifest-path omarchy/anton-runtime/Cargo.toml --locked --offline
-node --test tests/test_pi_hooks.mjs tests/test_omarchy_state.cjs tests/test_native_distribution.mjs
+node --test tests/test_pi_hooks.mjs tests/test_claude_mod.mjs tests/test_omarchy_state.cjs tests/test_native_distribution.mjs
 bash tests/run-qml.sh
 bash tests/run-qmllint.sh
 bash tests/run-shell-harness.sh
