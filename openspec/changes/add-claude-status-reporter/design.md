@@ -649,8 +649,10 @@ refuses a peer root (`herdr.observatory-peer`) as a second guard.
   recomputes the list from scratch, because on a refresh every directory
   already exists.
 - Every recorded path (`root`, each of `directories` and each file `path`)
-  is absolute with only root and normal components. An entry with a `.` or
-  `..` component is not a valid entry, because a lexical prefix test would
+  is absolute with only root and normal components. An entry with a `..`
+  component is not a valid entry (a `.` component or a repeated separator is
+  dropped when the path is split into components, so it cannot leave the
+  root), because a lexical prefix test would
   accept `<root>/../../outside` as inside the mod directory and removal
   would then remove an empty directory Anton never created (review round 4).
 - `prior_sha256` is present only while a refresh is in progress (below). It

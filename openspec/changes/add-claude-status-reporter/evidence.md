@@ -929,8 +929,8 @@ against the unfixed or mutated code and failed there.
   migration never persists, so each candidate read evaluates `[env]` again.
   Coordinator decision: accepted and recorded, with no migration-marker
   refusal. Each read is still bounded to 3 s and 1 MiB, and the number of
-  reads is bounded by the candidate list (at most 256). D5 and the round-3
-  entry above are corrected (`a051009`). Not re-probed here; the
+  reads is bounded by the candidate list (at most 256). D5 (`a051009`) and
+  the round-3 entry above are corrected. Not re-probed here; the
   reviewer's sandbox (mise 2026.9.16) is the source.
 - **Receipt lock held throughout (installer lens, non-blocking).** The busy
   tests only showed that each writer tries the lock once. Two probes now
