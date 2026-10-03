@@ -183,6 +183,31 @@ fn an_existing_skills_directory_is_not_recorded_or_removed() {
     assert!(m.f.receipt().get("claude_mod").is_none());
 }
 
+/// A `skills/` the installer recreated after install is recorded after its
+/// children; removal still deletes it, deepest directory first.
+#[test]
+fn a_skills_directory_recreated_after_install_is_removed() {
+    let m = Mod::new();
+    let skills = m.f.home.join(".claude/skills");
+    common::ensure_private_directory(&skills).unwrap();
+    m.install().unwrap();
+    std::fs::remove_dir_all(&skills).unwrap();
+    m.install().unwrap();
+    assert_eq!(
+        m.entry()["directories"],
+        json!([
+            m.root(),
+            m.root().join(".claude-plugin"),
+            m.root().join("hooks"),
+            skills
+        ])
+    );
+    m.uninstall_mod().unwrap();
+    assert!(!skills.exists(), "the recorded skills directory is removed");
+    assert!(m.f.home.join(".claude").is_dir());
+    assert!(m.f.receipt().get("claude_mod").is_none());
+}
+
 #[test]
 fn a_payload_change_rewrites_only_the_changed_files() {
     let m = Mod::new();

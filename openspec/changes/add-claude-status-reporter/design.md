@@ -585,8 +585,10 @@ and removal would refuse.
    directory (fake `mise` listing it) that is still removed, and a
    chezmoi-managed one that is refused.
 2. Remove the recorded files and any installer debris (defined above) in the
-   recorded directories, then `remove_dir` each recorded directory in reverse
-   order. Debris is deleted only after the preflight passes, so a refused
+   recorded directories, then `remove_dir` each recorded directory, deepest
+   first (by path component count). A refresh appends a recreated parent such
+   as `skills/` after its recorded children, so list order alone would try the
+   parent while it still holds them. Debris is deleted only after the preflight passes, so a refused
    removal still keeps everything. An absent recorded directory is fine. `remove_dir` removes
    only empty directories, so a directory holding an unrecorded file stays;
    the command reports it on stderr and still succeeds, because that file was
@@ -732,7 +734,12 @@ New behaviour (must fail on `80f6295`):
   and the receipt unchanged.
 - Refresh then uninstall: a refresh keeps the prior `directories` list, and a
   later `--uninstall-claude-mod` leaves no `anton-observatory/` (and no
-  `skills/` when the installer created it).
+  `skills/` when the installer created it). This includes a `skills/` that
+  existed at install, was deleted, and was recreated and recorded by a later
+  install after its children.
+- Snapshots: the "nothing changes", "everything is kept" and "writes
+  nothing" comparisons record directories as well as files (path, kind,
+  inode, mode), so a directory created or removed fails them.
 - Refusals: existing unowned directory, unrecorded file, modified recorded
   file, symlinked `~/.claude`, `skills` or target; chezmoi; a fake `mise` on
   `PATH` printing a covering entry; a fake `mise` that fails and one that

@@ -532,7 +532,7 @@ pub(super) fn removal(home: &Path, receipt: &Value, env: &ClaudeEnv) -> Result<O
     Ok(Some(recorded))
 }
 /// D5 removal step 2, after the preflight: the recorded files, any debris,
-/// then each recorded directory in reverse order if it is empty. A kept mod
+/// then each recorded directory, deepest first, if it is empty. A kept mod
 /// directory holds files Anton never wrote; it is reported, not an error.
 pub(super) fn remove(home: &Path, recorded: &Recorded) -> Result<()> {
     for path in recorded.files.keys() {
@@ -544,7 +544,10 @@ pub(super) fn remove(home: &Path, recorded: &Recorded) -> Result<()> {
     }
     delete_debris(&recorded.directories)?;
     let mod_root = claude_mod_root(home);
-    for directory in recorded.directories.iter().rev() {
+    // Deepest first: a refresh can record a recreated parent after its children.
+    let mut directories: Vec<&PathBuf> = recorded.directories.iter().collect();
+    directories.sort_by_key(|directory| std::cmp::Reverse(directory.components().count()));
+    for directory in directories {
         let _ = std::fs::remove_dir(directory);
         if directory.starts_with(&mod_root) && std::fs::symlink_metadata(directory).is_ok() {
             eprintln!(
