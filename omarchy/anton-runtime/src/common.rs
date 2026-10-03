@@ -211,6 +211,18 @@ fn atomic_write(path: &Path, bytes: &[u8], checkpoint: bool) -> Result<()> {
 pub struct OwnerGuard {
     _file: File,
 }
+/// Releases a `flock` taken on the file when dropped. A process spawned by
+/// another thread holds the lock's open file description until it calls
+/// exec, so closing the descriptor alone can leave the lock held. Declare
+/// the guard after the file so it drops first.
+pub struct Unlock<'a>(pub &'a File);
+impl Drop for Unlock<'_> {
+    fn drop(&mut self) {
+        unsafe {
+            libc::flock(self.0.as_raw_fd(), libc::LOCK_UN);
+        }
+    }
+}
 pub fn owner_guard(path: &Path) -> Result<OwnerGuard> {
     let mut file = open_owned(path, false, false)?;
     if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) } < 0 {
@@ -510,4 +522,80 @@ pub fn ensure_private_directory(path: &Path) -> Result<()> {
         return Err("State directory ownership mismatch".into());
     }
     Ok(())
+}
+/// A unique fixture directory name under the temporary directory, after
+/// removing stale siblings with `prefix`. Fixtures clean up on drop, which a
+/// killed test process never reaches. A sibling is stale only when the
+/// current user owns it, its embedded process id is dead here and it has not
+/// been modified for an hour: a run in another pid namespace sharing the
+/// temporary directory has ids that look dead here, so the age is what keeps
+/// its live fixtures. A sweep by hand should match the exact prefix and age.
+#[cfg(test)]
+pub(crate) fn fixture_dir(prefix: &str, sequence: u64) -> PathBuf {
+    let temp = std::env::temp_dir();
+    if let Ok(entries) = std::fs::read_dir(&temp) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(pid) = name
+                .to_str()
+                .and_then(|name| name.strip_prefix(prefix))
+                .and_then(|rest| rest.split('-').next())
+                .and_then(|pid| pid.parse::<libc::pid_t>().ok())
+                .filter(|pid| *pid > 0 && *pid as u32 != std::process::id())
+            else {
+                continue;
+            };
+            // A modification time in the future or unreadable is recent.
+            let owned = std::fs::symlink_metadata(entry.path()).is_ok_and(|info| {
+                info.is_dir()
+                    && info.uid() == unsafe { libc::geteuid() }
+                    && info
+                        .modified()
+                        .ok()
+                        .and_then(|at| at.elapsed().ok())
+                        .is_some_and(|age| age.as_secs() >= 3600)
+            });
+            // SAFETY: signal 0 only checks whether the process exists.
+            let dead = unsafe { libc::kill(pid, 0) } == -1
+                && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+            if owned && dead {
+                let _ = std::fs::remove_dir_all(entry.path());
+            }
+        }
+    }
+    temp.join(format!(
+        "{prefix}{}-{}-{sequence}",
+        std::process::id(),
+        now().to_bits()
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A sibling whose process id is dead here may belong to a live run in
+    /// another pid namespace, so only one also untouched for an hour is
+    /// swept (review round 12).
+    #[test]
+    fn fixture_sweep_removes_only_dead_pid_dirs_untouched_for_an_hour() {
+        let prefix = format!("anton-unit-sweep-{}-", std::process::id());
+        let max: i64 = std::fs::read_to_string("/proc/sys/kernel/pid_max")
+            .ok()
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(4_194_304);
+        let decoy = std::env::temp_dir().join(format!("{prefix}{}-0-0", max + 1));
+        std::fs::create_dir(&decoy).unwrap();
+        fixture_dir(&prefix, 0);
+        let kept = decoy.is_dir();
+        File::open(&decoy)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(3601))
+            .unwrap();
+        fixture_dir(&prefix, 1);
+        let removed = !decoy.exists();
+        let _ = std::fs::remove_dir_all(&decoy);
+        assert!(kept, "a recent dead-pid sibling is kept");
+        assert!(removed, "an hour-old dead-pid sibling is removed");
+    }
 }

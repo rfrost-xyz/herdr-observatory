@@ -1,9 +1,10 @@
 //! User navigation with fixture executables. No actual desktop, SSH or Herdr
 //! control is performed; stale routes must fail before even inspecting windows.
+mod support;
+
 use anton_runtime::{common, navigation};
 use serde_json::{Value, json};
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -33,8 +34,7 @@ impl Fixture {
     }
     fn script(&self, name: &str, body: &str) {
         let path = self.0.join("bin").join(name);
-        fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+        support::write_executable(&path, format!("#!/bin/sh\n{body}\n").as_bytes(), 0o755);
     }
     fn click(&self, profiles: &Value, binding: &Value) -> std::process::Output {
         fs::write(self.0.join("profiles.json"), profiles.to_string()).unwrap();

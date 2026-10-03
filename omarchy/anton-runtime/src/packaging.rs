@@ -231,9 +231,14 @@ mod tests {
     #[test]
     fn duplicate_peer_targets_fail_without_losing_receipt() {
         let root = std::env::temp_dir().join(format!(
-            "anton-peer-receipt-{}-{}",
+            "anton-peer-receipt-{}-{}-{}",
             std::process::id(),
-            common::now().to_bits()
+            common::now().to_bits(),
+            {
+                static SEQUENCE: std::sync::atomic::AtomicUsize =
+                    std::sync::atomic::AtomicUsize::new(0);
+                SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            }
         ));
         std::fs::create_dir(&root).unwrap();
         let bytes =

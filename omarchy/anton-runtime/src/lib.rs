@@ -11,6 +11,7 @@ pub mod identity;
 pub mod navigation;
 pub mod reporter;
 
+pub mod claude;
 pub mod collection;
 pub mod config;
 pub mod native;

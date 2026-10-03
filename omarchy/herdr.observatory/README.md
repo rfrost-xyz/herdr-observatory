@@ -6,7 +6,7 @@ allowances. It has no companion window or web application.
 ## Runtime
 
 QML owns `anton-runtime`. The Rust collector reads local Herdr, validates bounded
-Codex session records and invokes the same executable on explicitly configured
+Codex and Claude Code session records and invokes the same executable on explicitly configured
 SSH peers. It stops on owner-pipe closure. No Python, Docker, listening service,
 independent autostart or music forwarding is required.
 
@@ -30,8 +30,11 @@ validated as before so installed configurations keep loading, and are otherwise
 ignored. Peers report `theme` as `null` for compatibility with older plugins.
 
 The unchanged popover shows context, input/output, cache composition, subagent
-outcomes and turn time. Missing data stays unknown. Codex collection does not
-need Observatory hooks; Herdr's native integration supplies session identity.
+outcomes and turn time. Missing data stays unknown. Codex and Claude Code
+collection do not need Observatory hooks; Herdr's native integration supplies
+session identity. Claude Code transcripts are read from
+`$CLAUDE_CONFIG_DIR/projects` or `~/.claude/projects`; their context dial stays
+unknown because transcripts carry no context window.
 The optional Pi extension calls the native reporter for supported live metrics.
 
 ## Popover structure

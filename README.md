@@ -20,7 +20,8 @@ explicitly provisioned.
 QML owns one Rust collector. It reads local Herdr and invokes a small Rust peer
 on configured SSH hosts. Both use bounded read-only operations. No Python,
 Docker, HTTP server, web dashboard, music forwarding or background service is
-required. Codex metrics come from validated native session records; Pi uses a
+required. Codex and Claude Code metrics come from validated native session
+records; Pi uses a
 small extension which calls the native reporter.
 
 See [installation, configuration and complete removal](omarchy/herdr.observatory/README.md).

@@ -1,38 +1,30 @@
-# Harness telemetry
+# Delta for harness-telemetry
 
-## Purpose
-Provide bounded harness activity metadata shared by native Herdr and the Observatory display without collecting private transcript content.
+## ADDED Requirements
 
-## Requirements
+### Requirement: Native Claude Code transcript replay
+The plugin-owned native reader SHALL enrich a Claude Code pane only when Herdr reports agent `claude` with a `herdr:claude` session of kind `id` whose value is a safe identifier. It SHALL bind that id to exactly one `<projects-root>/<entry>/<id>.jsonl`, where the projects root is `$CLAUDE_CONFIG_DIR/projects` from the collector's own environment or `~/.claude/projects`. Zero, several or budget-truncated matches (a scan cut short by the shared probe deadline is a deadline skip instead, and changes neither the follower's binding nor its retained sample; without a current binding the thread's telemetry is unknown for that pass), a predecessor successor proven by a bounded scan, ownership or symlink failure, a header whose `sessionId` differs, or any later record carrying a different `sessionId` SHALL leave the thread's native telemetry unknown, for the rest of that binding in the case of a later record. Positive bindings SHALL be rediscovered at a bounded cadence. Records carrying `forkedFrom` SHALL be treated as inherited history and SHALL feed no metric. Subagent, tool-result, memory and account files SHALL NOT be read during thread replay.
 
-### Requirement: Supplementary harness reports
-The installed Pi adapter SHALL report supported tool, model, phase and compaction events as expiring Herdr presentation metadata, without changing lifecycle authority, session references or sending agent input. Reports SHALL be limited to the matching native session in the configured local Herdr instance.
+Assistant usage SHALL be deduplicated by response: only an assistant record with a different `message.id` closes the open group, a later line of the open group replaces its counted contribution, and a reopened recently closed group SHALL make totals unknown. Totals SHALL be published only after replay from the header has caught up. Cumulative input SHALL include cache reads and writes, while source `input_tokens` remain uncached input. Client-generated `<synthetic>` records SHALL NOT count, missing counters SHALL make totals unknown, and context occupancy SHALL follow the provider's own last-response rule. The context window and percentage SHALL remain omitted when no compliant window source exists. Child completion SHALL come only from structured launch, resume and task-notification records with bounded hashed associations, and turn timing SHALL come from validated prompt, abort and turn-end record timestamps, with silent or ambiguous evidence leaving accumulated coverage unknown. Once a turn may still be running without evidence of its end, no interval for that turn SHALL be published as current or last until a turn-end record or abort; the previous last valid interval MAY remain.
 
-#### Scenario: Matching session
-- **WHEN** a supported event occurs in the identified Herdr pane
-- **THEN** Herdr exposes supplementary activity metadata and a concise display label while preserving its semantic state.
+#### Scenario: Bound Claude session
+- **WHEN** Herdr reports a Claude pane whose id matches exactly one owned transcript with a matching header
+- **THEN** the popover receives deduplicated cumulative and last-response usage, compactions, child outcomes and turn timing for that session with original source times and `claude-transcript` provenance, and no context percentage.
 
-#### Scenario: Unavailable or replaced session
-- **WHEN** the native helper or Herdr is unavailable, the adapter runs outside Herdr, or its native session no longer matches
-- **THEN** reporting fails silently within a bounded time without blocking or changing the harness operation.
+#### Scenario: Split and interleaved responses
+- **WHEN** one response is written as several assistant lines sharing a message id, with tool results between them
+- **THEN** its usage is counted once, using the response's final line.
 
-### Requirement: Truthful and private telemetry
-The system SHALL export only allowlisted metadata, omit raw arguments, output, prompts and reasoning content, reject future or mismatched telemetry, and leave unsupported metrics unavailable. Older session-bound values SHALL retain their original source times. Context estimates SHALL be distinguished from reported usage; usage SHALL name its scope and retain its source timestamp.
+#### Scenario: Ambiguous, forked or predecessor binding
+- **WHEN** the id matches several files, a scan is truncated, a successor transcript names the bound id, or a fork copied the parent's records
+- **THEN** no native measurement is shown for the ambiguous binding and copied history is never counted in two sessions.
 
-#### Scenario: Supported and unsupported metrics
-- **WHEN** a harness supplies supported recent usage through its extension or verified hook-time numeric enrichment
-- **THEN** the display shows supported last-response counters and labelled context estimates, while absent counters remain unknown and newer activity does not renew old usage.
+#### Scenario: Unsupported record shapes
+- **WHEN** an oversized, malformed or unrecognised record of a relevant type cannot be classified
+- **THEN** only the dependent totals, children, compactions or turn coverage become unknown and no zero is invented.
 
-#### Scenario: Personal activity
-- **WHEN** native metadata contains arguments, paths, transcript content or unknown fields
-- **THEN** those fields are absent from the popover state and peer telemetry response.
 
-### Requirement: Minimal adapter lifecycle
-Telemetry processing and required install payloads SHALL ship with the native plugin or its marked native peer. No Python or Docker process SHALL be required. Redundant plugin Codex callbacks SHALL be removed only when proven owned; native Herdr integrations SHALL remain untouched. Installation and removal SHALL be idempotent, preserve unrelated/native integrations and require no additional persistent service or network listener.
-
-#### Scenario: Repeat installation and removal
-- **WHEN** an operator installs twice and later removes the adapters
-- **THEN** there is one owned integration per harness and removal leaves unrelated hooks and extensions intact.
+## MODIFIED Requirements
 
 ### Requirement: Hook-time structured usage enrichment
 The native Codex and Claude Code readers SHALL enrich collection from supported numeric usage records in the exact local session established by Herdr, without synchronous harness callbacks or a daemon. It SHALL verify the file belongs to the user, reject symlink traversal, restrict reads to the configured session directory, verify the session header and bound file reads and execution. Only allowlisted numeric fields and their source time SHALL leave the adapter; transcript text, arguments, file paths and child identities SHALL NOT be forwarded. Pi SHALL report supported live extension usage and seed it from the current session branch when available on reload. Missing counters SHALL remain unknown, and an older usage source SHALL not be made fresh by a newer hook.
@@ -139,24 +131,3 @@ The plugin-owned collector MAY retain restart checkpoints locally for configured
 #### Scenario: Small remote clock offset
 - **WHEN** a validated remote observation and cursor are at most one second ahead of local time
 - **THEN** native timing and checkpoint retention accept the bounded offset without rewriting original source timestamps, while larger future offsets remain invalid, usage freshness stays strict and allowances follow their independently specified transport tolerance.
-
-### Requirement: Native Claude Code transcript replay
-The plugin-owned native reader SHALL enrich a Claude Code pane only when Herdr reports agent `claude` with a `herdr:claude` session of kind `id` whose value is a safe identifier. It SHALL bind that id to exactly one `<projects-root>/<entry>/<id>.jsonl`, where the projects root is `$CLAUDE_CONFIG_DIR/projects` from the collector's own environment or `~/.claude/projects`. Zero, several or budget-truncated matches (a scan cut short by the shared probe deadline is a deadline skip instead, and changes neither the follower's binding nor its retained sample; without a current binding the thread's telemetry is unknown for that pass), a predecessor successor proven by a bounded scan, ownership or symlink failure, a header whose `sessionId` differs, or any later record carrying a different `sessionId` SHALL leave the thread's native telemetry unknown, for the rest of that binding in the case of a later record. Positive bindings SHALL be rediscovered at a bounded cadence. Records carrying `forkedFrom` SHALL be treated as inherited history and SHALL feed no metric. Subagent, tool-result, memory and account files SHALL NOT be read during thread replay.
-
-Assistant usage SHALL be deduplicated by response: only an assistant record with a different `message.id` closes the open group, a later line of the open group replaces its counted contribution, and a reopened recently closed group SHALL make totals unknown. Totals SHALL be published only after replay from the header has caught up. Cumulative input SHALL include cache reads and writes, while source `input_tokens` remain uncached input. Client-generated `<synthetic>` records SHALL NOT count, missing counters SHALL make totals unknown, and context occupancy SHALL follow the provider's own last-response rule. The context window and percentage SHALL remain omitted when no compliant window source exists. Child completion SHALL come only from structured launch, resume and task-notification records with bounded hashed associations, and turn timing SHALL come from validated prompt, abort and turn-end record timestamps, with silent or ambiguous evidence leaving accumulated coverage unknown. Once a turn may still be running without evidence of its end, no interval for that turn SHALL be published as current or last until a turn-end record or abort; the previous last valid interval MAY remain.
-
-#### Scenario: Bound Claude session
-- **WHEN** Herdr reports a Claude pane whose id matches exactly one owned transcript with a matching header
-- **THEN** the popover receives deduplicated cumulative and last-response usage, compactions, child outcomes and turn timing for that session with original source times and `claude-transcript` provenance, and no context percentage.
-
-#### Scenario: Split and interleaved responses
-- **WHEN** one response is written as several assistant lines sharing a message id, with tool results between them
-- **THEN** its usage is counted once, using the response's final line.
-
-#### Scenario: Ambiguous, forked or predecessor binding
-- **WHEN** the id matches several files, a scan is truncated, a successor transcript names the bound id, or a fork copied the parent's records
-- **THEN** no native measurement is shown for the ambiguous binding and copied history is never counted in two sessions.
-
-#### Scenario: Unsupported record shapes
-- **WHEN** an oversized, malformed or unrecognised record of a relevant type cannot be classified
-- **THEN** only the dependent totals, children, compactions or turn coverage become unknown and no zero is invented.

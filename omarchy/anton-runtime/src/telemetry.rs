@@ -76,6 +76,19 @@ pub fn session_binding(agent: &Value) -> Option<String> {
     }
     Some(sha256(format!("{harness}:{kind}:{value}").as_bytes()))
 }
+pub fn safe_model(model: &str) -> bool {
+    model.len() <= 64
+        && !model.contains("..")
+        && !model.contains(":/")
+        && model.split('/').count() <= 2
+        && model.split('/').all(|part| {
+            !part.is_empty()
+                && part.as_bytes()[0].is_ascii_alphanumeric()
+                && part
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || b"_.:-".contains(&c))
+        })
+}
 pub fn telemetry_view(raw: &Value) -> Option<Value> {
     telemetry_view_at(raw, now())
 }
@@ -121,19 +134,7 @@ pub fn telemetry_view_at(raw: &Value, time: f64) -> Option<Value> {
         .unwrap_or(Value::Null);
     result["model"] = raw["model"]
         .as_str()
-        .filter(|model| {
-            model.len() <= 64
-                && !model.contains("..")
-                && !model.contains(":/")
-                && model.split('/').count() <= 2
-                && model.split('/').all(|part| {
-                    !part.is_empty()
-                        && part.as_bytes()[0].is_ascii_alphanumeric()
-                        && part
-                            .bytes()
-                            .all(|c| c.is_ascii_alphanumeric() || b"_.:-".contains(&c))
-                })
-        })
+        .filter(|model| safe_model(model))
         .map(|s| json!(s))
         .unwrap_or(Value::Null);
     result["result"] = raw["result"]
@@ -178,7 +179,7 @@ pub fn telemetry_view_at(raw: &Value, time: f64) -> Option<Value> {
     }
     result["usage_source"] = raw["usage_source"]
         .as_str()
-        .filter(|s| ["codex-rollout", "pi-extension"].contains(s))
+        .filter(|s| ["codex-rollout", "pi-extension", "claude-transcript"].contains(s))
         .map(|s| json!(s))
         .unwrap_or(Value::Null);
     if (!raw["usage_seq"].is_null() || !raw["usage_source"].is_null())
@@ -296,14 +297,17 @@ pub fn telemetry_from_agent(agent: &Value) -> Option<Value> {
     telemetry_view(&raw)
 }
 pub fn turn_timing_view(raw: &Value) -> Option<Value> {
-    let time = now();
+    turn_timing_view_at(raw, now() + 1.0)
+}
+/// `turn_timing_view` with `observed_at_s` allowed up to `limit`.
+pub fn turn_timing_view_at(raw: &Value, limit: f64) -> Option<Value> {
     let observed = raw["observed_at_s"].as_f64()?;
     let active = raw["active"].as_bool();
     let start = number(&raw["started_at_s"]);
     let complete = raw["complete"].as_bool()?;
     if !observed.is_finite()
         || observed <= 0.0
-        || observed > time + 1.0
+        || observed > limit
         || (!raw["active"].is_null() && active.is_none())
         || (!raw["started_at_s"].is_null() && start.is_none())
         || start.is_some_and(|v| v == 0 || v as f64 > observed)

@@ -109,6 +109,67 @@ impl Turns {
         self.active = None;
         self.start = None;
     }
+    /// Opens the interval for an exact hashed key at a validated Unix second.
+    /// Overlap with the previous end or an open interval makes coverage unknown.
+    pub fn begin(&mut self, key: String, start: u64) {
+        self.supported = true;
+        if !hex_id(&key, 24) || start == 0 || start > 9_007_199_254_740_991 {
+            self.unknown();
+            return;
+        }
+        if self.active.is_some() {
+            self.unknown();
+        }
+        if let Some(row) = self.finished.get(&key) {
+            if row.0 != start {
+                self.unknown();
+            }
+            return;
+        }
+        if self.last_end.is_some_and(|end| start < end) {
+            self.unknown();
+            return;
+        }
+        self.active = Some(key);
+        self.start = Some(start);
+        self.current_known = true;
+    }
+    pub fn finish(&mut self, end: u64) {
+        self.end(end, "completed");
+    }
+    pub fn abort(&mut self, end: u64) {
+        self.end(end, "aborted");
+    }
+    fn end(&mut self, end: u64, outcome: &str) {
+        self.supported = true;
+        let (Some(key), Some(start)) = (self.active.clone(), self.start) else {
+            self.valid = false;
+            return;
+        };
+        if end < start || end > 9_007_199_254_740_991 {
+            self.unknown();
+            return;
+        }
+        self.active = None;
+        self.start = None;
+        self.current_known = true;
+        let total = self
+            .total
+            .checked_add(end - start)
+            .filter(|v| *v <= 9_007_199_254_740_991);
+        match total {
+            Some(total) if self.finished.len() < 512 => {
+                self.finished
+                    .insert(key.clone(), (start, end, outcome.to_owned()));
+                self.total = total;
+            }
+            _ => self.valid = false,
+        }
+        self.last = Some(key);
+        self.last_duration = Some(end - start);
+        self.last_outcome = Some(outcome.to_owned());
+        self.last_end = Some(end);
+    }
     pub fn observe(&mut self, payload: &Value, session: &str, now: f64) {
         let kind = payload["type"].as_str().unwrap_or("");
         if !["task_started", "task_complete", "turn_aborted"].contains(&kind) {
@@ -217,5 +278,79 @@ impl Turns {
             self.last_outcome = Some(outcome.to_owned());
             self.last_end = Some(end);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn key(n: u8) -> String {
+        sha256(&[n])[..24].to_owned()
+    }
+    #[test]
+    fn helpers_keep_turn_invariants() {
+        let mut turns = Turns::default();
+        turns.begin(key(1), 100);
+        assert!(turns.validate() && turns.supported && turns.current_known);
+        assert_eq!(
+            (turns.active.as_ref(), turns.start),
+            (Some(&key(1)), Some(100))
+        );
+        turns.finish(130);
+        assert!(turns.validate() && turns.valid && turns.active.is_none());
+        assert_eq!((turns.total, turns.last_duration), (30, Some(30)));
+        turns.begin(key(2), 140);
+        turns.abort(145);
+        assert!(turns.validate() && turns.valid);
+        assert_eq!(
+            (turns.total, turns.last_outcome.as_deref()),
+            (35, Some("aborted"))
+        );
+        // A finished key at the same start is a duplicate, not a new interval.
+        turns.begin(key(2), 140);
+        assert!(turns.validate() && turns.valid && turns.active.is_none());
+        let mut overlap = turns.clone();
+        overlap.begin(key(3), 144);
+        assert!(overlap.validate() && !overlap.valid && !overlap.current_known);
+        assert!(overlap.active.is_none());
+        let mut reopened = turns.clone();
+        reopened.begin(key(2), 150);
+        assert!(reopened.validate() && !reopened.valid);
+        let mut backwards = turns.clone();
+        backwards.begin(key(4), 150);
+        backwards.finish(149);
+        assert!(backwards.validate() && !backwards.valid && backwards.active.is_none());
+        let mut orphan = turns.clone();
+        orphan.finish(160);
+        assert!(orphan.validate() && !orphan.valid && orphan.current_known);
+        let mut open = turns.clone();
+        open.begin(key(5), 150);
+        open.begin(key(6), 160);
+        assert!(open.validate() && !open.valid && open.current_known);
+        assert_eq!(
+            (open.active.as_ref(), open.start),
+            (Some(&key(6)), Some(160))
+        );
+        let mut bad = turns.clone();
+        bad.begin("raw-turn".into(), 150);
+        bad.begin(key(7), 0);
+        assert!(bad.validate() && !bad.valid);
+    }
+    #[test]
+    fn helpers_bound_finished_rows_and_totals() {
+        let mut turns = Turns::default();
+        for n in 0..513u64 {
+            turns.begin(sha256(&n.to_be_bytes())[..24].to_owned(), 10 + n * 2);
+            turns.finish(11 + n * 2);
+        }
+        assert!(turns.validate() && !turns.valid);
+        assert_eq!((turns.finished.len(), turns.total), (512, 512));
+        assert_eq!(turns.last_duration, Some(1));
+        let mut huge = Turns::default();
+        huge.begin(key(1), 1);
+        huge.finish(9_007_199_254_740_991);
+        huge.begin(key(2), 9_007_199_254_740_991);
+        huge.finish(9_007_199_254_740_991);
+        assert!(huge.validate() && huge.valid);
     }
 }

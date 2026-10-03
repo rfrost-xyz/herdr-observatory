@@ -2,6 +2,7 @@
 //! typed counters and grammar state only. Native paths stay in process memory.
 use crate::{
     Result,
+    claude::{self, ClaudeCursor},
     common::{self, hex_id, now, number, safe_id, sha256},
     envelope::Envelope,
     telemetry,
@@ -38,7 +39,7 @@ fn open_session(path: &Path) -> Result<File> {
     }
     common::open_owned(path, false, false)
 }
-fn line<R: BufRead>(stream: &mut R, limit: usize) -> std::io::Result<Vec<u8>> {
+pub(crate) fn line<R: BufRead>(stream: &mut R, limit: usize) -> std::io::Result<Vec<u8>> {
     let mut result = Vec::new();
     while result.len() < limit {
         let chunk = stream.fill_buf()?;
@@ -79,10 +80,10 @@ fn verified(path: &Path, session: &str) -> bool {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Fingerprint {
-    size: u64,
-    mtime_us: u64,
-    header: String,
-    tail: String,
+    pub(crate) size: u64,
+    pub(crate) mtime_us: u64,
+    pub(crate) header: String,
+    pub(crate) tail: String,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Cursor {
@@ -107,6 +108,10 @@ pub struct Cursor {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     fingerprint: Option<Fingerprint>,
     at: f64,
+    /// D8: Claude parser state. Absent on Codex rows, so they serialise
+    /// unchanged; required on Claude rows.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    claude: Option<ClaudeCursor>,
 }
 impl Cursor {
     fn validate(&self, time: f64) -> bool {
@@ -124,17 +129,92 @@ impl Cursor {
             .any(|v| *v > max)
             || self.children.len() > 128
             || self.children.iter().any(|(key, status)| {
+                // D6: only Claude rows produce the `unknown` status.
+                let unknown = self.claude.is_some() && status == "unknown";
                 !hex_id(key, 64)
-                    || !["running", "completed", "interrupted", "errored"]
-                        .contains(&status.as_str())
+                    || !unknown
+                        && !["running", "completed", "interrupted", "errored"]
+                            .contains(&status.as_str())
             })
             || self.turns.as_ref().is_some_and(|turns| !turns.validate())
             || self.fingerprint.as_ref().is_some_and(|f| {
                 f.size > max || f.mtime_us > max || !hex_id(&f.header, 64) || !hex_id(&f.tail, 64)
             })
+            || self.claude.as_ref().is_some_and(|block| {
+                !block.validate(time)
+                    || self.turns.is_none()
+                    || self.envelope.is_some()
+                    || self.compaction_markers != 0
+                    || self.compaction_summaries != 0
+                    || !self.skipping && block.classifier.is_some()
+            })
         {
             return false;
         }
+        true
+    }
+    fn from_row(row: claude::Row) -> Self {
+        Self {
+            file: row.file,
+            offset: row.offset,
+            children: row.children,
+            seq: row.seq,
+            valid: row.valid,
+            compactions_valid: row.compactions_valid,
+            compaction_markers: 0,
+            compaction_summaries: 0,
+            caught_up: row.caught_up,
+            skipping: row.skipping,
+            envelope: None,
+            turns: Some(row.turns),
+            fingerprint: row.fingerprint,
+            at: row.at,
+            claude: Some(row.claude),
+        }
+    }
+    /// A Claude-keyed row without its block is never resumed (D8).
+    fn into_row(self) -> Option<claude::Row> {
+        Some(claude::Row {
+            file: self.file,
+            offset: self.offset,
+            children: self.children,
+            seq: self.seq,
+            valid: self.valid,
+            compactions_valid: self.compactions_valid,
+            caught_up: self.caught_up,
+            skipping: self.skipping,
+            turns: self.turns?,
+            fingerprint: self.fingerprint,
+            at: self.at,
+            claude: self.claude?,
+        })
+    }
+    /// Whether this is a Claude row. A validated Claude row always has its block.
+    pub fn is_claude(&self) -> bool {
+        self.claude.is_some()
+    }
+    /// D8: a Claude row over the byte bound sheds its finished intervals, all
+    /// but the last turn's, before it is dropped. Accumulated turn coverage
+    /// becomes unknown for the rest of the binding; the byte cursor,
+    /// fingerprint, block, children and current and last turn stay, so replay
+    /// keeps its position. Returns whether anything was shed.
+    fn shrink(&mut self) -> bool {
+        let (Some(_), Some(turns)) = (&self.claude, &mut self.turns) else {
+            return false;
+        };
+        let last: BTreeMap<_, _> = turns
+            .last
+            .as_ref()
+            .and_then(|key| turns.finished.get_key_value(key))
+            .map(|(key, interval)| (key.clone(), interval.clone()))
+            .into_iter()
+            .collect();
+        if turns.finished.len() <= last.len() {
+            return false;
+        }
+        turns.valid = false;
+        turns.total = last.values().map(|(start, end, _)| end - start).sum();
+        turns.finished = last;
         true
     }
     fn invalid(&mut self) {
@@ -168,13 +248,17 @@ impl Cursor {
         }
     }
 }
+/// Validates peer or checkpoint cursor rows within 32 rows and `LIMIT` bytes.
+/// Codex rows are charged against the byte budget first, in key order, and
+/// Claude rows after them, so Claude rows never displace Codex rows. A Claude
+/// row that would exceed the budget is shrunk before it is dropped.
 pub fn validate_cursors(raw: &Value) -> BTreeMap<String, Cursor> {
     let mut result = BTreeMap::new();
     let Some(rows) = raw.as_object().filter(|v| v.len() <= 32) else {
         return result;
     };
-    let mut size = 0;
     let time = now();
+    let mut valid = vec![];
     for (key, row) in rows {
         if !hex_id(key, 64) {
             continue;
@@ -191,20 +275,32 @@ pub fn validate_cursors(raw: &Value) -> BTreeMap<String, Cursor> {
             } else {
                 cursor.envelope = None;
             }
-            size += serde_json::to_vec(&cursor)
-                .map(|v| v.len())
-                .unwrap_or(LIMIT + 1)
-                + key.len()
-                + 8;
-            if size > LIMIT {
-                break;
-            }
-            result.insert(key.clone(), cursor);
+            valid.push((key, cursor));
         }
+    }
+    // A stable sort keeps key order within each kind.
+    valid.sort_by_key(|(_, cursor)| cursor.is_claude());
+    let cost = |cursor: &Cursor, key: &str| {
+        serde_json::to_vec(cursor)
+            .map(|v| v.len())
+            .unwrap_or(LIMIT + 1)
+            + key.len()
+            + 8
+    };
+    let mut size = 0;
+    for (key, mut cursor) in valid {
+        let mut bytes = cost(&cursor, key);
+        if size + bytes > LIMIT && cursor.shrink() {
+            bytes = cost(&cursor, key);
+        }
+        size += bytes;
+        if size > LIMIT {
+            break;
+        }
+        result.insert(key.clone(), cursor);
     }
     result
 }
-
 fn replay(
     path: &Path,
     session: &str,
@@ -261,6 +357,7 @@ fn replay(
             turns: Some(Turns::default()),
             fingerprint: None,
             at: time,
+            claude: None,
         }
     };
     stream
@@ -402,7 +499,7 @@ fn replay(
     Ok(state)
 }
 
-fn timestamp_us(stamp: &str) -> Option<u64> {
+pub(crate) fn timestamp_us(stamp: &str) -> Option<u64> {
     // RFC3339 source timestamps only. Offset/fraction conversion is exact to the
     // microsecond; timezone-less timestamps do not become fresh measurements.
     if stamp.len() < 20 || !stamp.is_ascii() {
@@ -629,10 +726,147 @@ pub fn read_usage(path: &Path, session: &str, time: f64) -> Value {
 }
 
 type FileSignature = (u64, u64, u64, i64, i64, i64, i64);
+// Records the harness of each pane enrichment on this thread, so a test can
+// check the order of enrichment without depending on timing.
+#[cfg(test)]
+thread_local! { static ENRICHED: std::cell::RefCell<Vec<&'static str>> = const { std::cell::RefCell::new(Vec::new()) }; }
+/// A Claude session binding (D1) and its last published numeric sample (D3).
+struct Binding {
+    at: Instant,
+    /// Rediscover on the next pass: a truncated scan or a growing candidate.
+    rescan: bool,
+    path: Option<PathBuf>,
+    /// Predecessor candidates that ended with no `session_id` at the last
+    /// clear scan of `path`; one unchanged since then is not growing (D1).
+    ended: Vec<claude::Ended>,
+    /// The usage subset and `seq` of the last caught-up sample, re-emitted only
+    /// for an incomplete replay that resumed this bound, identity-checked file.
+    retained: Option<(Value, u64)>,
+}
 #[derive(Default)]
 pub struct NativeTelemetry {
     discovery: BTreeMap<String, (Instant, Option<PathBuf>)>,
     usage: BTreeMap<String, (FileSignature, Value)>,
+    claude: BTreeMap<String, Binding>,
+}
+fn turn_timing(turns: &Turns, time: f64) -> Value {
+    json!({"active":if turns.current_known{Some(turns.active.is_some())}else{None},"started_at_s":if turns.current_known{turns.start}else{None},"observed_at_s":time,"last_duration_s":turns.last_duration,"last_outcome":turns.last_outcome,"total_finished_duration_s":if turns.valid&&turns.supported{Some(turns.total)}else{None},"complete":turns.valid&&turns.supported})
+}
+/// Merges a Claude replay object into the agent's metadata telemetry as Codex
+/// usage is merged, adds children from a caught-up `row`, then stamps it with
+/// the largest of the metadata, usage, child and replay `seq` times (D6, D8).
+/// Returns whether a sample was published: none is when no time is usable.
+fn publish_claude(
+    agent: &mut Value,
+    usage: &Value,
+    row: Option<&claude::Row>,
+    seq: u64,
+    time: f64,
+) -> bool {
+    let previous = telemetry::telemetry_from_agent(agent).unwrap_or_else(|| json!({}));
+    let mut value = previous.clone();
+    if number(&previous["usage_seq"]).is_none()
+        || number(&usage["usage_seq"]) >= number(&previous["usage_seq"])
+    {
+        if let Some(usage) = usage.as_object() {
+            value.as_object_mut().unwrap().extend(usage.clone());
+        }
+    }
+    if let Some(row) = row.filter(|v| v.valid) {
+        let count = |status: &str| row.children.values().filter(|v| *v == status).count();
+        let done = count("completed");
+        value["subagent_total"] = json!(row.children.len());
+        value["subagent_done"] = json!(done);
+        value["subagent_status_seq"] = json!(row.status_seq());
+        for (key, count) in [
+            ("subagent_running", count("running")),
+            ("subagent_completed", done),
+            ("subagent_interrupted", count("interrupted")),
+            ("subagent_failed", count("errored")),
+            ("subagent_unknown", count("unknown")),
+        ] {
+            value[key] = json!(count);
+        }
+    } else {
+        for key in ["subagent_total", "subagent_done", "subagent_status_seq"]
+            .iter()
+            .chain(telemetry::OUTCOMES)
+        {
+            value[*key] = Value::Null;
+        }
+    }
+    if let Some(stamp) = [
+        number(&value["seq"]),
+        number(&value["usage_seq"]),
+        number(&value["subagent_status_seq"]),
+        Some(seq),
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|v| *v > 0 && *v as f64 <= time * 1e6)
+    .max()
+    {
+        value["seq"] = json!(stamp);
+        if value.get("event").is_none() {
+            value["event"] = json!("session");
+            value["phase"] = json!("ready");
+        }
+        let mut view = telemetry::telemetry_view_at(&value, time).unwrap_or(Value::Null);
+        // D4: a Claude pane has no window source, so the window and its
+        // percentage are omitted rather than null; a metadata value stays.
+        if let Some(view) = view.as_object_mut() {
+            for key in ["window", "context_percent"] {
+                if view.get(key).is_some_and(Value::is_null) {
+                    view.remove(key);
+                }
+            }
+        }
+        agent["_native_telemetry"] = view;
+        return true;
+    }
+    false
+}
+/// The source times of a Claude cursor row: `coverage_seq`, `usage_seq` and
+/// the child `seq`.
+fn incoming_stamps(cursors: &BTreeMap<String, Cursor>, key: &str) -> Option<[u64; 3]> {
+    cursors.get(key).and_then(|v| {
+        let block = v.claude.as_ref()?;
+        Some([block.coverage_seq, block.usage_seq, v.seq])
+    })
+}
+/// A peer follower is fresh on every probe, so a bind or verification
+/// failure, a deadline skip, or a restart that publishes nothing, for a
+/// session with a cursor row publishes an all-null sample at that row's
+/// latest usable original source time. It replaces the copy the local
+/// retains for the peer (D3). Without a cursor row the local re-emits
+/// nothing. Returns false only when the row has a source time but none is
+/// usable yet: the caller then withholds the row, so the local cannot
+/// re-emit.
+fn unknown_claude(agent: &mut Value, stamps: Option<[u64; 3]>, time: f64) -> bool {
+    let Some(stamps) = stamps else {
+        return true;
+    };
+    let usage = claude::Row::new([0, 0], 0, time).usage();
+    match stamps
+        .into_iter()
+        .filter(|v| *v > 0 && *v as f64 <= time * 1e6)
+        .max()
+    {
+        Some(seq) => publish_claude(agent, &usage, None, seq, time),
+        None => stamps.iter().all(|v| *v == 0),
+    }
+}
+/// The Claude session id of an enrichable pane and its hashed row key.
+fn claude_session(agent: &Value) -> Option<(String, String)> {
+    if telemetry::session_binding(agent).is_none() || agent["agent_session"]["kind"] != "id" {
+        return None;
+    }
+    let session = agent["agent_session"]["value"]
+        .as_str()
+        .filter(|v| safe_id(v, 128))?
+        .to_owned();
+    let key = sha256(format!("anton-native-session-v1:claude:{session}").as_bytes());
+    Some((session, key))
 }
 impl NativeTelemetry {
     fn discover(session: &str, deadline: Instant) -> Option<PathBuf> {
@@ -671,173 +905,489 @@ impl NativeTelemetry {
         }
         None
     }
-    pub fn enrich(&mut self, agents: &mut [Value], raw_cursors: &Value) -> Value {
-        let time = now();
-        let mut cursors = validate_cursors(raw_cursors);
-        let mut active = BTreeSet::new();
-        let deadline = Instant::now() + Duration::from_millis(750);
-        for agent in agents.iter_mut().take(32) {
-            if agent["agent"] != "codex"
-                || telemetry::session_binding(agent).is_none()
-                || agent["agent_session"]["kind"] != "id"
-            {
-                continue;
-            }
-            let Some(session) = agent["agent_session"]["value"]
-                .as_str()
-                .filter(|v| safe_id(v, 128))
-                .map(str::to_owned)
-            else {
-                continue;
-            };
-            let key = sha256(format!("anton-native-session-v1:{session}").as_bytes());
-            active.insert(key.clone());
-            if Instant::now() >= deadline {
-                continue;
-            }
-            let cached = self.discovery.get(&key);
-            let path = if cached
-                .is_none_or(|(at, path)| path.is_none() && at.elapsed() >= Duration::from_secs(60))
-            {
-                let path = Self::discover(
-                    &session,
-                    deadline.min(Instant::now() + Duration::from_millis(100)),
-                );
-                self.discovery
-                    .insert(key.clone(), (Instant::now(), path.clone()));
-                path
-            } else {
-                cached.and_then(|(_, path)| path.clone())
-            };
-            let Some(path) = path else {
-                continue;
-            };
-            let usage = if let Ok(info) = open_session(&path)
-                .and_then(|file| file.metadata().map_err(|_| "Session stat failed".into()))
-            {
-                let signature = (
-                    info.dev(),
-                    info.ino(),
-                    info.len(),
-                    info.mtime(),
-                    info.mtime_nsec(),
-                    info.ctime(),
-                    info.ctime_nsec(),
-                );
-                let result = if let Some((old, value)) =
-                    self.usage.get(&key).filter(|(old, _)| *old == signature)
+    /// D1: positive and negative bindings are both rediscovered every 60 s. A
+    /// truncated scan or a growing predecessor candidate (new, or changed
+    /// since the last scan of this path) is not cached. Any
+    /// result other than the same bound path drops the retained sample. A scan
+    /// truncated because the shared `deadline` passed returns `None` and
+    /// changes nothing: the pane is skipped by the deadline, not unbound.
+    fn bind(
+        &mut self,
+        root: &Path,
+        session: &str,
+        key: &str,
+        deadline: Instant,
+    ) -> Option<Option<PathBuf>> {
+        if let Some(binding) = self
+            .claude
+            .get(key)
+            .filter(|v| !v.rescan && v.at.elapsed() < Duration::from_secs(60))
+        {
+            return Some(binding.path.clone());
+        }
+        let mut budget =
+            claude::Budget::new(deadline.min(Instant::now() + Duration::from_millis(100)));
+        let mut ended = vec![];
+        let (path, rescan) = match claude::discover(root, session, &mut budget) {
+            claude::Discovery::Found(path) => {
+                // A deadline skip below keeps the binding unchanged.
+                if let Some(binding) = self.claude.get(key)
+                    && binding.path.as_ref() == Some(&path)
                 {
-                    let _ = old;
-                    value.clone()
-                } else {
-                    read_usage(&path, &session, time)
-                };
-                self.usage.insert(key.clone(), (signature, result.clone()));
-                result
-            } else {
-                self.usage.remove(&key);
-                self.discovery.remove(&key);
-                json!({})
-            };
-            let mut native = cursors.remove(&key);
-            for _ in 0..16 {
-                if Instant::now() >= deadline {
-                    break;
+                    ended.clone_from(&binding.ended);
                 }
-                let offset = native.as_ref().map(|v| v.offset);
-                native = replay(
-                    &path,
-                    &session,
-                    native,
-                    time,
-                    deadline.min(Instant::now() + Duration::from_millis(600)),
-                )
-                .ok();
-                if native
-                    .as_ref()
-                    .is_none_or(|v| v.caught_up || Some(v.offset) == offset)
-                {
-                    break;
+                match claude::predecessor_since(&path, session, &mut budget, &mut ended) {
+                    claude::Predecessor::Clear { growing } => (Some(path), growing),
+                    claude::Predecessor::Unknown => (None, false),
+                    claude::Predecessor::Truncated => (None, true),
                 }
             }
-            if let Some(state) = &native {
-                if state.caught_up && !state.skipping {
-                    if let Some(turns) = &state.turns {
-                        agent["_native_turn_timing"] = json!({"active":if turns.current_known{Some(turns.active.is_some())}else{None},"started_at_s":if turns.current_known{turns.start}else{None},"observed_at_s":time,"last_duration_s":turns.last_duration,"last_outcome":turns.last_outcome,"total_finished_duration_s":if turns.valid&&turns.supported{Some(turns.total)}else{None},"complete":turns.valid&&turns.supported});
+            claude::Discovery::Truncated => (None, true),
+            claude::Discovery::None | claude::Discovery::Ambiguous => (None, false),
+        };
+        if path.is_none() && rescan && Instant::now() >= deadline {
+            return None;
+        }
+        let binding = self.claude.entry(key.to_owned()).or_insert(Binding {
+            at: Instant::now(),
+            rescan,
+            path: None,
+            ended: vec![],
+            retained: None,
+        });
+        if path.is_none() || binding.path != path {
+            binding.retained = None;
+        }
+        binding.at = Instant::now();
+        binding.rescan = rescan;
+        binding.path = path.clone();
+        binding.ended = ended;
+        Some(path)
+    }
+    /// A pane skipped by the shared deadline: a current binding with its
+    /// cursor row re-emits the retained sample, as an incomplete replay does.
+    /// Without a current binding, which a peer's fresh follower never has,
+    /// nothing verified the file, so an incoming row takes the all-null sample
+    /// or is withheld, as after a bind failure; the local never re-emits.
+    fn skip_claude(
+        &self,
+        agent: &mut Value,
+        key: &str,
+        cursors: &mut BTreeMap<String, Cursor>,
+        time: f64,
+    ) {
+        let current = self
+            .claude
+            .get(key)
+            .filter(|v| !v.rescan && v.path.is_some() && v.at.elapsed() < Duration::from_secs(60));
+        let Some(binding) = current else {
+            let stamps = incoming_stamps(cursors, key);
+            if stamps.is_some() && !unknown_claude(agent, stamps, time) {
+                cursors.remove(key);
+            }
+            return;
+        };
+        if let Some((subset, seq)) = binding
+            .retained
+            .as_ref()
+            .filter(|_| cursors.get(key).is_some_and(Cursor::is_claude))
+        {
+            publish_claude(agent, subset, None, *seq, time);
+        }
+    }
+    /// The deadline passed after binding, before any replay pass, so the file
+    /// was not opened in this call. `bind` has just made the binding current,
+    /// so only a sample retained from an earlier verified pass may be
+    /// re-emitted. Without one, which is always the case on a peer's fresh
+    /// follower, the incoming row takes the all-null sample or is withheld
+    /// (D1, D3).
+    fn skip_after_bind(
+        &self,
+        agent: &mut Value,
+        key: &str,
+        cursors: &mut BTreeMap<String, Cursor>,
+        time: f64,
+    ) {
+        if let Some((subset, seq)) = self.claude.get(key).and_then(|v| v.retained.as_ref()) {
+            publish_claude(agent, subset, None, *seq, time);
+            return;
+        }
+        let stamps = incoming_stamps(cursors, key);
+        if stamps.is_some() && !unknown_claude(agent, stamps, time) {
+            cursors.remove(key);
+        }
+    }
+    /// One Claude pane: bind, replay up to 16 bounded passes, then publish the
+    /// caught-up sample, or re-emit the retained one for an incomplete replay.
+    /// `deadline` bounds the bind and `passes` the replay; both are the shared
+    /// deadline outside tests, which split them to reach each skip.
+    fn enrich_claude(
+        &mut self,
+        agent: &mut Value,
+        cursors: &mut BTreeMap<String, Cursor>,
+        requested: &BTreeSet<String>,
+        active: &mut BTreeSet<String>,
+        time: f64,
+        [deadline, passes]: [Instant; 2],
+    ) {
+        #[cfg(test)]
+        ENRICHED.with(|order| order.borrow_mut().push("claude"));
+        let Some((session, key)) = claude_session(agent) else {
+            return;
+        };
+        active.insert(key.clone());
+        if Instant::now() >= deadline {
+            self.skip_claude(agent, &key, cursors, time);
+            return;
+        }
+        let incoming = incoming_stamps(cursors, &key);
+        let unknown = |agent: &mut Value| unknown_claude(agent, incoming, time);
+        let root = claude::projects_root();
+        let path = match self.bind(&root, &session, &key, deadline) {
+            Some(Some(path)) => path,
+            Some(None) => {
+                if !unknown(agent) {
+                    cursors.remove(&key);
+                }
+                return;
+            }
+            // The deadline passed inside discovery or the predecessor scan.
+            None => {
+                self.skip_claude(agent, &key, cursors, time);
+                return;
+            }
+        };
+        let incoming_row = cursors.remove(&key);
+        // The request carried a row that validation rejected, so the local
+        // holds a copy this call cannot stamp an all-null sample for (D3).
+        let rejected = incoming_row.is_none() && requested.contains(&key);
+        let mut row = incoming_row.clone().and_then(Cursor::into_row);
+        let (mut ran, mut restarted, mut withhold) = (false, false, false);
+        for _ in 0..16 {
+            if Instant::now() >= passes {
+                break;
+            }
+            let offset = row.as_ref().map(|v| v.offset);
+            let pass = passes.min(Instant::now() + Duration::from_millis(600));
+            let (next, resumed) =
+                match claude::resume(&root, &path, &session, row.take(), time, pass) {
+                    Ok(value) => value,
+                    Err(failure) => {
+                        // An open, ownership, header or read failure drops the
+                        // retained sample, but keeps the incoming row, so the host
+                        // still reports a row for this pane and a peer publishes the
+                        // all-null sample at its source time (D3). Progress made by
+                        // an earlier pass of this call is discarded. The binding
+                        // keeps its path and time: only a failure that may be
+                        // transient rediscovers at the next pass, so one that holds
+                        // for the path keeps the 60 s cadence (D1).
+                        let binding = self.claude.get_mut(&key).unwrap();
+                        binding.retained = None;
+                        binding.rescan |= failure.transient;
+                        if let Some(incoming_row) = incoming_row.filter(|_| unknown(agent)) {
+                            cursors.insert(key, incoming_row);
+                        }
+                        return;
                     }
-                }
-            }
-            let previous = telemetry::telemetry_from_agent(agent).unwrap_or_else(|| json!({}));
-            let mut value = previous.clone();
-            if usage.as_object().is_some_and(|v| !v.is_empty())
-                && (number(&previous["usage_seq"]).is_none()
-                    || number(&usage["usage_seq"]) >= number(&previous["usage_seq"]))
-            {
-                value
-                    .as_object_mut()
-                    .unwrap()
-                    .extend(usage.as_object().unwrap().clone());
-            }
-            if let Some(state) = native
-                .as_ref()
-                .filter(|v| v.valid && v.caught_up && !v.skipping)
-            {
-                let total = state.children.len();
-                let count = |status: &str| {
-                    state
-                        .children
-                        .values()
-                        .filter(|v| v.as_str() == status)
-                        .count()
                 };
-                let done = count("completed");
-                value["subagent_total"] = json!(total);
-                value["subagent_done"] = json!(done);
-                value["subagent_status_seq"] = json!(state.seq);
-                for (key, count) in [
-                    ("subagent_running", count("running")),
-                    ("subagent_completed", done),
-                    ("subagent_interrupted", count("interrupted")),
-                    ("subagent_failed", count("errored")),
-                    ("subagent_unknown", 0),
-                ] {
-                    value[key] = json!(count);
-                }
-            } else {
-                for key in ["subagent_total", "subagent_done", "subagent_status_seq"]
-                    .iter()
-                    .chain(telemetry::OUTCOMES)
-                {
-                    value[*key] = Value::Null;
-                }
-            }
-            if let Some(state) = native.as_ref().filter(|v| {
-                v.caught_up && v.compactions_valid && number(&value["usage_seq"]).is_some()
-            }) {
-                value["compactions"] =
-                    json!(state.compaction_markers.max(state.compaction_summaries));
-            }
-            if let Some(stamp) = ["seq", "usage_seq", "subagent_status_seq"]
-                .iter()
-                .filter_map(|key| number(&value[*key]))
-                .filter(|v| *v > 0 && *v as f64 <= time * 1e6)
-                .max()
-            {
-                value["seq"] = json!(stamp);
-                if value.get("event").is_none() {
-                    value["event"] = json!("session");
-                    value["phase"] = json!("ready");
-                }
-                agent["_native_telemetry"] =
-                    telemetry::telemetry_view_at(&value, time).unwrap_or(Value::Null);
-            }
-            if let Some(state) = native {
-                cursors.insert(key, state);
+            ran = true;
+            restarted |= !resumed;
+            let done = next.caught_up || Some(next.offset) == offset;
+            row = Some(next);
+            if done {
+                break;
             }
         }
+        let Some(row) = row else {
+            return;
+        };
+        if ran {
+            let binding = self.claude.get_mut(&key).unwrap();
+            // A record naming another session is a D2 identity failure.
+            let foreign = row.claude.foreign;
+            if restarted || foreign {
+                binding.retained = None;
+            }
+            if row.caught_up && !row.skipping {
+                if !foreign {
+                    agent["_native_turn_timing"] = turn_timing(&row.published_turns(), time);
+                }
+                let usage = row.usage();
+                let seq = row.claude.coverage_seq;
+                let children = (!foreign).then_some(&row);
+                // A restart that publishes nothing, as with no timestamped
+                // record yet, must still replace the local's copy (D3).
+                if !publish_claude(agent, &usage, children, seq, time) && (restarted || foreign) {
+                    withhold = !unknown(agent) || rejected;
+                }
+                let mut subset = usage;
+                subset.as_object_mut().unwrap().remove("compactions");
+                binding.retained = Some((subset, seq));
+            } else if let Some((subset, seq)) = &binding.retained {
+                publish_claude(agent, subset, None, *seq, time);
+            } else if restarted || foreign {
+                // An identity failure replaces the copy a local retains for
+                // a peer, whose fresh follower has nothing to re-emit (D3).
+                // A restart after a rejected request row has no source time,
+                // so its row is withheld for the local to drop its copy.
+                withhold = !unknown(agent) || rejected;
+            }
+        } else {
+            cursors.insert(key.clone(), Cursor::from_row(row));
+            self.skip_after_bind(agent, &key, cursors, time);
+            return;
+        }
+        if !withhold {
+            cursors.insert(key, Cursor::from_row(row));
+        }
+    }
+    /// The Claude panes among the first 32 agents. Each session key is
+    /// enriched once per call, by its first pane: a later pane on the same key
+    /// receives a copy of that outcome, the published telemetry and turn timing
+    /// or their absence, and shares its row or its withholding. Enriching it
+    /// again would resume the row the first pane just wrote as if verified and
+    /// could publish nothing beside the first pane's all-null sample, so the
+    /// local would re-emit a replaced file's copy (D3). `deadlines` gives each
+    /// enriched pane its bind and replay deadlines.
+    fn enrich_claude_panes(
+        &mut self,
+        agents: &mut [Value],
+        cursors: &mut BTreeMap<String, Cursor>,
+        requested: &BTreeSet<String>,
+        active: &mut BTreeSet<String>,
+        time: f64,
+        mut deadlines: impl FnMut() -> [Instant; 2],
+    ) {
+        const FIELDS: [&str; 2] = ["_native_telemetry", "_native_turn_timing"];
+        let mut outcomes = BTreeMap::<String, [Option<Value>; 2]>::new();
+        for agent in agents.iter_mut().take(32) {
+            if agent["agent"] != "claude" {
+                continue;
+            }
+            let key = claude_session(agent).map(|(_, key)| key);
+            if let Some(outcome) = key.as_ref().and_then(|v| outcomes.get(v)) {
+                // A pane naming "claude" is an object.
+                let object = agent.as_object_mut().unwrap();
+                for (field, value) in FIELDS.into_iter().zip(outcome) {
+                    match value {
+                        Some(value) => object.insert(field.to_owned(), value.clone()),
+                        None => object.remove(field),
+                    };
+                }
+                continue;
+            }
+            self.enrich_claude(agent, cursors, requested, active, time, deadlines());
+            if let Some(key) = key {
+                outcomes.insert(key, FIELDS.map(|field| agent.get(field).cloned()));
+            }
+        }
+    }
+    /// One Codex pane: discover, read usage, replay up to 16 bounded passes,
+    /// then publish usage, children, compactions and turn timing.
+    fn enrich_codex(
+        &mut self,
+        agent: &mut Value,
+        cursors: &mut BTreeMap<String, Cursor>,
+        active: &mut BTreeSet<String>,
+        time: f64,
+        deadline: Instant,
+    ) {
+        #[cfg(test)]
+        ENRICHED.with(|order| order.borrow_mut().push("codex"));
+        if agent["agent"] != "codex"
+            || telemetry::session_binding(agent).is_none()
+            || agent["agent_session"]["kind"] != "id"
+        {
+            return;
+        }
+        let Some(session) = agent["agent_session"]["value"]
+            .as_str()
+            .filter(|v| safe_id(v, 128))
+            .map(str::to_owned)
+        else {
+            return;
+        };
+        let key = sha256(format!("anton-native-session-v1:{session}").as_bytes());
+        active.insert(key.clone());
+        if Instant::now() >= deadline {
+            return;
+        }
+        let cached = self.discovery.get(&key);
+        let path = if cached
+            .is_none_or(|(at, path)| path.is_none() && at.elapsed() >= Duration::from_secs(60))
+        {
+            let path = Self::discover(
+                &session,
+                deadline.min(Instant::now() + Duration::from_millis(100)),
+            );
+            self.discovery
+                .insert(key.clone(), (Instant::now(), path.clone()));
+            path
+        } else {
+            cached.and_then(|(_, path)| path.clone())
+        };
+        let Some(path) = path else {
+            return;
+        };
+        let usage = if let Ok(info) = open_session(&path)
+            .and_then(|file| file.metadata().map_err(|_| "Session stat failed".into()))
+        {
+            let signature = (
+                info.dev(),
+                info.ino(),
+                info.len(),
+                info.mtime(),
+                info.mtime_nsec(),
+                info.ctime(),
+                info.ctime_nsec(),
+            );
+            let result = if let Some((old, value)) =
+                self.usage.get(&key).filter(|(old, _)| *old == signature)
+            {
+                let _ = old;
+                value.clone()
+            } else {
+                read_usage(&path, &session, time)
+            };
+            self.usage.insert(key.clone(), (signature, result.clone()));
+            result
+        } else {
+            self.usage.remove(&key);
+            self.discovery.remove(&key);
+            json!({})
+        };
+        let mut native = cursors.remove(&key).filter(|v| v.claude.is_none());
+        for _ in 0..16 {
+            if Instant::now() >= deadline {
+                break;
+            }
+            let offset = native.as_ref().map(|v| v.offset);
+            native = replay(
+                &path,
+                &session,
+                native,
+                time,
+                deadline.min(Instant::now() + Duration::from_millis(600)),
+            )
+            .ok();
+            if native
+                .as_ref()
+                .is_none_or(|v| v.caught_up || Some(v.offset) == offset)
+            {
+                break;
+            }
+        }
+        if let Some(state) = &native {
+            if state.caught_up && !state.skipping {
+                if let Some(turns) = &state.turns {
+                    agent["_native_turn_timing"] = turn_timing(turns, time);
+                }
+            }
+        }
+        let previous = telemetry::telemetry_from_agent(agent).unwrap_or_else(|| json!({}));
+        let mut value = previous.clone();
+        if usage.as_object().is_some_and(|v| !v.is_empty())
+            && (number(&previous["usage_seq"]).is_none()
+                || number(&usage["usage_seq"]) >= number(&previous["usage_seq"]))
+        {
+            value
+                .as_object_mut()
+                .unwrap()
+                .extend(usage.as_object().unwrap().clone());
+        }
+        if let Some(state) = native
+            .as_ref()
+            .filter(|v| v.valid && v.caught_up && !v.skipping)
+        {
+            let total = state.children.len();
+            let count = |status: &str| {
+                state
+                    .children
+                    .values()
+                    .filter(|v| v.as_str() == status)
+                    .count()
+            };
+            let done = count("completed");
+            value["subagent_total"] = json!(total);
+            value["subagent_done"] = json!(done);
+            value["subagent_status_seq"] = json!(state.seq);
+            for (key, count) in [
+                ("subagent_running", count("running")),
+                ("subagent_completed", done),
+                ("subagent_interrupted", count("interrupted")),
+                ("subagent_failed", count("errored")),
+                ("subagent_unknown", 0),
+            ] {
+                value[key] = json!(count);
+            }
+        } else {
+            for key in ["subagent_total", "subagent_done", "subagent_status_seq"]
+                .iter()
+                .chain(telemetry::OUTCOMES)
+            {
+                value[*key] = Value::Null;
+            }
+        }
+        if let Some(state) = native
+            .as_ref()
+            .filter(|v| v.caught_up && v.compactions_valid && number(&value["usage_seq"]).is_some())
+        {
+            value["compactions"] = json!(state.compaction_markers.max(state.compaction_summaries));
+        }
+        if let Some(stamp) = ["seq", "usage_seq", "subagent_status_seq"]
+            .iter()
+            .filter_map(|key| number(&value[*key]))
+            .filter(|v| *v > 0 && *v as f64 <= time * 1e6)
+            .max()
+        {
+            value["seq"] = json!(stamp);
+            if value.get("event").is_none() {
+                value["event"] = json!("session");
+                value["phase"] = json!("ready");
+            }
+            agent["_native_telemetry"] =
+                telemetry::telemetry_view_at(&value, time).unwrap_or(Value::Null);
+        }
+        if let Some(state) = native {
+            cursors.insert(key, state);
+        }
+    }
+    pub fn enrich(&mut self, agents: &mut [Value], raw_cursors: &Value) -> Value {
+        self.enrich_until(
+            agents,
+            raw_cursors,
+            Instant::now() + Duration::from_millis(750),
+        )
+    }
+    fn enrich_until(
+        &mut self,
+        agents: &mut [Value],
+        raw_cursors: &Value,
+        deadline: Instant,
+    ) -> Value {
+        let time = now();
+        // Keys the request carried, before validation drops any (D3).
+        let requested: BTreeSet<String> = raw_cursors
+            .as_object()
+            .map(|rows| rows.keys().filter(|key| hex_id(key, 64)).cloned().collect())
+            .unwrap_or_default();
+        let mut cursors = validate_cursors(raw_cursors);
+        let mut active = BTreeSet::new();
+        // Codex panes go first, so Claude replay, which an old local makes
+        // restart from the header on every peer probe, cannot use up the
+        // shared deadline before them.
+        for agent in agents.iter_mut().take(32) {
+            if agent["agent"] != "claude" {
+                self.enrich_codex(agent, &mut cursors, &mut active, time, deadline);
+            }
+        }
+        self.enrich_claude_panes(agents, &mut cursors, &requested, &mut active, time, || {
+            [deadline; 2]
+        });
         cursors.retain(|key, _| active.contains(key));
         self.discovery.retain(|key, _| active.contains(key));
         self.usage.retain(|key, _| active.contains(key));
+        self.claude.retain(|key, _| active.contains(key));
         let result = serde_json::to_value(cursors).unwrap_or_else(|_| json!({}));
         serde_json::to_value(validate_cursors(&result)).unwrap_or_else(|_| json!({}))
     }
@@ -854,10 +1404,16 @@ struct CheckpointFile {
     version: u32,
     records: Vec<CheckpointRow>,
 }
+/// Each holder releases the checkpoint lock explicitly (`common::Unlock`),
+/// because a process spawned by another thread shares the lock's open file
+/// description until it calls exec. The wait covers genuine contention.
+const LOCK_WAIT: Duration = Duration::from_millis(250);
 pub struct Checkpoints {
     state: PathBuf,
     owner: PathBuf,
-    lease: Option<(u64, u64)>,
+    /// The lock file identity taken at startup, or why it could not be
+    /// taken; `persist` reports that cause rather than a changed owner.
+    lease: Result<(u64, u64)>,
     rows: Vec<CheckpointRow>,
     written: Value,
     loaded: bool,
@@ -899,7 +1455,8 @@ impl Checkpoints {
         }
         let lease = common::open_owned(&state.join("replay-checkpoints.lock"), true, true)
             .and_then(|file| {
-                lock(&file, true, Duration::ZERO)?;
+                lock(&file, true, LOCK_WAIT)?;
+                let _unlock = common::Unlock(&file);
                 let info = file
                     .metadata()
                     .map_err(|_| "Cannot inspect checkpoint lease")?;
@@ -907,8 +1464,7 @@ impl Checkpoints {
                     return Err("Invalid checkpoint lease".into());
                 }
                 Ok((info.dev(), info.ino()))
-            })
-            .ok();
+            });
         let mut cache = Self {
             state: state.to_owned(),
             owner: owner.to_owned(),
@@ -921,10 +1477,16 @@ impl Checkpoints {
                 .unwrap(),
         };
         if let Ok(bytes) = common::read_owned(&state.join("replay-checkpoints.json"), LIMIT, true) {
-            if let Ok(value) = serde_json::from_slice::<CheckpointFile>(&bytes) {
-                if value.version == 1 && value.records.len() <= 32 {
+            // Rows are decoded one by one, so a row this build cannot read,
+            // such as another build's Claude block, never discards the others.
+            if let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
+                let records = value["records"].as_array().filter(|v| v.len() <= 32);
+                if let (Some(1), Some(records)) = (value["version"].as_u64(), records) {
                     cache.loaded = true;
-                    cache.rows = value.records;
+                    cache.rows = records
+                        .iter()
+                        .filter_map(|row| serde_json::from_value(row.clone()).ok())
+                        .collect();
                     cache.written = cache.signature();
                     cache.rows.retain(|row| {
                         hex_id(&row.host, 64)
@@ -996,11 +1558,16 @@ impl Checkpoints {
             .unwrap_or(LIMIT + 1)
                 > LIMIT
         {
+            // The oldest Claude row goes first; Codex rows only once none is left.
             let Some(index) = self
                 .rows
                 .iter()
                 .enumerate()
-                .min_by(|(_, a), (_, b)| a.cursor.at.total_cmp(&b.cursor.at))
+                .min_by(|(_, a), (_, b)| {
+                    (!a.cursor.is_claude())
+                        .cmp(&!b.cursor.is_claude())
+                        .then(a.cursor.at.total_cmp(&b.cursor.at))
+                })
                 .map(|(index, _)| index)
             else {
                 break;
@@ -1017,14 +1584,16 @@ impl Checkpoints {
         {
             return Ok(());
         }
+        let lease = self.lease.clone()?;
         let _owner = common::owner_guard(&self.owner)?;
         let file = common::open_owned(&self.state.join("replay-checkpoints.lock"), true, false)?;
-        lock(&file, true, Duration::ZERO)?;
+        lock(&file, true, LOCK_WAIT)?;
+        let _unlock = common::Unlock(&file);
         let info = file.metadata().map_err(|_| "Invalid checkpoint lease")?;
         let current = std::fs::symlink_metadata(self.state.join("replay-checkpoints.lock"))
             .map_err(|_| "Checkpoint lease removed")?;
         if info.len() != 0
-            || self.lease != Some((info.dev(), info.ino()))
+            || lease != (info.dev(), info.ino())
             || info.dev() != current.dev()
             || info.ino() != current.ino()
         {
@@ -1119,6 +1688,19 @@ pub fn retire(state: &Path, owner: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Opens checkpoints as a test expects them: with the lease taken, so a
+/// construction-time conflict fails here under its real cause.
+#[cfg(test)]
+#[track_caller]
+fn leased(state: &Path, owner: &Path) -> Checkpoints {
+    let cache = Checkpoints::new(state, owner).unwrap();
+    if let Err(error) = &cache.lease {
+        panic!("checkpoint lease: {error}");
+    }
+    cache
+}
+#[cfg(test)]
+mod claude_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1130,12 +1712,10 @@ mod tests {
     impl Fixture {
         fn new() -> Self {
             static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-            let root = std::env::temp_dir().join(format!(
-                "anton-native-{}-{}-{}",
-                std::process::id(),
-                now().to_bits(),
+            let root = common::fixture_dir(
+                "anton-unit-native-",
                 SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-            ));
+            );
             std::fs::create_dir(&root).unwrap();
             let sessions = root.join("sessions");
             std::fs::create_dir(&sessions).unwrap();
@@ -1356,11 +1936,11 @@ mod tests {
         .unwrap();
         let session = sha256(b"session");
         let mut values = BTreeMap::from([("test".to_owned(), json!({session.clone():cursor}))]);
-        let mut cache = Checkpoints::new(&state, &owner).unwrap();
+        let mut cache = leased(&state, &owner);
         cache.update(&values, true).unwrap();
         let saved = std::fs::read(state.join("replay-checkpoints.json")).unwrap();
         assert!(!String::from_utf8_lossy(&saved).contains(fixture.file.to_str().unwrap()));
-        let loaded = Checkpoints::new(&state, &owner).unwrap();
+        let loaded = leased(&state, &owner);
         assert_eq!(loaded.for_host("test"), values["test"]);
         values.get_mut("test").unwrap()[&session]["at"] = json!(now());
         cache.update(&values, false).unwrap();
@@ -1376,7 +1956,7 @@ mod tests {
         assert!(validate_cursors(&values["test"]).is_empty());
     }
     #[test]
-    fn checkpoint_startup_reconciles_expired_and_removed_hosts_without_empty_creation() {
+    fn checkpoint_rows_load_individually_so_one_unreadable_row_keeps_the_rest() {
         let fixture = Fixture::new();
         fixture.write(&[], "fixture-session");
         let owner = fixture.root.join(".herdr-observatory-install");
@@ -1384,8 +1964,99 @@ mod tests {
         let state = fixture.root.join("state");
         std::fs::create_dir(&state).unwrap();
         let path = state.join("replay-checkpoints.json");
+        let cursor = replay(
+            &fixture.file,
+            "fixture-session",
+            None,
+            now(),
+            Instant::now() + Duration::from_secs(2),
+        )
+        .unwrap();
+        let session = sha256(b"session");
+        let values = BTreeMap::from([("kept".to_owned(), json!({session.clone():cursor}))]);
+        let mut cache = leased(&state, &owner);
+        cache.update(&values, true).unwrap();
+        let mut file: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let mut unreadable = file["records"][0].clone();
+        unreadable["session"] = json!(sha256(b"other"));
+        unreadable["cursor"]["claude"] = json!({"field_from_another_build": 1});
+        file["records"].as_array_mut().unwrap().push(unreadable);
+        common::atomic_checkpoint_write(&path, &serde_json::to_vec(&file).unwrap()).unwrap();
+        let loaded = leased(&state, &owner);
+        let hydrated = loaded.for_host("kept");
+        assert!(hydrated.get(&session).is_some());
+        assert!(hydrated.get(sha256(b"other")).is_none());
+    }
+    #[test]
+    fn checkpoint_startup_reconciles_expired_and_removed_hosts_without_empty_creation() {
+        let fixture = Fixture::new();
+        let state = fixture.root.join("state");
+        let path = state.join("replay-checkpoints.json");
+        // A failure at any step prints what is left of the fixture, through
+        // `Diagnosis` while unwinding, and each read and parse names its
+        // step. A partial external `rm -rf` can leave the root in place, so
+        // its inode and listings are printed: a new inode, or entries missing
+        // from them, show removal from outside.
+        let inode = std::fs::metadata(&fixture.root).unwrap().ino();
+        let diagnose = || {
+            let list = |dir: &Path| match std::fs::read_dir(dir) {
+                Ok(entries) => format!(
+                    "{:?}",
+                    entries
+                        .flatten()
+                        .map(|v| v.file_name().to_string_lossy().into_owned())
+                        .collect::<BTreeSet<_>>()
+                ),
+                Err(error) => format!("{:?}", error.kind()),
+            };
+            let now = std::fs::metadata(&fixture.root).map(|v| v.ino());
+            format!(
+                "fixture root inode at creation {inode}, now {now:?}; root {}; state {}",
+                list(&fixture.root),
+                list(&state)
+            )
+        };
+        struct Diagnosis<F: Fn() -> String>(F);
+        impl<F: Fn() -> String> Drop for Diagnosis<F> {
+            fn drop(&mut self) {
+                if std::thread::panicking() {
+                    eprintln!("checkpoint fixture: {}", (self.0)());
+                }
+            }
+        }
+        let _diagnosis = Diagnosis(diagnose);
+        fixture.write(&[], "fixture-session");
+        let owner = fixture.root.join(".herdr-observatory-install");
+        std::fs::write(&owner, b"herdr.observatory\n").unwrap();
+        std::fs::create_dir(&state).unwrap();
+        let read = |step: &str| {
+            std::fs::read(&path)
+                .unwrap_or_else(|error| panic!("{step}: read checkpoint: {:?}", error.kind()))
+        };
+        let parse = |step: &str, bytes: &[u8]| -> CheckpointFile {
+            serde_json::from_slice(bytes)
+                .unwrap_or_else(|error| panic!("{step}: parse checkpoint: {error}"))
+        };
+        // Each load that must find the file names its step, with why it
+        // could not be read: absent, or an open failure such as `EMFILE`,
+        // which `Checkpoints::new` treats as no file.
+        let load = |step: &str| {
+            let cache = leased(&state, &owner);
+            assert!(
+                cache.loaded,
+                "{step}: checkpoint not loaded: metadata {:?}, read {:?}",
+                std::fs::metadata(&path)
+                    .map(|v| v.len())
+                    .map_err(|e| e.kind()),
+                common::read_owned(&path, LIMIT, true)
+                    .err()
+                    .map(|e| e.to_string())
+            );
+            cache
+        };
         let empty = BTreeMap::from([("kept".to_owned(), json!({}))]);
-        let mut cache = Checkpoints::new(&state, &owner).unwrap();
+        let mut cache = leased(&state, &owner);
+        assert!(!cache.loaded, "startup: no checkpoint file yet");
         cache.reconcile(&empty).unwrap();
         assert!(!path.exists(), "startup must not create an empty cache");
         let cursor = replay(
@@ -1402,26 +2073,29 @@ mod tests {
             ("removed".to_owned(), json!({session.clone():cursor})),
         ]);
         cache.update(&values, true).unwrap();
-        let mut loaded = Checkpoints::new(&state, &owner).unwrap();
+        let mut loaded = load("first load");
+        assert_ne!(loaded.for_host("kept"), json!({}), "first load: kept host");
         let configured = BTreeMap::from([("kept".to_owned(), loaded.for_host("kept"))]);
         loaded.reconcile(&configured).unwrap();
-        let kept = std::fs::read(&path).unwrap();
-        let saved: CheckpointFile = serde_json::from_slice(&kept).unwrap();
+        let kept = read("first reconcile");
+        let saved = parse("first reconcile", &kept);
         assert_eq!(saved.records.len(), 1);
         assert_eq!(
             saved.records[0].host,
             sha256(b"anton-checkpoint-host-v1:kept")
         );
         loaded.reconcile(&configured).unwrap();
-        assert_eq!(std::fs::read(&path).unwrap(), kept);
+        let again = read("repeated reconcile");
+        assert_eq!(again, kept);
         // An expired-only file must be reconciled even though hydration is empty.
-        let mut expired: Value = serde_json::from_slice(&kept).unwrap();
+        let mut expired: Value = serde_json::from_slice(&kept).expect("kept checkpoint as JSON");
         expired["records"][0]["cursor"]["at"] = json!(now() - 86401.0);
         common::atomic_checkpoint_write(&path, &serde_json::to_vec(&expired).unwrap()).unwrap();
-        let mut loaded = Checkpoints::new(&state, &owner).unwrap();
+        let mut loaded = load("expired load");
         assert_eq!(loaded.for_host("kept"), json!({}));
         loaded.reconcile(&empty).unwrap();
-        let saved: CheckpointFile = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let bytes = read("expired reconcile");
+        let saved = parse("expired reconcile", &bytes);
         assert!(saved.records.is_empty());
         // A removed-host-only file also needs clearing with no live cursors.
         cache
@@ -1430,9 +2104,258 @@ mod tests {
                 true,
             )
             .unwrap();
-        let mut loaded = Checkpoints::new(&state, &owner).unwrap();
+        let mut loaded = load("removed-host load");
         loaded.reconcile(&empty).unwrap();
-        let saved: CheckpointFile = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let bytes = read("removed-host reconcile");
+        let saved = parse("removed-host reconcile", &bytes);
         assert!(saved.records.is_empty());
+    }
+    /// A sibling thread spawning processes until dropped. Each child holds a
+    /// copy of every open file description until it calls exec, including
+    /// the checkpoint lock's.
+    struct Spawner(
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+        Option<std::thread::JoinHandle<()>>,
+    );
+    impl Spawner {
+        fn new() -> Self {
+            let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let flag = stop.clone();
+            Self(
+                stop,
+                Some(std::thread::spawn(move || {
+                    while !flag.load(std::sync::atomic::Ordering::Relaxed) {
+                        let _ = std::process::Command::new("true").status();
+                    }
+                })),
+            )
+        }
+    }
+    impl Drop for Spawner {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+            if let Some(join) = self.1.take() {
+                let _ = join.join();
+            }
+        }
+    }
+    /// Both checkpoint lock sites release the lock before closing it, so a
+    /// zero-wait lock taken straight after `new` or `persist` never finds it
+    /// held by a child that a sibling thread spawned in between.
+    #[test]
+    fn checkpoint_lock_is_free_at_once_after_each_holder_while_siblings_spawn() {
+        let fixture = Fixture::new();
+        let owner = fixture.root.join(".herdr-observatory-install");
+        std::fs::write(&owner, b"herdr.observatory\n").unwrap();
+        let state = fixture.root.join("state");
+        std::fs::create_dir(&state).unwrap();
+        let path = state.join("replay-checkpoints.lock");
+        let _spawner = Spawner::new();
+        let empty = BTreeMap::new();
+        let mut held = 0;
+        let free = |held: &mut usize| {
+            let file = common::open_owned(&path, true, false).unwrap();
+            if lock(&file, true, Duration::ZERO).is_ok() {
+                let _unlock = common::Unlock(&file);
+            } else {
+                *held += 1;
+            }
+        };
+        for _ in 0..300 {
+            let mut cache = leased(&state, &owner);
+            free(&mut held);
+            cache.update(&empty, true).unwrap();
+            free(&mut held);
+        }
+        assert_eq!(held, 0);
+    }
+    /// A lease that `new` could not take is reported by `persist` under its
+    /// real cause, not as a changed owner.
+    #[test]
+    fn checkpoint_lease_failure_at_startup_is_reported_by_persist() {
+        let fixture = Fixture::new();
+        let owner = fixture.root.join(".herdr-observatory-install");
+        std::fs::write(&owner, b"herdr.observatory\n").unwrap();
+        let state = fixture.root.join("state");
+        std::fs::create_dir(&state).unwrap();
+        let holder =
+            common::open_owned(&state.join("replay-checkpoints.lock"), true, true).unwrap();
+        lock(&holder, true, Duration::ZERO).unwrap();
+        let unlock = common::Unlock(&holder);
+        let mut cache = Checkpoints::new(&state, &owner).unwrap();
+        drop(unlock);
+        drop(holder);
+        assert_eq!(cache.lease, Err("Checkpoint ownership busy".to_owned()));
+        assert_eq!(
+            cache.update(&BTreeMap::new(), true),
+            Err("Checkpoint ownership busy".to_owned())
+        );
+        assert!(!state.join("replay-checkpoints.json").exists());
+        assert!(
+            leased(&state, &owner)
+                .update(&BTreeMap::new(), true)
+                .is_ok()
+        );
+    }
+    /// Repeated lease, write and reconcile cycles succeed while sibling threads
+    /// spawn processes. The release itself is checked by
+    /// `checkpoint_lock_is_free_at_once_after_each_holder_while_siblings_spawn`.
+    #[test]
+    fn checkpoint_cycles_succeed_while_siblings_spawn() {
+        let fixture = Fixture::new();
+        let owner = fixture.root.join(".herdr-observatory-install");
+        std::fs::write(&owner, b"herdr.observatory\n").unwrap();
+        let state = fixture.root.join("state");
+        std::fs::create_dir(&state).unwrap();
+        let _spawner = Spawner::new();
+        let empty = BTreeMap::new();
+        let mut failures = 0;
+        for _ in 0..300 {
+            let result = Checkpoints::new(&state, &owner).and_then(|mut cache| {
+                cache.update(&empty, true)?;
+                cache.reconcile(&empty)
+            });
+            failures += usize::from(result.is_err());
+        }
+        assert_eq!(failures, 0);
+    }
+    /// Genuine contention: another holder keeps the checkpoint lock for about
+    /// 100 ms, then releases it. The lease and the write each wait it out
+    /// within `LOCK_WAIT`; with no wait, `new` would record a busy lease.
+    #[test]
+    fn checkpoint_lease_and_write_wait_out_a_brief_holder() {
+        let fixture = Fixture::new();
+        let owner = fixture.root.join(".herdr-observatory-install");
+        std::fs::write(&owner, b"herdr.observatory\n").unwrap();
+        let state = fixture.root.join("state");
+        std::fs::create_dir(&state).unwrap();
+        let path = state.join("replay-checkpoints.lock");
+        // Holds the lock on its own open file description, so it conflicts
+        // with this thread's, until about 100 ms after it is taken.
+        let hold = || {
+            let (ready, taken) = std::sync::mpsc::channel();
+            let shared = path.clone();
+            let holder = std::thread::spawn(move || {
+                let file = common::open_owned(&shared, true, true).unwrap();
+                lock(&file, true, Duration::ZERO).unwrap();
+                let _unlock = common::Unlock(&file);
+                ready.send(()).unwrap();
+                std::thread::sleep(Duration::from_millis(100));
+            });
+            taken.recv().unwrap();
+            let probe = common::open_owned(&path, true, false).unwrap();
+            let _unlock = common::Unlock(&probe);
+            assert!(lock(&probe, true, Duration::ZERO).is_err());
+            holder
+        };
+        let holder = hold();
+        let started = Instant::now();
+        let mut cache = leased(&state, &owner);
+        assert!(started.elapsed() >= Duration::from_millis(50));
+        holder.join().unwrap();
+        let holder = hold();
+        assert!(cache.update(&BTreeMap::new(), true).is_ok());
+        holder.join().unwrap();
+        assert!(state.join("replay-checkpoints.json").exists());
+    }
+    /// Clears the per-run cursor fields so a golden comparison is stable.
+    fn normalised(cursors: &Value) -> Value {
+        let mut value = cursors.clone();
+        for cursor in value.as_object_mut().unwrap().values_mut() {
+            cursor["at"] = json!(0);
+            cursor["file"] = json!([0, 0]);
+            if cursor["fingerprint"].is_object() {
+                cursor["fingerprint"]["mtime_us"] = json!(0);
+            }
+        }
+        value
+    }
+    fn codex_agent(session: &str) -> Value {
+        json!({"agent":"codex","agent_session":{"agent":"codex","source":"herdr:codex","kind":"id","value":session}})
+    }
+    /// Codex-only enrichment, cursors and checkpoint rows as produced before
+    /// Claude dispatch existed (`a2b3363`). Any change here changes Codex output.
+    #[test]
+    fn codex_only_enrich_cursor_and_checkpoint_are_unchanged() {
+        let fixture = Fixture::new();
+        let child = |kind: &str, ms: u64| json!({"json":{"type":"event_msg","payload":{"type":"sub_agent_activity","agent_path":"/root/worker","kind":kind,"occurred_at_ms":ms}}});
+        let usage = json!({"json":{"type":"event_msg","timestamp":"2026-01-01T00:00:30+00:00","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":12,"output_tokens":3,"cached_input_tokens":0,"cache_write_input_tokens":4,"total_tokens":185000},"total_token_usage":{"input_tokens":21700000,"output_tokens":4200,"cached_input_tokens":20000000,"cache_write_input_tokens":0},"model_context_window":258400}}}});
+        fixture.write(
+            &[
+                json!({"json":{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-a","started_at":1767225601}}}),
+                child("started", 1_767_225_602_000),
+                child("interrupted", 1_767_225_603_000),
+                json!({"json":{"type":"compacted","payload":{}}}),
+                json!({"json":{"type":"event_msg","payload":{"type":"context_compacted"}}}),
+                usage,
+                json!({"json":{"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-a","started_at":1767225601,"completed_at":1767225620}}}),
+                child("interacted", 1_767_225_621_000),
+                child("completed", 1_767_225_625_000),
+            ],
+            "session",
+        );
+        let mut follower = NativeTelemetry::default();
+        let mut agents = vec![codex_agent("session"), codex_agent("absent")];
+        let cursors = follower.enrich(&mut agents, &json!({}));
+        let mut timing = agents[0]["_native_turn_timing"].clone();
+        timing["observed_at_s"] = json!(0);
+        assert_eq!(
+            json!({"telemetry":agents[0]["_native_telemetry"],"timing":timing,"absent":agents[1],"cursors":normalised(&cursors)}),
+            json!({
+                "absent": codex_agent("absent"),
+                "cursors": {"384ed787d76c0bbd72bc0b86f6a2ea605455237463b18f5ef656c40cd66dbe63": {
+                    "at": 0, "caught_up": true,
+                    "children": {"e75c94502a7fbb74b08bc4ffc5219f31d5d16266272e870171adc0310a3e01f7": "completed"},
+                    "compaction_markers": 1, "compaction_summaries": 1, "compactions_valid": true,
+                    "file": [0, 0],
+                    "fingerprint": {"header": "b35d3bda40a5e3ad26bf99af603b7a02d858f8ca2b6a2a1f96fc1879d77f627c", "mtime_us": 0, "size": 1317, "tail": "850b6772e93a8ef47b0c76a3da0a96bebdeb489af8bdda25e0ece15537eaa6a8"},
+                    "offset": 1317, "seq": 1_767_225_625_000_000_u64, "skipping": false,
+                    "turns": {"active": null, "current_known": true, "finished": {"4ea1a6a42fdcde0801691c1a": [1767225601, 1767225620, "completed"]}, "last": "4ea1a6a42fdcde0801691c1a", "last_duration": 19, "last_end": 1767225620, "last_outcome": "completed", "start": null, "supported": true, "total": 19, "valid": true},
+                    "valid": true
+                }},
+                "telemetry": {
+                    "cache_read": 0, "cache_write": 4, "compactions": 1, "context": 185000, "context_percent": 70,
+                    "event": "session", "input": 12, "model": null, "output_tokens": 3, "phase": "ready", "result": null,
+                    "seq": 1_767_225_630_000_000_u64, "subagent_completed": 1, "subagent_done": 1, "subagent_failed": 0,
+                    "subagent_interrupted": 0, "subagent_running": 0, "subagent_seq": null, "subagent_starts": null,
+                    "subagent_status_seq": 1_767_225_625_000_000_u64, "subagent_stops": null, "subagent_total": 1,
+                    "subagent_unknown": 0, "tool": null, "total_cache_read": 20000000, "total_cache_write": 0,
+                    "total_input": 21700000, "total_output": 4200, "total_uncached_input": 1700000,
+                    "usage_seq": 1_767_225_630_000_000_u64, "usage_source": "codex-rollout", "window": 258400
+                },
+                "timing": {"active": false, "complete": true, "last_duration_s": 19, "last_outcome": "completed", "observed_at_s": 0, "started_at_s": null, "total_finished_duration_s": 19}
+            })
+        );
+        let owner = fixture.root.join(".herdr-observatory-install");
+        std::fs::write(&owner, b"herdr.observatory\n").unwrap();
+        let state = fixture.root.join("state");
+        std::fs::create_dir(&state).unwrap();
+        let mut cache = leased(&state, &owner);
+        cache
+            .update(
+                &BTreeMap::from([("test".to_owned(), cursors.clone())]),
+                true,
+            )
+            .unwrap();
+        let saved = std::fs::read_to_string(state.join("replay-checkpoints.json")).unwrap();
+        assert!(!saved.contains("claude"));
+        let file: CheckpointFile = serde_json::from_str(&saved).unwrap();
+        let (key, row) = cursors.as_object().unwrap().iter().next().unwrap();
+        assert_eq!(file.records.len(), 1);
+        assert_eq!(&file.records[0].session, key);
+        assert_eq!(&serde_json::to_value(&file.records[0].cursor).unwrap(), row);
+        let mut cursor = file.records[0].cursor.clone();
+        cursor.at = 0.0;
+        cursor.file = [0, 0];
+        cursor.fingerprint.as_mut().unwrap().mtime_us = 0;
+        assert_eq!(
+            serde_json::to_string(&cursor).unwrap(),
+            concat!(
+                r#"{"file":[0,0],"offset":1317,"children":{"e75c94502a7fbb74b08bc4ffc5219f31d5d16266272e870171adc0310a3e01f7":"completed"},"seq":1767225625000000,"valid":true,"compactions_valid":true,"compaction_markers":1,"compaction_summaries":1,"caught_up":true,"skipping":false,"turns":{"valid":true,"supported":tru"#,
+                r#"e,"current_known":true,"active":null,"start":null,"last":"4ea1a6a42fdcde0801691c1a","last_duration":19,"last_outcome":"completed","last_end":1767225620,"total":19,"finished":{"4ea1a6a42fdcde0801691c1a":[1767225601,1767225620,"completed"]}},"fingerprint":{"size":1317,"mtime_us":0,"header":"b35d3bda40a5e3ad26bf99af603b7a02d858f8ca2b6a2a1f96fc1879d77f627c","tail":"850b6772e93a8ef47b0c76a3da0a96bebdeb489af8bdda25e0ece15537eaa6a8"},"at":0.0}"#
+            )
+        );
+        let again = follower.enrich(&mut agents, &cursors);
+        assert_eq!(normalised(&again), normalised(&cursors));
     }
 }
