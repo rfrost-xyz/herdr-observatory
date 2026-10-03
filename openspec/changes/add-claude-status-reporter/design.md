@@ -917,10 +917,10 @@ New behaviour (must fail on `80f6295`):
   removals; installer debris unlinks are not probed one by one. A fake
   `chezmoi` logs whether `flock -n` can take the plugin root during the
   managed-configuration checks of the mod install and both removals. Every
-  probe finds the lock held. Each probe fails with that writer's guard
-  dropped (review round 4), and the write and deletion probe also fails with
-  the guard released right after the managed-configuration check (review
-  round 5).
+  probe finds the lock held. The chezmoi and Pi probes each fail with that
+  writer's guard dropped (review round 4); the write and deletion probe
+  fails with the guard released right after the managed-configuration check
+  (review round 5).
 - Refresh then uninstall: a refresh keeps the prior `directories` list, and a
   later `--uninstall-claude-mod` leaves no `anton-observatory/` (and no
   `skills/` when the installer created it). This includes a `skills/` that

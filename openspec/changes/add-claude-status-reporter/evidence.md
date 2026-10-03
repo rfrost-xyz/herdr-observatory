@@ -987,8 +987,8 @@ real `~/.claude` and no `claude` CLI run; every fixture is synthetic.
 ## Review round 5 and remediation
 
 Review of `2f474b4`: one blocking finding and five nits across four lenses.
-Every finding was fixed; none was declined. Each fix has a test that fails
-with the fix reverted (checked by reverting it in place from a scratch copy,
+Every finding was fixed; none was declined. Each code or test fix has a
+test that fails with the fix reverted (checked by reverting it in place from a scratch copy,
 then restoring and confirming the diff).
 
 - **Lock probe covered only the checks (installer lens, blocking).**
