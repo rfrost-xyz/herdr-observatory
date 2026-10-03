@@ -173,16 +173,24 @@ hook has returned, and every promise the mod creates ends in a terminal
    that is not epoch milliseconds fails closed instead of sending a small
    `seq` that guard 6 would refuse for good. A reading that is too large (a
    microsecond or nanosecond clock) is caught in step 5.
-   If a run is in flight (`inflight !== null`),
-   `now >= inflight.startedAt` and `now - inflight.startedAt <= 3000`, return:
-   the sample is skipped, not held. The next `session.measure`, which is never deduplicated, carries the
-   latest window. A run older than 3 s (above the 2 s `timeoutMs`) is stale:
-   it is abandoned and a new run starts. This covers a worker that never
-   settles an un-awaited promise (open question 3). A reading earlier than
-   `startedAt` (the wall clock stepped back, for example a manual change, a
-   VM restore or an NTP step) also counts as stale; otherwise a run that never
-   settles would block every event until the clock passed `startedAt + 3000`
-   again. This restores run starts, not reports: step 5 then sends
+   If a run is in flight (`inflight !== null`) and
+   `Math.abs(now - inflight.startedAt) <= 3000`, return: the sample is
+   skipped, not held. The next `session.measure`, which is never
+   deduplicated, carries the latest window. A run whose start is more than
+   3 s from `now` in either direction is stale: it is abandoned and a new run
+   starts. Forward, 3 s is above the 2 s `timeoutMs`; this covers a worker
+   that never settles an un-awaited promise (open question 3). Backward, a
+   reading more than 3 s before `startedAt` means the wall clock stepped back
+   (for example a manual change, a VM restore or an NTP step); otherwise a run
+   that never settles would block every event until the clock passed
+   `startedAt + 3000` again. The tolerance is symmetric because two hooks can
+   be dispatched at overlapping times (for example `session.start` on a reload
+   near the end of a turn): one can read the clock first and resume after the
+   other has started a run with a later reading, and that run, milliseconds
+   old, must still count as in flight. The cost is that after a backward step
+   of 3 s or less a run that never settles keeps blocking until the clock
+   passes `startedAt + 3000`, at most about 6 s of real time. A stale backward
+   step restores run starts, not reports: step 5 then sends
    `lastSeq + 1`, which is ahead of the stepped-back clock, so the reporter
    refuses it as a future `seq` (exit 2), and Herdr's `obs_seq` refuses any
    lower one, until the clock passes the earlier reading again.
@@ -880,6 +888,10 @@ All cases are new behaviour (the file does not exist on `80f6295`):
   a later event with a new window after 3 s (stubbed clock) starts a second
   run; a clock stepped back an hour also starts a second run, with `seq`
   `lastSeq + 1`;
+- overlapping dispatches: `session.start` and `session.measure`, each with its
+  own stubbed `$` whose clock the test resolves by hand; the measure hook's
+  later reading (5 ms later) is delivered first and starts a run, then the
+  start hook's earlier reading is delivered, and exactly one run exists;
 - a first run that settles late, after a second run started: its `.then` does
   not set `confirmed`, and its `.finally` does not clear the second run's
   in-flight state;
@@ -1015,7 +1027,7 @@ for that.
   another and then refuses as busy; `install.sh` prints its warning and the
   user reruns. No writer holds the lock for longer than its own bounded
   checks.
-- **[Subagent windows (unverified)]** See open question 9.
+- **[Subagent windows (documented, live check pending)]** See open question 9.
 - **[Metadata without expiry]** As for Pi. `obs_bind` stops a stale report
   applying to a new session.
 - **[Window and context from different moments]** The window can lag one turn
@@ -1076,15 +1088,18 @@ for that.
    whether a personal mod's hooks run in an untrusted folder. The design treats
    an untrusted workspace as fail-closed (window unknown), and the live check
    runs the Claude Code session in a trusted folder.
-9. **Subagent turns and `session.measure`.** Not documented: whether a
-   subagent's turn fires `session.measure` with the subagent's
-   `context.window` while `$.session.id()` still returns the parent's id. If it
-   does, a subagent on a model with a different window would pass every
-   reporter guard and write a wrong window. Task 5.3 starts a subagent on a
-   model with a different window when the account offers one and confirms
-   `obs_n1` does not change. If it changes, the change does not ship until
-   `sample` filters on a payload field that identifies the main session; if it
-   cannot be exercised, that is recorded as an open risk.
+9. **Subagent turns and `session.measure`.** Answered by the published types
+   [types]: the doc comment on `'session.measure'` reads "Fires when the
+   engine measures the session and a unit moved: after each main-thread turn,
+   and when a rate-limit window moves a whole point." A subagent's turn is not
+   a main-thread turn, so by the documented contract it does not fire
+   `session.measure` with the subagent's window. Because the GitHub copy of the
+   types can be older than the installed build, task 5.3 still confirms this:
+   it starts a subagent on a model with a different window when the account
+   offers one and checks that `obs_n1` does not change. If it changes, the
+   change does not ship until `sample` filters on a payload field that
+   identifies the main session; if it cannot be exercised, that is recorded as
+   a residual risk against the documented contract.
 10. **Claude Code writing into the plugin directory.** Not documented. Any
     file Claude Code (or `claude plugin validate`) writes under the mod
     directory is unrecorded, so later refreshes would refuse and removal would

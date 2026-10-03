@@ -129,6 +129,11 @@ build's own copy.
   run before it is killed and the call rejects, in milliseconds; 30 seconds
   when absent, ten minutes at most").
 - `ProcessRunResult.exitCode`: "a child ended by a signal reads as 1".
+- `'session.measure'` (doc comment above `'session.measure':
+  SessionMeasureInput;`, about line 3594 of the copy fetched on 2026-10-03):
+  "Fires when the engine measures the session and a unit moved: after each
+  main-thread turn, and when a rate-limit window moves a whole point." and
+  "One at a time, a burst folding into one more."
 
 **[loading]** `plugins/loading`
 
