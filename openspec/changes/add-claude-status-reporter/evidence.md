@@ -553,6 +553,88 @@ stage`), the tree that holds every source change in tasks 1.1 to 4.2.
   variant's RSS peak is one 50 ms sample in a single run.
 - Raw output is kept outside the repository because it contains a local path.
 
+## Review round 1 and remediation
+
+Four review lenses. Lens 2 was clean; lens 4 raised one nit. Three blocking
+and two non-blocking findings came from lenses 1 and 3. Each fix below has a
+test that was run against the unfixed code first and failed there.
+
+- **Sequence above the safe integer range (lens 1, blocking).** The clock
+  guard had no upper bound, so a microsecond or nanosecond `clock.now()`
+  passed it and `seq` (and `lastSeq`) went above `Number.MAX_SAFE_INTEGER`,
+  repeating one out-of-range value from then on. `register.js` now returns
+  when `seq` is not a safe integer, before `lastSeq` is assigned (`a3034a7`).
+  Tests: the not-epoch-milliseconds list gains `1.7e15` and `1.7e18` (no
+  run), and a new test fires each bad reading and then a valid `start`
+  reading and asserts `argv[4] === String(start * 1000)`. Both failed before
+  the fix. With the guard moved after `lastSeq = seq`, the second test still
+  fails, so it catches a check placed after the assignment. Design D2 steps
+  4 and 5, D7 and open question 7 updated.
+- **Symlinked `.git` (lens 3 #1, blocking).** `git_managed` used
+  `symlink_metadata` and so ignored a `.git` symlink, which Git follows. Any
+  `.git` symlink in an ancestor up to the home now counts as a marker,
+  whether it resolves or not, and the check never follows it (`1276886`).
+  Fixtures: `~/.git` linked to a directory holding `HEAD`, `~/.claude/.git`
+  linked to a `gitdir:` file, and a dangling `~/.claude/.git` link. The
+  refusal test failed before the fix at the first symlink case. The other
+  two cases take the same unfixed branch (a symlink is neither a directory
+  nor a file under `symlink_metadata`), so they were not run separately
+  against the unfixed code. Design D5 and D7, the spec requirement and task
+  3.4 name the rule.
+- **Snapshot helpers blind to directories (lens 3 #2, blocking).** `tree()`
+  in `hooks_install.rs` and `file_tree()` in `tests/native_process.rs` now
+  record every entry including directories and the root itself: path, kind,
+  inode and mode, with bytes only for regular files (`5a08b8d`). The
+  reviewer's mutation (`create_dir_all(mod_root.join("hooks"))` before
+  `claude_managed` in `install_mod`) now fails
+  `install_refuses_a_target_listed_by_mise_or_an_unreadable_listing` with
+  "nothing changes"; it passed before. The mutation was then removed and the
+  file restored to its committed bytes. D7 records the snapshot rule.
+- **Plugin-root receipt temporary file (lens 3 #3, non-blocking).** Design D5
+  and the spec requirement claimed that any leftover installer temporary
+  file is accepted by a retry or removal. That holds only inside recorded mod
+  directories. D5 and the requirement now say so, and D5 describes the
+  plugin-root case. `uninstall.sh` is unchanged. See the follow-up below.
+- **Removal order (lens 3 #4, non-blocking).** A refresh appends a recreated
+  `skills/` after its recorded children, and removal in reverse list order
+  tried `skills/` first and left it. Removal now sorts recorded directories
+  deepest first by component count (`f0ec766`). Fixture
+  `a_skills_directory_recreated_after_install_is_removed`: `skills/` exists
+  at install, is deleted, a second install recreates and records it last,
+  and uninstall must remove it. It failed before the fix ("the recorded
+  skills directory is removed").
+- **Shell harness coverage (lens 4, nit).** `tests/shell/fake-runtime.mjs`
+  adds `claude-c` (context 48,000, no window, no percentage), and `shell.qml`
+  checks that it projects `contextPercent === null` with 90,000 input tokens
+  (`e9cdd00`). `claude-a` now supplies `context_percent` 25 against a plain
+  ratio of 24: `State.js` uses a valid supplied percentage, as it does for
+  Codex's reserve, so this fits the design and shows the value is passed
+  through. The new checks failed (8 failures) before the fixture change.
+  With `State.js` changed to recompute the ratio, the harness fails 4 checks;
+  `State.js` was then restored.
+
+**Follow-up (not fixed in this change).** `atomic_owned_write` creates its
+temporary file in the destination's directory, so a crash during a receipt
+write (D5 steps 2 and 5, and Pi's existing receipt writes) can leave
+`.anton-write-<pid>-<bits>` in the plugin root. The installer neither deletes
+nor refuses it, but `uninstall.sh` refuses any unknown plugin-root file
+("Unknown plugin file remains"), so plugin removal stops until the file is
+deleted by hand. The exposure predates this change (Pi receipt writes) and is
+shared with Pi; this change adds receipt writes on a refresh. A fix would let
+`uninstall.sh` delete regular, owned files matching
+`^\.anton-write-[0-9]+-[0-9]+$` only while holding `flock -x` on the owner
+marker, because other plugin-root writers (`.peer-receipt.json`,
+`.accounts.json`, `.peers.json`) do not take the receipt lock.
+
+**Gates (HEAD after the fixes).** `cargo fmt --check` clean; `cargo clippy
+--all-targets --locked -- -D warnings` clean (local clippy 0.1.96; no
+`Some(x).filter(|_| ..)` or argument-less `format!` added); `cargo test --locked
+--offline`: 255 + 21 + 6 + 42 passed. `node --test tests/test_*.cjs
+tests/test_*.mjs`: 110 passed. `tests/run-shell-harness.sh`: 0 failures, 6
+rows. `OPENSPEC_TELEMETRY=0 openspec validate --all --strict`: 4 passed.
+Private `TMPDIR` under `/tmp/c3f-*`, removed afterwards. No write under the
+real `~/.claude` and no `claude` CLI run; every fixture is synthetic.
+
 ## Live installed check
 
 _Pending (task 5.3)._
