@@ -118,7 +118,10 @@ template-mode dotfile source, and mise loads the user's configuration, including
 `[env]`, as any mise command does)
 and Git repositories with a real `.git` marker; it installs
 only locally under `~/.claude/skills/anton-observatory/`, never on a peer, and
-removal refuses a changed recorded file and keeps the receipt. Hook receipt
+removal refuses a changed recorded file and keeps the receipt; a recorded
+directory is kept only when it still holds entries, and any other failure
+to remove one fails the removal with the receipt kept. Its reporter needs a
+local host configured with `socket_path` and does nothing without one. Hook receipt
 writers hold one exclusive lock and refuse as busy after a bounded wait. Remove old callbacks/files only with proven ownership.
 Peer provision has a marked receipt; local `.peers.json` records provisioned
 SSH targets. Uninstall completes recorded peer removal first. On unreachable or
