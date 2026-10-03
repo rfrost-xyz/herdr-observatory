@@ -216,6 +216,13 @@ fn no_symlink(path: &Path) -> Result<()> {
     }
     Ok(())
 }
+/// The outermost symlink among `path` and its ancestors, if any.
+fn symlink_component(path: &Path) -> Option<PathBuf> {
+    path.ancestors()
+        .filter(|part| std::fs::symlink_metadata(part).is_ok_and(|m| m.file_type().is_symlink()))
+        .last()
+        .map(Path::to_owned)
+}
 /// Whether `path` is an existing real directory owned by the user; absent is
 /// `false` and anything else refuses.
 fn real_directory(path: &Path) -> Result<bool> {
@@ -533,6 +540,16 @@ pub(super) fn removal(home: &Path, receipt: &Value, env: &ClaudeEnv) -> Result<O
             path.display()
         )
     };
+    // A symlink refuses as `regular` does, naming the link itself: removing
+    // the recorded path below it could never satisfy the check.
+    for path in recorded.directories.iter().chain(recorded.files.keys()) {
+        if let Some(link) = symlink_component(path) {
+            return Err(format!(
+                "Refusing Claude Code mod removal through symlink {}; replace it with the real directory or file, then retry",
+                link.display()
+            ));
+        }
+    }
     for directory in &recorded.directories {
         real_directory(directory).map_err(|_| changed(directory))?;
     }

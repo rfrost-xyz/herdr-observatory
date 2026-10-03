@@ -734,9 +734,8 @@ fn everything() -> Mod {
 
 #[test]
 fn removal_of_a_changed_file_refuses_before_any_deletion() {
-    use std::os::unix::fs::symlink;
     type Setup = fn(&Mod) -> PathBuf;
-    let cases: [(&str, Setup); 4] = [
+    let cases: [(&str, Setup); 2] = [
         ("modified file", |m| {
             let path = m.file("hooks/register.js");
             common::atomic_owned_write(&path, b"user change").unwrap();
@@ -747,18 +746,6 @@ fn removal_of_a_changed_file_refuses_before_any_deletion() {
             std::fs::remove_file(&path).unwrap();
             common::ensure_private_directory(&path).unwrap();
             path
-        }),
-        ("symlinked mod directory", |m| {
-            let real = m.f.home.join("mod-real");
-            std::fs::rename(m.root(), &real).unwrap();
-            symlink(&real, m.root()).unwrap();
-            m.root()
-        }),
-        ("symlinked hooks directory", |m| {
-            let real = m.f.home.join("hooks-real");
-            std::fs::rename(m.file("hooks"), &real).unwrap();
-            symlink(&real, m.file("hooks")).unwrap();
-            m.file("hooks")
         }),
     ];
     for (what, setup) in cases {
@@ -811,6 +798,49 @@ fn debris_names_outside_the_written_directories_are_kept() {
     m.uninstall_mod().unwrap();
     assert!(path.is_file(), "removal keeps it");
     assert!(!m.file("hooks").exists());
+}
+
+/// D5: a symlink in any component refuses the removal before any deletion
+/// and names that symlink, not the recorded path below it, so the user
+/// knows which link to replace (review round 2).
+#[test]
+fn removal_through_a_symlink_refuses_and_names_the_link() {
+    use std::os::unix::fs::symlink;
+    for (what, link) in [
+        ("symlinked ~/.claude", ".claude"),
+        (
+            "symlinked mod directory",
+            ".claude/skills/anton-observatory",
+        ),
+        (
+            "symlinked hooks directory",
+            ".claude/skills/anton-observatory/hooks",
+        ),
+        (
+            "symlinked recorded file",
+            ".claude/skills/anton-observatory/hooks/register.js",
+        ),
+    ] {
+        let m = everything();
+        let link = m.f.home.join(link);
+        let real = m.f.home.join("moved-real");
+        std::fs::rename(&link, &real).unwrap();
+        symlink(&real, &link).unwrap();
+        let before = m.snapshot();
+        let message = format!(
+            "Refusing Claude Code mod removal through symlink {}; replace it with the real directory or file, then retry",
+            link.display()
+        );
+        for result in [m.uninstall_all(), m.uninstall_mod()] {
+            assert_eq!(result, Err(message.clone()), "{what}");
+            assert_eq!(m.snapshot(), before, "{what}: everything is kept");
+        }
+        // Replacing the link with the real entry lets the removal proceed.
+        std::fs::remove_file(&link).unwrap();
+        std::fs::rename(&real, &link).unwrap();
+        m.uninstall_all().unwrap_or_else(|e| panic!("{what}: {e}"));
+        assert!(!m.root().exists(), "{what}");
+    }
 }
 
 #[test]
