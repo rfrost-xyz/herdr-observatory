@@ -448,7 +448,7 @@ fn a_refresh_keeps_the_directories_and_uninstall_leaves_no_mod_tree() {
 fn install_refuses_targets_it_cannot_prove_are_its_own() {
     use std::os::unix::fs::symlink;
     type Setup = fn(&mut Mod);
-    let cases: [(&str, &str, Setup); 23] = [
+    let cases: [(&str, &str, Setup); 24] = [
         (
             "changed root",
             "Conflicting Claude Code mod directory",
@@ -543,6 +543,16 @@ fn install_refuses_targets_it_cannot_prove_are_its_own() {
             common::atomic_owned_write(&m.f.home.join(".git/HEAD"), b"ref: refs/heads/main\n")
                 .unwrap();
         }),
+        (
+            "Git directory with a symlinked HEAD",
+            "Git repository",
+            |m| {
+                // A legacy symref from `core.preferSymlinkRefs`; dangling here,
+                // which also shows the check never follows it.
+                common::ensure_private_directory(&m.f.home.join(".git")).unwrap();
+                symlink("refs/heads/main", m.f.home.join(".git/HEAD")).unwrap();
+            },
+        ),
         ("Git file marker", "Git repository", |m| {
             common::atomic_owned_write(&m.f.home.join(".claude/.git"), b"gitdir: /elsewhere\n")
                 .unwrap();

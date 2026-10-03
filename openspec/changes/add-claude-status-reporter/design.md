@@ -588,7 +588,9 @@ refuses a peer root (`herdr.observatory-peer`) as a second guard.
        `[[dotfiles]]` or a top-level `dotfiles = …` value.
   - **Git.** Any directory from the mod directory up to and including the
     home directory holds a real repository marker: a `.git` directory that
-    contains a regular file `HEAD`, a regular `.git` file whose first line
+    contains a `HEAD` that is a regular file or a symlink (a legacy symref
+    from `core.preferSymlinkRefs`, which Git still honours; checked with
+    lstat and never followed), a regular `.git` file whose first line
     starts with `gitdir:`, or a `.git` symlink of any kind. Git follows a
     symlinked `.git` (for example a dotfiles setup that links the Git
     directory in), so a `.git` symlink counts as a marker whether it resolves
@@ -909,7 +911,8 @@ New behaviour (must fail on `80f6295`):
   file, symlinked `~/.claude`, `skills` or target; chezmoi; a fake `mise` on
   `PATH` printing a covering entry; a fake `chezmoi` that manages only
   `~/.claude` or only `~/.claude/skills`; a fake `mise` that fails and one that
-  hangs past 3 s; a `.git` directory with a regular `HEAD` and a `.git` file
+  hangs past 3 s; a `.git` directory with a regular `HEAD`, one with a
+  dangling symlinked `HEAD` (review round 5), and a `.git` file
   starting `gitdir:` in an ancestor, and a `.git` symlink to such a directory,
   to such a file, and one that does not resolve; a fake `mise` listing the target only in
   `incomplete`, `invalid`, `nested` or `omitted`; `CLAUDE_CONFIG_DIR`

@@ -186,7 +186,9 @@ fn mise_managed(target: &Path, home: &Path, env: &ClaudeEnv) -> Result<()> {
 /// D5 Git check: a real repository marker in any directory from `target` up
 /// to and including `home`. An empty `.git` directory does not count. Git
 /// follows a symlinked `.git`, so any `.git` symlink, resolvable or not,
-/// counts as a marker.
+/// counts as a marker. A `HEAD` that is a symlink (a legacy symref, from
+/// `core.preferSymlinkRefs`) counts as a regular one does; neither is
+/// followed.
 fn git_managed(target: &Path, home: &Path) -> Result<()> {
     use std::io::Read;
     for directory in target.ancestors().take_while(|d| d.starts_with(home)) {
@@ -197,7 +199,8 @@ fn git_managed(target: &Path, home: &Path) -> Result<()> {
         let repository = if info.file_type().is_symlink() {
             true
         } else if info.is_dir() {
-            std::fs::symlink_metadata(marker.join("HEAD")).is_ok_and(|head| head.is_file())
+            std::fs::symlink_metadata(marker.join("HEAD"))
+                .is_ok_and(|head| head.is_file() || head.file_type().is_symlink())
         } else if info.is_file() {
             let mut first = Vec::new();
             std::fs::File::open(&marker)
