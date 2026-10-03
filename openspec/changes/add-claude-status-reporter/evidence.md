@@ -638,6 +638,141 @@ rows. `OPENSPEC_TELEMETRY=0 openspec validate --all --strict`: 4 passed.
 Private `TMPDIR` under `/tmp/c3f-*`, removed afterwards. No write under the
 real `~/.claude` and no `claude` CLI run; every fixture is synthetic.
 
+## Review round 2 and remediation
+
+Four lenses on `7a615a9`: the mod (three nits), the reporter wire (one
+blocking, one non-blocking), the installer (one blocking, two non-blocking,
+one nit) and the collector (one blocking, one non-blocking, one nit). Every
+finding was fixed; none was declined. Each code fix has a test that was run
+against the unfixed code (the fix reverted or mutated in place, then the file
+restored) and failed there. Test-only findings name the mutation that their
+new test catches.
+
+- **Peer output depended on reporter metadata (collector lens #1,
+  blocking).** On a host probed as a peer that also runs the mod, an
+  incomplete replay pass returned the window-only metadata fallback, which
+  made the local's `retain_claude` drop its retained copy instead of
+  re-emitting it. `--probe` now uses `NativeTelemetry::peer()`: its
+  `publish_claude` starts from an empty object instead of
+  `telemetry_from_agent`, the shared-session overlay passes no window, and
+  `collection::normalise` gives a Claude pane without native telemetry no
+  fallback on a peer (`444668a`). The whole metadata is ignored, not only the
+  window: with the window alone dropped, the report's `seq` still stamped the
+  sample, so peer output would still differ from change 2. Tests:
+  `claude_peer_output_ignores_bound_reporter_metadata` (native: a bound pane
+  is collected exactly as an unbound one on a caught-up, an incomplete and a
+  restarted pass; the report's `seq` is newer than every replay time) fails
+  with either half reverted, at the caught-up comparison for the metadata
+  half and at the incomplete pass for the fallback half;
+  `peer_claude_pane_with_a_reporter_window_keeps_the_retained_sample`
+  (`main.rs`, paired with it: `collection::normalise` of the bound pane with
+  no native telemetry, then `State::sample`, re-emits `total_input` 3461 on
+  the peer path and loses it on the local path) fails with the fallback half
+  reverted; the process fixture `claude_peer_probe_ignores_a_bound_reporter_window`
+  fails with the `--probe` arm back on `NativeTelemetry::default()`. A change
+  2 peer runtime on such a host keeps the old behaviour until it is upgraded;
+  D6 records the row.
+- **Local collector analysis (coordinator decision 1).** The local follower
+  keeps its retained replay sample in its own binding, independent of
+  metadata, and on an incomplete pass `publish_claude` merges that sample over
+  the bound metadata, whose `usage_seq` is null, so the window only overlays
+  it. `State::sample` keeps no Claude copy for local hosts. No loss was found;
+  `claude_local_incomplete_pass_overlays_a_bound_window_on_the_retained_sample`
+  pins it as a regression guard (it passes before and after).
+- **Debris outside the written directories (installer lens #1,
+  blocking).** `delete_debris` now looks only in the recorded
+  `anton-observatory/.claude-plugin/` and `anton-observatory/hooks/`, in both
+  install and removal (`166cf11`). A debris-named file in the mod root is an
+  unrecorded conflict (refused, kept), and one in `skills/` is kept by
+  install, `--uninstall-claude-mod` and `--uninstall-hooks`. New refusal case
+  and `debris_names_outside_the_written_directories_are_kept` failed before
+  the fix; with only the install path fixed the removal assertion failed
+  ("--uninstall-claude-mod keeps it"). D5, D7 and the spec narrowed.
+- **Null stdin not proven (reporter lens #1, blocking).** The mise fixture
+  now runs the installer with a held stdin pipe (`cb6500d`). With
+  `run_process_in` changed to `Stdio::inherit()` the fake `mise` wrote
+  `other` and the test failed; before this change it passed under that
+  mutation.
+- **`CLAUDE_CONFIG_DIR` CLI wiring untested (reporter lens #2,
+  non-blocking).** Process fixture
+  `claude_mod_install_refuses_another_claude_config_dir_through_the_cli`:
+  exit 1, stderr names `CLAUDE_CONFIG_DIR`, tree unchanged; a value naming
+  `~/.claude` installs (`0580c54`). It fails with `ClaudeEnv::process()`
+  reading `config_dir: None`.
+- **Default paths not run as the mod runs them (collector lens #3, nit).**
+  `claude_report_as_the_mod_runs_it_derives_root_and_state` runs the
+  installed runtime copy with only `HOME`, no `--root` or `--state`, and
+  asserts exit 0, both RPCs and `hook.lock` under
+  `<home>/.local/state/herdr.observatory` (`0580c54`). It fails with the
+  default state leaf mutated. D7 notes this one fixture's exception to the
+  explicit `--root`/`--state` rule.
+- **chezmoi-managed parents (installer lens #2, non-blocking).**
+  `claude_managed` also runs the chezmoi check on `~/.claude/skills` and
+  `~/.claude` (`6265f0e`). New refusal cases (a fake `chezmoi` managing only
+  either) failed before the fix. Narrowed: the home directory itself is not
+  asked, because it is chezmoi's destination root and `chezmoi source-path`
+  succeeds for it on any chezmoi host; a fake `chezmoi` that answers only for
+  the home is accepted, and that case fails if the home is included. The
+  development host has no `chezmoi` on `PATH`, so task 5.3 is unaffected. D5
+  and Risks record that any `dot_claude/` source state now refuses the mod.
+- **Removal message through a symlink (installer lens #3,
+  non-blocking).** Removal now names the outermost symlinked component:
+  `Refusing Claude Code mod removal through symlink <link>; replace it with
+  the real directory or file, then retry` (`2d26c5c`). "file changed" is kept
+  for hash and type mismatches. `removal_through_a_symlink_refuses_and_names_the_link`
+  (symlinked `~/.claude`, mod directory, `hooks/` and recorded file; each
+  removal succeeds once the link is replaced) failed before the fix with the
+  old message naming `.claude/skills`. D5, D7 and the plugin README updated.
+- **No sync before the receipt change on removal (installer lens #4,
+  nit).** Removal now syncs each surviving recorded directory and the
+  surviving parent of each removed one before returning, so both
+  `--uninstall-claude-mod` and `--uninstall-hooks` sync before they rewrite or
+  remove the receipt (`e80e513`). `removal_syncs_the_surviving_directories`
+  records the syncs through a `remove_with` seam and failed with the sync
+  call removed. The ordering relative to the receipt write is structural
+  (both callers write after `remove` returns) and is not separately tested;
+  a power-loss reordering cannot be reproduced in a test.
+- **Socket path taken verbatim (collector lens #2, non-blocking).** The
+  Claude path expands `~` and `~/` in `socket_path` against the resolved home
+  (`common::expand_home_in`, which `expand_home` now calls with `HOME`, so the
+  collector is unchanged) and exits 3 for a path still relative (`06fd071`).
+  The home is the one `claude_paths` resolved, which equals `HOME` whenever
+  `HOME` is absolute; it differs from `expand_home` only where `HOME` is unset
+  or relative, where `expand_home` would give a relative path. The Pi
+  reporter is unchanged. `claude_report_expands_a_home_socket_and_refuses_a_relative_one`
+  failed before the fix (exit 1 for `~/herdr.sock`), and its relative case
+  failed (exit 0, RPC sent to the cwd socket) with only the absolute check
+  removed. D3 updated.
+- **Session id in the confirmed key (mod lens #1, nit).** Node test: a run
+  for session A in flight across `session.end`, settling afterwards with exit
+  0, then `classic.SessionStart` for session B with the same window starts a
+  run whose `argv[5]` is `session-b` (`bbde839`). With the key changed to
+  `String(size)` it fails. `generation` is not reset in `session.end`. D2
+  step 7 records why.
+- **Backward clock step (mod lens #2, nit).** A reading earlier than the
+  in-flight run's `startedAt` now counts as stale (`1b21bd3`). Node test: a
+  never-settling run, the clock stepped back an hour, and the next measure
+  starts a second run with `seq` `start * 1000 + 1`; it failed before the
+  fix. This restores run starts only: that `seq` is ahead of the stepped-back
+  clock, so the reporter refuses it as a future sequence (exit 2) until the
+  clock catches up. D2 step 4 says so.
+- **sec-default (mod lens #3, nit).** D1, the D2 events table and the plugin
+  README now say that where `sec-default@builtin` loads (Team or Enterprise
+  sign-in, or managed settings), `classic.SessionStart` does not reach the
+  mod, so after `/resume` the window arrives with the next turn. The source
+  is the reviewer's reading of the anthropics/claude-code
+  `mods/sec-default/README.md` and the mods reference on 2026-10-03; it was
+  not re-read here.
+
+**Gates (HEAD after the fixes).** `cargo fmt --check` clean; `cargo clippy
+--all-targets --locked -- -D warnings` clean (local clippy 0.1.96; no
+`Some(x).filter(|_| ..)` or argument-less `format!` added); `cargo test --locked
+--offline`: 260 + 22 + 6 + 46 passed. `node --test tests/test_*.cjs
+tests/test_*.mjs`: 112 passed. `tests/run-shell-harness.sh`: 0 failures, 6
+rows. `OPENSPEC_TELEMETRY=0 openspec validate --all --strict`: 4 passed.
+Private `TMPDIR` under `/tmp/c3f-*`, removed afterwards. No write under the
+real `~/.claude` and no `claude` CLI run; every fixture is synthetic.
+
 ## Live installed check
 
 _Pending (task 5.3)._
