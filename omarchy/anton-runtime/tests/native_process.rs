@@ -2528,3 +2528,204 @@ fn pi_report_option_parsing_is_unchanged() {
     assert_eq!(write["agent"], "pi");
     assert_eq!(write["display_agent"], "pi · working");
 }
+
+/// Installer CLI fixtures for the Claude Code mod (design D5, D7). Each run
+/// has `env_clear()`, an absolute temporary `HOME`, a `PATH` holding only the
+/// fixture `bin` directory (so the host's `chezmoi` and `mise` never run) and
+/// a private working directory.
+impl Reporter {
+    /// A real runtime in the plugin root, `~/.claude` and an empty `bin`, with
+    /// the synthetic receipt removed so the installers write their own.
+    fn installable(&self) {
+        fs::remove_file(self.root.join(".hooks-receipt.json")).unwrap();
+        // Copied by a child process for the reason `support::write_executable` gives.
+        assert!(
+            Command::new("cp")
+                .arg("--")
+                .arg(BIN)
+                .arg(self.root.join("anton-runtime"))
+                .status()
+                .unwrap()
+                .success()
+        );
+        fs::set_permissions(
+            self.root.join("anton-runtime"),
+            fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+        for path in [self.home.join(".claude"), self.dir.join("bin")] {
+            fs::create_dir(&path).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+    }
+    fn installer(&self, mode: &str) -> Command {
+        let mut command = Command::new(BIN);
+        command
+            .env_clear()
+            .env("HOME", &self.home)
+            .env("PATH", self.dir.join("bin"))
+            .current_dir(self.dir.join("cwd"))
+            .args([
+                "--root",
+                self.root.to_str().unwrap(),
+                "--state",
+                self.state.to_str().unwrap(),
+                mode,
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        command
+    }
+    /// Runs one installer command and asserts it succeeded.
+    fn install_step(&self, mode: &str) {
+        let output = self.installer(mode).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{mode}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    fn mod_root(&self) -> PathBuf {
+        self.home.join(".claude/skills/anton-observatory")
+    }
+}
+/// Every regular file under `dir` with its bytes and inode; other entries
+/// (the fixture socket) with no bytes.
+fn file_tree(dir: &Path) -> std::collections::BTreeMap<PathBuf, (Vec<u8>, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let mut files = std::collections::BTreeMap::new();
+    let mut pending = vec![dir.to_owned()];
+    while let Some(path) = pending.pop() {
+        let info = fs::symlink_metadata(&path).unwrap();
+        if info.is_dir() {
+            for entry in fs::read_dir(&path).unwrap() {
+                pending.push(entry.unwrap().path());
+            }
+        } else {
+            let bytes = if info.is_file() {
+                fs::read(&path).unwrap()
+            } else {
+                Vec::new()
+            };
+            files.insert(path, (bytes, info.ino()));
+        }
+    }
+    files
+}
+
+/// D3 guard 2 and D5 agree: a mod installed through the CLI is accepted by
+/// `--report claude`, and after `--uninstall-claude-mod` it is refused.
+#[test]
+fn claude_mod_installed_by_the_cli_is_accepted_by_the_reporter() {
+    let f = Reporter::new();
+    f.installable();
+    f.install_step("--install-hooks");
+    f.install_step("--install-claude-mod");
+    let register = fs::read_to_string(f.mod_root().join("hooks/register.js")).unwrap();
+    assert!(register.contains(&format!(
+        "const nativeRuntime = {};",
+        json!(f.root.join("anton-runtime"))
+    )));
+    for name in [".claude-plugin/plugin.json", "hooks/hooks.json"] {
+        assert!(f.mod_root().join(name).is_file(), "{name}");
+    }
+    assert_eq!(
+        f.report(&["w1:p1", &report_seq(30), CLAUDE_ID, "200000"]),
+        Some(0)
+    );
+    assert_eq!(f.methods(), ["pane.get", "pane.report_metadata"]);
+    let before = file_tree(&f.dir);
+    f.install_step("--install-claude-mod");
+    assert_eq!(
+        file_tree(&f.dir),
+        before,
+        "an identical reinstall writes nothing"
+    );
+    f.install_step("--uninstall-claude-mod");
+    assert!(!f.home.join(".claude/skills").exists());
+    assert!(f.home.join(".pi/agent/extensions/observatory.ts").exists());
+    f.calls.lock().unwrap().clear();
+    assert_eq!(
+        f.report(&["w1:p1", &report_seq(20), CLAUDE_ID, "200000"]),
+        Some(3)
+    );
+    assert!(f.methods().is_empty(), "no RPC without a mod receipt");
+    f.install_step("--install-claude-mod");
+    f.install_step("--uninstall-hooks");
+    assert!(!f.home.join(".claude/skills").exists());
+    assert!(!f.root.join(".hooks-receipt.json").exists());
+}
+
+/// D5: `mise -C <home> dotfiles paths --json` runs in the home directory with
+/// a null stdin, whatever the installer's own working directory holds.
+#[test]
+fn claude_mod_install_runs_mise_from_the_home_with_null_stdin() {
+    let f = Reporter::new();
+    f.installable();
+    f.install_step("--install-hooks");
+    write(&f.dir.join("cwd/mise.toml"), b"[tools]\n", 0o600);
+    let log = f.dir.join("mise.log");
+    support::write_executable(
+        &f.dir.join("bin/mise"),
+        format!(
+            "#!/bin/sh\n{{ printf '%s\\n' \"$@\"; pwd; if [ /proc/$$/fd/0 -ef /dev/null ]; then echo null; else echo other; fi; }} > '{}'\nprintf '%s' '{{\"entries\":[{{\"path\":\"~/.claude/skills/other\"}}]}}'\n",
+            log.display()
+        )
+        .as_bytes(),
+        0o700,
+    );
+    f.install_step("--install-claude-mod");
+    let home = f.home.to_str().unwrap();
+    assert_eq!(
+        fs::read_to_string(&log).unwrap(),
+        format!("-C\n{home}\ndotfiles\npaths\n--json\n{home}\nnull\n")
+    );
+    assert!(f.mod_root().join("hooks/register.js").is_file());
+}
+
+/// D5: while the plugin root is locked, every receipt writer refuses as busy
+/// within its bound and leaves every file unchanged.
+#[test]
+fn hook_receipt_writers_refuse_as_busy_through_the_cli() {
+    use std::os::fd::AsRawFd;
+    let f = Reporter::new();
+    f.installable();
+    f.install_step("--install-hooks");
+    f.install_step("--install-claude-mod");
+    let before = file_tree(&f.dir);
+    let lock = fs::File::open(&f.root).unwrap();
+    assert_eq!(
+        unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+        0
+    );
+    let started = Instant::now();
+    let writers: Vec<_> = [
+        "--install-hooks",
+        "--install-claude-mod",
+        "--uninstall-claude-mod",
+        "--uninstall-hooks",
+        "--repair-retired-hooks",
+    ]
+    .into_iter()
+    .map(|mode| (mode, f.installer(mode).spawn().unwrap()))
+    .collect();
+    for (mode, writer) in writers {
+        let output = writer.wait_with_output().unwrap();
+        assert_eq!(output.status.code(), Some(1), "{mode}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            "Hook receipt busy; retry\n",
+            "{mode}"
+        );
+    }
+    let waited = started.elapsed();
+    assert!(
+        waited >= Duration::from_secs(3) && waited < Duration::from_secs(6),
+        "{waited:?}"
+    );
+    assert_eq!(file_tree(&f.dir), before);
+    drop(lock);
+    f.install_step("--uninstall-claude-mod");
+    assert!(!f.mod_root().exists());
+}

@@ -1115,6 +1115,8 @@ fn cli() -> Result<()> {
         ),
         "--uninstall-hooks" => hooks_install::uninstall(&root, &home),
         "--repair-retired-hooks" => hooks_install::repair_retired(&root, &home),
+        "--install-claude-mod" => hooks_install::install_claude_mod(&root, &home),
+        "--uninstall-claude-mod" => hooks_install::uninstall_claude_mod(&root, &home),
         "--retire-checkpoints" => native::retire(&state, &owner),
         "--report" => {
             if commands.len() != 4 {

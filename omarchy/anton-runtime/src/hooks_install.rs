@@ -160,6 +160,12 @@ fn receipt_value(bytes: &[u8], runtime: &Path, extension: &Path) -> Result<Value
     }
     Ok(receipt)
 }
+mod claude_mod;
+#[cfg(test)]
+mod claude_mod_tests;
+use claude_mod::ClaudeEnv;
+pub use claude_mod::{install_claude_mod, uninstall_claude_mod};
+
 /// The Claude Code mod directory under `home` (design D1).
 pub(crate) fn claude_mod_root(home: &Path) -> PathBuf {
     home.join(".claude/skills/anton-observatory")
@@ -561,12 +567,8 @@ pub fn install(root: &Path, home: &Path, adopt_legacy: bool) -> Result<()> {
     Ok(())
 }
 
-pub fn uninstall(root: &Path, home: &Path) -> Result<()> {
-    let _receipt = receipt_lock(root, RECEIPT_WAIT)?;
-    let receipt_path = root.join(".hooks-receipt.json");
-    let Some(bytes) = regular(&receipt_path)? else {
-        return Ok(());
-    };
+/// The owner marker removal accepts, including a retired installation's.
+fn owner_marker(root: &Path) -> Result<()> {
     let marker =
         regular(&root.join(".herdr-observatory-install"))?.ok_or("Hook owner marker missing")?;
     if ![
@@ -579,6 +581,20 @@ pub fn uninstall(root: &Path, home: &Path) -> Result<()> {
     {
         return Err("Conflicting hook owner marker".into());
     }
+    Ok(())
+}
+/// `--uninstall-hooks`: the Pi extension, the compatibility shim and a
+/// recorded Claude Code mod, each preflighted before any is deleted.
+pub fn uninstall(root: &Path, home: &Path) -> Result<()> {
+    uninstall_in(root, home, &ClaudeEnv::process())
+}
+fn uninstall_in(root: &Path, home: &Path, env: &ClaudeEnv) -> Result<()> {
+    let _receipt = receipt_lock(root, RECEIPT_WAIT)?;
+    let receipt_path = root.join(".hooks-receipt.json");
+    let Some(bytes) = regular(&receipt_path)? else {
+        return Ok(());
+    };
+    owner_marker(root)?;
     let runtime = root.join("anton-runtime");
     let (legacy, extension, _) = paths(home);
     let shell = legacy.join("codex.sh");
@@ -600,7 +616,11 @@ pub fn uninstall(root: &Path, home: &Path) -> Result<()> {
             shell_present = true;
         }
     }
-    // Both integrations have been preflighted before deleting either one.
+    let claude = claude_mod::removal(home, &receipt, env)?;
+    // Every integration has been preflighted before deleting any one.
+    if let Some(recorded) = &claude {
+        claude_mod::remove(home, recorded)?;
+    }
     if shell_present {
         std::fs::remove_file(&shell).map_err(|_| "Retired hook removal failed")?;
     }
@@ -761,12 +781,12 @@ mod tests {
         assert!(config.exists());
         std::fs::remove_dir_all(home).unwrap();
     }
-    struct NativeFixture {
-        home: PathBuf,
-        root: PathBuf,
+    pub(super) struct NativeFixture {
+        pub(super) home: PathBuf,
+        pub(super) root: PathBuf,
     }
     impl NativeFixture {
-        fn new() -> Self {
+        pub(super) fn new() -> Self {
             use std::os::unix::fs::PermissionsExt;
             static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             let home = std::env::temp_dir().join(format!(
@@ -793,14 +813,14 @@ mod tests {
             install(&root, &home, false).unwrap();
             Self { home, root }
         }
-        fn shell(&self) -> PathBuf {
+        pub(super) fn shell(&self) -> PathBuf {
             paths(&self.home).0.join("codex.sh")
         }
-        fn receipt(&self) -> Value {
+        pub(super) fn receipt(&self) -> Value {
             serde_json::from_slice(&std::fs::read(self.root.join(".hooks-receipt.json")).unwrap())
                 .unwrap()
         }
-        fn backup(&self) {
+        pub(super) fn backup(&self) {
             let value = json!({"hooks":{"Stop":[{"hooks":[{"type":"command","command":legacy_commands(&self.shell())[0]}]}]}});
             common::atomic_owned_write(
                 &self.root.join(".hooks-before-native.json"),
