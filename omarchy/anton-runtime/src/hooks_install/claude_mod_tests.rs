@@ -843,6 +843,35 @@ fn removal_through_a_symlink_refuses_and_names_the_link() {
     }
 }
 
+/// Review round 2: removal syncs every surviving recorded directory and the
+/// surviving parent of each removed one, before the receipt changes.
+#[test]
+fn removal_syncs_the_surviving_directories() {
+    for extra in [false, true] {
+        let m = Mod::new();
+        m.install().unwrap();
+        if extra {
+            common::atomic_owned_write(&m.file("hooks/extra.js"), b"x").unwrap();
+        }
+        let recorded = claude_mod::removal(&m.f.home, &m.f.receipt(), &m.env)
+            .unwrap()
+            .unwrap();
+        let mut synced = Vec::new();
+        claude_mod::remove_with(&m.f.home, &recorded, &mut |path| {
+            synced.push(path.to_owned());
+            Ok(())
+        })
+        .unwrap();
+        synced.sort();
+        let expected = if extra {
+            vec![m.f.home.join(".claude/skills"), m.root(), m.file("hooks")]
+        } else {
+            vec![m.f.home.join(".claude")]
+        };
+        assert_eq!(synced, expected, "extra file: {extra}");
+    }
+}
+
 #[test]
 fn removal_keeps_unrecorded_files_and_reports_success() {
     let m = Mod::new();

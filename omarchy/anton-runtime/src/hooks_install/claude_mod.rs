@@ -566,6 +566,17 @@ pub(super) fn removal(home: &Path, receipt: &Value, env: &ClaudeEnv) -> Result<O
 /// then each recorded directory, deepest first, if it is empty. A kept mod
 /// directory holds files Anton never wrote; it is reported, not an error.
 pub(super) fn remove(home: &Path, recorded: &Recorded) -> Result<()> {
+    remove_with(home, recorded, &mut |path| sync_directory(path))
+}
+/// `remove`, with each directory sync passed to `sync`. Every recorded
+/// directory that survives, and the parent of each one removed, is synced
+/// before the caller rewrites or removes the receipt, so the receipt change
+/// cannot reach disk ahead of the unlinks (the install order's reason).
+pub(super) fn remove_with(
+    home: &Path,
+    recorded: &Recorded,
+    sync: &mut dyn FnMut(&Path) -> Result<()>,
+) -> Result<()> {
     for path in recorded.files.keys() {
         match std::fs::remove_file(path) {
             Ok(()) => {}
@@ -578,13 +589,24 @@ pub(super) fn remove(home: &Path, recorded: &Recorded) -> Result<()> {
     // Deepest first: a refresh can record a recreated parent after its children.
     let mut directories: Vec<&PathBuf> = recorded.directories.iter().collect();
     directories.sort_by_key(|directory| std::cmp::Reverse(directory.components().count()));
-    for directory in directories {
+    for directory in &directories {
         let _ = std::fs::remove_dir(directory);
         if directory.starts_with(&mod_root) && std::fs::symlink_metadata(directory).is_ok() {
             eprintln!(
                 "Kept {}: it holds files the Claude Code mod installer did not write",
                 directory.display()
             );
+        }
+    }
+    let mut synced = std::collections::BTreeSet::new();
+    for directory in directories {
+        let survivor = if directory.is_dir() {
+            Some(directory.as_path())
+        } else {
+            directory.parent().filter(|parent| parent.is_dir())
+        };
+        if let Some(survivor) = survivor.filter(|v| synced.insert(v.to_owned())) {
+            sync(survivor)?;
         }
     }
     Ok(())

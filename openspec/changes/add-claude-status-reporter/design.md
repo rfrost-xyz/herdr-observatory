@@ -635,6 +635,10 @@ and removal would refuse.
    only empty directories, so a directory holding an unrecorded file stays;
    the command reports it on stderr and still succeeds, because that file was
    never Anton's.
+   Each recorded directory that survives, and the surviving parent of each
+   one removed, is then synced (`fsync`), so the receipt change in step 3
+   cannot reach disk ahead of the unlinks, the same ordering reason the
+   install path syncs for.
 3. Remove the `claude_mod` entry (`--uninstall-claude-mod`), or the whole receipt
    as today (`--uninstall-hooks`).
 
