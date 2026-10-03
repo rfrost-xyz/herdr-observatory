@@ -739,13 +739,21 @@ fn install_refuses_a_target_declared_in_mise_dotfiles_in_any_mode() {
 #[test]
 fn install_refuses_unreadable_mise_declarations() {
     type Setup = fn(&Mod);
-    let cases: [(&str, Setup); 5] = [
+    let cases: [(&str, Setup); 6] = [
         ("config get fails", |m| {
             m.declare(".config/mise/config.toml", "[tools]\n");
             let home = m.f.home.display();
             m.tool(
                 "mise",
                 &format!("[ \"$3\" = dotfiles ] && printf '%s' '{}' && exit 0; case \"$6\" in '{home}'/*) exit 1 ;; esac", json!({"entries":[]})),
+            );
+        }),
+        ("hanging config get", |m| {
+            m.declare(".config/mise/config.toml", "[tools]\n");
+            let home = m.f.home.display();
+            m.tool(
+                "mise",
+                &format!("[ \"$3\" = dotfiles ] && printf '%s' '{}' && exit 0; case \"$6\" in '{home}'/*) exec sleep 10 ;; esac", json!({"entries":[]})),
             );
         }),
         ("unparseable declarations", |m| {
@@ -778,7 +786,12 @@ fn install_refuses_unreadable_mise_declarations() {
         if original.is_some() {
             std::fs::set_permissions(&conf, std::fs::Permissions::from_mode(0o000)).unwrap();
         }
+        let started = Instant::now();
         let result = m.install();
+        assert!(
+            started.elapsed() < Duration::from_secs(6),
+            "{what} is bounded"
+        );
         if let Some(permissions) = original {
             std::fs::set_permissions(&conf, permissions).unwrap();
         }

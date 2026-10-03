@@ -829,8 +829,9 @@ place, then the file restored) and failed there.
     `~/.mise.local.toml`, and directories moved by `MISE_CONFIG_DIR`,
     `XDG_CONFIG_HOME` and `MISE_SYSTEM_CONFIG_DIR`; each refuses with the
     home snapshot unchanged) and `install_refuses_unreadable_mise_declarations`
-    (`config get` failing, unparseable output, `[[dotfiles]]`, `~other`, an
-    unlistable `conf.d`) fail with the candidate list replaced by an empty
+    (`config get` failing or hanging, the latter refused within 6 s,
+    unparseable output, `[[dotfiles]]`, `~other`, an unlistable `conf.d`)
+    fail with the candidate list replaced by an empty
     one. The process fixtures `claude_mod_install_refuses_a_copy_mode_mise_declaration`
     and the D7 argv fixture `claude_mod_install_runs_mise_from_the_home_with_null_stdin`
     (now asserting every run, `paths` first, then `config get -f` of the

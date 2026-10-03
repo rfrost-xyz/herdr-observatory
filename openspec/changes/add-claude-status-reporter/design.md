@@ -907,8 +907,8 @@ New behaviour (must fail on `80f6295`):
   entry, for the home itself, in a `conf.d` file and a `conf.d` folder
   fragment, in `~/.mise.local.toml`, and in global and system directories
   moved by `MISE_CONFIG_DIR`, `XDG_CONFIG_HOME` and
-  `MISE_SYSTEM_CONFIG_DIR`. Refused as unreadable: `config get` failing,
-  unparseable output, `[[dotfiles]]`, another user's `~name` and an
+  `MISE_SYSTEM_CONFIG_DIR`. Refused as unreadable: `config get` failing or
+  hanging past 3 s (refused within 6 s), unparseable output, `[[dotfiles]]`, another user's `~name` and an
   unlistable `conf.d`. Not refused: declarations of `~/.claude/skills/other`,
   `~/.claude/settings.json` and `~/.bashrc`, with a `[dotfiles]` line inside
   a task's multi-line string. Reader unit tests cover each key form, values
