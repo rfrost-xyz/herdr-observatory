@@ -69,8 +69,11 @@ function host() {
 const turn = () => new Promise(setImmediate);
 const measure = (window) => ({ context: { tokens: 10, window, percent: 0 }, rateLimits: {}, cost: {}, changed: [] });
 
-// Fires one hook and asserts it resolved to the value of next(e).
-async function fire(hooks, name, $, e = {}) {
+// Fires one hook and asserts it resolved to the value of next(e). An event
+// passed explicitly, including undefined, reaches the hook as given; only an
+// omitted one becomes {}.
+async function fire(hooks, name, $, ...event) {
+  const e = event.length > 0 ? event[0] : {};
   const passed = { passed: e };
   const result = await hooks[name]($, e, (value) => {
     assert.equal(value, e);
@@ -353,6 +356,19 @@ test('a reading past the safe sequence range leaves the last sequence unchanged'
     await fire(hooks, 'session.measure', $, measure(200000));
     assert.equal(state.runs.length, 1, String(bad));
     assert.equal(state.runs[0].argv[4], String(start * 1000), String(bad));
+  }
+});
+
+test('an undefined or null event passes through every hook unchanged', async () => {
+  for (const e of [undefined, null]) {
+    for (const name of events) {
+      const { hooks } = await load();
+      const { $, state } = host();
+      await fire(hooks, name, $, e);
+      // session.start reads nothing from its event, so it still reports once.
+      const runs = name === 'session.start' ? 1 : 0;
+      assert.equal(state.runs.length, runs, `${name} with ${e}`);
+    }
   }
 });
 

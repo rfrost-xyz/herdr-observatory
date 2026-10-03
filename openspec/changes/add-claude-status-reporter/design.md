@@ -1039,6 +1039,10 @@ All cases are new behaviour (the file does not exist on `80f6295`):
 - `classic.SessionStart` with a mismatched `session_id` skipped;
 - every hook resolves to the value of `next(e)` and never throws, even when
   every `$` call throws or rejects;
+- with a valid `$`, an explicit `undefined` or `null` event reaches each of
+  the four hooks as given (the harness does not default it to `{}`) and
+  resolves to `next(e)`; only `session.start`, which reads nothing from its
+  event, starts a run (review round 5);
 - a static scan of the source: no `import`, `require`, `setTimeout`,
   `setInterval` or `Date`, and no bare `process` identifier (one not preceded
   by `$.`, so `$.process.run` is allowed); the same not-preceded-by-`$.` rule
