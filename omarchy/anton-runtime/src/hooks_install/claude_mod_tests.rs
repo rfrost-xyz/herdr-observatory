@@ -901,6 +901,44 @@ fn mod_receipt_writers_refuse_as_busy_while_the_lock_is_held() {
     assert!(m.install().is_err(), "the changed file is still refused");
 }
 
+/// D5: each mod receipt writer holds the receipt lock across its whole
+/// read-modify-write. A fake `chezmoi`, which the managed-configuration
+/// check runs on every target during install and on every present file
+/// during removal, logs whether `flock -n` could take the plugin root.
+#[test]
+fn mod_receipt_writers_hold_the_lock_while_checking() {
+    let m = Mod::new();
+    let flock = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+        .map(|dir| dir.join("flock"))
+        .find(|path| path.is_file())
+        .expect("the util-linux flock command");
+    let log = m.f.home.join("lock.log");
+    m.tool(
+        "chezmoi",
+        &format!(
+            "if '{}' -n '{}' true; then echo free; else echo held; fi >> '{}'\nexit 1",
+            flock.display(),
+            m.f.root.display(),
+            log.display()
+        ),
+    );
+    let checked = |what: &str| {
+        let lines = std::fs::read_to_string(&log).unwrap();
+        std::fs::remove_file(&log).unwrap();
+        assert!(lines.lines().count() >= 3, "{what}: {lines}");
+        assert!(lines.lines().all(|line| line == "held"), "{what}: {lines}");
+    };
+    m.install().unwrap();
+    checked("install_mod");
+    m.uninstall_mod().unwrap();
+    checked("uninstall_mod");
+    m.install().unwrap();
+    std::fs::remove_file(&log).unwrap();
+    m.uninstall_all().unwrap();
+    checked("uninstall_in");
+    assert!(!m.root().exists());
+}
+
 /// Pi, the compatibility shim and the mod, all installed and recorded.
 fn everything() -> Mod {
     let m = Mod::new();

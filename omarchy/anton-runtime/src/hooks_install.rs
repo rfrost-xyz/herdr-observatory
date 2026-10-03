@@ -369,7 +369,15 @@ fn record_and_create(
     compatibility_directories(home, true)?;
     create_shim_exclusive(shell)
 }
+/// Writes one Pi receipt, extension, shim or configuration file; a fixture
+/// passes a recording writer to observe the receipt lock (design D7).
+type FileWriter<'a> = &'a mut dyn FnMut(&Path, &[u8]) -> Result<()>;
 pub fn repair_retired(root: &Path, home: &Path) -> Result<()> {
+    repair_retired_with(root, home, &mut |path, bytes| {
+        common::atomic_owned_write(path, bytes)
+    })
+}
+fn repair_retired_with(root: &Path, home: &Path, write: FileWriter) -> Result<()> {
     let _owner = common::owner_guard(&root.join(".herdr-observatory-install"))?;
     let _receipt = receipt_lock(root, RECEIPT_WAIT)?;
     let runtime = runtime_owned(root)?;
@@ -403,11 +411,16 @@ pub fn repair_retired(root: &Path, home: &Path) -> Result<()> {
         &compatibility_receipt(receipt, &shell),
         home,
         &shell,
-        common::atomic_owned_write,
+        |path, bytes| write(path, bytes),
     )
 }
 
 pub fn install(root: &Path, home: &Path, adopt_legacy: bool) -> Result<()> {
+    install_with(root, home, adopt_legacy, &mut |path, bytes| {
+        common::atomic_owned_write(path, bytes)
+    })
+}
+fn install_with(root: &Path, home: &Path, adopt_legacy: bool, write: FileWriter) -> Result<()> {
     let _owner = common::owner_guard(&root.join(".herdr-observatory-install"))?;
     let _receipt = receipt_lock(root, RECEIPT_WAIT)?;
     let runtime = runtime_owned(root)?;
@@ -529,7 +542,7 @@ pub fn install(root: &Path, home: &Path, adopt_legacy: bool) -> Result<()> {
     }
 
     if updated != original_value && regular(&root.join(".hooks-before-native.json"))?.is_none() {
-        common::atomic_owned_write(
+        write(
             &root.join(".hooks-before-native.json"),
             &serde_json::to_vec_pretty(&original_value).map_err(|_| "Invalid hook backup")?,
         )?;
@@ -540,8 +553,8 @@ pub fn install(root: &Path, home: &Path, adopt_legacy: bool) -> Result<()> {
         .mode(0o700)
         .create(extension.parent().ok_or("Missing extension parent")?)
         .map_err(|_| "Cannot create extension directory")?;
-    common::atomic_owned_write(&extension, payload.as_bytes())?;
-    let receipt_result = common::atomic_owned_write(
+    write(&extension, payload.as_bytes())?;
+    let receipt_result = write(
         &receipt_path,
         &serde_json::to_vec(&receipt).map_err(|_| "Invalid hook receipt")?,
     );
@@ -549,7 +562,7 @@ pub fn install(root: &Path, home: &Path, adopt_legacy: bool) -> Result<()> {
         // Only undo the extension bytes installed by this attempt.
         if regular(&extension)?.as_deref() == Some(payload.as_bytes()) {
             if let Some(bytes) = existing_extension {
-                common::atomic_owned_write(&extension, &bytes)?;
+                write(&extension, &bytes)?;
             } else {
                 std::fs::remove_file(&extension).map_err(|_| "Cannot roll back Pi integration")?;
             }
@@ -564,11 +577,11 @@ pub fn install(root: &Path, home: &Path, adopt_legacy: bool) -> Result<()> {
             if regular(&shell)? != shell_bytes {
                 return Err("Retired hook changed during migration".into());
             }
-            common::atomic_owned_write(&shell, RETIRED_CODEX_SHIM)?;
+            write(&shell, RETIRED_CODEX_SHIM)?;
         }
     }
     if updated != original_value {
-        common::atomic_owned_write(
+        write(
             &config,
             &serde_json::to_vec_pretty(&updated).map_err(|_| "Invalid hook configuration")?,
         )?;
@@ -1126,6 +1139,42 @@ mod tests {
         drop(held);
         repair_retired(&f.root, &f.home).unwrap();
         assert_eq!(std::fs::read(f.shell()).unwrap(), RETIRED_CODEX_SHIM);
+    }
+    /// Whether the receipt lock on `root` is free: another open file
+    /// description of the directory can take it at once (and releases it).
+    fn receipt_lock_free(root: &Path) -> bool {
+        use std::os::fd::AsRawFd;
+        let directory = common::open_directory(root).unwrap();
+        let free =
+            unsafe { libc::flock(directory.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0;
+        if free {
+            unsafe {
+                libc::flock(directory.as_raw_fd(), libc::LOCK_UN);
+            }
+        }
+        free
+    }
+    /// D5: each Pi receipt writer holds the receipt lock across its whole
+    /// read-modify-write, so every file it writes is written under the lock.
+    #[test]
+    fn pi_receipt_writers_hold_the_lock_while_writing() {
+        let f = NativeFixture::new();
+        f.backup();
+        let mut writes = Vec::new();
+        let mut probe = |path: &Path, bytes: &[u8]| {
+            writes.push((path.to_owned(), receipt_lock_free(&f.root)));
+            common::atomic_owned_write(path, bytes)
+        };
+        repair_retired_with(&f.root, &f.home, &mut probe).unwrap();
+        install_with(&f.root, &f.home, false, &mut probe).unwrap();
+        let receipt = f.root.join(".hooks-receipt.json");
+        assert_eq!(
+            writes.iter().filter(|(path, _)| *path == receipt).count(),
+            2,
+            "{writes:?}"
+        );
+        assert!(writes.iter().all(|(_, free)| !free), "{writes:?}");
+        assert!(receipt_lock_free(&f.root), "released afterwards");
     }
     #[test]
     fn repair_exclusive_creation_preserves_a_file_appearing_after_preflight() {
