@@ -280,12 +280,26 @@ test('sequences increase strictly, also for equal clock readings', async () => {
 });
 
 test('a clock that is not epoch milliseconds starts nothing', async () => {
-  for (const now of [1_700_000_000, 0, -1, '1700000000000', Number.NaN, Infinity, undefined, null]) {
+  for (const now of [1_700_000_000, 0, -1, '1700000000000', Number.NaN, Infinity, undefined, null, 1.7e15, 1.7e18]) {
     const { hooks } = await load();
     const { $, state } = host();
     state.now = now;
     await fire(hooks, 'session.measure', $, measure(200000));
     assert.equal(state.runs.length, 0, String(now));
+  }
+});
+
+test('a reading past the safe sequence range leaves the last sequence unchanged', async () => {
+  for (const bad of [1.7e15, 1.7e18]) {
+    const { hooks } = await load();
+    const { $, state } = host();
+    state.now = bad;
+    await fire(hooks, 'session.measure', $, measure(200000));
+    assert.equal(state.runs.length, 0, String(bad));
+    state.now = start;
+    await fire(hooks, 'session.measure', $, measure(200000));
+    assert.equal(state.runs.length, 1, String(bad));
+    assert.equal(state.runs[0].argv[4], String(start * 1000), String(bad));
   }
 });
 

@@ -35,6 +35,8 @@ async function sample($, source, e) {
   // Skipped, not held: the next turn carries the latest window.
   if (inflight !== null && now - inflight.startedAt <= staleMs) return;
   const seq = Math.max(lastSeq + 1, Math.floor(now) * 1000);
+  // A microsecond or nanosecond clock overflows the sequence: skip, keep lastSeq.
+  if (!Number.isSafeInteger(seq)) return;
   lastSeq = seq;
   const run = $.process.run(
     [nativeRuntime, '--report', 'claude', pane, String(seq), id, String(size)],

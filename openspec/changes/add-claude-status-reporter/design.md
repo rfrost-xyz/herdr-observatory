@@ -161,7 +161,8 @@ hook has returned, and every promise the mod creates ends in a terminal
    Next, `const now = await $.clock.now();` If
    `!Number.isSafeInteger(Math.floor(now))` or `now < 1e12`, return: a clock
    that is not epoch milliseconds fails closed instead of sending a small
-   `seq` that guard 6 would refuse for good.
+   `seq` that guard 6 would refuse for good. A reading that is too large (a
+   microsecond or nanosecond clock) is caught in step 5.
    If a run is in flight (`inflight !== null`) and
    `now - inflight.startedAt <= 3000`, return: the sample is skipped, not
    held. The next `session.measure`, which is never deduplicated, carries the
@@ -170,7 +171,11 @@ hook has returned, and every promise the mod creates ends in a terminal
    settles an un-awaited promise (open question 3).
 5. `seq = Math.max(lastSeq + 1, Math.floor(now) * 1000)`, kept in module scope,
    so sequences are strictly increasing epoch microseconds, also across a mod
-   reload (which resets `lastSeq`).
+   reload (which resets `lastSeq`). If `!Number.isSafeInteger(seq)`, return
+   before `lastSeq` is assigned: a clock reading above about `9.007e12`
+   (microseconds or nanoseconds) or a `lastSeq + 1` overflow starts no run,
+   would only be refused by the D3 bound, and must not leave an out-of-range
+   `lastSeq` that every later valid reading would inherit.
 6. Call `$.process.run([nativeRuntime, '--report', 'claude', pane, String(seq), id, String(window)], {timeoutMs: 2000})`
    synchronously inside `sample`, without awaiting it and never from a
    deferred callback. Only after the call returns a promise:
@@ -793,7 +798,11 @@ All cases are new behaviour (the file does not exist on `80f6295`):
   so the next event starts one; a rejection clears the in-flight state);
 - `session.end` clears `confirmed`, so the next `session.start` reports again;
 - strictly increasing `seq`, including equal clock readings;
-- `$.clock.now()` below `1e12` (and a non-number): no run;
+- `$.clock.now()` below `1e12` (and a non-number), or a microsecond or
+  nanosecond reading (`1.7e15`, `1.7e18`) whose `seq` is not a safe integer:
+  no run; after such a too-large reading the next valid reading `start` sends
+  `argv[4] === String(start * 1000)`, so the bad reading left `lastSeq`
+  unchanged;
 - `classic.SessionStart` with a mismatched `session_id` skipped;
 - every hook resolves to the value of `next(e)` and never throws, even when
   every `$` call throws or rejects;
@@ -949,7 +958,8 @@ for that.
    failing.
 7. **`$.clock.now()` versus `Date.now()`.** Answered by the published types
    [types]: `clock.now` "resolves milliseconds since the epoch". The mod still
-   fails closed below `1e12` (D2 step 4) in case a build differs, and task 5.3
+   fails closed below `1e12` (D2 step 4) and when `seq` is not a safe integer
+   (D2 step 5) in case a build differs, and task 5.3
    checks the build's own types copy and a report after `/reload-plugins`.
 8. **Untrusted workspaces.** The change brief lists an untrusted workspace as a
    condition that turns mods off. The loading page says only that
@@ -989,8 +999,8 @@ Plan review findings that were declined or narrowed, with the reason:
   write (D5). The dual-hash order does.
 - **Runtime-assigned `seq` (`max(now_us, obs_seq + 1)` under `hook.lock`).**
   Declined. The published types state that `clock.now` is epoch milliseconds,
-  the mod fails closed below `1e12`, and keeping `seq` in argv keeps the Pi
-  wire shape and guard 6 unchanged.
+  the mod fails closed below `1e12` and above the safe `seq` range, and
+  keeping `seq` in argv keeps the Pi wire shape and guard 6 unchanged.
 - **Baking `--state` (or home) into `register.js`.** Declined. The installer's
   environment is no more authoritative than Claude Code's, a baked path would
   go stale when the user changes `XDG_STATE_HOME`, and it would add a second
