@@ -556,8 +556,9 @@ stage`), the tree that holds every source change in tasks 1.1 to 4.2.
 ## Review round 1 and remediation
 
 Four review lenses. Lens 2 was clean; lens 4 raised one nit. Three blocking
-and two non-blocking findings came from lenses 1 and 3. Each fix below has a
-test that was run against the unfixed code first and failed there.
+and two non-blocking findings came from lenses 1 and 3. Each code or test fix
+below has a test that was run against the unfixed code first and failed
+there; lens 3 #3 changed documents only.
 
 - **Sequence above the safe integer range (lens 1, blocking).** The clock
   guard had no upper bound, so a microsecond or nanosecond `clock.now()`
@@ -575,12 +576,11 @@ test that was run against the unfixed code first and failed there.
   `.git` symlink in an ancestor up to the home now counts as a marker,
   whether it resolves or not, and the check never follows it (`1276886`).
   Fixtures: `~/.git` linked to a directory holding `HEAD`, `~/.claude/.git`
-  linked to a `gitdir:` file, and a dangling `~/.claude/.git` link. The
-  refusal test failed before the fix at the first symlink case. The other
-  two cases take the same unfixed branch (a symlink is neither a directory
-  nor a file under `symlink_metadata`), so they were not run separately
-  against the unfixed code. Design D5 and D7, the spec requirement and task
-  3.4 name the rule.
+  linked to a `gitdir:` file, and a dangling `~/.claude/.git` link. Each
+  case was run against the unfixed `git_managed` on its own (earlier cases
+  removed in a scratch copy, then the files restored): each install
+  succeeded and the refusal test panicked naming that case. Design D5 and
+  D7, the spec requirement and task 3.4 name the rule.
 - **Snapshot helpers blind to directories (lens 3 #2, blocking).** `tree()`
   in `hooks_install.rs` and `file_tree()` in `tests/native_process.rs` now
   record every entry including directories and the root itself: path, kind,
@@ -602,7 +602,8 @@ test that was run against the unfixed code first and failed there.
   `a_skills_directory_recreated_after_install_is_removed`: `skills/` exists
   at install, is deleted, a second install recreates and records it last,
   and uninstall must remove it. It failed before the fix ("the recorded
-  skills directory is removed").
+  skills directory is removed"). `--uninstall-hooks` removes the mod through
+  the same `claude_mod::remove`, so it gets the same order.
 - **Shell harness coverage (lens 4, nit).** `tests/shell/fake-runtime.mjs`
   adds `claude-c` (context 48,000, no window, no percentage), and `shell.qml`
   checks that it projects `contextPercent === null` with 90,000 input tokens
@@ -619,7 +620,9 @@ write (D5 steps 2 and 5, and Pi's existing receipt writes) can leave
 `.anton-write-<pid>-<bits>` in the plugin root. The installer neither deletes
 nor refuses it, but `uninstall.sh` refuses any unknown plugin-root file
 ("Unknown plugin file remains"), so plugin removal stops until the file is
-deleted by hand. The exposure predates this change (Pi receipt writes) and is
+deleted by hand. The same holds on a peer, where `record_peer` and
+`remove_peer` refuse unknown peer-root files after a Pi receipt write; the
+Claude Code mod is never installed on a peer. The exposure predates this change (Pi receipt writes) and is
 shared with Pi; this change adds receipt writes on a refresh. A fix would let
 `uninstall.sh` delete regular, owned files matching
 `^\.anton-write-[0-9]+-[0-9]+$` only while holding `flock -x` on the owner

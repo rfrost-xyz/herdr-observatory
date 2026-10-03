@@ -557,8 +557,8 @@ its new hash, each of which the receipt accepts. A crash during a file write
 in step 4 can also leave one `.anton-write-*` temporary file in a recorded mod
 directory, which install and removal delete as debris. A crash during a
 receipt write in step 2 or 5 can leave one in the plugin root instead; that
-file is outside this guarantee: the installer neither deletes it nor refuses
-because of it, but `uninstall.sh` refuses any unknown plugin-root file, so
+file is outside this guarantee: the mod installer neither deletes it nor
+refuses because of it, but `uninstall.sh` refuses any unknown plugin-root file, so
 plugin removal then stops until it is deleted by hand. Pi's receipt writes
 already had this exposure; it is recorded as a follow-up in evidence.md.
 A retry restarts from step 1:
@@ -837,7 +837,7 @@ It runs at the live check (task 5.3), with the user's consent, not in
 automated tests (it needs the Claude binary).
 
 **State.js and the shell harness** (regression guards, since `State.js` does
-not change and both cases already hold on `80f6295`): a Claude thread with
+not change and all three cases already hold on `80f6295`): a Claude thread with
 `window` and `context_percent` projects the supplied percentage (the shell
 harness fixture's value differs from the plain ratio, so a recomputation would
 fail it); one with only `window` (replay context unknown) projects none; one
