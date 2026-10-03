@@ -614,6 +614,17 @@ pub fn uninstall(root: &Path, home: &Path) -> Result<()> {
     uninstall_in(root, home, &ClaudeEnv::process())
 }
 fn uninstall_in(root: &Path, home: &Path, env: &ClaudeEnv) -> Result<()> {
+    uninstall_with(root, home, env, &|_| {})
+}
+/// `uninstall_in`, with `deleting` shown each path before its deletion is
+/// tried and each mod directory before its sync; fixtures use it to probe
+/// the receipt lock.
+fn uninstall_with(
+    root: &Path,
+    home: &Path,
+    env: &ClaudeEnv,
+    deleting: &dyn Fn(&Path),
+) -> Result<()> {
     let _receipt = receipt_lock(root, RECEIPT_WAIT)?;
     let receipt_path = root.join(".hooks-receipt.json");
     let Some(bytes) = regular(&receipt_path)? else {
@@ -644,14 +655,21 @@ fn uninstall_in(root: &Path, home: &Path, env: &ClaudeEnv) -> Result<()> {
     let claude = claude_mod::removal(home, &receipt, env)?;
     // Every integration has been preflighted before deleting any one.
     if let Some(recorded) = &claude {
-        claude_mod::remove(home, recorded)?;
+        let mut sync = |path: &Path| {
+            deleting(path);
+            claude_mod::sync_directory(path)
+        };
+        claude_mod::remove_with(home, recorded, &mut sync, deleting)?;
     }
     if shell_present {
+        deleting(&shell);
         std::fs::remove_file(&shell).map_err(|_| "Retired hook removal failed")?;
     }
     if extension_bytes.is_some() {
+        deleting(&extension);
         std::fs::remove_file(&extension).map_err(|_| "Pi removal failed")?;
     }
+    deleting(&receipt_path);
     std::fs::remove_file(receipt_path).map_err(|_| "Receipt removal failed")?;
     if compatibility_owned {
         // remove_dir only removes empty directories, preserving unrelated files.
@@ -1142,7 +1160,7 @@ mod tests {
     }
     /// Whether the receipt lock on `root` is free: another open file
     /// description of the directory can take it at once (and releases it).
-    fn receipt_lock_free(root: &Path) -> bool {
+    pub(super) fn receipt_lock_free(root: &Path) -> bool {
         use std::os::fd::AsRawFd;
         let directory = common::open_directory(root).unwrap();
         let free =

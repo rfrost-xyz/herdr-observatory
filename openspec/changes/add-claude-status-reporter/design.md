@@ -897,12 +897,21 @@ New behaviour (must fail on `80f6295`):
 - Receipt lock: with the plugin root directory locked by the fixture, each of
   `--install-hooks`, `--install-claude-mod`, `--uninstall-claude-mod` and
   `--uninstall-hooks` refuses as busy within its bound and leaves every file
-  and the receipt unchanged. A probe also shows each writer holds the lock
-  for its whole read-modify-write: a fake `chezmoi`, which the mod install
-  and both removals run while checking, logs whether `flock -n` can take the
-  plugin root, and a recording writer passed to the Pi install and repair
-  tries the lock before each file write; every probe finds it held, and each
-  fails with that writer's guard dropped (review round 4).
+  and the receipt unchanged. Probes also show each writer still holds the
+  lock at each step that touches the receipt or an integration file. A
+  recording writer passed to the Pi install and repair, to the mod install
+  and to `--uninstall-claude-mod` tries `flock` on a fresh descriptor of the
+  plugin root before every receipt and file write. For `--uninstall-hooks`,
+  a deletion seam (`uninstall_with`, threaded through `remove_with`) runs the
+  same probe before each recorded mod file and directory removal, before
+  each mod directory sync and before the shim, Pi extension and receipt
+  removals; installer debris unlinks are not probed one by one. A fake
+  `chezmoi` logs whether `flock -n` can take the plugin root during the
+  managed-configuration checks of the mod install and both removals. Every
+  probe finds the lock held. Each probe fails with that writer's guard
+  dropped (review round 4), and the write and deletion probe also fails with
+  the guard released right after the managed-configuration check (review
+  round 5).
 - Refresh then uninstall: a refresh keeps the prior `directories` list, and a
   later `--uninstall-claude-mod` leaves no `anton-observatory/` (and no
   `skills/` when the installer created it). This includes a `skills/` that

@@ -2,7 +2,7 @@
 //! Every check gets an explicit environment: `PATH` holds only a fixture
 //! directory, so the host's `chezmoi` and `mise` are never consulted.
 use super::claude_mod::{self, ClaudeEnv};
-use super::tests::{NativeFixture, Tree, hold_receipt_lock, tree};
+use super::tests::{NativeFixture, Tree, hold_receipt_lock, receipt_lock_free, tree};
 use super::*;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::time::Instant;
@@ -41,6 +41,15 @@ impl Mod {
     }
     fn entry(&self) -> Value {
         self.f.receipt()["claude_mod"].clone()
+    }
+    /// The recorded mod directories.
+    fn entry_directories(&self) -> Vec<PathBuf> {
+        self.entry()["directories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| PathBuf::from(v.as_str().unwrap()))
+            .collect()
     }
     /// Every file and directory under the home (see `tree`).
     fn snapshot(&self) -> Tree {
@@ -911,10 +920,11 @@ fn mod_receipt_writers_refuse_as_busy_while_the_lock_is_held() {
     assert!(m.install().is_err(), "the changed file is still refused");
 }
 
-/// D5: each mod receipt writer holds the receipt lock across its whole
-/// read-modify-write. A fake `chezmoi`, which the managed-configuration
-/// check runs on every target during install and on every present file
-/// during removal, logs whether `flock -n` could take the plugin root.
+/// D5: each mod receipt writer holds the receipt lock during its
+/// managed-configuration checks. A fake `chezmoi`, which the check runs on
+/// every target during install and on every present file during removal,
+/// logs whether `flock -n` could take the plugin root. The writes and
+/// deletions are probed by the next test.
 #[test]
 fn mod_receipt_writers_hold_the_lock_while_checking() {
     let m = Mod::new();
@@ -947,6 +957,93 @@ fn mod_receipt_writers_hold_the_lock_while_checking() {
     m.uninstall_all().unwrap();
     checked("uninstall_in");
     assert!(!m.root().exists());
+}
+
+/// Probes the receipt lock on `root` for `path`, as a concurrent writer
+/// would, and records whether it was free.
+fn lock_probe<'a>(
+    root: &'a Path,
+    probes: &'a std::cell::RefCell<Vec<(PathBuf, bool)>>,
+) -> impl Fn(&Path) + 'a {
+    move |path| {
+        let free = receipt_lock_free(root);
+        probes.borrow_mut().push((path.to_owned(), free));
+    }
+}
+/// The probes recorded so far, each asserted to have found the lock held.
+fn held(what: &str, probes: &std::cell::RefCell<Vec<(PathBuf, bool)>>) -> Vec<PathBuf> {
+    let probes = std::mem::take(&mut *probes.borrow_mut());
+    assert!(probes.iter().all(|(_, free)| !free), "{what}: {probes:?}");
+    probes.into_iter().map(|(path, _)| path).collect()
+}
+
+/// D5, review round 5: each mod receipt writer holds the receipt lock until
+/// its last write or deletion. A recording writer passed to `install_mod`
+/// and `uninstall_mod` tries `flock` on a fresh descriptor of the plugin
+/// root before every receipt and mod file write; `uninstall_with` shows the
+/// same probe each recorded mod file and directory before its removal, each
+/// mod directory before its sync, and the shim, the Pi extension and the
+/// receipt before each is removed. Installer debris unlinks are not probed
+/// one by one; they sit between probed deletions.
+#[test]
+fn mod_receipt_writers_hold_the_lock_while_writing_and_deleting() {
+    let m = Mod::new();
+    let receipt = m.f.root.join(".hooks-receipt.json");
+    let probes = std::cell::RefCell::new(Vec::new());
+    let probe = lock_probe(&m.f.root, &probes);
+    let mut writer = |path: &Path, bytes: &[u8]| {
+        probe(path);
+        common::atomic_owned_write(path, bytes)
+    };
+    // In write order, the manifest last.
+    let mod_files: Vec<PathBuf> = ["hooks/hooks.json", "hooks/register.js"]
+        .iter()
+        .chain(&[".claude-plugin/plugin.json"])
+        .map(|n| m.file(n))
+        .collect();
+    m.install_with(&claude_mod::payload, &mut writer).unwrap();
+    let written = held("fresh install", &probes);
+    assert_eq!(written[0], receipt, "{written:?}");
+    assert_eq!(written[1..], mod_files[..], "{written:?}");
+    // A refresh that changes `register.js`: the dual-hash order writes the
+    // receipt, the file, then the receipt again.
+    let changed = |runtime: &Path| -> Result<Files> {
+        let mut files = claude_mod::payload(runtime)?;
+        files[1].1.extend_from_slice(b"\n// refreshed\n");
+        Ok(files)
+    };
+    m.install_with(&changed, &mut writer).unwrap();
+    let written = held("refresh", &probes);
+    assert_eq!(
+        written,
+        [
+            receipt.clone(),
+            m.file("hooks/register.js"),
+            receipt.clone()
+        ]
+    );
+    claude_mod::uninstall_mod(&m.f.root, &m.f.home, &m.env, &mut writer).unwrap();
+    assert_eq!(held("uninstall_mod", &probes), [receipt]);
+    assert!(!m.root().exists());
+    assert!(receipt_lock_free(&m.f.root), "released afterwards");
+
+    let m = everything();
+    let receipt = m.f.root.join(".hooks-receipt.json");
+    let directories = m.entry_directories();
+    let probe = lock_probe(&m.f.root, &probes);
+    uninstall_with(&m.f.root, &m.f.home, &m.env, &probe).unwrap();
+    let deleted = held("uninstall_in", &probes);
+    for path in CLAUDE_MOD_FILES
+        .iter()
+        .map(|n| m.file(n))
+        .chain(directories)
+        .chain([m.f.shell(), paths(&m.f.home).1])
+    {
+        assert!(deleted.contains(&path), "{path:?} in {deleted:?}");
+    }
+    assert_eq!(deleted.last(), Some(&receipt), "{deleted:?}");
+    assert!(!receipt.exists() && !m.root().exists());
+    assert!(receipt_lock_free(&m.f.root), "released afterwards");
 }
 
 /// Pi, the compatibility shim and the mod, all installed and recorded.
@@ -1084,10 +1181,15 @@ fn removal_syncs_the_surviving_directories() {
             .unwrap()
             .unwrap();
         let mut synced = Vec::new();
-        claude_mod::remove_with(&m.f.home, &recorded, &mut |path| {
-            synced.push(path.to_owned());
-            Ok(())
-        })
+        claude_mod::remove_with(
+            &m.f.home,
+            &recorded,
+            &mut |path| {
+                synced.push(path.to_owned());
+                Ok(())
+            },
+            &|_| {},
+        )
         .unwrap();
         synced.sort();
         let expected = if extra {

@@ -281,7 +281,7 @@ fn real_directory(path: &Path) -> Result<bool> {
         Err(_) => Err("Cannot inspect Claude Code mod directory".into()),
     }
 }
-fn sync_directory(path: &Path) -> Result<()> {
+pub(super) fn sync_directory(path: &Path) -> Result<()> {
     common::open_directory(path)?
         .sync_all()
         .map_err(|_| "Cannot sync hook directory".into())
@@ -612,18 +612,22 @@ pub(super) fn removal(home: &Path, receipt: &Value, env: &ClaudeEnv) -> Result<O
 /// Any other failure to remove a recorded directory is an error, returned
 /// before the caller changes the receipt.
 pub(super) fn remove(home: &Path, recorded: &Recorded) -> Result<()> {
-    remove_with(home, recorded, &mut |path| sync_directory(path))
+    remove_with(home, recorded, &mut |path| sync_directory(path), &|_| {})
 }
 /// `remove`, with each directory sync passed to `sync`. Every recorded
 /// directory that survives, and the parent of each one removed, is synced
 /// before the caller rewrites or removes the receipt, so the receipt change
 /// cannot reach disk ahead of the unlinks (the install order's reason).
+/// `deleting` sees each recorded file and directory before its removal is
+/// tried; fixtures use it to probe the receipt lock.
 pub(super) fn remove_with(
     home: &Path,
     recorded: &Recorded,
     sync: &mut dyn FnMut(&Path) -> Result<()>,
+    deleting: &dyn Fn(&Path),
 ) -> Result<()> {
     for path in recorded.files.keys() {
+        deleting(path);
         match std::fs::remove_file(path) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -636,6 +640,7 @@ pub(super) fn remove_with(
     let mut directories: Vec<&PathBuf> = recorded.directories.iter().collect();
     directories.sort_by_key(|directory| std::cmp::Reverse(directory.components().count()));
     for directory in &directories {
+        deleting(directory);
         match std::fs::remove_dir(directory) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
