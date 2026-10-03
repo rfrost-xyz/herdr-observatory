@@ -1075,6 +1075,57 @@ tests/test_*.cjs tests/test_*.mjs`: 114 passed. `tests/run-shell-harness.sh`:
 afterwards. No write under the real `~/.claude`, no `claude` CLI run and no
 authentication file read; every fixture is synthetic.
 
+## Review round 6 and remediation
+
+Review of `63c30ca`: no blocking or non-blocking findings across four lenses;
+three nits, all fixed. Each fix has a test that fails with the fix reverted
+(checked by mutating the source in place, then restoring it and confirming
+the diff).
+
+- **`session.end` state untested (mod lens, nit).** Two mutants of the
+  `session.end` hook survived: `confirmed = null; inflight = null;` and
+  `confirmed = null; lastSeq = 0;`. `tests/test_claude_mod.mjs` now fires
+  session B's `classic.SessionStart` within 3 s of `session.end` while A's
+  run is still in flight and asserts no second run starts, then settles A and
+  continues as before. A new test, "session.end keeps the last sequence
+  sent", measures, exits 0, ends the session and measures again at the same
+  clock reading, asserting the second sequence is `start * 1000 + 1`. The
+  first mutant fails the extended test and the second fails the new one;
+  both pass on HEAD.
+- **Kept `skills/` not reported (installer lens, nit).** `remove_with` now
+  prints `Kept <directory>: ...` on stderr for every recorded directory kept
+  by `ENOTEMPTY`, not only those under the mod root, so the README and D5
+  step 2 hold. New binary test
+  `claude_mod_removal_reports_a_kept_skills_directory`: with
+  `~/.claude/skills/other/SKILL.md` added after install, both
+  `--uninstall-claude-mod` and `--uninstall-hooks` succeed, keep the other
+  skill, remove the mod and name `~/.claude/skills` on stderr. With the
+  `starts_with(mod_root)` condition restored it fails. README and D5 now
+  name the kept `skills/` case.
+- **Retry receipt write before an unsynced rename (installer lens, nit).**
+  `install_mod` now delegates to `install_mod_with(.., sync)`, which takes
+  the directory syncs as a seam. Before the step 2 receipt write, whenever
+  step 1 hashed files on disk, it syncs each existing mod directory
+  (`.claude-plugin/`, `hooks/`, then the mod root), whether or not the entry
+  is dual. New test `a_retry_syncs_the_mod_directories_before_the_receipt_write`
+  records writes and syncs for every interrupted state with the same build
+  and with build C, and asserts all three directories are synced before the
+  step 2 receipt write (state (a) with the same build has no step 2 write,
+  since its receipt already matches). Mutations: disabling the new syncs
+  fails it; limiting them to `dual` fails it on state (c) with the same
+  build, the reviewer's scenario. D5 steps 2 and 5 now describe each sync,
+  and D7 and task 3.4 list the test. The power-loss reorder itself is not
+  reproducible in a test.
+
+**Gates (HEAD after the fixes).** `cargo fmt --check` clean; `cargo clippy
+--all-targets --locked -- -D warnings` clean (local clippy 0.1.96); `cargo test --locked
+--offline`: 271 + 22 + 6 + 48 passed. `node --test tests/test_*.cjs
+tests/test_*.mjs`: 115 passed. `tests/run-shell-harness.sh`: 0 failures, 6
+runtime invocations, no `--open-thread`. `OPENSPEC_TELEMETRY=0 openspec
+validate --all --strict`: 4 passed. Private `TMPDIR` under `/tmp/c3n-*`,
+removed afterwards. No write under the real `~/.claude`, no `claude` CLI run;
+every fixture is synthetic.
+
 ## Live installed check
 
 _Pending (task 5.3)._
