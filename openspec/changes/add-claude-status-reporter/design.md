@@ -606,10 +606,15 @@ and removal would refuse.
    absent, or a regular, user-owned file with one of its accepted hashes, read
    through the same `regular()` walk the install path uses, so a symlink in
    any component from the home directory (for example a symlinked
-   `anton-observatory/` or `hooks/`) refuses the removal. A modified or replaced recorded file refuses the whole removal,
+   `~/.claude`, `anton-observatory/` or `hooks/`) refuses the removal. That
+   refusal names the outermost symlinked component:
+   `Refusing Claude Code mod removal through symlink <link>; replace it with the real directory or file, then retry`,
+   because removing a recorded path below the link could never satisfy the
+   check. A modified or replaced recorded file refuses the whole removal,
    keeps every file and the receipt, and exits non-zero with
    `Claude Code mod file changed: <path>; restore or remove it, then retry`
-   (open question 6, confirmed). This matches the Pi extension rule and avoids
+   (open question 6, confirmed); that message is reserved for hash and type
+   mismatches. This matches the Pi extension rule and avoids
    an orphan: `uninstall.sh` deletes the receipt once `--uninstall-hooks`
    returns, after which no build could prove ownership.
    Removal also runs the chezmoi check (`managed`) on each present recorded
@@ -799,7 +804,9 @@ New behaviour (must fail on `80f6295`):
   answers only for the home directory.
 - Removal: with a modified file it refuses before any Pi, shim or mod deletion,
   keeps everything (including any debris) and names the path; a symlinked
-  `anton-observatory/` or `hooks/` refuses the removal the same way; with an extra unrecorded file it removes
+  `~/.claude`, `anton-observatory/`, `hooks/` or recorded file refuses the
+  removal the same way, names the link, and succeeds once the link is
+  replaced by the real entry; with an extra unrecorded file it removes
   the recorded files and keeps the directory; a mod directory listed by a fake
   `mise` is still removed (removal runs chezmoi only); a chezmoi-managed one is
   refused; `--uninstall-hooks` removes Pi, the shim and the mod together after

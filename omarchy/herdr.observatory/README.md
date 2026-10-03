@@ -71,7 +71,9 @@ plugin installed and the dial unknown. To remove only the mod:
 ```
 
 Removal refuses, keeping every file and the receipt, when a recorded file was
-changed; restore or delete that file and retry. A directory holding a file Anton
+changed; restore or delete that file and retry. It also refuses when a
+directory on the way, such as `~/.claude`, has become a symlink, and names that
+link; replace the link with the real directory and retry. A directory holding a file Anton
 did not write is kept and reported. The complete uninstall below also removes
 the mod.
 
