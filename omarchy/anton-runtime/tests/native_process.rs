@@ -2694,7 +2694,8 @@ fn claude_mod_installed_by_the_cli_is_accepted_by_the_reporter() {
 }
 
 /// D5: `mise -C <home> dotfiles paths --json` runs in the home directory with
-/// a null stdin, whatever the installer's own working directory holds.
+/// a null stdin, whatever the installer's own working directory holds and
+/// whatever stdin the installer itself has (here an open pipe).
 #[test]
 fn claude_mod_install_runs_mise_from_the_home_with_null_stdin() {
     let f = Reporter::new();
@@ -2711,7 +2712,21 @@ fn claude_mod_install_runs_mise_from_the_home_with_null_stdin() {
         .as_bytes(),
         0o700,
     );
-    f.install_step("--install-claude-mod");
+    // The installer's own stdin is a pipe held open here, so only the
+    // explicit null stdin of the mise run can make the fake print `null`.
+    let mut installer = f
+        .installer("--install-claude-mod")
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let held = installer.stdin.take();
+    let output = installer.wait_with_output().unwrap();
+    drop(held);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let home = f.home.to_str().unwrap();
     assert_eq!(
         fs::read_to_string(&log).unwrap(),
