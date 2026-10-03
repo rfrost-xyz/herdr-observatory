@@ -500,7 +500,58 @@ in this stage, so `cargo fmt --check` and clippy (`--all-targets --locked -- -D 
 
 ## After
 
-_Pending._
+Task 5.1, on `3467190` (`docs(openspec): record the claude contracts and docs
+stage`), the tree that holds every source change in tasks 1.1 to 4.2.
+
+- Gates, all with `TMPDIR` a private `mktemp -d /tmp/c3-XXXX` directory
+  (removed afterwards) and `CLAUDE_CONFIG_DIR` unset:
+  - `cargo fmt --check`: clean. `cargo clippy --locked --offline
+    --all-targets -- -D warnings`: clean on local clippy 0.1.96 (rustc
+    1.96.0). CI's clippy 1.98 is not installed here and was not run.
+  - `cargo test --locked --offline`: 254 (lib) + 21 (bin) + 6
+    (`native_navigation`) + 42 (`native_process`) passed, 0 failed.
+  - `node --test tests/test_*.cjs tests/test_*.mjs` (State, Pi hooks, Claude
+    mod, distribution): 109 passed, 0 failed.
+  - `tests/run-qml.sh`: 95 passed, 0 failed. `tests/run-qmllint.sh`: no
+    warnings outside `Panel.qml`. `tests/run-shell-harness.sh`: failures 0,
+    `--open-thread` 0.
+  - `omarchy-plugin-validate omarchy/herdr.observatory`: exit 0.
+  - `OPENSPEC_TELEMETRY=0 openspec validate --all --strict`: 4 passed,
+    0 failed (INFO notes on long requirement text only).
+- Binary: a fresh release build of `3467190` in a new, empty target directory
+  (`cargo build --release --locked --offline`), sha256
+  `5031eec063a547236783e9820026a00f911b9b67a325ef0ebb37aa0e9cc98ecf`.
+- Command: the baseline's, `node tests/measure_anton_popover.mjs --binary
+  <3467190 build> --seconds 15 --repeat 3`, other options default.
+- Runtime (medians of 3 windows), baseline then after:
+
+  | Metric | Baseline (`80f6295`) | After (`3467190`) |
+  |---|---|---|
+  | CPU s | 0.020 (0.020, 0.021, 0.019) | 0.017 (0.017, 0.020, 0.017) |
+  | Peak RSS KiB | 4572 (4556, 4572, 7836) | 4468 (4468, 4704, 4448) |
+  | Mean snapshot bytes | 24493.2 | 24491.5 |
+  | Snapshots / local samples / `colors.toml` opens | 6 / 8 / 0 | 6 / 8 / 0 |
+  | Update median ms (32 / 128 threads) | 0.0519 / 0.1239 | 0.0535 / 0.1215 |
+
+  All differences are within run-to-run noise. Fields per thread (16/44),
+  host (6/7) and allowance (10/10) are unchanged. Allowance wire bytes per
+  row read 337 (baseline 336); earlier runs in this change also read 336,
+  336.5 and 337 on unchanged code, so this is timing-dependent noise.
+- Claude probe (last snapshot, local/peer; one 30 s run per variant):
+
+  | Variant | CPU s | Peak RSS KiB | Native | Window | Percentage |
+  |---|---|---|---|---|---|
+  | standard | 0.045 (was 0.045) | 5236 (was 5136) | 4/4 | 0/0 | 0/0 |
+  | large | 0.241 (was 0.223) | 14720 (was 16024) | 4/4 | 0/0 | 0/0 |
+  | window | 0.048 (was 0.049) | 8424 (was 5104) | 4/4 | 2/0 (was 2/2) | 2/0 (was 0/0) |
+
+  Window variant: mismatched pane seen 1/1, with window 0/0, with percentage
+  0/0. This is the expected result: bound local reports now give a
+  percentage (2), peers carry neither window nor percentage (0/0), and the
+  mismatched report still gives nothing. Single-run CPU and RSS differences
+  between variants are noise-level, as in the baseline; the window
+  variant's RSS peak is one 50 ms sample in a single run.
+- Raw output is kept outside the repository because it contains a local path.
 
 ## Live installed check
 
