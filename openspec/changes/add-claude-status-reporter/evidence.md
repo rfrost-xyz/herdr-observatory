@@ -316,6 +316,118 @@ Lane B's installer should write and reuse this definition.
   `telemetry_from_agent` already nulls a zero window, so this only guards
   the division.
 
+### Lane B: mod and installer (tasks 3.1 to 3.5)
+
+Commits (signed, no attribution):
+
+- `1c1b394` feat(hooks): add the claude code context window mod (tasks 3.1
+  and 3.2; `tests/test_claude_mod.mjs` is also added to the CI node step).
+- `8cc0184` feat(runtime): serialise hook receipt writers with a plugin root
+  lock (the D5 lock on the existing Pi writers, including
+  `repair_retired`).
+- `a58bbcc` refactor(runtime): run bounded commands in a directory with null
+  stdin (`common::run_process_in`; `run_process` is unchanged for callers).
+- `b6d0c1c` feat(runtime): install and remove the claude code mod by receipt
+  (task 3.3 and its fixtures, task 3.4).
+- `6fa7545` feat(plugin): install the claude code mod after the hooks (task
+  3.5).
+
+**Gates on `6fa7545`.** `cargo test --locked --offline`: 254 (lib), 21 (bin),
+6 (navigation) and 42 (process) passed. `cargo fmt --check` and `cargo clippy
+--all-targets --locked -- -D warnings` clean on local clippy 0.1.96 (CI's
+1.98 not run here). `node --test` State, Pi hooks, Claude mod and
+distribution: 108 passed. The standalone `a58bbcc` tree also passes clippy and
+its 234 + 21 + 6 + 39 tests. Tests ran with a private `TMPDIR` and
+`CLAUDE_CONFIG_DIR` unset; in-process installer fixtures pass an explicit
+environment (`PATH` holding only a fixture directory), and CLI fixtures use
+`env_clear()` with an absolute temporary `HOME` and that `PATH` only.
+
+**Fail-on-old.**
+
+- `tests/test_claude_mod.mjs` (18 tests) and the two new distribution tests
+  run against a `git archive 80f6295` export: all fail (no payload, no
+  `--install-claude-mod` in `install.sh`). The three existing distribution
+  tests pass there and here (guards).
+- The three new CLI fixtures in `tests/native_process.rs`
+  (`claude_mod_installed_by_the_cli_is_accepted_by_the_reporter`,
+  `claude_mod_install_runs_mise_from_the_home_with_null_stdin`,
+  `hook_receipt_writers_refuse_as_busy_through_the_cli`) run against a
+  `git archive 1aa6d44` export, whose installer code equals `80f6295` apart
+  from lane A's read-only guard-2 helpers (`git diff 80f6295 1aa6d44 --
+  hooks_install.rs` removes no line; `main.rs` adds no installer command):
+  all three fail with `Unknown Anton command`. The busy fixture's lock
+  assertion separately fails on the current tree with every `receipt_lock`
+  call removed (`--install-hooks` exits 0).
+- `pi_receipt_writers_refuse_as_busy_while_the_lock_is_held` fails with the
+  three Pi lock calls removed (`Retired hook path appeared or is
+  unavailable` instead of busy).
+- The in-process mod fixtures call functions absent on `80f6295`, so each
+  rule was disabled on the current tree and the named fixture run: write
+  order with the manifest first, no debris deletion, `prior_sha256` not
+  accepted, prior hash not taken from the bytes on disk, duplicated or
+  recomputed `directories`, mise reading `entries` only, mise failing open,
+  any `.git` counting, no `CLAUDE_CONFIG_DIR` check, no peer refusal, removal
+  using the process `PATH` for chezmoi, `--uninstall-hooks` skipping the mod
+  preflight, no symlink check on recorded directories, unrecorded entries
+  allowed, no idempotence, every file rewritten, the receipt left dual, the
+  placeholder not replaced, and no lock on the mod writers. Each fails its
+  fixture; restored, all pass. Two mutations first survived (the write-order
+  test compared with the constant under test, and the A→B→C test never read
+  the dual receipt); both fixtures were tightened and now fail.
+- `register.js` mutations (token checks in `.then` and `.finally`, no
+  in-flight skip, no stale rule, deduplicating `session.measure`, no
+  `session.end` reset, no `.jsonl` strip, no classic id check, no clock
+  floor, `seq` from the clock only, in-flight set before the run, no
+  terminal `.catch`, an `env` option, the window bound) each fail at least
+  one node test.
+
+**Regression guards (pass on both).** The existing Pi install, uninstall,
+shim, repair and receipt fixtures, unchanged; `pi_extension_bytes_are_unchanged`
+pins `hooks/observatory.ts` to the `80f6295` sha256
+`d9a998b5…f2fb76`; `pi_receipt_writers_keep_the_mod_entry` (`--install-hooks`
+and `--repair-retired-hooks` keep `claude_mod`); the existing distribution
+tests and the pinned `install.sh` and `uninstall.sh` file lists.
+
+**Plan review findings applied in this stage.**
+
+- `repair_retired` takes the receipt lock as a fifth entry point and is in
+  both busy fixtures.
+- The plugin root is fsynced after each receipt write, and the two mod
+  directories before the step 5 rewrite, so the dual-hash order also holds
+  across a host crash for the renames.
+- Removal's chezmoi check takes the passed environment
+  (`claude_mod::chezmoi_managed`), so the chezmoi and mise removal cases run
+  in-process.
+- Write order is checked only through a recording writer, which also sees
+  the receipt writes.
+
+**Deviations and notes.**
+
+- Receipt debris: install and removal delete `.anton-write-*` files only in
+  the recorded mod directories. A crash during a receipt write leaves its
+  temporary file in the plugin root, where `uninstall.sh` refuses it as an
+  unknown file. This is the existing Pi receipt risk, unchanged; D5's "at
+  most one `.anton-write-*` temporary file, which install and removal
+  delete" holds for the mod directories only. `design.md` was not edited.
+- `plugin.json` carries the crate version literally; the distribution test
+  and `fresh_install_records_the_mod_and_an_identical_reinstall_writes_nothing`
+  fail if `Cargo.toml` changes without it.
+- `register.js` checks that `$.clock.now()` returns a number, and that
+  `$.process.run` returned a thenable before marking a run in flight.
+- mise item paths: `~` and `~/…` expand against the passed home, other
+  relative paths are taken as home-relative (the command runs there with
+  `-C <home>`), and `~name` or a `..` component refuses. Relative `PATH`
+  entries are skipped when looking up `chezmoi` and `mise`.
+- `CLAUDE_CONFIG_DIR` set to an empty string refuses.
+- chezmoi is asked about the mod directory and each mod file.
+- `--uninstall-claude-mod` and `--uninstall-hooks` give the same message,
+  naming the path, for a changed, replaced or symlinked recorded file or
+  directory.
+- A kept mod directory (it holds a file Anton did not write) is reported on
+  stderr; the command still succeeds.
+- The README step for existing installations (run `--install-claude-mod`
+  after updating the runtime) belongs to task 4.1 and is not done here.
+
 ## After
 
 _Pending._
