@@ -2,7 +2,7 @@
 use crate::{Result, common};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub const RETIRED_CODEX_SHIM: &[u8] = b"#!/bin/sh\n# herdr-observatory retired Codex hook v1\ncat >/dev/null 2>/dev/null || :\nexit 0\n";
 pub const RETIRED_CODEX_SHA256: &str =
@@ -23,6 +23,45 @@ const EVENTS: &[&str] = &[
     "SubagentStop",
 ];
 const LIMIT: usize = 1_048_576;
+/// How long a receipt writer waits for another before refusing as busy.
+const RECEIPT_WAIT: Duration = Duration::from_secs(3);
+
+/// An exclusive `flock` on the plugin root directory, held around a whole
+/// read-modify-write of `.hooks-receipt.json` (design D5). The directory is
+/// locked instead of a file because `uninstall.sh` refuses unknown files in
+/// the plugin root. Dropping it unlocks explicitly: a child spawned by
+/// another thread can hold the open file description until it calls exec.
+struct ReceiptLock {
+    directory: std::fs::File,
+}
+impl Drop for ReceiptLock {
+    fn drop(&mut self) {
+        use std::os::fd::AsRawFd;
+        unsafe {
+            libc::flock(self.directory.as_raw_fd(), libc::LOCK_UN);
+        }
+    }
+}
+/// Takes the receipt lock once, at a public entry point; helpers never take
+/// it again, because a second descriptor of the same directory conflicts.
+fn receipt_lock(root: &Path, wait: Duration) -> Result<ReceiptLock> {
+    use std::os::fd::AsRawFd;
+    let directory = common::open_directory(root)?;
+    let deadline = Instant::now() + wait;
+    loop {
+        if unsafe { libc::flock(directory.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            return Ok(ReceiptLock { directory });
+        }
+        let error = std::io::Error::last_os_error().raw_os_error();
+        if error != Some(libc::EWOULDBLOCK) && error != Some(libc::EINTR) {
+            return Err("Hook receipt lock unavailable".into());
+        }
+        if Instant::now() >= deadline {
+            return Err("Hook receipt busy; retry".into());
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
 
 fn regular(path: &Path) -> Result<Option<Vec<u8>>> {
     let mut parent = Some(path);
@@ -314,6 +353,7 @@ fn record_and_create(
 }
 pub fn repair_retired(root: &Path, home: &Path) -> Result<()> {
     let _owner = common::owner_guard(&root.join(".herdr-observatory-install"))?;
+    let _receipt = receipt_lock(root, RECEIPT_WAIT)?;
     let runtime = runtime_owned(root)?;
     let (legacy, extension, _) = paths(home);
     let shell = legacy.join("codex.sh");
@@ -351,6 +391,7 @@ pub fn repair_retired(root: &Path, home: &Path) -> Result<()> {
 
 pub fn install(root: &Path, home: &Path, adopt_legacy: bool) -> Result<()> {
     let _owner = common::owner_guard(&root.join(".herdr-observatory-install"))?;
+    let _receipt = receipt_lock(root, RECEIPT_WAIT)?;
     let runtime = runtime_owned(root)?;
     let (legacy, extension, config) = paths(home);
     let receipt_path = root.join(".hooks-receipt.json");
@@ -521,6 +562,7 @@ pub fn install(root: &Path, home: &Path, adopt_legacy: bool) -> Result<()> {
 }
 
 pub fn uninstall(root: &Path, home: &Path) -> Result<()> {
+    let _receipt = receipt_lock(root, RECEIPT_WAIT)?;
     let receipt_path = root.join(".hooks-receipt.json");
     let Some(bytes) = regular(&receipt_path)? else {
         return Ok(());
@@ -961,6 +1003,73 @@ mod tests {
         assert!(!f.shell().exists());
         assert!(!extension.exists());
         assert_eq!(std::fs::read(unrelated).unwrap(), b"unrelated");
+    }
+    /// Every regular file under `dir` with its bytes and inode.
+    pub(super) fn tree(dir: &Path) -> std::collections::BTreeMap<PathBuf, (Vec<u8>, u64)> {
+        use std::os::unix::fs::MetadataExt;
+        let mut files = std::collections::BTreeMap::new();
+        let mut pending = vec![dir.to_owned()];
+        while let Some(path) = pending.pop() {
+            let Ok(info) = std::fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if info.is_dir() {
+                for entry in std::fs::read_dir(&path).unwrap() {
+                    pending.push(entry.unwrap().path());
+                }
+            } else {
+                let bytes = if info.is_file() {
+                    std::fs::read(&path).unwrap()
+                } else {
+                    Vec::new()
+                };
+                files.insert(path, (bytes, info.ino()));
+            }
+        }
+        files
+    }
+    /// Holds the receipt lock on `root` from another open file description,
+    /// as a concurrent writer would, until dropped.
+    pub(super) fn hold_receipt_lock(root: &Path) -> ReceiptLock {
+        use std::os::fd::AsRawFd;
+        let directory = common::open_directory(root).unwrap();
+        assert_eq!(
+            unsafe { libc::flock(directory.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+            0
+        );
+        ReceiptLock { directory }
+    }
+    /// D5: while another writer holds the receipt lock, each Pi receipt
+    /// writer refuses as busy after its bounded wait and writes nothing.
+    #[test]
+    fn pi_receipt_writers_refuse_as_busy_while_the_lock_is_held() {
+        let f = NativeFixture::new();
+        f.backup();
+        let before = tree(&f.home);
+        let held = hold_receipt_lock(&f.root);
+        let started = Instant::now();
+        let results: Vec<Result<()>> = std::thread::scope(|scope| {
+            [
+                scope.spawn(|| install(&f.root, &f.home, false)),
+                scope.spawn(|| uninstall(&f.root, &f.home)),
+                scope.spawn(|| repair_retired(&f.root, &f.home)),
+            ]
+            .into_iter()
+            .map(|writer| writer.join().unwrap())
+            .collect()
+        });
+        let waited = started.elapsed();
+        for result in results {
+            assert_eq!(result, Err("Hook receipt busy; retry".into()));
+        }
+        assert!(
+            waited >= RECEIPT_WAIT && waited < RECEIPT_WAIT * 2,
+            "{waited:?}"
+        );
+        assert_eq!(tree(&f.home), before);
+        drop(held);
+        repair_retired(&f.root, &f.home).unwrap();
+        assert_eq!(std::fs::read(f.shell()).unwrap(), RETIRED_CODEX_SHIM);
     }
     #[test]
     fn repair_exclusive_creation_preserves_a_file_appearing_after_preflight() {
