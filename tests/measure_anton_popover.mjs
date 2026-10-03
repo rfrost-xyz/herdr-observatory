@@ -533,6 +533,17 @@ function allowanceReadingMetrics(State) {
 // synthetic transcripts under the fixture HOME's .claude/projects (local and fake-SSH
 // peer share that HOME; ids differ per host). The panes carry no Herdr metadata
 // tokens, so any technical.telemetry on them can only come from native replay.
+// Added for add-claude-status-reporter, additive only: the separate 'window'
+// variant gives the first half of each host's Claude panes a bound v2 window report
+// (the reporter's 16-key wire, only the window slot filled) and the last pane a
+// report bound to another id. Every variant counts agents with a numeric window and
+// context_percent; the standard, large and old-local fixtures are unchanged.
+const CLAUDE_WINDOW = 200000;
+const claudeWindowTokens = (id, seq) => ({ obs_v: '2', obs_bind: createHash('sha256').update(`claude:id:${id}`).digest('hex'), obs_seq: String(seq),
+  obs_event: 'session', obs_phase: 'ready', obs_tool: null, obs_model: null, obs_result: null, obs_usage_source: null,
+  obs_n0: ',,,', obs_n1: `,${CLAUDE_WINDOW},,`, obs_n2: ',,,', obs_n3: ',', obs_children: null, obs_completion: null, obs_outcomes: null });
+const claudeBound = () => Math.floor(claudeCount / 2);
+const claudeMismatched = i => claudeCount > 1 && i === claudeCount - 1;
 const CLAUDE_METRICS = ['total_input', 'total_output', 'total_cache_read', 'total_cache_write', 'total_uncached_input', 'context', 'compactions', 'subagent_total'];
 const claudeId = (variant, host, i) => `c1a0de00-${variant}${host}00-4000-8000-${(i + 1).toString(16).padStart(12, '0')}`;
 // One synthetic main transcript: header, then turns of a human prompt, a two-line
@@ -575,10 +586,12 @@ function claudeRecords(id, target, start) {
   }
   return { text: lines.join('\n') + '\n', count: n };
 }
-function claudeHerdr(prefix, ids) {
+function claudeHerdr(prefix, ids, reports = false) {
+  const seq = (Date.now() - 60000) * 1000;
+  const tokens = (id, i) => !reports ? {} : i < claudeBound() ? { tokens: claudeWindowTokens(id, seq) } : claudeMismatched(i) ? { tokens: claudeWindowTokens(`${id}-other`, seq) } : {};
   return { protocol: 1, version: 'fixture', workspaces: [{ workspace_id: 'w1', label: 'Synthetic', worktree: { checkout_path: '/synthetic/branch' } }], agents: ids.map((id, i) => ({
     pane_id: `w1:${prefix}${i + 1}`, workspace_id: 'w1', cwd: '/synthetic/branch', agent: 'claude', agent_status: i % 2 ? 'idle' : 'working',
-    agent_session: { agent: 'claude', source: 'herdr:claude', kind: 'id', value: id } })) };
+    agent_session: { agent: 'claude', source: 'herdr:claude', kind: 'id', value: id }, ...tokens(id, i) })) };
 }
 function familyRss(pid) {
   const all = processes(); const ids = new Set([pid]); let changed = true;
@@ -588,9 +601,10 @@ function familyRss(pid) {
 function claudeEmpty(error) {
   const nil = { local: null, peer: null };
   return { error, transcript_bytes: null, claude_agents: nil, claude_agents_with_native_telemetry: nil, usage_source_claude_transcript: nil,
+           claude_agents_with_window: nil, claude_agents_with_context_percent: nil, window_reports: null,
            present: Object.fromEntries([...CLAUDE_METRICS, 'turn_timing'].map(k => [k, nil])), first_native_ms: nil, all_native_ms: nil, runtime_cpu_seconds: null, peak_rss_kib: null };
 }
-async function claudeProbe(base, variant, target, localBinary = binary) {
+async function claudeProbe(base, variant, target, localBinary = binary, reports = false) {
   const f = fixture(base, `claude-${variant}`, localBinary);
   // Never let a parent CLAUDE_CONFIG_DIR point the runtime at a real transcript root.
   delete f.env.CLAUDE_CONFIG_DIR;
@@ -604,7 +618,7 @@ async function claudeProbe(base, variant, target, localBinary = binary) {
       fs.writeFileSync(path.join(dir, `${id}.jsonl`), text, { mode: 0o600 }); sizes.push(Buffer.byteLength(text)); ids[host].push(id);
     }
   }
-  const servers = [await herdrServer(f.localSocket, claudeHerdr('l', ids.local)), await herdrServer(f.remoteSocket, claudeHerdr('r', ids.peer))];
+  const servers = [await herdrServer(f.localSocket, claudeHerdr('l', ids.local, reports)), await herdrServer(f.remoteSocket, claudeHerdr('r', ids.peer, reports))];
   const run = launch(f); const start = performance.now();
   let peakRss = 0;
   try {
@@ -622,6 +636,8 @@ async function claudeProbe(base, variant, target, localBinary = binary) {
     if (!last) return claudeEmpty('Claude agents never appeared on both synthetic hosts');
     const per = fn => Object.fromEntries(Object.entries(hosts).map(([k, id]) => [k, fn(claude(last, id))]));
     const native = a => a.technical?.telemetry !== null && typeof a.technical?.telemetry === 'object';
+    // Agent ids end with the Herdr pane id (w1:l<n> or w1:r<n>); the mismatched pane is the last.
+    const mismatched = x => claudeMismatched(claudeCount - 1) && new RegExp(`:w1:[lr]${claudeCount}$`).test(x.id ?? '');
     const reach = all => Object.fromEntries(Object.entries(hosts).map(([k, id]) => { const hit = run.frames.find(fr => { const n = claude(fr, id).filter(native).length; return all ? n === claudeCount : n > 0; }); return [k, hit ? round(hit.at - start, 0) : null]; }));
     const [user, system] = (readText(f.timefile) || '').trim().split('\n').at(-1).split(' ').map(Number);
     return { error: null, transcript_bytes: { per_transcript: median(sizes), total: sizes.reduce((a, b) => a + b, 0) },
@@ -630,6 +646,13 @@ async function claudeProbe(base, variant, target, localBinary = binary) {
       present: { ...Object.fromEntries(CLAUDE_METRICS.map(k => [k, per(a => a.filter(x => Number.isFinite(x.technical?.telemetry?.[k])).length)])),
                  turn_timing: per(a => a.filter(x => ['last_duration_s', 'total_finished_duration_s'].some(k => Number.isFinite(x.technical?.turn_timing?.[k]))).length) },
       first_native_ms: reach(false), all_native_ms: reach(true),
+      claude_agents_with_window: per(a => a.filter(x => Number.isFinite(x.technical?.telemetry?.window)).length),
+      claude_agents_with_context_percent: per(a => a.filter(x => Number.isFinite(x.technical?.telemetry?.context_percent)).length),
+      // Fixture shape, and the mismatched pane's own window and percentage (expected absent).
+      window_reports: !reports ? null : { bound_per_host: claudeBound(), mismatched_per_host: claudeCount > 1 ? 1 : 0, window: CLAUDE_WINDOW,
+        mismatched_seen: per(a => a.filter(mismatched).length),
+        mismatched_with_window: per(a => a.filter(x => mismatched(x) && Number.isFinite(x.technical?.telemetry?.window)).length),
+        mismatched_with_context_percent: per(a => a.filter(x => mismatched(x) && Number.isFinite(x.technical?.telemetry?.context_percent)).length) },
       runtime_cpu_seconds: Number.isFinite(user + system) ? round(user + system, 3) : null, peak_rss_kib: peakRss };
   } finally {
     if (!run.exit) { run.child.kill('SIGKILL'); await run.done; }
@@ -637,9 +660,10 @@ async function claudeProbe(base, variant, target, localBinary = binary) {
   }
 }
 async function claudeMetrics(base) {
-  const guard = async (variant, target, local) => { try { return await claudeProbe(base, variant, target, local); } catch (error) { return claudeEmpty(String(error?.message ?? error).slice(0, 400)); } };
-  return { scope: `One ${claudeSeconds}s run per variant, ${claudeCount} Claude agents per host (local and fake-SSH peer). Native telemetry = technical.telemetry present on a Claude agent; the fixture panes carry no Herdr metadata, so only native replay can supply it. present counts agents with a numeric telemetry field (turn_timing: a numeric last or total finished duration) in the last snapshot. CPU is user+sys of the runtime and reaped descendants (fake-SSH peer probes running locally); RSS is sampled every 50 ms over the runtime family. Remote hosts, Qt and GPU are not measured.`,
+  const guard = async (variant, target, local, reports) => { try { return await claudeProbe(base, variant, target, local, reports); } catch (error) { return claudeEmpty(String(error?.message ?? error).slice(0, 400)); } };
+  return { scope: `One ${claudeSeconds}s run per variant, ${claudeCount} Claude agents per host (local and fake-SSH peer). Native telemetry = technical.telemetry present on a Claude agent; the fixture panes carry no Herdr metadata, so only native replay can supply it. present counts agents with a numeric telemetry field (turn_timing: a numeric last or total finished duration) in the last snapshot. CPU is user+sys of the runtime and reaped descendants (fake-SSH peer probes running locally); RSS is sampled every 50 ms over the runtime family. Remote hosts, Qt and GPU are not measured. The window variant (standard transcripts) adds bound v2 window reports to the first half of each host's panes and a report bound to another id on the last pane, so its native telemetry is not replay-only; with_window and with_context_percent count agents with a numeric telemetry window or context_percent in the last snapshot.`,
            agents_per_host: claudeCount, window_seconds: claudeSeconds, standard: await guard('standard', 0), large: claudeLargeMb > 0 ? { target_bytes: claudeLargeMb * 1e6, ...await guard('large', claudeLargeMb * 1e6) } : null,
+           window: await guard('window', 0, undefined, true),
            // Old local, new peer: the old local re-serialises cursor rows without the claude block, so the
            // peer replays every Claude row from the header on each probe. Hashes only; no binary paths.
            old_local: claudeOldLocal === null ? null : { local_binary_sha256: sha256(claudeOldLocal), peer_binary_sha256: sha256(binary),
@@ -691,9 +715,10 @@ try {
       ['ui. member references in QML', report.architecture?.ui_member_references], ['preference parse calls in QML', report.architecture?.preference_parse_calls],
       ['ToolTip declarations in QML', report.architecture?.tooltip_declarations], ['hard-coded ~/.local/state/omarchy paths in QML', report.architecture?.hardcoded_omarchy_state_paths],
       ['clock-only view changes in 60 s', report.architecture?.clock_only_view_changes_60s], ['qmllint warnings (Qt 6)', report.architecture?.qmllint?.total],
-      ...[['standard', report.claude?.standard], ['large', report.claude?.large], ['old-local standard', report.claude?.old_local?.standard], ['old-local large', report.claude?.old_local?.large]].filter(([name, c]) => c || !name.startsWith('old-local')).flatMap(([name, c]) => [
+      ...[['standard', report.claude?.standard], ['large', report.claude?.large], ['window', report.claude?.window], ['old-local standard', report.claude?.old_local?.standard], ['old-local large', report.claude?.old_local?.large]].filter(([name, c]) => c || !name.startsWith('old-local')).flatMap(([name, c]) => [
         [`Claude ${name}: native agents local/peer`, c && `${c.claude_agents_with_native_telemetry.local}/${c.claude_agents_with_native_telemetry.peer} of ${c.claude_agents.local}/${c.claude_agents.peer}`],
-        [`Claude ${name}: runtime CPU seconds`, c?.runtime_cpu_seconds]])];
+        [`Claude ${name}: runtime CPU seconds`, c?.runtime_cpu_seconds],
+        [`Claude ${name}: window / context_percent agents local/peer`, c?.claude_agents_with_window && `${c.claude_agents_with_window.local}/${c.claude_agents_with_window.peer} / ${c.claude_agents_with_context_percent.local}/${c.claude_agents_with_context_percent.peer}`]])];
     const width = Math.max(...rows.map(x => x[0].length));
     console.log(`Anton popover measurement (${report.git_head ?? 'unknown head'}, ${r.duration_seconds ?? 0}s x${r.repeats ?? 0}, ${count} agents/host)`);
     for (const [k, value] of rows) console.log(`${k.padEnd(width)}  ${value ?? 'null'}`);
