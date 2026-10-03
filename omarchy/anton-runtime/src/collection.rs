@@ -94,7 +94,10 @@ fn snapshot(host: &Value, cancel: Option<&AtomicBool>) -> Result<Value> {
         .cloned()
         .ok_or("Missing Herdr snapshot".into())
 }
-pub fn normalise(raw: &Value, host: &Value) -> Result<Vec<Value>> {
+/// `peer` is set for a `--probe`: a Claude pane without native telemetry then
+/// has none, rather than the reporter metadata fallback, so peer output never
+/// depends on the reporter (D4).
+pub fn normalise(raw: &Value, host: &Value, peer: bool) -> Result<Vec<Value>> {
     let agents = raw["agents"].as_array().ok_or("Invalid agents")?;
     let workspaces = raw["workspaces"].as_array().ok_or("Invalid workspaces")?;
     let id = host["id"].as_str().ok_or("Invalid host")?;
@@ -126,7 +129,15 @@ pub fn normalise(raw: &Value, host: &Value) -> Result<Vec<Value>> {
         } else {
             leaf
         };
-        let mut technical = json!({"revision":number(&entry["revision"]),"state_change_seq":number(&entry["state_change_seq"]),"focused":entry["focused"].as_bool(),"interactive_ready":entry["interactive_ready"].as_bool(),"launch_pending":entry["launch_pending"].as_bool(),"turn_timing":telemetry::turn_timing_view(&entry["_native_turn_timing"]),"telemetry":entry.get("_native_telemetry").cloned().or_else(||telemetry::telemetry_from_agent(entry))});
+        let fallback = !(peer && entry["agent"] == "claude");
+        let telemetry = entry.get("_native_telemetry").cloned().or_else(|| {
+            if fallback {
+                telemetry::telemetry_from_agent(entry)
+            } else {
+                None
+            }
+        });
+        let mut technical = json!({"revision":number(&entry["revision"]),"state_change_seq":number(&entry["state_change_seq"]),"focused":entry["focused"].as_bool(),"interactive_ready":entry["interactive_ready"].as_bool(),"launch_pending":entry["launch_pending"].as_bool(),"turn_timing":telemetry::turn_timing_view(&entry["_native_turn_timing"]),"telemetry":telemetry});
         if let Some(binding) = telemetry::session_binding(entry) {
             technical["session_generation"] =
                 json!(u64::from_str_radix(&binding[..13], 16).unwrap());
@@ -162,7 +173,7 @@ pub fn local(
                     .ok_or("Invalid agent snapshot")?,
                 cursors,
             );
-            let agents = normalise(&raw, host)?;
+            let agents = normalise(&raw, host, follower.is_peer())?;
             Ok(
                 json!({"agents":agents,"theme":null,"sampled_at":time,"error":null,"protocol":number(&raw["protocol"]),"version":clean(&raw["version"],"unknown"),"cursors":updated}),
             )

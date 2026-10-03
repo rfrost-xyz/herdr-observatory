@@ -2,7 +2,7 @@
 use crate::{Result, common};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub const RETIRED_CODEX_SHIM: &[u8] = b"#!/bin/sh\n# herdr-observatory retired Codex hook v1\ncat >/dev/null 2>/dev/null || :\nexit 0\n";
 pub const RETIRED_CODEX_SHA256: &str =
@@ -23,6 +23,45 @@ const EVENTS: &[&str] = &[
     "SubagentStop",
 ];
 const LIMIT: usize = 1_048_576;
+/// How long a receipt writer waits for another before refusing as busy.
+const RECEIPT_WAIT: Duration = Duration::from_secs(3);
+
+/// An exclusive `flock` on the plugin root directory, held around a whole
+/// read-modify-write of `.hooks-receipt.json` (design D5). The directory is
+/// locked instead of a file because `uninstall.sh` refuses unknown files in
+/// the plugin root. Dropping it unlocks explicitly: a child spawned by
+/// another thread can hold the open file description until it calls exec.
+struct ReceiptLock {
+    directory: std::fs::File,
+}
+impl Drop for ReceiptLock {
+    fn drop(&mut self) {
+        use std::os::fd::AsRawFd;
+        unsafe {
+            libc::flock(self.directory.as_raw_fd(), libc::LOCK_UN);
+        }
+    }
+}
+/// Takes the receipt lock once, at a public entry point; helpers never take
+/// it again, because a second descriptor of the same directory conflicts.
+fn receipt_lock(root: &Path, wait: Duration) -> Result<ReceiptLock> {
+    use std::os::fd::AsRawFd;
+    let directory = common::open_directory(root)?;
+    let deadline = Instant::now() + wait;
+    loop {
+        if unsafe { libc::flock(directory.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            return Ok(ReceiptLock { directory });
+        }
+        let error = std::io::Error::last_os_error().raw_os_error();
+        if error != Some(libc::EWOULDBLOCK) && error != Some(libc::EINTR) {
+            return Err("Hook receipt lock unavailable".into());
+        }
+        if Instant::now() >= deadline {
+            return Err("Hook receipt busy; retry".into());
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
 
 fn regular(path: &Path) -> Result<Option<Vec<u8>>> {
     let mut parent = Some(path);
@@ -120,6 +159,80 @@ fn receipt_value(bytes: &[u8], runtime: &Path, extension: &Path) -> Result<Value
         return Err("Conflicting hook owner".into());
     }
     Ok(receipt)
+}
+mod claude_mise;
+mod claude_mod;
+#[cfg(test)]
+mod claude_mod_tests;
+use claude_mod::ClaudeEnv;
+pub use claude_mod::{install_claude_mod, uninstall_claude_mod};
+
+/// The Claude Code mod directory under `home` (design D1).
+pub(crate) fn claude_mod_root(home: &Path) -> PathBuf {
+    home.join(".claude/skills/anton-observatory")
+}
+/// The mod files a `claude_mod` receipt entry records, relative to its root.
+pub(crate) const CLAUDE_MOD_FILES: [&str; 3] = [
+    ".claude-plugin/plugin.json",
+    "hooks/hooks.json",
+    "hooks/register.js",
+];
+/// Whether `entry` has the D5 `claude_mod` shape for the mod directory
+/// `root`: version 1, that root, absolute `directories` at or under it (or
+/// its `skills` parent), and exactly the three mod files, each with a
+/// SHA-256 and, while a refresh is in progress, a `prior_sha256`. Every
+/// path has only root and normal components, because `starts_with`
+/// compares components lexically and would accept a `..` that leaves `root`.
+pub(crate) fn claude_mod_entry(entry: &Value, root: &Path) -> bool {
+    use std::path::Component;
+    let plain = |path: &Path| {
+        path.is_absolute()
+            && path
+                .components()
+                .all(|part| matches!(part, Component::RootDir | Component::Normal(_)))
+    };
+    let skills = root.parent();
+    let directories = entry["directories"].as_array().is_some_and(|list| {
+        !list.is_empty()
+            && list.iter().all(|value| {
+                value.as_str().map(Path::new).is_some_and(|path| {
+                    plain(path) && (path.starts_with(root) || Some(path) == skills)
+                })
+            })
+    });
+    let hash = |value: &Value| value.as_str().is_some_and(|v| common::hex_id(v, 64));
+    let files = entry["files"].as_array().is_some_and(|list| {
+        let mut paths: Vec<_> = list
+            .iter()
+            .filter_map(|file| file["path"].as_str())
+            .collect();
+        paths.sort_unstable();
+        let mut expected = CLAUDE_MOD_FILES.map(|name| root.join(name));
+        expected.sort_unstable();
+        list.len() == CLAUDE_MOD_FILES.len()
+            && paths.iter().all(|path| plain(Path::new(path)))
+            && paths
+                .iter()
+                .map(Path::new)
+                .eq(expected.iter().map(PathBuf::as_path))
+            && list
+                .iter()
+                .all(|file| hash(&file["sha256"]) && file.get("prior_sha256").is_none_or(&hash))
+    });
+    entry["version"] == 1
+        && plain(root)
+        && entry["root"].as_str().map(Path::new) == Some(root)
+        && directories
+        && files
+}
+/// Reporter guard 2 (design D3): the plugin's hook receipt, owned by this
+/// runtime, records the Claude Code mod for `home`. An entry left
+/// mid-refresh, with `prior_sha256` values, is accepted.
+pub fn claude_mod_recorded(root: &Path, home: &Path) -> bool {
+    let (_, extension, _) = paths(home);
+    common::read_owned(&root.join(".hooks-receipt.json"), LIMIT, false)
+        .and_then(|bytes| receipt_value(&bytes, &root.join("anton-runtime"), &extension))
+        .is_ok_and(|receipt| claude_mod_entry(&receipt["claude_mod"], &claude_mod_root(home)))
 }
 fn native_extension(receipt: &Value, bytes: &[u8], runtime: &Path) -> Result<()> {
     let declaration = format!(
@@ -256,8 +369,17 @@ fn record_and_create(
     compatibility_directories(home, true)?;
     create_shim_exclusive(shell)
 }
+/// Writes one Pi receipt, extension, shim or configuration file; a fixture
+/// passes a recording writer to observe the receipt lock (design D7).
+type FileWriter<'a> = &'a mut dyn FnMut(&Path, &[u8]) -> Result<()>;
 pub fn repair_retired(root: &Path, home: &Path) -> Result<()> {
+    repair_retired_with(root, home, &mut |path, bytes| {
+        common::atomic_owned_write(path, bytes)
+    })
+}
+fn repair_retired_with(root: &Path, home: &Path, write: FileWriter) -> Result<()> {
     let _owner = common::owner_guard(&root.join(".herdr-observatory-install"))?;
+    let _receipt = receipt_lock(root, RECEIPT_WAIT)?;
     let runtime = runtime_owned(root)?;
     let (legacy, extension, _) = paths(home);
     let shell = legacy.join("codex.sh");
@@ -289,12 +411,18 @@ pub fn repair_retired(root: &Path, home: &Path) -> Result<()> {
         &compatibility_receipt(receipt, &shell),
         home,
         &shell,
-        common::atomic_owned_write,
+        |path, bytes| write(path, bytes),
     )
 }
 
 pub fn install(root: &Path, home: &Path, adopt_legacy: bool) -> Result<()> {
+    install_with(root, home, adopt_legacy, &mut |path, bytes| {
+        common::atomic_owned_write(path, bytes)
+    })
+}
+fn install_with(root: &Path, home: &Path, adopt_legacy: bool, write: FileWriter) -> Result<()> {
     let _owner = common::owner_guard(&root.join(".herdr-observatory-install"))?;
+    let _receipt = receipt_lock(root, RECEIPT_WAIT)?;
     let runtime = runtime_owned(root)?;
     let (legacy, extension, config) = paths(home);
     let receipt_path = root.join(".hooks-receipt.json");
@@ -414,7 +542,7 @@ pub fn install(root: &Path, home: &Path, adopt_legacy: bool) -> Result<()> {
     }
 
     if updated != original_value && regular(&root.join(".hooks-before-native.json"))?.is_none() {
-        common::atomic_owned_write(
+        write(
             &root.join(".hooks-before-native.json"),
             &serde_json::to_vec_pretty(&original_value).map_err(|_| "Invalid hook backup")?,
         )?;
@@ -425,8 +553,8 @@ pub fn install(root: &Path, home: &Path, adopt_legacy: bool) -> Result<()> {
         .mode(0o700)
         .create(extension.parent().ok_or("Missing extension parent")?)
         .map_err(|_| "Cannot create extension directory")?;
-    common::atomic_owned_write(&extension, payload.as_bytes())?;
-    let receipt_result = common::atomic_owned_write(
+    write(&extension, payload.as_bytes())?;
+    let receipt_result = write(
         &receipt_path,
         &serde_json::to_vec(&receipt).map_err(|_| "Invalid hook receipt")?,
     );
@@ -434,7 +562,7 @@ pub fn install(root: &Path, home: &Path, adopt_legacy: bool) -> Result<()> {
         // Only undo the extension bytes installed by this attempt.
         if regular(&extension)?.as_deref() == Some(payload.as_bytes()) {
             if let Some(bytes) = existing_extension {
-                common::atomic_owned_write(&extension, &bytes)?;
+                write(&extension, &bytes)?;
             } else {
                 std::fs::remove_file(&extension).map_err(|_| "Cannot roll back Pi integration")?;
             }
@@ -449,11 +577,11 @@ pub fn install(root: &Path, home: &Path, adopt_legacy: bool) -> Result<()> {
             if regular(&shell)? != shell_bytes {
                 return Err("Retired hook changed during migration".into());
             }
-            common::atomic_owned_write(&shell, RETIRED_CODEX_SHIM)?;
+            write(&shell, RETIRED_CODEX_SHIM)?;
         }
     }
     if updated != original_value {
-        common::atomic_owned_write(
+        write(
             &config,
             &serde_json::to_vec_pretty(&updated).map_err(|_| "Invalid hook configuration")?,
         )?;
@@ -464,11 +592,8 @@ pub fn install(root: &Path, home: &Path, adopt_legacy: bool) -> Result<()> {
     Ok(())
 }
 
-pub fn uninstall(root: &Path, home: &Path) -> Result<()> {
-    let receipt_path = root.join(".hooks-receipt.json");
-    let Some(bytes) = regular(&receipt_path)? else {
-        return Ok(());
-    };
+/// The owner marker removal accepts, including a retired installation's.
+fn owner_marker(root: &Path) -> Result<()> {
     let marker =
         regular(&root.join(".herdr-observatory-install"))?.ok_or("Hook owner marker missing")?;
     if ![
@@ -481,6 +606,31 @@ pub fn uninstall(root: &Path, home: &Path) -> Result<()> {
     {
         return Err("Conflicting hook owner marker".into());
     }
+    Ok(())
+}
+/// `--uninstall-hooks`: the Pi extension, the compatibility shim and a
+/// recorded Claude Code mod, each preflighted before any is deleted.
+pub fn uninstall(root: &Path, home: &Path) -> Result<()> {
+    uninstall_in(root, home, &ClaudeEnv::process())
+}
+fn uninstall_in(root: &Path, home: &Path, env: &ClaudeEnv) -> Result<()> {
+    uninstall_with(root, home, env, &|_| {})
+}
+/// `uninstall_in`, with `deleting` shown each path before its deletion is
+/// tried and each mod directory before its sync; fixtures use it to probe
+/// the receipt lock.
+fn uninstall_with(
+    root: &Path,
+    home: &Path,
+    env: &ClaudeEnv,
+    deleting: &dyn Fn(&Path),
+) -> Result<()> {
+    let _receipt = receipt_lock(root, RECEIPT_WAIT)?;
+    let receipt_path = root.join(".hooks-receipt.json");
+    let Some(bytes) = regular(&receipt_path)? else {
+        return Ok(());
+    };
+    owner_marker(root)?;
     let runtime = root.join("anton-runtime");
     let (legacy, extension, _) = paths(home);
     let shell = legacy.join("codex.sh");
@@ -502,13 +652,24 @@ pub fn uninstall(root: &Path, home: &Path) -> Result<()> {
             shell_present = true;
         }
     }
-    // Both integrations have been preflighted before deleting either one.
+    let claude = claude_mod::removal(home, &receipt, env)?;
+    // Every integration has been preflighted before deleting any one.
+    if let Some(recorded) = &claude {
+        let mut sync = |path: &Path| {
+            deleting(path);
+            claude_mod::sync_directory(path)
+        };
+        claude_mod::remove_with(home, recorded, &mut sync, deleting)?;
+    }
     if shell_present {
+        deleting(&shell);
         std::fs::remove_file(&shell).map_err(|_| "Retired hook removal failed")?;
     }
     if extension_bytes.is_some() {
+        deleting(&extension);
         std::fs::remove_file(&extension).map_err(|_| "Pi removal failed")?;
     }
+    deleting(&receipt_path);
     std::fs::remove_file(receipt_path).map_err(|_| "Receipt removal failed")?;
     if compatibility_owned {
         // remove_dir only removes empty directories, preserving unrelated files.
@@ -523,6 +684,52 @@ pub fn uninstall(root: &Path, home: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Reporter guard 2 accepts exactly the D5 `claude_mod` shape, also
+    /// mid-refresh with `prior_sha256` values.
+    #[test]
+    fn claude_mod_entry_has_the_receipt_shape() {
+        let root = claude_mod_root(Path::new("/home/a"));
+        let hash = common::sha256(b"fixture");
+        let files: Vec<_> = CLAUDE_MOD_FILES
+            .iter()
+            .map(|name| json!({"path":root.join(name),"sha256":hash}))
+            .collect();
+        let entry = json!({"version":1,"root":root,"directories":["/home/a/.claude/skills",root,root.join("hooks")],"files":files});
+        assert!(claude_mod_entry(&entry, &root));
+        let mut prior = entry.clone();
+        prior["files"][2]["prior_sha256"] = json!(hash);
+        assert!(claude_mod_entry(&prior, &root));
+        let mut broken = Vec::new();
+        for (pointer, value) in [
+            ("/version", json!(2)),
+            ("/root", json!("/home/b/.claude/skills/anton-observatory")),
+            ("/directories", json!([])),
+            ("/directories/0", json!("/home/a/.claude")),
+            ("/directories/0", json!("relative")),
+            ("/directories/1", json!(root.join("../../../outside"))),
+            ("/directories/1", json!(root.join("hooks/.."))),
+            ("/files/0/sha256", json!("short")),
+            ("/files/0/path", json!("/home/a/other.json")),
+            ("/files", json!(files[..2])),
+        ] {
+            let mut value_entry = entry.clone();
+            *value_entry.pointer_mut(pointer).unwrap() = value;
+            broken.push(value_entry);
+        }
+        let mut bad_prior = prior.clone();
+        bad_prior["files"][2]["prior_sha256"] = json!("short");
+        broken.push(bad_prior);
+        let mut extra = entry.clone();
+        extra["files"]
+            .as_array_mut()
+            .unwrap()
+            .push(files[0].clone());
+        broken.push(extra);
+        broken.push(json!(null));
+        for entry in broken {
+            assert!(!claude_mod_entry(&entry, &root), "{entry}");
+        }
+    }
     #[test]
     fn removes_only_exact_owned_callbacks() {
         let original = json!({"other":true,"hooks":{"Stop":[{"matcher":"*","hooks":[{"type":"command","command":"sh /owned"},{"type":"command","command":"herdr native"}]}],"Custom":[{"hooks":[{"type":"command","command":"sh /owned"}]}]}});
@@ -619,12 +826,12 @@ mod tests {
         assert!(config.exists());
         std::fs::remove_dir_all(home).unwrap();
     }
-    struct NativeFixture {
-        home: PathBuf,
-        root: PathBuf,
+    pub(super) struct NativeFixture {
+        pub(super) home: PathBuf,
+        pub(super) root: PathBuf,
     }
     impl NativeFixture {
-        fn new() -> Self {
+        pub(super) fn new() -> Self {
             use std::os::unix::fs::PermissionsExt;
             static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             let home = std::env::temp_dir().join(format!(
@@ -651,14 +858,14 @@ mod tests {
             install(&root, &home, false).unwrap();
             Self { home, root }
         }
-        fn shell(&self) -> PathBuf {
+        pub(super) fn shell(&self) -> PathBuf {
             paths(&self.home).0.join("codex.sh")
         }
-        fn receipt(&self) -> Value {
+        pub(super) fn receipt(&self) -> Value {
             serde_json::from_slice(&std::fs::read(self.root.join(".hooks-receipt.json")).unwrap())
                 .unwrap()
         }
-        fn backup(&self) {
+        pub(super) fn backup(&self) {
             let value = json!({"hooks":{"Stop":[{"hooks":[{"type":"command","command":legacy_commands(&self.shell())[0]}]}]}});
             common::atomic_owned_write(
                 &self.root.join(".hooks-before-native.json"),
@@ -861,6 +1068,131 @@ mod tests {
         assert!(!f.shell().exists());
         assert!(!extension.exists());
         assert_eq!(std::fs::read(unrelated).unwrap(), b"unrelated");
+    }
+    /// One snapshot entry: kind, bytes (regular files only), inode and mode.
+    #[derive(Debug, PartialEq, Eq)]
+    pub(super) struct Entry {
+        pub(super) kind: &'static str,
+        pub(super) bytes: Vec<u8>,
+        pub(super) inode: u64,
+        pub(super) mode: u32,
+    }
+    pub(super) type Tree = std::collections::BTreeMap<PathBuf, Entry>;
+    /// Every entry under and including `dir`: directories too, so a snapshot
+    /// comparison sees a directory created or removed as well as a file.
+    pub(super) fn tree(dir: &Path) -> Tree {
+        use std::os::unix::fs::MetadataExt;
+        let mut entries = Tree::new();
+        let mut pending = vec![dir.to_owned()];
+        while let Some(path) = pending.pop() {
+            let Ok(info) = std::fs::symlink_metadata(&path) else {
+                continue;
+            };
+            let kind = if info.is_dir() {
+                for entry in std::fs::read_dir(&path).unwrap() {
+                    pending.push(entry.unwrap().path());
+                }
+                "directory"
+            } else if info.is_file() {
+                "file"
+            } else if info.file_type().is_symlink() {
+                "symlink"
+            } else {
+                "other"
+            };
+            let bytes = if kind == "file" {
+                std::fs::read(&path).unwrap()
+            } else {
+                Vec::new()
+            };
+            let entry = Entry {
+                kind,
+                bytes,
+                inode: info.ino(),
+                mode: info.mode(),
+            };
+            entries.insert(path, entry);
+        }
+        entries
+    }
+    /// Holds the receipt lock on `root` from another open file description,
+    /// as a concurrent writer would, until dropped.
+    pub(super) fn hold_receipt_lock(root: &Path) -> ReceiptLock {
+        use std::os::fd::AsRawFd;
+        let directory = common::open_directory(root).unwrap();
+        assert_eq!(
+            unsafe { libc::flock(directory.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+            0
+        );
+        ReceiptLock { directory }
+    }
+    /// D5: while another writer holds the receipt lock, each Pi receipt
+    /// writer refuses as busy after its bounded wait and writes nothing.
+    #[test]
+    fn pi_receipt_writers_refuse_as_busy_while_the_lock_is_held() {
+        let f = NativeFixture::new();
+        f.backup();
+        let before = tree(&f.home);
+        let held = hold_receipt_lock(&f.root);
+        let started = Instant::now();
+        let results: Vec<Result<()>> = std::thread::scope(|scope| {
+            [
+                scope.spawn(|| install(&f.root, &f.home, false)),
+                scope.spawn(|| uninstall(&f.root, &f.home)),
+                scope.spawn(|| repair_retired(&f.root, &f.home)),
+            ]
+            .into_iter()
+            .map(|writer| writer.join().unwrap())
+            .collect()
+        });
+        let waited = started.elapsed();
+        for result in results {
+            assert_eq!(result, Err("Hook receipt busy; retry".into()));
+        }
+        assert!(
+            waited >= RECEIPT_WAIT && waited < RECEIPT_WAIT * 2,
+            "{waited:?}"
+        );
+        assert_eq!(tree(&f.home), before);
+        drop(held);
+        repair_retired(&f.root, &f.home).unwrap();
+        assert_eq!(std::fs::read(f.shell()).unwrap(), RETIRED_CODEX_SHIM);
+    }
+    /// Whether the receipt lock on `root` is free: another open file
+    /// description of the directory can take it at once (and releases it).
+    pub(super) fn receipt_lock_free(root: &Path) -> bool {
+        use std::os::fd::AsRawFd;
+        let directory = common::open_directory(root).unwrap();
+        let free =
+            unsafe { libc::flock(directory.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0;
+        if free {
+            unsafe {
+                libc::flock(directory.as_raw_fd(), libc::LOCK_UN);
+            }
+        }
+        free
+    }
+    /// D5: each Pi receipt writer holds the receipt lock across its whole
+    /// read-modify-write, so every file it writes is written under the lock.
+    #[test]
+    fn pi_receipt_writers_hold_the_lock_while_writing() {
+        let f = NativeFixture::new();
+        f.backup();
+        let mut writes = Vec::new();
+        let mut probe = |path: &Path, bytes: &[u8]| {
+            writes.push((path.to_owned(), receipt_lock_free(&f.root)));
+            common::atomic_owned_write(path, bytes)
+        };
+        repair_retired_with(&f.root, &f.home, &mut probe).unwrap();
+        install_with(&f.root, &f.home, false, &mut probe).unwrap();
+        let receipt = f.root.join(".hooks-receipt.json");
+        assert_eq!(
+            writes.iter().filter(|(path, _)| *path == receipt).count(),
+            2,
+            "{writes:?}"
+        );
+        assert!(writes.iter().all(|(_, free)| !free), "{writes:?}");
+        assert!(receipt_lock_free(&f.root), "released afterwards");
     }
     #[test]
     fn repair_exclusive_creation_preserves_a_file_appearing_after_preflight() {

@@ -21,8 +21,9 @@ QML owns one Rust collector. It reads local Herdr and invokes a small Rust peer
 on configured SSH hosts. Both use bounded read-only operations. No Python,
 Docker, HTTP server, web dashboard, music forwarding or background service is
 required. Codex and Claude Code metrics come from validated native session
-records; Pi uses a
-small extension which calls the native reporter.
+records; Pi uses a small extension which calls the native reporter. A small
+local Claude Code mod reports only the session's context window, so the
+Claude Code context dial can show a percentage.
 
 See [installation, configuration and complete removal](omarchy/herdr.observatory/README.md).
 Canonical behaviour is in `openspec/specs`; historical decisions are retained

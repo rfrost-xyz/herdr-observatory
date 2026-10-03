@@ -1717,6 +1717,35 @@ fn retained_subset(telemetry: &Value) -> Value {
     value
 }
 
+/// Review round 2 (D4): `--probe` collects a Claude pane carrying a bound
+/// reporter window exactly as one without it. A caught-up sample keeps the
+/// replay's own stamp and has no window, and without a transcript the
+/// telemetry stays null instead of the window-only metadata fallback.
+#[test]
+fn claude_peer_probe_ignores_a_bound_reporter_window() {
+    let f = Fixture::new();
+    f.claude(&claude_transcript());
+    let plain = f.probe(&json!({}));
+    let mut raw = f.raw.lock().unwrap().clone();
+    let pane = &mut raw["agents"][0];
+    let binding = anton_runtime::telemetry::session_binding(pane).unwrap();
+    let seq = ((common::now() as u64 - 5) * 1_000_000).to_string();
+    pane["tokens"] = json!({"obs_v":"2","obs_bind":binding,"obs_seq":seq,
+        "obs_event":"session","obs_phase":"ready","obs_tool":null,"obs_model":null,
+        "obs_result":null,"obs_usage_source":null,"obs_n0":",,,","obs_n1":",200000,,",
+        "obs_n2":",,,","obs_n3":",","obs_children":null,"obs_completion":null,"obs_outcomes":null});
+    *f.raw.lock().unwrap() = raw;
+    let bound = f.probe(&json!({}));
+    let telemetry = |probe: &Value| probe["result"]["agents"][0]["technical"]["telemetry"].clone();
+    assert_eq!(telemetry(&bound), telemetry(&plain));
+    assert_eq!(telemetry(&bound)["total_input"], 2260);
+    assert!(telemetry(&bound).get("window").is_none());
+    fs::remove_file(f.transcript("entry-a")).unwrap();
+    let missing = f.probe(&json!({}));
+    assert!(missing["result"]["agents"][0].is_object());
+    assert!(telemetry(&missing).is_null(), "{missing}");
+}
+
 #[test]
 fn claude_peer_probe_publishes_transcript_telemetry_and_old_cursor_replays_fresh() {
     let f = Fixture::new();
@@ -2008,4 +2037,993 @@ fn executable_fixtures_run_while_sibling_threads_spawn() {
     }
     let _ = fs::remove_dir_all(&dir);
     assert_eq!(failures, 0);
+}
+
+static REPORTER_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+/// One recorded Herdr RPC: its method and params.
+type Call = (String, Value);
+/// A synthetic plugin root, home and Herdr socket for `--report claude`
+/// (design D3). The socket answers `pane.get` from `panes` and applies each
+/// `pane.report_metadata` to the pane's tokens, as Herdr does.
+struct Reporter {
+    dir: PathBuf,
+    root: PathBuf,
+    home: PathBuf,
+    state: PathBuf,
+    socket: PathBuf,
+    panes: Arc<Mutex<Value>>,
+    calls: Arc<Mutex<Vec<Call>>>,
+    stop: Arc<AtomicBool>,
+    server: Option<thread::JoinHandle<()>>,
+}
+/// A 64-character hex hash for a synthetic receipt.
+fn hex(seed: &str) -> String {
+    common::sha256(seed.as_bytes())
+}
+impl Reporter {
+    fn new() -> Self {
+        let dir = support::fixture_dir(
+            "anton-process-reporter-",
+            REPORTER_SEQUENCE.fetch_add(1, Ordering::Relaxed),
+        );
+        fs::create_dir(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        let root = dir.join("plugin");
+        let home = dir.join("home");
+        for path in [&root, &home, &dir.join("cwd")] {
+            fs::create_dir(path).unwrap();
+        }
+        write(
+            &root.join(".herdr-observatory-install"),
+            b"herdr.observatory\n",
+            0o600,
+        );
+        let socket = dir.join("herdr.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let panes = Arc::new(Mutex::new(json!({})));
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (server_panes, server_calls, server_stop) =
+            (panes.clone(), calls.clone(), stop.clone());
+        let server = thread::spawn(move || {
+            while !server_stop.load(Ordering::Relaxed) {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    thread::sleep(Duration::from_millis(5));
+                    continue;
+                };
+                stream.set_nonblocking(false).unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(1)))
+                    .unwrap();
+                let mut line = String::new();
+                if BufReader::new(stream.try_clone().unwrap())
+                    .read_line(&mut line)
+                    .is_err()
+                {
+                    continue;
+                }
+                let request: Value = serde_json::from_str(&line).unwrap_or(Value::Null);
+                let method = request["method"].as_str().unwrap_or("").to_owned();
+                let params = request["params"].clone();
+                server_calls
+                    .lock()
+                    .unwrap()
+                    .push((method.clone(), params.clone()));
+                let pane = params["pane_id"].as_str().unwrap_or("").to_owned();
+                let mut panes = server_panes.lock().unwrap();
+                let result = match method.as_str() {
+                    "pane.get" => json!({"pane":panes.get(&pane).cloned().unwrap_or(json!({}))}),
+                    "pane.report_metadata" => {
+                        if let Some(entry) = panes.get_mut(&pane) {
+                            entry["tokens"] = params["tokens"].clone();
+                        }
+                        json!({})
+                    }
+                    _ => json!({}),
+                };
+                drop(panes);
+                let _ = writeln!(
+                    stream,
+                    "{}",
+                    json!({"jsonrpc":"2.0","id":request["id"],"result":result})
+                );
+            }
+        });
+        let state = dir.join("state");
+        let fixture = Self {
+            dir,
+            root,
+            home,
+            state,
+            socket,
+            panes,
+            calls,
+            stop,
+            server: Some(server),
+        };
+        fixture.config(1);
+        fixture.receipt(Some(fixture.mod_entry(false)));
+        fixture.pane("w1:p1", claude_pane(CLAUDE_ID));
+        fixture
+    }
+    /// `count` local hosts, each on the fixture socket.
+    fn config(&self, count: usize) {
+        let hosts: Vec<_> = (0..count)
+            .map(|i| json!({"id":format!("local-{i}"),"socket_path":self.socket}))
+            .chain([json!({"id":"remote","transport":"ssh","target":"fixture"})])
+            .collect();
+        write(
+            &self.root.join(".config.json"),
+            serde_json::to_vec(&json!({"hosts":hosts,"interval":2})).unwrap(),
+            0o600,
+        );
+    }
+    /// The D5 `claude_mod` receipt entry, mid-refresh when `prior` is set.
+    fn mod_entry(&self, prior: bool) -> Value {
+        let root = self.home.join(".claude/skills/anton-observatory");
+        let files: Vec<_> = [
+            ".claude-plugin/plugin.json",
+            "hooks/hooks.json",
+            "hooks/register.js",
+        ]
+        .iter()
+        .map(|name| {
+            let mut file = json!({"path":root.join(name),"sha256":hex(name)});
+            if prior {
+                file["prior_sha256"] = json!(hex(&format!("prior-{name}")));
+            }
+            file
+        })
+        .collect();
+        json!({"version":1,"root":root,"directories":[root,root.join(".claude-plugin"),root.join("hooks")],"files":files})
+    }
+    /// The hook receipt, with `entry` as `claude_mod` when given.
+    fn receipt(&self, entry: Option<Value>) {
+        let mut receipt = json!({"version":1,"runtime":self.root.join("anton-runtime"),
+            "extension":self.home.join(".pi/agent/extensions/observatory.ts"),"sha256":hex("extension")});
+        if let Some(entry) = entry {
+            receipt["claude_mod"] = entry;
+        }
+        write(
+            &self.root.join(".hooks-receipt.json"),
+            serde_json::to_vec(&receipt).unwrap(),
+            0o600,
+        );
+    }
+    fn pane(&self, id: &str, pane: Value) {
+        self.panes.lock().unwrap()[id] = pane;
+    }
+    fn methods(&self) -> Vec<String> {
+        self.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(m, _)| m.clone())
+            .collect()
+    }
+    fn writes(&self) -> Vec<Value> {
+        let calls = self.calls.lock().unwrap();
+        calls
+            .iter()
+            .filter(|(m, _)| m == "pane.report_metadata")
+            .map(|(_, p)| p.clone())
+            .collect()
+    }
+    /// `anton-runtime` with only an absolute temporary `HOME`, explicit
+    /// `--root` and `--state` before `--report`, and a private empty cwd.
+    fn command(&self, report: &[&str]) -> Command {
+        let mut command = Command::new(BIN);
+        command
+            .env_clear()
+            .env("HOME", &self.home)
+            .current_dir(self.dir.join("cwd"))
+            .args([
+                "--root",
+                self.root.to_str().unwrap(),
+                "--state",
+                self.state.to_str().unwrap(),
+                "--report",
+                "claude",
+            ])
+            .args(report)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        command
+    }
+    /// Runs one report and returns its exit status, with no output for
+    /// statuses 0, 2 and 3.
+    fn report(&self, report: &[&str]) -> Option<i32> {
+        let output = self.command(report).output().unwrap();
+        let code = output.status.code();
+        if matches!(code, Some(0 | 2 | 3)) {
+            assert!(output.stdout.is_empty(), "{report:?}");
+            assert!(output.stderr.is_empty(), "{report:?}");
+        }
+        code
+    }
+}
+impl Drop for Reporter {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(server) = self.server.take() {
+            server.join().unwrap();
+        }
+        let _ = fs::remove_dir_all(&self.dir);
+    }
+}
+/// A Herdr pane bound to Claude session `id`, with no metadata yet.
+fn claude_pane(id: &str) -> Value {
+    json!({"pane_id":"w1:p1","agent":"claude","agent_session":{"agent":"claude","source":"herdr:claude","kind":"id","value":id},"tokens":{}})
+}
+/// A report sequence `ago` seconds in the past, in epoch microseconds.
+fn report_seq(ago: u64) -> String {
+    ((common::now() as u64 - ago) * 1_000_000).to_string()
+}
+
+/// D3: invalid arguments exit 2 before any file or socket access.
+#[test]
+fn claude_report_rejects_invalid_arguments_without_socket_access() {
+    let f = Reporter::new();
+    let seq = report_seq(10);
+    let future = ((common::now() as u64 + 3600) * 1_000_000).to_string();
+    let long = "a".repeat(129);
+    let mut cases: Vec<Vec<&str>> = vec![
+        vec![],
+        vec!["w1:p1", &seq, CLAUDE_ID],
+        vec!["w1:p1", &seq, CLAUDE_ID, "200000", "extra"],
+        vec!["w1:p1", &seq, CLAUDE_ID, "200000", "--state"],
+        vec!["w1/p1", &seq, CLAUDE_ID, "200000"],
+        vec!["", &seq, CLAUDE_ID, "200000"],
+        vec!["w1:p1", "seq", CLAUDE_ID, "200000"],
+        vec!["w1:p1", "+1700000000000000", CLAUDE_ID, "200000"],
+        vec!["w1:p1", "9007199254740992", CLAUDE_ID, "200000"],
+        vec!["w1:p1", &future, CLAUDE_ID, "200000"],
+        vec!["w1:p1", &seq, ".", "200000"],
+        vec!["w1:p1", &seq, "a/b", "200000"],
+        vec!["w1:p1", &seq, &long, "200000"],
+        vec!["w1:p1", &seq, "fixture.jsonl", "200000"],
+        vec!["w1:p1", &seq, "", "200000"],
+    ];
+    for window in ["0", "-1", "+5", "1e6", "100000001", "\u{0663}", "", " 5"] {
+        cases.push(vec!["w1:p1", &seq, CLAUDE_ID, window]);
+    }
+    for case in &cases {
+        assert_eq!(f.report(case), Some(2), "{case:?}");
+    }
+    assert!(f.methods().is_empty());
+    assert!(!f.state.exists());
+    assert_eq!(fs::read_dir(f.dir.join("cwd")).unwrap().count(), 0);
+}
+
+/// D3: the four values after `claude` are taken verbatim, so an option-like
+/// pane or session id is a value, never `--state`.
+#[test]
+fn claude_report_takes_option_like_values_verbatim() {
+    let f = Reporter::new();
+    let seq = report_seq(10);
+    assert_eq!(f.report(&["w1:p1", &seq, "--state", "200000"]), Some(3));
+    assert_eq!(f.methods(), ["pane.get"]);
+    assert_eq!(f.calls.lock().unwrap()[0].1["pane_id"], "w1:p1");
+    f.calls.lock().unwrap().clear();
+    assert_eq!(f.report(&["--state", &seq, CLAUDE_ID, "200000"]), Some(3));
+    assert_eq!(f.methods(), ["pane.get"]);
+    assert_eq!(f.calls.lock().unwrap()[0].1["pane_id"], "--state");
+    // The explicit state directory was used, never one named by a value.
+    assert!(f.state.join("hook.lock").is_file());
+    assert_eq!(fs::read_dir(f.dir.join("cwd")).unwrap().count(), 0);
+    assert!(!f.root.join("200000").exists());
+}
+
+/// The wire of one Claude report (design D3).
+fn assert_claude_wire(params: &Value, seq: &str, window: u64) {
+    let object = params.as_object().unwrap();
+    let mut keys: Vec<_> = object.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(keys, ["agent", "pane_id", "seq", "source", "tokens"]);
+    assert_eq!(params["agent"], "claude");
+    assert_eq!(params["source"], "user:observatory");
+    assert_eq!(params["pane_id"], "w1:p1");
+    assert_eq!(params["seq"].to_string(), seq);
+    let binding = common::sha256(format!("claude:id:{CLAUDE_ID}").as_bytes());
+    let window = format!(",{window},,");
+    let expected = json!({"obs_v":"2","obs_bind":binding,"obs_seq":seq,
+        "obs_event":"session","obs_phase":"ready","obs_tool":null,"obs_model":null,
+        "obs_result":null,"obs_usage_source":null,
+        "obs_n0":",,,","obs_n1":window,"obs_n2":",,,","obs_n3":",",
+        "obs_children":null,"obs_completion":null,"obs_outcomes":null});
+    assert_eq!(params["tokens"], expected);
+    assert_eq!(params["tokens"].as_object().unwrap().len(), 16);
+}
+
+/// D3: one `pane.get`, then one metadata write carrying only the window; a
+/// repeat with the same window reads only; a new window writes again; an
+/// older sequence is refused after the read.
+#[test]
+fn claude_report_writes_the_bound_window_once_and_repeats_read_only() {
+    let f = Reporter::new();
+    let seq = report_seq(30);
+    assert_eq!(f.report(&["w1:p1", &seq, CLAUDE_ID, "200000"]), Some(0));
+    assert_eq!(f.methods(), ["pane.get", "pane.report_metadata"]);
+    assert_claude_wire(&f.writes()[0], &seq, 200_000);
+    let text = f.writes()[0].to_string();
+    for absent in [
+        "display_agent",
+        "usage_seq",
+        "account",
+        "rate",
+        "model\":\"",
+    ] {
+        assert!(!text.contains(absent), "{absent} in {text}");
+    }
+    // The same window at a later sequence: read, no write, success.
+    let repeat = report_seq(20);
+    assert_eq!(f.report(&["w1:p1", &repeat, CLAUDE_ID, "200000"]), Some(0));
+    assert_eq!(
+        f.methods(),
+        ["pane.get", "pane.report_metadata", "pane.get"]
+    );
+    // A changed window writes again.
+    let changed = report_seq(10);
+    assert_eq!(
+        f.report(&["w1:p1", &changed, CLAUDE_ID, "1000000"]),
+        Some(0)
+    );
+    assert_eq!(f.writes().len(), 2);
+    assert_claude_wire(&f.writes()[1], &changed, 1_000_000);
+    // A sequence not newer than the pane's `obs_seq` is refused.
+    for old in [&changed, &seq] {
+        f.calls.lock().unwrap().clear();
+        assert_eq!(f.report(&["w1:p1", old, CLAUDE_ID, "200000"]), Some(3));
+        assert_eq!(f.methods(), ["pane.get"]);
+    }
+}
+
+/// D3: stdin is never read, so an open pipe cannot stall the report. The
+/// full wire is asserted, so the case fails where `--report claude` is absent.
+#[test]
+fn claude_report_with_open_stdin_completes_the_write() {
+    let f = Reporter::new();
+    let seq = report_seq(10);
+    let started = Instant::now();
+    let mut child = f
+        .command(&["w1:p1", &seq, CLAUDE_ID, "200000"])
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let held = child.stdin.take();
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if started.elapsed() > Duration::from_millis(1500) {
+            let _ = child.kill();
+            panic!("report blocked on open stdin");
+        }
+        thread::sleep(Duration::from_millis(10));
+    };
+    drop(held);
+    assert_eq!(status.code(), Some(0));
+    assert_eq!(f.methods(), ["pane.get", "pane.report_metadata"]);
+    assert_claude_wire(&f.writes()[0], &seq, 200_000);
+}
+
+/// D3: an `env -i` run with only an absolute `HOME` succeeds, and an
+/// explicit relative `--state` exits 3 with no file access in the cwd.
+#[test]
+fn claude_report_needs_only_home_and_refuses_relative_state() {
+    let f = Reporter::new();
+    let seq = report_seq(10);
+    // `command` clears the environment and sets only `HOME`.
+    assert_eq!(f.report(&["w1:p1", &seq, CLAUDE_ID, "200000"]), Some(0));
+    assert_eq!(f.writes().len(), 1);
+    f.calls.lock().unwrap().clear();
+    let output = Command::new(BIN)
+        .env_clear()
+        .env("HOME", &f.home)
+        .current_dir(f.dir.join("cwd"))
+        .args([
+            "--root",
+            f.root.to_str().unwrap(),
+            "--state",
+            "relative/state",
+        ])
+        .args([
+            "--report",
+            "claude",
+            "w1:p1",
+            &report_seq(5),
+            CLAUDE_ID,
+            "300000",
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(3));
+    assert!(output.stdout.is_empty() && output.stderr.is_empty());
+    assert!(f.methods().is_empty());
+    assert_eq!(fs::read_dir(f.dir.join("cwd")).unwrap().count(), 0);
+}
+
+/// D3, as the mod runs it: the installed runtime with only an absolute
+/// `HOME`, no `--root` or `--state` and an unrelated cwd derives its root
+/// from its own path and its state from the home, and reports.
+#[test]
+fn claude_report_as_the_mod_runs_it_derives_root_and_state() {
+    let f = Reporter::new();
+    f.installable();
+    f.install_step("--install-hooks");
+    f.install_step("--install-claude-mod");
+    f.calls.lock().unwrap().clear();
+    let output = Command::new(f.root.join("anton-runtime"))
+        .env_clear()
+        .env("HOME", &f.home)
+        .current_dir(f.dir.join("cwd"))
+        .args(["--report", "claude", "w1:p1", &report_seq(10), CLAUDE_ID])
+        .arg("200000")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(f.methods(), ["pane.get", "pane.report_metadata"]);
+    let state = f.home.join(".local/state/herdr.observatory");
+    assert!(state.join("hook.lock").is_file());
+    assert!(!f.state.exists());
+    assert_eq!(fs::read_dir(f.dir.join("cwd")).unwrap().count(), 0);
+}
+
+/// D3 (review round 2): the reporter expands a `~/` socket path against
+/// its home, as the collector does, and refuses a relative one (exit 3, no
+/// RPC), because it runs in the Claude session's working directory. A local
+/// host without `socket_path` is not applicable either (review round 5).
+#[test]
+fn claude_report_expands_a_home_socket_and_refuses_a_relative_one() {
+    let f = Reporter::new();
+    let socket_config = |path: &str| {
+        write(
+            &f.root.join(".config.json"),
+            serde_json::to_vec(&json!({"hosts":[{"id":"local","socket_path":path}]})).unwrap(),
+            0o600,
+        );
+    };
+    std::os::unix::fs::symlink(&f.socket, f.home.join("herdr.sock")).unwrap();
+    socket_config("~/herdr.sock");
+    assert_eq!(
+        f.report(&["w1:p1", &report_seq(20), CLAUDE_ID, "200000"]),
+        Some(0)
+    );
+    assert_eq!(f.methods(), ["pane.get", "pane.report_metadata"]);
+    // A relative path, run from a directory that holds a socket of that name.
+    socket_config("herdr.sock");
+    f.calls.lock().unwrap().clear();
+    let output = f
+        .command(&["w1:p1", &report_seq(10), CLAUDE_ID, "300000"])
+        .current_dir(&f.dir)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(3));
+    assert!(output.stdout.is_empty() && output.stderr.is_empty());
+    assert!(f.methods().is_empty());
+    // Review round 5: a local host without `socket_path` (a `session` host,
+    // or neither key, so Herdr's CLI default) has no socket to report to.
+    // The Claude reporter exits 3 without output or RPC; Pi still exits 1.
+    for host in [
+        json!({"id":"local","session":"main"}),
+        json!({"id":"local"}),
+    ] {
+        write(
+            &f.root.join(".config.json"),
+            serde_json::to_vec(&json!({"hosts":[host]})).unwrap(),
+            0o600,
+        );
+        f.calls.lock().unwrap().clear();
+        let output = f
+            .command(&["w1:p1", &report_seq(30), CLAUDE_ID, "200000"])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(3), "{host}");
+        assert!(
+            output.stdout.is_empty() && output.stderr.is_empty(),
+            "{host}"
+        );
+        let mut pi = Command::new(BIN)
+            .env_clear()
+            .env("HOME", &f.home)
+            .current_dir(f.dir.join("cwd"))
+            .args(["--report", "pi", "w1:p1", &report_seq(30)])
+            .args(["--root", f.root.to_str().unwrap()])
+            .args(["--state", f.state.to_str().unwrap()])
+            .stdin(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        pi.stdin
+            .take()
+            .unwrap()
+            .write_all(br#"{"event":"turn","phase":"working"}"#)
+            .unwrap();
+        let pi = pi.wait_with_output().unwrap();
+        assert_eq!(pi.status.code(), Some(1), "{host}");
+        assert_eq!(
+            String::from_utf8_lossy(&pi.stderr).trim(),
+            "Missing local socket",
+            "{host}"
+        );
+        assert!(f.methods().is_empty(), "{host}");
+    }
+}
+
+/// D3: a pane that is not this exact Claude session, an older `obs_seq`,
+/// no mod receipt, two local hosts or a busy hook lock exit 3 without a
+/// write; a mod receipt mid-refresh is accepted.
+#[test]
+fn claude_report_refuses_unbound_panes_and_missing_ownership() {
+    let f = Reporter::new();
+    let seq = report_seq(10);
+    let mut cases = Vec::new();
+    let mut pane = claude_pane(CLAUDE_ID);
+    pane["agent"] = json!("codex");
+    cases.push(pane);
+    let mut pane = claude_pane(CLAUDE_ID);
+    pane["agent_session"]["agent"] = json!("pi");
+    cases.push(pane);
+    let mut pane = claude_pane(CLAUDE_ID);
+    pane["agent_session"]["source"] = json!("user:claude");
+    cases.push(pane);
+    let mut pane = claude_pane(CLAUDE_ID);
+    pane["agent_session"]["kind"] = json!("path");
+    cases.push(pane);
+    cases.push(claude_pane("fixture-other-session"));
+    let mut pane = claude_pane(CLAUDE_ID);
+    pane["tokens"] = json!({"obs_seq":report_seq(0)});
+    cases.push(pane);
+    for pane in cases {
+        f.pane("w1:p1", pane.clone());
+        f.calls.lock().unwrap().clear();
+        assert_eq!(
+            f.report(&["w1:p1", &seq, CLAUDE_ID, "200000"]),
+            Some(3),
+            "{pane}"
+        );
+        assert_eq!(f.methods(), ["pane.get"], "{pane}");
+    }
+    f.pane("w1:p1", claude_pane(CLAUDE_ID));
+    // No receipt, a receipt without `claude_mod` and a malformed entry.
+    let mut broken = f.mod_entry(false);
+    broken["files"][0]["sha256"] = json!("not-a-hash");
+    for entry in [None, Some(json!(null)), Some(broken)] {
+        f.receipt(entry);
+        f.calls.lock().unwrap().clear();
+        assert_eq!(f.report(&["w1:p1", &seq, CLAUDE_ID, "200000"]), Some(3));
+        assert!(f.methods().is_empty());
+    }
+    fs::remove_file(f.root.join(".hooks-receipt.json")).unwrap();
+    assert_eq!(f.report(&["w1:p1", &seq, CLAUDE_ID, "200000"]), Some(3));
+    assert!(f.methods().is_empty());
+    // Two local hosts.
+    f.receipt(Some(f.mod_entry(false)));
+    f.config(2);
+    assert_eq!(f.report(&["w1:p1", &seq, CLAUDE_ID, "200000"]), Some(3));
+    assert!(f.methods().is_empty());
+    f.config(1);
+    // A busy hook lock, held past the reporter's 400 ms wait.
+    assert!(f.state.is_dir());
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(f.state.join("hook.lock"))
+        .unwrap();
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::OpenOptionsExt;
+    assert_eq!(unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) }, 0);
+    assert_eq!(f.report(&["w1:p1", &seq, CLAUDE_ID, "200000"]), Some(3));
+    assert!(f.methods().is_empty());
+    drop(lock);
+    // A receipt entry still carrying `prior_sha256` from a refresh.
+    f.receipt(Some(f.mod_entry(true)));
+    assert_eq!(f.report(&["w1:p1", &seq, CLAUDE_ID, "200000"]), Some(0));
+    assert_eq!(f.methods(), ["pane.get", "pane.report_metadata"]);
+}
+
+/// Regression guard: `--report pi` still parses options after its values
+/// and reads its event from stdin.
+#[test]
+fn pi_report_option_parsing_is_unchanged() {
+    let f = Reporter::new();
+    f.pane(
+        "w1:p1",
+        json!({"agent":"pi","agent_session":{"agent":"pi","source":"herdr:pi","kind":"path","value":"/synthetic/session"},"tokens":{}}),
+    );
+    let mut child = Command::new(BIN)
+        .env_clear()
+        .env("HOME", &f.home)
+        .current_dir(f.dir.join("cwd"))
+        .args(["--report", "pi", "w1:p1", &report_seq(10)])
+        .args([
+            "--root",
+            f.root.to_str().unwrap(),
+            "--state",
+            f.state.to_str().unwrap(),
+        ])
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let event = json!({"session_path":"/synthetic/session","event":"turn","phase":"working"});
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(event.to_string().as_bytes())
+        .unwrap();
+    assert!(child.wait().unwrap().success());
+    assert_eq!(f.methods(), ["pane.get", "pane.report_metadata"]);
+    let write = &f.writes()[0];
+    assert_eq!(write["agent"], "pi");
+    assert_eq!(write["display_agent"], "pi · working");
+}
+
+/// Installer CLI fixtures for the Claude Code mod (design D5, D7). Each run
+/// has `env_clear()`, an absolute temporary `HOME`, a `PATH` holding only the
+/// fixture `bin` directory (so the host's `chezmoi` and `mise` never run) and
+/// a private working directory.
+impl Reporter {
+    /// A real runtime in the plugin root, `~/.claude` and an empty `bin`, with
+    /// the synthetic receipt removed so the installers write their own.
+    fn installable(&self) {
+        fs::remove_file(self.root.join(".hooks-receipt.json")).unwrap();
+        // Copied by a child process for the reason `support::write_executable` gives.
+        assert!(
+            Command::new("cp")
+                .arg("--")
+                .arg(BIN)
+                .arg(self.root.join("anton-runtime"))
+                .status()
+                .unwrap()
+                .success()
+        );
+        fs::set_permissions(
+            self.root.join("anton-runtime"),
+            fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+        for path in [self.home.join(".claude"), self.dir.join("bin")] {
+            fs::create_dir(&path).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+    }
+    fn installer(&self, mode: &str) -> Command {
+        let mut command = Command::new(BIN);
+        command
+            .env_clear()
+            .env("HOME", &self.home)
+            .env("PATH", self.dir.join("bin"))
+            // Keeps the host's `/etc/mise` out of the mise declaration read.
+            .env("MISE_SYSTEM_CONFIG_DIR", self.dir.join("etc-mise"))
+            .current_dir(self.dir.join("cwd"))
+            .args([
+                "--root",
+                self.root.to_str().unwrap(),
+                "--state",
+                self.state.to_str().unwrap(),
+                mode,
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        command
+    }
+    /// Runs one installer command and asserts it succeeded.
+    fn install_step(&self, mode: &str) {
+        let output = self.installer(mode).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{mode}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    fn mod_root(&self) -> PathBuf {
+        self.home.join(".claude/skills/anton-observatory")
+    }
+}
+/// Every entry under and including `dir`, keyed by path: kind, bytes (regular
+/// files only), inode and mode. Directories are recorded, so a comparison sees
+/// one created or removed.
+fn file_tree(dir: &Path) -> std::collections::BTreeMap<PathBuf, (&'static str, Vec<u8>, u64, u32)> {
+    use std::os::unix::fs::MetadataExt;
+    let mut entries = std::collections::BTreeMap::new();
+    let mut pending = vec![dir.to_owned()];
+    while let Some(path) = pending.pop() {
+        let info = fs::symlink_metadata(&path).unwrap();
+        let kind = if info.is_dir() {
+            for entry in fs::read_dir(&path).unwrap() {
+                pending.push(entry.unwrap().path());
+            }
+            "directory"
+        } else if info.is_file() {
+            "file"
+        } else if info.file_type().is_symlink() {
+            "symlink"
+        } else {
+            "other"
+        };
+        let bytes = if kind == "file" {
+            fs::read(&path).unwrap()
+        } else {
+            Vec::new()
+        };
+        entries.insert(path, (kind, bytes, info.ino(), info.mode()));
+    }
+    entries
+}
+
+/// D3 guard 2 and D5 agree: a mod installed through the CLI is accepted by
+/// `--report claude`, and after `--uninstall-claude-mod` it is refused.
+#[test]
+fn claude_mod_installed_by_the_cli_is_accepted_by_the_reporter() {
+    let f = Reporter::new();
+    f.installable();
+    f.install_step("--install-hooks");
+    f.install_step("--install-claude-mod");
+    let register = fs::read_to_string(f.mod_root().join("hooks/register.js")).unwrap();
+    assert!(register.contains(&format!(
+        "const nativeRuntime = {};",
+        json!(f.root.join("anton-runtime"))
+    )));
+    for name in [".claude-plugin/plugin.json", "hooks/hooks.json"] {
+        assert!(f.mod_root().join(name).is_file(), "{name}");
+    }
+    assert_eq!(
+        f.report(&["w1:p1", &report_seq(30), CLAUDE_ID, "200000"]),
+        Some(0)
+    );
+    assert_eq!(f.methods(), ["pane.get", "pane.report_metadata"]);
+    let before = file_tree(&f.dir);
+    f.install_step("--install-claude-mod");
+    assert_eq!(
+        file_tree(&f.dir),
+        before,
+        "an identical reinstall writes nothing"
+    );
+    f.install_step("--uninstall-claude-mod");
+    assert!(!f.home.join(".claude/skills").exists());
+    assert!(f.home.join(".pi/agent/extensions/observatory.ts").exists());
+    f.calls.lock().unwrap().clear();
+    assert_eq!(
+        f.report(&["w1:p1", &report_seq(20), CLAUDE_ID, "200000"]),
+        Some(3)
+    );
+    assert!(f.methods().is_empty(), "no RPC without a mod receipt");
+    f.install_step("--install-claude-mod");
+    f.install_step("--uninstall-hooks");
+    assert!(!f.home.join(".claude/skills").exists());
+    assert!(!f.root.join(".hooks-receipt.json").exists());
+}
+
+/// D5 removal step 2 (review round 6): every kept recorded directory is
+/// reported on stderr, including a recorded `~/.claude/skills` that now
+/// holds another skill, and the removal still succeeds.
+#[test]
+fn claude_mod_removal_reports_a_kept_skills_directory() {
+    let f = Reporter::new();
+    f.installable();
+    f.install_step("--install-hooks");
+    for mode in ["--uninstall-claude-mod", "--uninstall-hooks"] {
+        f.install_step("--install-claude-mod");
+        let skills = f.home.join(".claude/skills");
+        let other = skills.join("other/SKILL.md");
+        fs::create_dir_all(other.parent().unwrap()).unwrap();
+        fs::write(&other, "another skill").unwrap();
+        let output = f.installer(mode).output().unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{mode}: {stderr}");
+        assert!(
+            stderr.contains(&format!("Kept {}:", skills.display())),
+            "{mode}: {stderr}"
+        );
+        assert_eq!(fs::read_to_string(&other).unwrap(), "another skill");
+        assert!(!f.mod_root().exists(), "{mode}");
+        fs::remove_dir_all(&skills).unwrap();
+        if mode == "--uninstall-hooks" {
+            assert!(!f.root.join(".hooks-receipt.json").exists());
+        }
+    }
+}
+
+/// D1: the CLI reads `CLAUDE_CONFIG_DIR` from its own environment, and a
+/// value naming another configuration refuses the mod and changes nothing.
+#[test]
+fn claude_mod_install_refuses_another_claude_config_dir_through_the_cli() {
+    let f = Reporter::new();
+    f.installable();
+    f.install_step("--install-hooks");
+    let before = file_tree(&f.dir);
+    let output = f
+        .installer("--install-claude-mod")
+        .env("CLAUDE_CONFIG_DIR", f.dir.join("other-claude"))
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("CLAUDE_CONFIG_DIR"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(file_tree(&f.dir), before);
+    assert!(!f.home.join(".claude/skills").exists());
+    // Naming `~/.claude` itself is accepted.
+    let output = f
+        .installer("--install-claude-mod")
+        .env("CLAUDE_CONFIG_DIR", f.home.join(".claude"))
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(f.mod_root().join("hooks/register.js").is_file());
+}
+
+/// D5: every mise run (`dotfiles paths --json`, then `config get -f <file>`
+/// for each config file it could load) runs from the home directory with a
+/// null stdin, whatever the installer's own working directory holds and
+/// whatever stdin the installer itself has (here an open pipe). A sibling
+/// declaration does not refuse.
+#[test]
+fn claude_mod_install_runs_mise_from_the_home_with_null_stdin() {
+    let f = Reporter::new();
+    f.installable();
+    f.install_step("--install-hooks");
+    write(&f.dir.join("cwd/mise.toml"), b"[tools]\n", 0o600);
+    let config = f.home.join(".config/mise/config.toml");
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    write(
+        &config,
+        b"[dotfiles.\"~/.claude/skills/other\"]\nmode = \"copy\"\n",
+        0o600,
+    );
+    let log = f.dir.join("mise.log");
+    let home = f.home.to_str().unwrap();
+    support::write_executable(
+        &f.dir.join("bin/mise"),
+        format!(
+            "#!/bin/sh\n{{ printf '%s ' \"$@\"; printf '| %s | ' \"$(pwd)\"; if [ /proc/$$/fd/0 -ef /dev/null ]; then echo null; else echo other; fi; }} >> '{}'\ncase \"$3\" in\ndotfiles) printf '%s' '{{\"entries\":[{{\"path\":\"~/.claude/skills/other\"}}]}}' ;;\nconfig) case \"$6\" in '{home}'/*) while IFS= read -r line; do printf '%s\\n' \"$line\"; done < \"$6\" ;; esac ;;\n*) exit 1 ;;\nesac\n",
+            log.display()
+        )
+        .as_bytes(),
+        0o700,
+    );
+    // The installer's own stdin is a pipe held open here, so only the
+    // explicit null stdin of the mise run can make the fake print `null`.
+    let mut installer = f
+        .installer("--install-claude-mod")
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let held = installer.stdin.take();
+    let output = installer.wait_with_output().unwrap();
+    drop(held);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let calls = fs::read_to_string(&log).unwrap();
+    let calls: Vec<&str> = calls.lines().collect();
+    assert_eq!(
+        calls[0],
+        format!("-C {home} dotfiles paths --json | {home} | null")
+    );
+    for call in &calls[1..] {
+        assert!(
+            call.starts_with(&format!("-C {home} config get -f /")),
+            "{call}"
+        );
+        assert!(call.ends_with(&format!(" | {home} | null")), "{call}");
+    }
+    // Of the fixture's own files, only the home's config file is read; the
+    // other calls are the host's directories above the fixture, if any.
+    let fixture = f.dir.to_str().unwrap();
+    let ours: Vec<&str> = calls[1..]
+        .iter()
+        .filter(|call| call.contains(&format!(" -f {fixture}/")))
+        .copied()
+        .collect();
+    assert_eq!(
+        ours,
+        [format!(
+            "-C {home} config get -f {} | {home} | null",
+            config.display()
+        )]
+    );
+    assert!(f.mod_root().join("hooks/register.js").is_file());
+}
+
+/// D5: a copy-mode `[dotfiles]` declaration of `~/.claude/skills` refuses
+/// through the CLI although history lists nothing, and nothing is written.
+#[test]
+fn claude_mod_install_refuses_a_copy_mode_mise_declaration() {
+    let f = Reporter::new();
+    f.installable();
+    f.install_step("--install-hooks");
+    let config = f.home.join(".config/mise/config.toml");
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    write(
+        &config,
+        b"[dotfiles.\"~/.claude/skills\"]\nmode = \"copy\"\n",
+        0o600,
+    );
+    let home = f.home.to_str().unwrap();
+    support::write_executable(
+        &f.dir.join("bin/mise"),
+        format!(
+            "#!/bin/sh\ncase \"$3\" in\ndotfiles) printf '%s' '{{\"entries\":[],\"incomplete\":[]}}' ;;\nconfig) case \"$6\" in '{home}'/*) while IFS= read -r line; do printf '%s\\n' \"$line\"; done < \"$6\" ;; esac ;;\n*) exit 1 ;;\nesac\n"
+        )
+        .as_bytes(),
+        0o700,
+    );
+    let receipt = fs::read(f.root.join(".hooks-receipt.json")).unwrap();
+    let output = f.installer("--install-claude-mod").output().unwrap();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("managed by mise"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!f.home.join(".claude/skills").exists());
+    assert_eq!(
+        fs::read(f.root.join(".hooks-receipt.json")).unwrap(),
+        receipt
+    );
+}
+
+/// D5: while the plugin root is locked, every receipt writer refuses as busy
+/// within its bound and leaves every file unchanged.
+#[test]
+fn hook_receipt_writers_refuse_as_busy_through_the_cli() {
+    use std::os::fd::AsRawFd;
+    let f = Reporter::new();
+    f.installable();
+    f.install_step("--install-hooks");
+    f.install_step("--install-claude-mod");
+    let before = file_tree(&f.dir);
+    let lock = fs::File::open(&f.root).unwrap();
+    assert_eq!(
+        unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+        0
+    );
+    let started = Instant::now();
+    let writers: Vec<_> = [
+        "--install-hooks",
+        "--install-claude-mod",
+        "--uninstall-claude-mod",
+        "--uninstall-hooks",
+        "--repair-retired-hooks",
+    ]
+    .into_iter()
+    .map(|mode| (mode, f.installer(mode).spawn().unwrap()))
+    .collect();
+    for (mode, writer) in writers {
+        let output = writer.wait_with_output().unwrap();
+        assert_eq!(output.status.code(), Some(1), "{mode}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            "Hook receipt busy; retry\n",
+            "{mode}"
+        );
+    }
+    let waited = started.elapsed();
+    assert!(
+        waited >= Duration::from_secs(3) && waited < Duration::from_secs(6),
+        "{waited:?}"
+    );
+    assert_eq!(file_tree(&f.dir), before);
+    drop(lock);
+    f.install_step("--uninstall-claude-mod");
+    assert!(!f.mod_root().exists());
 }

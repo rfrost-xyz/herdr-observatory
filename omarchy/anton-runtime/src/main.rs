@@ -235,6 +235,14 @@ impl State {
                     if !local && revalidate(agent, sample.sampled_at) {
                         rejected.insert(agent.id.clone());
                     }
+                    // D4: Claude windows are local-only, so a peer's, from
+                    // any peer version, is dropped with its percentage.
+                    if !local && agent.harness == "claude" {
+                        if let Some(telemetry) = &mut agent.technical.telemetry {
+                            telemetry.window = None;
+                            telemetry.context_percent = None;
+                        }
+                    }
                     let previous = if state.online {
                         state.agents.iter().find(|old| {
                             old.id == agent.id
@@ -1047,14 +1055,33 @@ fn cli() -> Result<()> {
         .ok_or("Executable directory unavailable")?
         .to_owned();
     let mut state = None;
-    let mut args = std::env::args().skip(1);
+    let mut args = std::env::args().skip(1).peekable();
     let mut commands = Vec::new();
+    let mut claude = None;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--root" => root = args.next().ok_or("Missing root")?.into(),
             "--state" => state = Some(PathBuf::from(args.next().ok_or("Missing state")?)),
+            // D3: `--report claude` takes every later value verbatim, so an
+            // option-like pane or session id is never parsed as an option.
+            "--report" if commands.is_empty() && args.peek().is_some_and(|v| v == "claude") => {
+                args.next();
+                claude = Some(args.by_ref().collect::<Vec<_>>());
+            }
             _ => commands.push(arg),
         }
+    }
+    let leaf = if root
+        .file_name()
+        .is_some_and(|v| v == "herdr.observatory-peer")
+    {
+        "herdr.observatory-peer"
+    } else {
+        "herdr.observatory"
+    };
+    if let Some(values) = claude {
+        // Before any stdin read; the status carries the outcome (D3).
+        std::process::exit(reporter::claude(&root, state.as_deref(), &values, leaf));
     }
     if !root.is_absolute() {
         return Err("Absolute plugin root required".into());
@@ -1063,16 +1090,7 @@ fn cli() -> Result<()> {
         std::env::var_os("XDG_STATE_HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|| common::expand_home("~/.local/state"))
-            .join(
-                if root
-                    .file_name()
-                    .is_some_and(|v| v == "herdr.observatory-peer")
-                {
-                    "herdr.observatory-peer"
-                } else {
-                    "herdr.observatory"
-                },
-            )
+            .join(leaf)
     });
     let home = common::expand_home("~");
     let owner = root.join(".herdr-observatory-install");
@@ -1097,6 +1115,8 @@ fn cli() -> Result<()> {
         ),
         "--uninstall-hooks" => hooks_install::uninstall(&root, &home),
         "--repair-retired-hooks" => hooks_install::repair_retired(&root, &home),
+        "--install-claude-mod" => hooks_install::install_claude_mod(&root, &home),
+        "--uninstall-claude-mod" => hooks_install::uninstall_claude_mod(&root, &home),
         "--retire-checkpoints" => native::retire(&state, &owner),
         "--report" => {
             if commands.len() != 4 {
@@ -1166,7 +1186,7 @@ fn cli() -> Result<()> {
             let result = collection::local(
                 &host,
                 &request["cursors"],
-                &mut native::NativeTelemetry::default(),
+                &mut native::NativeTelemetry::peer(),
                 Some(&SIGNAL_STOP),
             )?;
             output(
@@ -1425,6 +1445,44 @@ mod tests {
             (timing.total_finished_duration_s, timing.freshness_seconds),
             (Some(7), 15.0)
         );
+    }
+    /// A peer sample of `harness` whose caught-up telemetry carries a window
+    /// and a percentage, after `State::sample`.
+    fn peer_windowed(harness: &str) -> Telemetry {
+        let now = common::now();
+        let mut telemetry = caught_up((now as u64 - 60) * 1_000_000);
+        telemetry["window"] = json!(200_000);
+        telemetry["context_percent"] = json!(1);
+        let mut state = peer();
+        let mut value = sample("working", now);
+        value.agents[0] = claude(7, telemetry);
+        value.agents[0].harness = harness.into();
+        state.sample("test", Ok(value));
+        let kept = state.hosts[0].agents[0].technical.telemetry.clone();
+        let kept = kept.expect("revalidated telemetry");
+        assert_eq!(kept.context, Some(1201), "{harness}");
+        assert_eq!(kept.total_input, Some(3461), "{harness}");
+        kept
+    }
+    /// D4: a peer never reports a Claude window, so one in a peer sample,
+    /// from any peer version, is dropped with its percentage.
+    #[test]
+    fn peer_claude_window_and_context_percent_are_dropped() {
+        let kept = peer_windowed("claude");
+        assert_eq!((kept.window, kept.context_percent), (None, None));
+    }
+    /// Regression guard: peer Codex and Pi telemetry keep their window and
+    /// percentage.
+    #[test]
+    fn peer_codex_and_pi_windows_are_kept() {
+        for harness in ["codex", "pi"] {
+            let kept = peer_windowed(harness);
+            assert_eq!(
+                (kept.window, kept.context_percent),
+                (Some(200_000), Some(1)),
+                "{harness}"
+            );
+        }
     }
     /// Peer revalidation allows the 1 s transport skew `sampled_at` allows,
     /// plus the peer's own gap between stamping `sampled_at` and stamping its
@@ -1890,6 +1948,45 @@ mod tests {
         let mut row: Value = serde_json::from_str(r#"{"caught_up":true,"children":{},"claude":{"abort_adjacent":false,"ambiguous":false,"clean":true,"foreign":false,"cache_creation":0,"cache_read":0,"classifier":null,"closed":[],"compaction_iteration":false,"compactions":0,"coverage_seq":1767225612250000,"input":0,"last":null,"last_valid":true,"end_floor":1767225612,"local_idle":false,"lost_idle":false,"open":{"id":"3a0de37932e8b197","response":{"model":"claude-fixture-1","usage":[1,1,1,1]},"stop":2,"tainted":false,"usage":[1,1,1,1]},"output":0,"pending_command":false,"pending_start":null,"queued_since_start":null,"silent_end":false,"totals_valid":true,"usage_seq":1767225611250000},"compaction_markers":0,"compaction_summaries":0,"compactions_valid":true,"file":[1,2],"fingerprint":{"header":"47b6f0a22fd24b24fe54e82f5ba3bb0b310819634f922c08a6c6e72ba5e132c5","mtime_us":1,"size":654,"tail":"ffc6d285d1377c43ed044721bbe51bdbb916ee8891654de6362a784d098d80e5"},"offset":654,"seq":0,"skipping":false,"turns":{"active":null,"current_known":true,"finished":{"4c318c012df919977122e3ca":[1767225610,1767225612,"completed"]},"last":"4c318c012df919977122e3ca","last_duration":2,"last_end":1767225612,"last_outcome":"completed","start":null,"supported":true,"total":2,"valid":true},"valid":true}"#).unwrap();
         row["at"] = json!(common::now());
         json!({ common::sha256(b"claude-row"): row })
+    }
+    /// Review round 2, paired with the native test
+    /// `claude_peer_output_ignores_bound_reporter_metadata`: on an
+    /// incomplete peer pass a Claude pane has no native telemetry. A peer
+    /// pane carrying a bound reporter window is then collected with none,
+    /// so the local re-emits its retained copy. The local collection
+    /// fallback would carry the window-only report instead and drop it.
+    #[test]
+    fn peer_claude_pane_with_a_reporter_window_keeps_the_retained_sample() {
+        let seq = (common::now() as u64 - 60) * 1_000_000;
+        let mut pane = json!({"pane_id":"pane","agent":"claude","agent_status":"working",
+            "agent_session":{"agent":"claude","source":"herdr:claude","kind":"id","value":"fixture-session"}});
+        let binding = telemetry::session_binding(&pane).unwrap();
+        pane["tokens"] = json!({"obs_v":"2","obs_bind":binding,"obs_seq":(seq + 1).to_string(),
+            "obs_event":"session","obs_phase":"ready","obs_tool":null,"obs_model":null,
+            "obs_result":null,"obs_usage_source":null,"obs_n0":",,,","obs_n1":",200000,,",
+            "obs_n2":",,,","obs_n3":",","obs_children":null,"obs_completion":null,"obs_outcomes":null});
+        let collected = |probe: bool, native: Option<Value>| {
+            let mut entry = pane.clone();
+            if let Some(native) = native {
+                entry["_native_telemetry"] = native;
+            }
+            let raw = json!({"agents":[entry],"workspaces":[]});
+            let agents = collection::normalise(&raw, &json!({"id":"test"}), probe).unwrap();
+            let mut value = sample("working", common::now());
+            value.agents = vec![serde_json::from_value(agents[0].clone()).unwrap()];
+            value.cursors = claude_row();
+            value.requested = requested();
+            value
+        };
+        for (probe, kept) in [(true, Some(3461)), (false, None)] {
+            let mut state = peer();
+            state.sample("test", Ok(collected(probe, Some(caught_up(seq)))));
+            assert_eq!(state.retained["test"].len(), 1, "{probe}");
+            state.sample("test", Ok(collected(probe, None)));
+            let shown = state.hosts[0].agents[0].technical.telemetry.as_ref();
+            assert_eq!(shown.and_then(|v| v.total_input), kept, "{probe}");
+            assert_eq!(state.retained["test"].len(), usize::from(probe), "{probe}");
+        }
     }
     #[test]
     fn peer_retention_is_dropped_without_rows_on_failure_and_for_local_hosts() {

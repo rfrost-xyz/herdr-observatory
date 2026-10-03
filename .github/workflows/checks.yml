@@ -13,7 +13,7 @@ jobs:
       - run: cargo fmt --manifest-path omarchy/anton-runtime/Cargo.toml --check
       - run: cargo clippy --manifest-path omarchy/anton-runtime/Cargo.toml --locked --all-targets -- -D warnings
       - run: cargo test --manifest-path omarchy/anton-runtime/Cargo.toml --locked
-      - run: node --test tests/test_pi_hooks.mjs tests/test_omarchy_state.cjs tests/test_native_distribution.mjs
+      - run: node --test tests/test_pi_hooks.mjs tests/test_claude_mod.mjs tests/test_omarchy_state.cjs tests/test_native_distribution.mjs
   qml:
     # Qt 6.8 LTS instead of Ubuntu's Qt 6.4. On 6.4 the AntonSurface colour
     # bindings read the stub qs.Commons Color as undefined and throw while the

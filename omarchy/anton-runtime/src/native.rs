@@ -748,22 +748,36 @@ pub struct NativeTelemetry {
     discovery: BTreeMap<String, (Instant, Option<PathBuf>)>,
     usage: BTreeMap<String, (FileSignature, Value)>,
     claude: BTreeMap<String, Binding>,
+    /// A peer probe's follower: Claude samples ignore the pane's Observatory
+    /// metadata, so peer output never depends on a reporter (D4).
+    peer: bool,
 }
 fn turn_timing(turns: &Turns, time: f64) -> Value {
     json!({"active":if turns.current_known{Some(turns.active.is_some())}else{None},"started_at_s":if turns.current_known{turns.start}else{None},"observed_at_s":time,"last_duration_s":turns.last_duration,"last_outcome":turns.last_outcome,"total_finished_duration_s":if turns.valid&&turns.supported{Some(turns.total)}else{None},"complete":turns.valid&&turns.supported})
 }
+/// The pane's bound Observatory metadata telemetry for a Claude sample. A
+/// peer ignores it, so a peer sample is the replay alone, as before the
+/// reporter existed, whatever metadata the peer's panes carry (D4).
+fn claude_metadata(agent: &Value, peer: bool) -> Option<Value> {
+    if peer {
+        return None;
+    }
+    telemetry::telemetry_from_agent(agent)
+}
 /// Merges a Claude replay object into the agent's metadata telemetry as Codex
 /// usage is merged, adds children from a caught-up `row`, then stamps it with
 /// the largest of the metadata, usage, child and replay `seq` times (D6, D8).
-/// Returns whether a sample was published: none is when no time is usable.
+/// On a `peer` the metadata is ignored. Returns whether a sample was
+/// published: none is when no time is usable.
 fn publish_claude(
     agent: &mut Value,
     usage: &Value,
     row: Option<&claude::Row>,
     seq: u64,
     time: f64,
+    peer: bool,
 ) -> bool {
-    let previous = telemetry::telemetry_from_agent(agent).unwrap_or_else(|| json!({}));
+    let previous = claude_metadata(agent, peer).unwrap_or_else(|| json!({}));
     let mut value = previous.clone();
     if number(&previous["usage_seq"]).is_none()
         || number(&usage["usage_seq"]) >= number(&previous["usage_seq"])
@@ -795,6 +809,8 @@ fn publish_claude(
             value[*key] = Value::Null;
         }
     }
+    let window = number(&value["window"]);
+    claude_window(&mut value, window);
     if let Some(stamp) = [
         number(&value["seq"]),
         number(&value["usage_seq"]),
@@ -812,8 +828,8 @@ fn publish_claude(
             value["phase"] = json!("ready");
         }
         let mut view = telemetry::telemetry_view_at(&value, time).unwrap_or(Value::Null);
-        // D4: a Claude pane has no window source, so the window and its
-        // percentage are omitted rather than null; a metadata value stays.
+        // D4: without a bound reporter window, the window and its percentage
+        // are omitted rather than null.
         if let Some(view) = view.as_object_mut() {
             for key in ["window", "context_percent"] {
                 if view.get(key).is_some_and(Value::is_null) {
@@ -825,6 +841,30 @@ fn publish_claude(
         return true;
     }
     false
+}
+/// D4: sets a Claude sample's `window` and `context_percent` from `window`,
+/// the pane's own bound reporter window. Any incoming percentage is dropped.
+/// A window under the replay context is stale (a smaller model before its
+/// next turn reports), so it is dropped and the context kept. The percentage
+/// needs both values and is rounded half up, with no reserve.
+fn claude_window(value: &mut Value, window: Option<u64>) {
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    object.remove("window");
+    object.remove("context_percent");
+    let Some(window) = window.filter(|v| *v > 0) else {
+        return;
+    };
+    let context = object.get("context").and_then(number);
+    if context.is_some_and(|context| context > window) {
+        return;
+    }
+    object.insert("window".into(), json!(window));
+    if let Some(context) = context {
+        let percent = (u128::from(context) * 100 + u128::from(window) / 2) / u128::from(window);
+        object.insert("context_percent".into(), json!(percent as u64));
+    }
 }
 /// The source times of a Claude cursor row: `coverage_seq`, `usage_seq` and
 /// the child `seq`.
@@ -842,7 +882,7 @@ fn incoming_stamps(cursors: &BTreeMap<String, Cursor>, key: &str) -> Option<[u64
 /// nothing. Returns false only when the row has a source time but none is
 /// usable yet: the caller then withholds the row, so the local cannot
 /// re-emit.
-fn unknown_claude(agent: &mut Value, stamps: Option<[u64; 3]>, time: f64) -> bool {
+fn unknown_claude(agent: &mut Value, stamps: Option<[u64; 3]>, time: f64, peer: bool) -> bool {
     let Some(stamps) = stamps else {
         return true;
     };
@@ -852,7 +892,7 @@ fn unknown_claude(agent: &mut Value, stamps: Option<[u64; 3]>, time: f64) -> boo
         .filter(|v| *v > 0 && *v as f64 <= time * 1e6)
         .max()
     {
-        Some(seq) => publish_claude(agent, &usage, None, seq, time),
+        Some(seq) => publish_claude(agent, &usage, None, seq, time, peer),
         None => stamps.iter().all(|v| *v == 0),
     }
 }
@@ -869,6 +909,17 @@ fn claude_session(agent: &Value) -> Option<(String, String)> {
     Some((session, key))
 }
 impl NativeTelemetry {
+    /// The follower of a `--probe`: fresh on every probe and blind to the
+    /// panes' Claude reporter metadata (D4).
+    pub fn peer() -> Self {
+        Self {
+            peer: true,
+            ..Self::default()
+        }
+    }
+    pub fn is_peer(&self) -> bool {
+        self.peer
+    }
     fn discover(session: &str, deadline: Instant) -> Option<PathBuf> {
         let mut stack = vec![(session_root(), 0)];
         let mut checked = 0;
@@ -982,7 +1033,7 @@ impl NativeTelemetry {
             .filter(|v| !v.rescan && v.path.is_some() && v.at.elapsed() < Duration::from_secs(60));
         let Some(binding) = current else {
             let stamps = incoming_stamps(cursors, key);
-            if stamps.is_some() && !unknown_claude(agent, stamps, time) {
+            if stamps.is_some() && !unknown_claude(agent, stamps, time, self.peer) {
                 cursors.remove(key);
             }
             return;
@@ -992,7 +1043,7 @@ impl NativeTelemetry {
             .as_ref()
             .filter(|_| cursors.get(key).is_some_and(Cursor::is_claude))
         {
-            publish_claude(agent, subset, None, *seq, time);
+            publish_claude(agent, subset, None, *seq, time, self.peer);
         }
     }
     /// The deadline passed after binding, before any replay pass, so the file
@@ -1009,11 +1060,11 @@ impl NativeTelemetry {
         time: f64,
     ) {
         if let Some((subset, seq)) = self.claude.get(key).and_then(|v| v.retained.as_ref()) {
-            publish_claude(agent, subset, None, *seq, time);
+            publish_claude(agent, subset, None, *seq, time, self.peer);
             return;
         }
         let stamps = incoming_stamps(cursors, key);
-        if stamps.is_some() && !unknown_claude(agent, stamps, time) {
+        if stamps.is_some() && !unknown_claude(agent, stamps, time, self.peer) {
             cursors.remove(key);
         }
     }
@@ -1041,7 +1092,8 @@ impl NativeTelemetry {
             return;
         }
         let incoming = incoming_stamps(cursors, &key);
-        let unknown = |agent: &mut Value| unknown_claude(agent, incoming, time);
+        let peer = self.peer;
+        let unknown = |agent: &mut Value| unknown_claude(agent, incoming, time, peer);
         let root = claude::projects_root();
         let path = match self.bind(&root, &session, &key, deadline) {
             Some(Some(path)) => path,
@@ -1117,14 +1169,16 @@ impl NativeTelemetry {
                 let children = (!foreign).then_some(&row);
                 // A restart that publishes nothing, as with no timestamped
                 // record yet, must still replace the local's copy (D3).
-                if !publish_claude(agent, &usage, children, seq, time) && (restarted || foreign) {
+                if !publish_claude(agent, &usage, children, seq, time, peer)
+                    && (restarted || foreign)
+                {
                     withhold = !unknown(agent) || rejected;
                 }
                 let mut subset = usage;
                 subset.as_object_mut().unwrap().remove("compactions");
                 binding.retained = Some((subset, seq));
             } else if let Some((subset, seq)) = &binding.retained {
-                publish_claude(agent, subset, None, *seq, time);
+                publish_claude(agent, subset, None, *seq, time, peer);
             } else if restarted || foreign {
                 // An identity failure replaces the copy a local retains for
                 // a peer, whose fresh follower has nothing to re-emit (D3).
@@ -1144,7 +1198,8 @@ impl NativeTelemetry {
     /// The Claude panes among the first 32 agents. Each session key is
     /// enriched once per call, by its first pane: a later pane on the same key
     /// receives a copy of that outcome, the published telemetry and turn timing
-    /// or their absence, and shares its row or its withholding. Enriching it
+    /// or their absence, with its own window (D4), and shares its row or its
+    /// withholding. Enriching it
     /// again would resume the row the first pane just wrote as if verified and
     /// could publish nothing beside the first pane's all-null sample, so the
     /// local would re-emit a replaced file's copy (D3). `deadlines` gives each
@@ -1173,6 +1228,12 @@ impl NativeTelemetry {
                         Some(value) => object.insert(field.to_owned(), value.clone()),
                         None => object.remove(field),
                     };
+                }
+                // D4: the copy carries the first pane's window; this pane
+                // shows its own bound window, if any, against the context.
+                let window = claude_metadata(agent, self.peer).and_then(|v| number(&v["window"]));
+                if let Some(view) = agent.get_mut("_native_telemetry") {
+                    claude_window(view, window);
                 }
                 continue;
             }

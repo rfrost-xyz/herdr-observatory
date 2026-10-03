@@ -38,6 +38,8 @@ if ! omarchy-shell shell rescanPlugins >/dev/null || ! omarchy plugin enable "$i
 fi
 if [[ -f $target/.config.json ]]; then
   "$target/anton-runtime" --install-hooks
+  # The Claude Code context reporter is optional: a refusal never blocks the plugin.
+  "$target/anton-runtime" --install-claude-mod || echo "Claude Code context reporter not installed; the context dial stays unknown" >&2
 fi
 omarchy restart shell
 omarchy-shell shell ping >/dev/null

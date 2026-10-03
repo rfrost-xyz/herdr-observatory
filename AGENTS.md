@@ -13,13 +13,18 @@ omarchy/herdr.observatory/README.md for current operation.
 - Only explicit user navigation may call `herdr agent focus` for the exact
   configured host/session/pane and raise/open its matching terminal. One attempt,
   no fallback to another host. Preserve most-recent matching window behaviour.
-- Required Pi reporters may read `pane.get` and write bounded owned presentation
-  metadata through `pane.report_metadata`. Native Herdr remains authoritative.
-  Codex and Claude Code enrichment belong to collection, not synchronous
-  Observatory callbacks.
+- Required Pi reporters and the Claude Code mod's reporter may read `pane.get`
+  and write bounded owned presentation metadata through `pane.report_metadata`.
+  Native Herdr remains authoritative. The Claude Code mod only observes events,
+  passes each on unchanged, never waits on its reporter and sends only the pane,
+  sequence, session id and window as argv; its reporter writes one bound window
+  report for agent `claude` and nothing else. Codex and Claude Code transcript
+  enrichment belong to collection, not synchronous Observatory callbacks.
 - No Python or Docker subprocess, web listener, independent daemon or autostart
   service is part of the supported plugin. QML owns the Rust collector lifetime.
   Peers are invoked over existing authenticated SSH and exit after bounded work.
+  The reporter child the Claude Code mod starts is bounded and short-lived, and
+  the mod skips a sample while a recent run is in flight; it is not a daemon.
 - Never parse authentication files. Account observations use native read-only
   Codex account RPCs. No login/reset/redemption mutation. Verify hashed mapping
   before displaying an email; private email identity never enters normal snapshots.
@@ -36,7 +41,8 @@ omarchy/herdr.observatory/README.md for current operation.
 own bounded file/process/socket operations, config, collection, telemetry,
 validated native replay/checkpoints, allowances/identity, navigation, Pi reporting
 and integration/peer receipts. `omarchy/herdr.observatory` contains QML/JS, manifest
-and shell build/install/uninstall. `hooks/observatory.ts` is the Pi extension.
+and shell build/install/uninstall. `hooks/observatory.ts` is the Pi extension and
+`hooks/claude/anton-observatory` is the local-only Claude Code mod.
 
 During an active native migration, old Python files are temporary development
 oracles only. Remove them after parity fixtures preserve plugin guarantees. Do
@@ -56,8 +62,13 @@ not add features or compatibility work to the retired web application.
   retaining source input as uncached; Claude Code follows the same partition.
   Missing complete totals remain unknown.
 - Codex context uses its verified baseline reserve; Pi uses supported context
-  API. Claude Code context has no window or percentage without a compliant
-  window source; never invent one from a model table. Compactions require complete bounded coverage. Repeated or reset counters
+  API. Claude Code takes its window only from a bound local Claude Code mod
+  report for the pane's current session; its percentage is replay context over
+  that window, rounded half up, without the Codex reserve. Without such a report,
+  or with a window smaller than the context, the window and percentage stay
+  unknown; peer Claude Code threads carry neither, and a peer collects them
+  without reading reporter metadata. Never invent a window from a
+  model table. Compactions require complete bounded coverage. Repeated or reset counters
   cannot create activity. Reported old values remain last-known for the same
   bound live session; session replacement invalidates them.
 - Codex and Claude Code completion is based on typed native child lifecycle
@@ -100,7 +111,18 @@ state under `~/.local/state/herdr.observatory`. The peer owns only
 Keep private config/accounts, concealment preferences and owner marker inode on
 updates. Explicit migration removes retired publication/music and known container
 export fields. Installers refuse conflicts/symlinks/managed configuration and
-preserve unrelated hooks. Remove old callbacks/files only with proven ownership.
+preserve unrelated hooks. For the Claude Code mod, managed configuration also
+covers mise dotfiles (history entries and `[dotfiles]` declarations in every
+mode; the declarations are read with `mise config get -f`, which renders no
+template-mode dotfile source, and mise loads the user's configuration, including
+`[env]`, as any mise command does)
+and Git repositories with a real `.git` marker; it installs
+only locally under `~/.claude/skills/anton-observatory/`, never on a peer, and
+removal refuses a changed recorded file and keeps the receipt; a recorded
+directory is kept only when it still holds entries, and any other failure
+to remove one fails the removal with the receipt kept. Its reporter needs a
+local host configured with `socket_path` and does nothing without one. Hook receipt
+writers hold one exclusive lock and refuse as busy after a bounded wait. Remove old callbacks/files only with proven ownership.
 Peer provision has a marked receipt; local `.peers.json` records provisioned
 SSH targets. Uninstall completes recorded peer removal first. On unreachable or
 conflicting peers, retain local installation and remaining receipt for retry.
