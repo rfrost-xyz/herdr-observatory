@@ -228,7 +228,85 @@ string or null values. The Claude report therefore needs no `display_agent` or
 
 ## Implementation
 
-_Pending._
+### Lane A: runtime (tasks 2.1 to 2.3)
+
+Commits (signed, no attribution):
+
+- `b660bbc` feat(runtime): show the claude context percent from a bound window
+  (task 2.2 and its fixtures).
+- `253d579` feat(runtime): add the claude context window reporter (task 2.1
+  and its fixtures).
+
+**Fail-on-old method.** The runtime source was unchanged from `80f6295` when
+the tests were written (`git diff --stat 80f6295 HEAD -- omarchy/anton-runtime`
+was empty), so the new tests were run before any production edit. Results on
+the old code:
+
+| Test | Kind | On `80f6295` | Reason |
+|---|---|---|---|
+| `claude_bound_window_gives_context_percent_rounded_half_up` | new | fails | `context_percent` null, expected 75 |
+| `claude_context_over_window_keeps_context_and_drops_window` | new | fails | `context` nulled, expected 1201 |
+| `claude_panes_on_one_session_key_show_their_own_windows` | new | fails | later pane window null, expected 2000 |
+| `peer_claude_window_and_context_percent_are_dropped` | new | fails | peer Claude keeps `(200000, 1)` |
+| `claude_report_rejects_invalid_arguments_without_socket_access` | new | fails | exit 1, expected 2 |
+| `claude_report_takes_option_like_values_verbatim` | new | fails | exit 1, expected 3 |
+| `claude_report_with_open_stdin_completes_the_write` | new | fails | exit 1, expected 0 |
+| `claude_report_needs_only_home_and_refuses_relative_state` | new | fails | exit 1, expected 0 |
+| `claude_report_writes_the_bound_window_once_and_repeats_read_only` | new | fails | exit 1, expected 0 |
+| `claude_report_refuses_unbound_panes_and_missing_ownership` | new | fails | exit 1, expected 3 |
+| `claude_unbound_or_incomplete_reports_give_no_window` | guard | passes | |
+| `claude_unknown_replay_with_a_bound_report_invents_no_percentage` | guard | passes | |
+| `pi_metadata_bytes_are_unchanged` (exact Pi wire and label) | guard | passes | |
+| `pi_report_option_parsing_is_unchanged` (options after `--report pi`) | guard | passes | |
+
+The unit tests that call APIs absent on `80f6295` cannot compile there and
+were added after the implementation: `claude_metadata_has_no_label_and_only_the_window`,
+`claude_arguments_are_bounded_digits_and_safe_ids`,
+`claude_paths_are_absolute_without_the_cwd` (the path resolver: absolute
+`HOME`; `HOME` unset, empty or relative falls back to the password database;
+relative `XDG_STATE_HOME` ignored; absolute one used; relative `--state`
+refused) and `claude_mod_entry_has_the_receipt_shape`.
+
+After the change: `cargo test --locked --offline` passes 233 (lib), 20
+(bin), 6 (navigation) and 39 (process) tests; `cargo fmt --check` and
+`cargo clippy --all-targets --locked -- -D warnings` (local clippy 0.1.96)
+are clean. Tests ran with a private `TMPDIR` and `CLAUDE_CONFIG_DIR` unset;
+the reporter process fixtures use `env_clear()` with only a temporary
+absolute `HOME`.
+
+**Plan review finding applied.** The open-stdin case holds stdin open and
+asserts exit 0 with exactly `pane.get` then one `pane.report_metadata` and
+the full wire, so it fails on `80f6295` (exit 1) rather than passing on
+timing alone.
+
+**Guard 2 receipt shape (for lane B).** `hooks_install::claude_mod_recorded`
+reads `.hooks-receipt.json`, requires `receipt_value` with
+`<root>/anton-runtime` and `<home>/.pi/agent/extensions/observatory.ts`, then
+`claude_mod_entry`: `version` 1; `root` equal to
+`<home>/.claude/skills/anton-observatory` (`claude_mod_root`); a non-empty
+`directories` list of absolute paths at or under the root, or its `skills`
+parent; `files` exactly the three `CLAUDE_MOD_FILES` paths under the root,
+each with a 64-hex `sha256` and, when present, a 64-hex `prior_sha256`.
+Lane B's installer should write and reuse this definition.
+
+**Implementation notes.**
+
+- `--report claude` is recognised only as the first command, with `claude`
+  next; every later value is taken verbatim and fewer or more than four exit
+  2. Exit statuses 0, 2 and 3 print nothing; status 1 prints the error.
+- A relative `--root` on this path exits 3 (D3 names no status for it; it
+  is a path that would resolve against the cwd).
+- Owner-guard, configuration-parse, lock-file and Herdr RPC errors exit 1, as
+  on the Pi path; a busy `hook.lock`, no single local host and no valid mod
+  receipt exit 3.
+- The no-change check returns 0 when the bound metadata view has this window
+  and no other numeric value (subagent fields included).
+- `metadata()` builds the same object for both agents and adds
+  `display_agent` only for `pi`; the Pi bytes are pinned by
+  `pi_metadata_bytes_are_unchanged`.
+- `claude_window` (D4) skips a zero window as well as one under the context;
+  `telemetry_from_agent` already nulls a zero window, so this only guards
+  the division.
 
 ## After
 
