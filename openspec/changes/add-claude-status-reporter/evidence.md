@@ -332,11 +332,12 @@ Commits (signed, no attribution):
 - `6fa7545` feat(plugin): install the claude code mod after the hooks (task
   3.5).
 
-**Gates on `6fa7545`.** `cargo test --locked --offline`: 254 (lib), 21 (bin),
+**Gates on the final tree.** `cargo test --locked --offline`: 254 (lib), 21 (bin),
 6 (navigation) and 42 (process) passed. `cargo fmt --check` and `cargo clippy
 --all-targets --locked -- -D warnings` clean on local clippy 0.1.96 (CI's
 1.98 not run here). `node --test` State, Pi hooks, Claude mod and
-distribution: 108 passed. The standalone `a58bbcc` tree also passes clippy and
+distribution: 108 passed. `run-shell-harness.sh` (synthetic `HOME`, never
+runs `install.sh`): failures 0. The standalone `a58bbcc` tree also passes clippy and
 its 234 + 21 + 6 + 39 tests. Tests ran with a private `TMPDIR` and
 `CLAUDE_CONFIG_DIR` unset; in-process installer fixtures pass an explicit
 environment (`PATH` holding only a fixture directory), and CLI fixtures use
@@ -370,10 +371,34 @@ environment (`PATH` holding only a fixture directory), and CLI fixtures use
   using the process `PATH` for chezmoi, `--uninstall-hooks` skipping the mod
   preflight, no symlink check on recorded directories, unrecorded entries
   allowed, no idempotence, every file rewritten, the receipt left dual, the
-  placeholder not replaced, and no lock on the mod writers. Each fails its
-  fixture; restored, all pass. Two mutations first survived (the write-order
-  test compared with the constant under test, and the A→B→C test never read
-  the dual receipt); both fixtures were tightened and now fail.
+  placeholder not replaced, no lock on the mod writers, and an unrecorded
+  mod tree accepted (changed root). Each fails its fixture; restored, all
+  pass. Two mutations first survived (the write-order test compared with the
+  constant under test, and the A→B→C test never read the dual receipt); both
+  fixtures were tightened and now fail. Fixture for each rule:
+
+  | Rule disabled | Fixture that fails |
+  |---|---|
+  | write order, manifest first | `writes_go_receipt_first_and_the_manifest_last` |
+  | debris deletion; `prior_sha256` accepted | `an_interrupted_refresh_completes_on_retry`, `an_interrupted_refresh_is_removed_by_uninstall_hooks` |
+  | prior hash from the bytes on disk | `a_refresh_interrupted_from_a_to_b_completes_with_build_c` |
+  | `directories` kept and deduplicated | `a_retry_after_the_receipt_write_lists_each_directory_once` |
+  | mise lists and fail-closed | `install_refuses_a_target_listed_by_mise_or_an_unreadable_listing` |
+  | real `.git` marker only | `install_accepts_unrelated_markers_and_listings` |
+  | `CLAUDE_CONFIG_DIR`; unrecorded entries; changed root | `install_refuses_targets_it_cannot_prove_are_its_own` |
+  | peer root | `install_refuses_a_peer_root_and_a_missing_pi_integration` |
+  | removal chezmoi through the passed `PATH` | `removal_runs_the_chezmoi_check_only` |
+  | mod preflight in `--uninstall-hooks`; recorded directory symlinks | `removal_of_a_changed_file_refuses_before_any_deletion` |
+  | lock on the mod writers | `mod_receipt_writers_refuse_as_busy_while_the_lock_is_held` |
+  | idempotence; placeholder replaced | `fresh_install_records_the_mod_and_an_identical_reinstall_writes_nothing` |
+  | only changed files rewritten | `a_payload_change_rewrites_only_the_changed_files` |
+  | receipt cleaned after a dual write | `an_interrupted_refresh_completes_on_retry` |
+
+  Not mutation-checked: `an_existing_skills_directory_is_not_recorded_or_removed`,
+  `a_refresh_keeps_the_directories_and_uninstall_leaves_no_mod_tree`,
+  `removal_keeps_unrecorded_files_and_reports_success` and
+  `uninstall_hooks_removes_pi_the_shim_and_the_mod_together` (each calls
+  functions absent on `80f6295`, so cannot pass there).
 - `register.js` mutations (token checks in `.then` and `.finally`, no
   in-flight skip, no stale rule, deduplicating `session.measure`, no
   `session.end` reset, no `.jsonl` strip, no classic id check, no clock
@@ -400,6 +425,8 @@ tests and the pinned `install.sh` and `uninstall.sh` file lists.
   in-process.
 - Write order is checked only through a recording writer, which also sees
   the receipt writes.
+- The changed-root case (D7) is a full mod tree beside a receipt with no
+  `claude_mod`, in `install_refuses_targets_it_cannot_prove_are_its_own`.
 
 **Deviations and notes.**
 
@@ -425,6 +452,9 @@ tests and the pinned `install.sh` and `uninstall.sh` file lists.
   directory.
 - A kept mod directory (it holds a file Anton did not write) is reported on
   stderr; the command still succeeds.
+- `--uninstall-hooks` now opens the plugin root for its lock, so with no
+  plugin root at all it fails where it used to return success (no receipt).
+  `uninstall.sh` and peer removal always run inside an existing root.
 - The README step for existing installations (run `--install-claude-mod`
   after updating the runtime) belongs to task 4.1 and is not done here.
 
