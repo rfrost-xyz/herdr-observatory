@@ -2446,6 +2446,38 @@ fn claude_report_needs_only_home_and_refuses_relative_state() {
     assert_eq!(fs::read_dir(f.dir.join("cwd")).unwrap().count(), 0);
 }
 
+/// D3, as the mod runs it: the installed runtime with only an absolute
+/// `HOME`, no `--root` or `--state` and an unrelated cwd derives its root
+/// from its own path and its state from the home, and reports.
+#[test]
+fn claude_report_as_the_mod_runs_it_derives_root_and_state() {
+    let f = Reporter::new();
+    f.installable();
+    f.install_step("--install-hooks");
+    f.install_step("--install-claude-mod");
+    f.calls.lock().unwrap().clear();
+    let output = Command::new(f.root.join("anton-runtime"))
+        .env_clear()
+        .env("HOME", &f.home)
+        .current_dir(f.dir.join("cwd"))
+        .args(["--report", "claude", "w1:p1", &report_seq(10), CLAUDE_ID])
+        .arg("200000")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(f.methods(), ["pane.get", "pane.report_metadata"]);
+    let state = f.home.join(".local/state/herdr.observatory");
+    assert!(state.join("hook.lock").is_file());
+    assert!(!f.state.exists());
+    assert_eq!(fs::read_dir(f.dir.join("cwd")).unwrap().count(), 0);
+}
+
 /// D3: a pane that is not this exact Claude session, an older `obs_seq`,
 /// no mod receipt, two local hosts or a busy hook lock exit 3 without a
 /// write; a mod receipt mid-refresh is accepted.
@@ -2691,6 +2723,37 @@ fn claude_mod_installed_by_the_cli_is_accepted_by_the_reporter() {
     f.install_step("--uninstall-hooks");
     assert!(!f.home.join(".claude/skills").exists());
     assert!(!f.root.join(".hooks-receipt.json").exists());
+}
+
+/// D1: the CLI reads `CLAUDE_CONFIG_DIR` from its own environment, and a
+/// value naming another configuration refuses the mod and changes nothing.
+#[test]
+fn claude_mod_install_refuses_another_claude_config_dir_through_the_cli() {
+    let f = Reporter::new();
+    f.installable();
+    f.install_step("--install-hooks");
+    let before = file_tree(&f.dir);
+    let output = f
+        .installer("--install-claude-mod")
+        .env("CLAUDE_CONFIG_DIR", f.dir.join("other-claude"))
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("CLAUDE_CONFIG_DIR"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(file_tree(&f.dir), before);
+    assert!(!f.home.join(".claude/skills").exists());
+    // Naming `~/.claude` itself is accepted.
+    let output = f
+        .installer("--install-claude-mod")
+        .env("CLAUDE_CONFIG_DIR", f.home.join(".claude"))
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(f.mod_root().join("hooks/register.js").is_file());
 }
 
 /// D5: `mise -C <home> dotfiles paths --json` runs in the home directory with
