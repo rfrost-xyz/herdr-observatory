@@ -795,6 +795,8 @@ fn publish_claude(
             value[*key] = Value::Null;
         }
     }
+    let window = number(&value["window"]);
+    claude_window(&mut value, window);
     if let Some(stamp) = [
         number(&value["seq"]),
         number(&value["usage_seq"]),
@@ -812,8 +814,8 @@ fn publish_claude(
             value["phase"] = json!("ready");
         }
         let mut view = telemetry::telemetry_view_at(&value, time).unwrap_or(Value::Null);
-        // D4: a Claude pane has no window source, so the window and its
-        // percentage are omitted rather than null; a metadata value stays.
+        // D4: without a bound reporter window, the window and its percentage
+        // are omitted rather than null.
         if let Some(view) = view.as_object_mut() {
             for key in ["window", "context_percent"] {
                 if view.get(key).is_some_and(Value::is_null) {
@@ -825,6 +827,30 @@ fn publish_claude(
         return true;
     }
     false
+}
+/// D4: sets a Claude sample's `window` and `context_percent` from `window`,
+/// the pane's own bound reporter window. Any incoming percentage is dropped.
+/// A window under the replay context is stale (a smaller model before its
+/// next turn reports), so it is dropped and the context kept. The percentage
+/// needs both values and is rounded half up, with no reserve.
+fn claude_window(value: &mut Value, window: Option<u64>) {
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    object.remove("window");
+    object.remove("context_percent");
+    let Some(window) = window.filter(|v| *v > 0) else {
+        return;
+    };
+    let context = object.get("context").and_then(number);
+    if context.is_some_and(|context| context > window) {
+        return;
+    }
+    object.insert("window".into(), json!(window));
+    if let Some(context) = context {
+        let percent = (u128::from(context) * 100 + u128::from(window) / 2) / u128::from(window);
+        object.insert("context_percent".into(), json!(percent as u64));
+    }
 }
 /// The source times of a Claude cursor row: `coverage_seq`, `usage_seq` and
 /// the child `seq`.
@@ -1144,7 +1170,8 @@ impl NativeTelemetry {
     /// The Claude panes among the first 32 agents. Each session key is
     /// enriched once per call, by its first pane: a later pane on the same key
     /// receives a copy of that outcome, the published telemetry and turn timing
-    /// or their absence, and shares its row or its withholding. Enriching it
+    /// or their absence, with its own window (D4), and shares its row or its
+    /// withholding. Enriching it
     /// again would resume the row the first pane just wrote as if verified and
     /// could publish nothing beside the first pane's all-null sample, so the
     /// local would re-emit a replaced file's copy (D3). `deadlines` gives each
@@ -1173,6 +1200,13 @@ impl NativeTelemetry {
                         Some(value) => object.insert(field.to_owned(), value.clone()),
                         None => object.remove(field),
                     };
+                }
+                // D4: the copy carries the first pane's window; this pane
+                // shows its own bound window, if any, against the context.
+                let window =
+                    telemetry::telemetry_from_agent(agent).and_then(|v| number(&v["window"]));
+                if let Some(view) = agent.get_mut("_native_telemetry") {
+                    claude_window(view, window);
                 }
                 continue;
             }

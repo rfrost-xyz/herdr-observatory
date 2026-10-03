@@ -1618,3 +1618,133 @@ fn claude_restart_after_a_rejected_request_row_withholds_it() {
     }
     assert!(exercised);
 }
+
+/// A Claude pane carrying a reporter sample: bound v2 metadata at `seq`
+/// with only the `window` slot filled, written as the reporter writes it.
+fn reported(binding: &str, window: u64, seq: u64) -> Value {
+    let mut pane = agent();
+    pane["tokens"] = json!({"obs_v":"2","obs_bind":binding,"obs_seq":seq.to_string(),
+        "obs_event":"session","obs_phase":"ready","obs_tool":null,"obs_model":null,
+        "obs_result":null,"obs_usage_source":null,"obs_n0":",,,",
+        "obs_n1":format!(",{window},,"),"obs_n2":",,,","obs_n3":",",
+        "obs_children":null,"obs_completion":null,"obs_outcomes":null});
+    pane
+}
+fn bound(window: u64) -> Value {
+    reported(
+        &telemetry::session_binding(&agent()).unwrap(),
+        window,
+        micros(5),
+    )
+}
+/// One fresh pass over `lines` for `panes`, returning their telemetry.
+fn published(fixture: &Fixture, lines: &[String], mut panes: Vec<Value>) -> Vec<Value> {
+    fixture.write(lines);
+    NativeTelemetry::default().enrich(&mut panes, &json!({}));
+    panes
+        .iter()
+        .map(|v| v["_native_telemetry"].clone())
+        .collect()
+}
+/// A turn whose last response holds `context` tokens.
+fn occupied(context: u64) -> Vec<String> {
+    vec![
+        prompt(10),
+        assistant(13, "msg-1", "\"end_turn\"", [1, 1, context - 1, 0]),
+        ended(15, 10),
+    ]
+}
+
+/// D4: a bound reporter window beside caught-up replay context gives a
+/// percentage rounded half up with no reserve.
+#[test]
+fn claude_bound_window_gives_context_percent_rounded_half_up() {
+    let fixture = Fixture::new();
+    for (context, window, percent) in [
+        (150_000, 200_000, 75),
+        (1, 200, 1),
+        (1201, 1201, 100),
+        (1201, 2402, 50),
+        (1201, 100_000_000, 0),
+    ] {
+        let telemetry = &published(&fixture, &occupied(context), vec![bound(window)])[0];
+        assert_eq!(telemetry["context"], context, "{telemetry}");
+        assert_eq!(telemetry["window"], window, "{telemetry}");
+        assert_eq!(telemetry["context_percent"], percent, "{telemetry}");
+        assert_eq!(telemetry["usage_source"], "claude-transcript");
+    }
+}
+
+/// D4: a stale window smaller than replay context never erases the context.
+#[test]
+fn claude_context_over_window_keeps_context_and_drops_window() {
+    let fixture = Fixture::new();
+    let telemetry = &published(&fixture, &session(), vec![bound(1000)])[0];
+    assert_eq!(telemetry["context"], 1201);
+    assert_eq!(telemetry["total_output"], 26);
+    windowless(telemetry);
+}
+
+/// D4: panes sharing one session key each show their own bound window.
+#[test]
+fn claude_panes_on_one_session_key_show_their_own_windows() {
+    let fixture = Fixture::new();
+    // Only the later pane has a report.
+    let panes = published(&fixture, &session(), vec![agent(), bound(2000)]);
+    windowless(&panes[0]);
+    assert_eq!(panes[0]["context"], 1201);
+    assert_eq!(panes[1]["context"], 1201);
+    assert_eq!(panes[1]["window"], 2000);
+    assert_eq!(panes[1]["context_percent"], 60);
+    // Two reports with different windows.
+    let panes = published(&fixture, &session(), vec![bound(2000), bound(4000)]);
+    assert_eq!(panes[0]["window"], 2000);
+    assert_eq!(panes[0]["context_percent"], 60);
+    assert_eq!(panes[1]["window"], 4000);
+    assert_eq!(panes[1]["context_percent"], 30);
+    // Only the first pane has a report: the later pane loses the copy.
+    let panes = published(&fixture, &session(), vec![bound(2000), agent()]);
+    assert_eq!(panes[0]["context_percent"], 60);
+    windowless(&panes[1]);
+    assert_eq!(panes[1]["context"], 1201);
+    // The later pane's own window is under the shared context.
+    let panes = published(&fixture, &session(), vec![bound(2000), bound(1000)]);
+    assert_eq!(panes[0]["context_percent"], 60);
+    windowless(&panes[1]);
+    assert_eq!(panes[1]["context"], 1201);
+}
+
+/// Regression guard: a report that is not bound to this Claude session, or
+/// lacks a numeric group, gives no window and no percentage.
+#[test]
+fn claude_unbound_or_incomplete_reports_give_no_window() {
+    let fixture = Fixture::new();
+    let other = sha256(b"claude:id:fixture-session-b");
+    let pi = sha256(b"pi:path:/synthetic/session");
+    let mut missing = bound(2000);
+    missing["tokens"].as_object_mut().unwrap().remove("obs_n3");
+    for pane in [
+        reported(&other, 2000, micros(5)),
+        reported(&pi, 2000, micros(5)),
+        missing,
+    ] {
+        let telemetry = &published(&fixture, &session(), vec![pane])[0];
+        assert_eq!(telemetry["context"], 1201);
+        windowless(telemetry);
+    }
+}
+
+/// Regression guard: with replay unknown, a bound report adds no percentage
+/// and no zero anywhere.
+#[test]
+fn claude_unknown_replay_with_a_bound_report_invents_no_percentage() {
+    let fixture = Fixture::new();
+    let lines = [prompt(10), system("stop_hook_summary", 12)];
+    let telemetry = &published(&fixture, &lines, vec![bound(2000)])[0];
+    let object = telemetry.as_object().expect("published telemetry");
+    assert!(!object.contains_key("context_percent"), "{telemetry}");
+    for key in telemetry::NUMBERS {
+        assert_ne!(telemetry[*key], 0, "{key} in {telemetry}");
+    }
+    assert!(telemetry["context"].is_null());
+}

@@ -235,6 +235,14 @@ impl State {
                     if !local && revalidate(agent, sample.sampled_at) {
                         rejected.insert(agent.id.clone());
                     }
+                    // D4: Claude windows are local-only, so a peer's, from
+                    // any peer version, is dropped with its percentage.
+                    if !local && agent.harness == "claude" {
+                        if let Some(telemetry) = &mut agent.technical.telemetry {
+                            telemetry.window = None;
+                            telemetry.context_percent = None;
+                        }
+                    }
                     let previous = if state.online {
                         state.agents.iter().find(|old| {
                             old.id == agent.id
@@ -1425,6 +1433,32 @@ mod tests {
             (timing.total_finished_duration_s, timing.freshness_seconds),
             (Some(7), 15.0)
         );
+    }
+    /// D4: a peer never reports a Claude window, so one in a peer sample,
+    /// from any peer version, is dropped with its percentage. Other peer
+    /// harnesses keep theirs.
+    #[test]
+    fn peer_claude_window_and_context_percent_are_dropped() {
+        let now = common::now();
+        let mut telemetry = caught_up((now as u64 - 60) * 1_000_000);
+        telemetry["window"] = json!(200_000);
+        telemetry["context_percent"] = json!(1);
+        for harness in ["claude", "codex", "pi"] {
+            let mut state = peer();
+            let mut value = sample("working", now);
+            value.agents[0] = claude(7, telemetry.clone());
+            value.agents[0].harness = harness.into();
+            state.sample("test", Ok(value));
+            let kept = state.hosts[0].agents[0].technical.telemetry.as_ref();
+            let kept = kept.expect("revalidated telemetry");
+            assert_eq!(kept.context, Some(1201), "{harness}");
+            assert_eq!(kept.total_input, Some(3461), "{harness}");
+            let expected = (harness != "claude").then_some((200_000, 1));
+            assert_eq!(kept.window.zip(kept.context_percent), expected, "{harness}");
+            if harness == "claude" {
+                assert_eq!((kept.window, kept.context_percent), (None, None));
+            }
+        }
     }
     /// Peer revalidation allows the 1 s transport skew `sampled_at` allows,
     /// plus the peer's own gap between stamping `sampled_at` and stamping its
