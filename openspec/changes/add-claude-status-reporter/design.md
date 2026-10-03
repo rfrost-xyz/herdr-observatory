@@ -528,17 +528,29 @@ refuses a peer root (`herdr.observatory-peer`) as a second guard.
        its help reads "Show what history tracks and under which policies".
        Loading the config also evaluates `[env]` templates, so it can run
        template functions such as `exec`; it is kept from earlier rounds
-       (review round 3).
+       (review round 3) and by coordinator decision in review round 4: the
+       user's own `mise activate` shell hook loads the same config and
+       evaluates the same `[env]` templates on every prompt, so running the
+       user's own mise with the user's own config adds no new kind of
+       execution.
     2. **Declarations.** Every `[dotfiles]` target whatever its mode (copy,
        link, template, track, or an edit entry), because history does not
        list a copy- or template-mode entry and the mod would otherwise be
        written into a directory mise copies from its source (review round 3).
-       The check never runs a command that renders templates: `mise dotfiles
-       status` renders template entries ("trusted template functions may
-       execute"), and `mise config ls` and `mise dotfiles paths` evaluate
-       `[env]` templates (shown with an `exec` marker in a sandbox,
-       evidence.md). `mise config get -f <file>` reads one file's stored
-       values without rendering or evaluating anything, but it does not say
+       The declaration read renders no template-mode dotfile source: `mise
+       dotfiles status` renders template entries ("trusted template
+       functions may execute"), so it is not used. Loading the config
+       evaluates `[env]` templates, as any mise command does: `mise config
+       ls` and `mise dotfiles paths` did so with an `exec` marker in a
+       sandbox (evidence.md). `mise config get -f <file>` reads one file's
+       stored values and renders no dotfile source. It skips the `[env]`
+       evaluation only once mise's data-directory migrations have run: on a
+       cold data directory the first mise command (here `dotfiles paths`)
+       runs them and evaluates `[env]`, and where the data directory is not
+       writable the migration never persists, so each `config get -f`
+       evaluates `[env]` again. That case is accepted (review round 4): each
+       read is still bounded to 3 s, and the number of reads by the
+       candidate limit of 256. `config get -f` does not say
        which files mise loads, so the installer lists the candidates itself,
        over-inclusively: in the home and each ancestor, `mise*.toml`,
        `.mise*.toml` and `.rtx*.toml`, the same names in `.config/`, and the
@@ -636,6 +648,11 @@ refuses a peer root (`herdr.observatory-peer`) as a second guard.
   directory it creates itself that the list does not already hold; it never
   recomputes the list from scratch, because on a refresh every directory
   already exists.
+- Every recorded path (`root`, each of `directories` and each file `path`)
+  is absolute with only root and normal components. An entry with a `.` or
+  `..` component is not a valid entry, because a lexical prefix test would
+  accept `<root>/../../outside` as inside the mod directory and removal
+  would then remove an empty directory Anton never created (review round 4).
 - `prior_sha256` is present only while a refresh is in progress (below). It
   is the hash of the bytes verified on disk at the start of that refresh.
 - Older receipts without `claude_mod` stay valid. `install` already copies the
@@ -872,7 +889,12 @@ New behaviour (must fail on `80f6295`):
 - Receipt lock: with the plugin root directory locked by the fixture, each of
   `--install-hooks`, `--install-claude-mod`, `--uninstall-claude-mod` and
   `--uninstall-hooks` refuses as busy within its bound and leaves every file
-  and the receipt unchanged.
+  and the receipt unchanged. A probe also shows each writer holds the lock
+  for its whole read-modify-write: a fake `chezmoi`, which the mod install
+  and both removals run while checking, logs whether `flock -n` can take the
+  plugin root, and a recording writer passed to the Pi install and repair
+  tries the lock before each file write; every probe finds it held, and each
+  fails with that writer's guard dropped (review round 4).
 - Refresh then uninstall: a refresh keeps the prior `directories` list, and a
   later `--uninstall-claude-mod` leaves no `anton-observatory/` (and no
   `skills/` when the installer created it). This includes a `skills/` that
