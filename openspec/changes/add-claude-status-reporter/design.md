@@ -93,8 +93,10 @@ Pi behaviour, output, checkpoints and the Pi extension bytes must not change.
   does not start with `claude-`.
 - `plugin.json` is `{"name":"anton-observatory","version":"<crate version>",
   "description":"Reports the Claude Code context window to the Anton Herdr
-  plugin","defaultEnabled":true}`. It has no `types` entry, because the mod
-  uses no `$.state` and adds no namespace.
+  plugin","author":{"name":"Herdr Observatory"},"defaultEnabled":true}`. The
+  author matches the Omarchy plugin manifest and keeps
+  `claude plugin validate --strict` free of its attribution warning. It has
+  no `types` entry, because the mod uses no `$.state` and adds no namespace.
 - `hooks.json` is `{"modules":["./register.js"]}` and holds no settings hooks.
 - The mod loads at the next session start or `/reload-plugins` [mods overview].
   A running session that never reloads stays unknown, as does every session in

@@ -47,7 +47,9 @@ test('the Claude Code mod payload is embedded in the runtime, not installed as p
   }
   const manifest=JSON.parse(fs.readFileSync(`${mod}/.claude-plugin/plugin.json`,'utf8'));
   const version=fs.readFileSync('omarchy/anton-runtime/Cargo.toml','utf8').match(/^version = "(.*)"$/m)[1];
-  assert.deepEqual(Object.keys(manifest).sort(),['defaultEnabled','description','name','version']);
+  assert.deepEqual(Object.keys(manifest).sort(),['author','defaultEnabled','description','name','version']);
+  // An author keeps `claude plugin validate --strict` free of its attribution warning.
+  assert.deepEqual(manifest.author,{name:'Herdr Observatory'});
   assert.equal(manifest.name,'anton-observatory');
   assert.ok(!manifest.name.startsWith('claude-'));
   assert.equal(manifest.version,version);
