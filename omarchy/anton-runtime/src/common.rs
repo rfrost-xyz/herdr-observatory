@@ -244,15 +244,21 @@ pub fn owner_guard(path: &Path) -> Result<OwnerGuard> {
     Ok(OwnerGuard { _file: file })
 }
 pub fn spawn_group(argv: &[String]) -> Result<Child> {
+    spawn_group_in(argv, Stdio::piped(), None)
+}
+fn spawn_group_in(argv: &[String], stdin: Stdio, cwd: Option<&Path>) -> Result<Child> {
     let (program, args) = argv.split_first().ok_or("Missing executable")?;
-    Command::new(program)
+    let mut command = Command::new(program);
+    command
         .args(args)
-        .stdin(Stdio::piped())
+        .stdin(stdin)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .process_group(0)
-        .spawn()
-        .map_err(|_| "Command unavailable".into())
+        .process_group(0);
+    if let Some(cwd) = cwd {
+        command.current_dir(cwd);
+    }
+    command.spawn().map_err(|_| "Command unavailable".into())
 }
 pub fn terminate_group(child: &mut Child) {
     unsafe {
@@ -272,10 +278,36 @@ pub fn run_process(
     limit: usize,
     cancel: Option<&AtomicBool>,
 ) -> Result<ProcessOutput> {
-    let mut child = spawn_group(argv)?;
-    let stdin = child.stdin.take().ok_or("Missing stdin")?;
+    run_process_in(argv, Some(input), None, timeout, limit, cancel)
+}
+/// `run_process` with an optional working directory. `None` input gives the
+/// child a null stdin instead of a pipe.
+pub fn run_process_in(
+    argv: &[String],
+    input: Option<&[u8]>,
+    cwd: Option<&Path>,
+    timeout: Duration,
+    limit: usize,
+    cancel: Option<&AtomicBool>,
+) -> Result<ProcessOutput> {
+    let piped = input.is_some();
+    let input = input.unwrap_or_default();
+    let mut child = spawn_group_in(
+        argv,
+        if piped { Stdio::piped() } else { Stdio::null() },
+        cwd,
+    )?;
+    let stdin = if piped {
+        Some(child.stdin.take().ok_or("Missing stdin")?)
+    } else {
+        None
+    };
     let mut stdout = child.stdout.take().ok_or("Missing stdout")?;
-    for fd in [stdin.as_raw_fd(), stdout.as_raw_fd()] {
+    for fd in stdin
+        .iter()
+        .map(AsRawFd::as_raw_fd)
+        .chain([stdout.as_raw_fd()])
+    {
         unsafe {
             let flags = libc::fcntl(fd, libc::F_GETFL);
             libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
@@ -285,7 +317,7 @@ pub fn run_process(
     let mut offset = 0;
     let mut output = Vec::new();
     let mut closed = false;
-    let mut writer = Some(stdin);
+    let mut writer = stdin;
     let mut chunk = [0u8; 16384];
     let result = (|| {
         loop {
