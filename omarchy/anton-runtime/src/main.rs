@@ -1186,7 +1186,7 @@ fn cli() -> Result<()> {
             let result = collection::local(
                 &host,
                 &request["cursors"],
-                &mut native::NativeTelemetry::default(),
+                &mut native::NativeTelemetry::peer(),
                 Some(&SIGNAL_STOP),
             )?;
             output(
@@ -1948,6 +1948,45 @@ mod tests {
         let mut row: Value = serde_json::from_str(r#"{"caught_up":true,"children":{},"claude":{"abort_adjacent":false,"ambiguous":false,"clean":true,"foreign":false,"cache_creation":0,"cache_read":0,"classifier":null,"closed":[],"compaction_iteration":false,"compactions":0,"coverage_seq":1767225612250000,"input":0,"last":null,"last_valid":true,"end_floor":1767225612,"local_idle":false,"lost_idle":false,"open":{"id":"3a0de37932e8b197","response":{"model":"claude-fixture-1","usage":[1,1,1,1]},"stop":2,"tainted":false,"usage":[1,1,1,1]},"output":0,"pending_command":false,"pending_start":null,"queued_since_start":null,"silent_end":false,"totals_valid":true,"usage_seq":1767225611250000},"compaction_markers":0,"compaction_summaries":0,"compactions_valid":true,"file":[1,2],"fingerprint":{"header":"47b6f0a22fd24b24fe54e82f5ba3bb0b310819634f922c08a6c6e72ba5e132c5","mtime_us":1,"size":654,"tail":"ffc6d285d1377c43ed044721bbe51bdbb916ee8891654de6362a784d098d80e5"},"offset":654,"seq":0,"skipping":false,"turns":{"active":null,"current_known":true,"finished":{"4c318c012df919977122e3ca":[1767225610,1767225612,"completed"]},"last":"4c318c012df919977122e3ca","last_duration":2,"last_end":1767225612,"last_outcome":"completed","start":null,"supported":true,"total":2,"valid":true},"valid":true}"#).unwrap();
         row["at"] = json!(common::now());
         json!({ common::sha256(b"claude-row"): row })
+    }
+    /// Review round 2, paired with the native test
+    /// `claude_peer_output_ignores_bound_reporter_metadata`: on an
+    /// incomplete peer pass a Claude pane has no native telemetry. A peer
+    /// pane carrying a bound reporter window is then collected with none,
+    /// so the local re-emits its retained copy. The local collection
+    /// fallback would carry the window-only report instead and drop it.
+    #[test]
+    fn peer_claude_pane_with_a_reporter_window_keeps_the_retained_sample() {
+        let seq = (common::now() as u64 - 60) * 1_000_000;
+        let mut pane = json!({"pane_id":"pane","agent":"claude","agent_status":"working",
+            "agent_session":{"agent":"claude","source":"herdr:claude","kind":"id","value":"fixture-session"}});
+        let binding = telemetry::session_binding(&pane).unwrap();
+        pane["tokens"] = json!({"obs_v":"2","obs_bind":binding,"obs_seq":(seq + 1).to_string(),
+            "obs_event":"session","obs_phase":"ready","obs_tool":null,"obs_model":null,
+            "obs_result":null,"obs_usage_source":null,"obs_n0":",,,","obs_n1":",200000,,",
+            "obs_n2":",,,","obs_n3":",","obs_children":null,"obs_completion":null,"obs_outcomes":null});
+        let collected = |probe: bool, native: Option<Value>| {
+            let mut entry = pane.clone();
+            if let Some(native) = native {
+                entry["_native_telemetry"] = native;
+            }
+            let raw = json!({"agents":[entry],"workspaces":[]});
+            let agents = collection::normalise(&raw, &json!({"id":"test"}), probe).unwrap();
+            let mut value = sample("working", common::now());
+            value.agents = vec![serde_json::from_value(agents[0].clone()).unwrap()];
+            value.cursors = claude_row();
+            value.requested = requested();
+            value
+        };
+        for (probe, kept) in [(true, Some(3461)), (false, None)] {
+            let mut state = peer();
+            state.sample("test", Ok(collected(probe, Some(caught_up(seq)))));
+            assert_eq!(state.retained["test"].len(), 1, "{probe}");
+            state.sample("test", Ok(collected(probe, None)));
+            let shown = state.hosts[0].agents[0].technical.telemetry.as_ref();
+            assert_eq!(shown.and_then(|v| v.total_input), kept, "{probe}");
+            assert_eq!(state.retained["test"].len(), usize::from(probe), "{probe}");
+        }
     }
     #[test]
     fn peer_retention_is_dropped_without_rows_on_failure_and_for_local_hosts() {

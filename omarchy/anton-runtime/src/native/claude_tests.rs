@@ -1748,3 +1748,86 @@ fn claude_unknown_replay_with_a_bound_report_invents_no_percentage() {
     }
     assert!(telemetry["context"].is_null());
 }
+
+/// One peer probe of `pane` with `cursors`: a fresh peer follower, then the
+/// collected telemetry as `collection::normalise` returns it for the probe.
+fn peer_collected(pane: Value, cursors: &Value) -> (Value, Value) {
+    let mut pane = pane;
+    pane["pane_id"] = json!("w1:p1");
+    let mut raw = json!({"agents":[pane],"workspaces":[]});
+    let rows = NativeTelemetry::peer().enrich(raw["agents"].as_array_mut().unwrap(), cursors);
+    let agents = crate::collection::normalise(&raw, &json!({"id":"peer"}), true).unwrap();
+    (agents[0]["technical"]["telemetry"].clone(), rows)
+}
+
+/// D4: a peer's Claude output never depends on the pane's reporter
+/// metadata. A bound pane is collected exactly as an unbound one on a
+/// caught-up, an incomplete and a restarted pass. On the incomplete pass
+/// the collected telemetry stays null, which is what lets the local
+/// re-emit its retained copy (review round 2).
+#[test]
+fn claude_peer_output_ignores_bound_reporter_metadata() {
+    let fixture = Fixture::new();
+    fixture.write(&session());
+    // Newer than every replay time, so a leaked metadata stamp would show.
+    let reported_pane = || {
+        reported(
+            &telemetry::session_binding(&agent()).unwrap(),
+            200_000,
+            micros(40),
+        )
+    };
+    let (unbound, cursors) = peer_collected(agent(), &json!({}));
+    let (bound, _) = peer_collected(reported_pane(), &json!({}));
+    assert_eq!(bound, unbound);
+    assert_eq!(bound["total_input"], 3461);
+    assert_eq!(bound["seq"], json!(micros(23)));
+    windowless(&bound);
+    // An incomplete pass: no sample, and no metadata fallback either.
+    let partial = assistant(30, "msg-4", "\"end_turn\"", [7, 7, 7, 7]);
+    fixture.append(&partial[..40]);
+    let (unbound, rows) = peer_collected(agent(), &cursors);
+    let (bound, bound_rows) = peer_collected(reported_pane(), &cursors);
+    assert_eq!(rows[key()]["caught_up"], false);
+    let mut stripped = [rows.clone(), bound_rows];
+    for rows in &mut stripped {
+        rows[key()].as_object_mut().unwrap().remove("at");
+    }
+    assert_eq!(stripped[0], stripped[1]);
+    assert!(unbound.is_null() && bound.is_null(), "{bound}");
+    // A replaced file restarts: the all-null sample is the same too.
+    let bytes = std::fs::read(fixture.path("entry-a", ID)).unwrap();
+    replace(&fixture.path("entry-a", ID), &bytes);
+    let (unbound, _) = peer_collected(agent(), &cursors);
+    let (bound, _) = peer_collected(reported_pane(), &cursors);
+    assert_eq!(bound, unbound);
+    assert!(bound["total_input"].is_null(), "{bound}");
+}
+
+/// Local analysis (review round 2): on an incomplete local pass a bound
+/// window overlays the retained sample; it never discards or replaces it.
+#[test]
+fn claude_local_incomplete_pass_overlays_a_bound_window_on_the_retained_sample() {
+    let fixture = Fixture::new();
+    fixture.write(&session());
+    let mut follower = NativeTelemetry::default();
+    let mut pass = |cursors: &Value| {
+        let mut agents = vec![bound(200_000)];
+        let rows = follower.enrich(&mut agents, cursors);
+        (agents.pop().unwrap()["_native_telemetry"].clone(), rows)
+    };
+    let (first, cursors) = pass(&json!({}));
+    assert_eq!(first["window"], 200_000);
+    assert_eq!(first["context_percent"], 1);
+    let partial = assistant(30, "msg-4", "\"end_turn\"", [7, 7, 7, 7]);
+    fixture.append(&partial[..40]);
+    let (telemetry, rows) = pass(&cursors);
+    assert_eq!(rows[key()]["caught_up"], false);
+    assert_eq!(telemetry, retained(&first));
+    assert_eq!(telemetry["total_input"], 3461);
+    assert_eq!(telemetry["window"], 200_000);
+    // A second incomplete pass still re-emits it.
+    fixture.append(&partial[40..60]);
+    let (telemetry, _) = pass(&rows);
+    assert_eq!(telemetry, retained(&first));
+}

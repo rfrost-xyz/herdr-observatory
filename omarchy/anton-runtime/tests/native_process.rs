@@ -1717,6 +1717,35 @@ fn retained_subset(telemetry: &Value) -> Value {
     value
 }
 
+/// Review round 2 (D4): `--probe` collects a Claude pane carrying a bound
+/// reporter window exactly as one without it. A caught-up sample keeps the
+/// replay's own stamp and has no window, and without a transcript the
+/// telemetry stays null instead of the window-only metadata fallback.
+#[test]
+fn claude_peer_probe_ignores_a_bound_reporter_window() {
+    let f = Fixture::new();
+    f.claude(&claude_transcript());
+    let plain = f.probe(&json!({}));
+    let mut raw = f.raw.lock().unwrap().clone();
+    let pane = &mut raw["agents"][0];
+    let binding = anton_runtime::telemetry::session_binding(pane).unwrap();
+    let seq = ((common::now() as u64 - 5) * 1_000_000).to_string();
+    pane["tokens"] = json!({"obs_v":"2","obs_bind":binding,"obs_seq":seq,
+        "obs_event":"session","obs_phase":"ready","obs_tool":null,"obs_model":null,
+        "obs_result":null,"obs_usage_source":null,"obs_n0":",,,","obs_n1":",200000,,",
+        "obs_n2":",,,","obs_n3":",","obs_children":null,"obs_completion":null,"obs_outcomes":null});
+    *f.raw.lock().unwrap() = raw;
+    let bound = f.probe(&json!({}));
+    let telemetry = |probe: &Value| probe["result"]["agents"][0]["technical"]["telemetry"].clone();
+    assert_eq!(telemetry(&bound), telemetry(&plain));
+    assert_eq!(telemetry(&bound)["total_input"], 2260);
+    assert!(telemetry(&bound).get("window").is_none());
+    fs::remove_file(f.transcript("entry-a")).unwrap();
+    let missing = f.probe(&json!({}));
+    assert!(missing["result"]["agents"][0].is_object());
+    assert!(telemetry(&missing).is_null(), "{missing}");
+}
+
 #[test]
 fn claude_peer_probe_publishes_transcript_telemetry_and_old_cursor_replays_fresh() {
     let f = Fixture::new();
