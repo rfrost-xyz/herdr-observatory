@@ -1168,3 +1168,22 @@ test('claude transcript telemetry projects totals, completion and timing with no
   assert.equal(unknown.usage.inputTokens, null);
   assert.equal(unknown.usage.contextPercent, null);
 });
+
+// add-claude-status-reporter D4 and D7: the collector supplies `window` and
+// `context_percent` from a bound Claude Code mod report. A bound window with
+// unknown replay context projects no percentage, never zero.
+test('claude telemetry projects a reported window percentage and none from a window alone', () => {
+  const stamp = (now - 4000) * 1000;
+  const telemetry = { seq: stamp, usage_seq: stamp, event: 'session', phase: 'ready', usage_source: 'claude-transcript',
+    model: 'claude-synthetic-1', context: 150000, window: 200000, context_percent: 75, last_input: 2000, last_output: 300,
+    total_input: 90000, total_output: 4000, total_cache_read: 70000, total_cache_write: 12000, total_uncached_input: 8000 };
+  const agent = (id, changes) => ({ id, status: 'idle', harness: 'claude', project: 'Example',
+    technical: { telemetry: { ...telemetry, ...changes } } });
+  const raw = { interval: 5, hosts: [host({ agents: [agent('bound'), agent('window-only', { context: null, context_percent: null })] })], allowances: [] };
+  const threads = Object.fromEntries(Array.from(presented(raw).threads, thread => [thread.id, thread]));
+  assert.equal(threads.bound.usage.contextPercent, 75);
+  assert.equal(threads.bound.usage.inputTokens, 90000);
+  assert.equal(threads['window-only'].usage.contextPercent, null);
+  assert.equal(threads['window-only'].usage.inputTokens, 90000);
+  assert.equal(project(raw, now).threads.find(thread => thread.id === 'window-only').usage.contextPercent, null);
+});
