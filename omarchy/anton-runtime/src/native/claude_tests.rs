@@ -1760,6 +1760,29 @@ fn peer_collected(pane: Value, cursors: &Value) -> (Value, Value) {
     (agents[0]["technical"]["telemetry"].clone(), rows)
 }
 
+/// D4: the later of two panes on one session key takes the first pane's
+/// sample by copy. On a peer that copy still ignores the later pane's
+/// reporter metadata (review round 3).
+#[test]
+fn claude_peer_later_pane_on_a_shared_key_ignores_its_report() {
+    let fixture = Fixture::new();
+    fixture.write(&session());
+    // The published telemetry of each pane; the panes themselves differ in
+    // their reporter metadata.
+    let peer = |mut panes: Vec<Value>| {
+        NativeTelemetry::peer().enrich(&mut panes, &json!({}));
+        let telemetry: Vec<Value> = panes
+            .iter()
+            .map(|v| v["_native_telemetry"].clone())
+            .collect();
+        telemetry
+    };
+    let reported = peer(vec![agent(), bound(2000)]);
+    windowless(&reported[1]);
+    assert_eq!(reported[1]["context"], 1201);
+    assert_eq!(reported, peer(vec![agent(), agent()]));
+}
+
 /// D4: a peer's Claude output never depends on the pane's reporter
 /// metadata. A bound pane is collected exactly as an unbound one on a
 /// caught-up, an incomplete and a restarted pass. On the incomplete pass
