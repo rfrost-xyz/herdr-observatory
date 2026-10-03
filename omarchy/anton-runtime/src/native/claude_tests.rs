@@ -1771,11 +1771,10 @@ fn claude_peer_later_pane_on_a_shared_key_ignores_its_report() {
     // their reporter metadata.
     let peer = |mut panes: Vec<Value>| {
         NativeTelemetry::peer().enrich(&mut panes, &json!({}));
-        let telemetry: Vec<Value> = panes
+        panes
             .iter()
             .map(|v| v["_native_telemetry"].clone())
-            .collect();
-        telemetry
+            .collect::<Vec<Value>>()
     };
     let reported = peer(vec![agent(), bound(2000)]);
     windowless(&reported[1]);
