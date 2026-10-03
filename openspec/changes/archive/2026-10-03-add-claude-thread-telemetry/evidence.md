@@ -822,3 +822,14 @@ The spec now promises a mask only for work the transcript records in a structure
 **Gates:** fmt and clippy are clean. The full suite passes: lib 223, main 19, native_navigation 6, native_process 32.
 
 **Round 19.** Lenses 1 to 3 were CLEAN. Lens 4 found no blocking or non-blocking issues and two design.md wording nits, both fixed: the unreadable task-id case makes children invalid and does not clear `clean`, and the residual list now has three bullets.
+
+## Live installed check
+
+- **Runtime:** the installed `anton-runtime` was replaced atomically by the release build of this branch, and its hash matches the build. The shell restarted the collector, and the running process's executable hash matches.
+- **README:** the plugin README was updated.
+- **Private state preserved:**
+  - `.config.json`, `.accounts.json`, `.peers.json` and the hook receipts are byte-identical (sha256 before and after);
+  - the owner marker inode is unchanged.
+- **Shell harness:** `tests/run-shell-harness.sh` against the real Omarchy modules reported failures 0 and 4 rows, with 0 `--open-thread` invocations.
+- **User check:** the user opened the popover and confirmed it, with no synthetic input.
+- **SSH peers:** not redeployed, because the protocol is unchanged and backward compatible.
