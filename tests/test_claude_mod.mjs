@@ -266,6 +266,21 @@ test('session.end clears the confirmed key', async () => {
   assert.equal(state.runs.length, 2);
 });
 
+test('the confirmed key carries the session id across session.end with a run in flight', async () => {
+  const { hooks } = await load();
+  const { $, state } = host();
+  await fire(hooks, 'session.measure', $, measure(200000));
+  await fire(hooks, 'session.end', $, { reason: 'clear' });
+  // The run for session A settles after the end and confirms A's key.
+  await exit(state.runs[0], 0);
+  state.id = 'session-b';
+  state.now = start + 1000;
+  await fire(hooks, 'classic.SessionStart', $, { session_id: 'session-b' });
+  assert.equal(state.runs.length, 2, 'B with the same window is not taken as confirmed');
+  assert.equal(state.runs[1].argv[5], 'session-b');
+  assert.equal(state.runs[1].argv[6], '200000');
+});
+
 test('sequences increase strictly, also for equal clock readings', async () => {
   const { hooks } = await load();
   const { $, state } = host();
