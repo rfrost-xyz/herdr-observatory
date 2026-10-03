@@ -1055,14 +1055,33 @@ fn cli() -> Result<()> {
         .ok_or("Executable directory unavailable")?
         .to_owned();
     let mut state = None;
-    let mut args = std::env::args().skip(1);
+    let mut args = std::env::args().skip(1).peekable();
     let mut commands = Vec::new();
+    let mut claude = None;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--root" => root = args.next().ok_or("Missing root")?.into(),
             "--state" => state = Some(PathBuf::from(args.next().ok_or("Missing state")?)),
+            // D3: `--report claude` takes every later value verbatim, so an
+            // option-like pane or session id is never parsed as an option.
+            "--report" if commands.is_empty() && args.peek().is_some_and(|v| v == "claude") => {
+                args.next();
+                claude = Some(args.by_ref().collect::<Vec<_>>());
+            }
             _ => commands.push(arg),
         }
+    }
+    let leaf = if root
+        .file_name()
+        .is_some_and(|v| v == "herdr.observatory-peer")
+    {
+        "herdr.observatory-peer"
+    } else {
+        "herdr.observatory"
+    };
+    if let Some(values) = claude {
+        // Before any stdin read; the status carries the outcome (D3).
+        std::process::exit(reporter::claude(&root, state.as_deref(), &values, leaf));
     }
     if !root.is_absolute() {
         return Err("Absolute plugin root required".into());
@@ -1071,16 +1090,7 @@ fn cli() -> Result<()> {
         std::env::var_os("XDG_STATE_HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|| common::expand_home("~/.local/state"))
-            .join(
-                if root
-                    .file_name()
-                    .is_some_and(|v| v == "herdr.observatory-peer")
-                {
-                    "herdr.observatory-peer"
-                } else {
-                    "herdr.observatory"
-                },
-            )
+            .join(leaf)
     });
     let home = common::expand_home("~");
     let owner = root.join(".herdr-observatory-install");

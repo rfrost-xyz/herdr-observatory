@@ -121,6 +121,62 @@ fn receipt_value(bytes: &[u8], runtime: &Path, extension: &Path) -> Result<Value
     }
     Ok(receipt)
 }
+/// The Claude Code mod directory under `home` (design D1).
+pub(crate) fn claude_mod_root(home: &Path) -> PathBuf {
+    home.join(".claude/skills/anton-observatory")
+}
+/// The mod files a `claude_mod` receipt entry records, relative to its root.
+pub(crate) const CLAUDE_MOD_FILES: [&str; 3] = [
+    ".claude-plugin/plugin.json",
+    "hooks/hooks.json",
+    "hooks/register.js",
+];
+/// Whether `entry` has the D5 `claude_mod` shape for the mod directory
+/// `root`: version 1, that root, absolute `directories` at or under it (or
+/// its `skills` parent), and exactly the three mod files, each with a
+/// SHA-256 and, while a refresh is in progress, a `prior_sha256`.
+pub(crate) fn claude_mod_entry(entry: &Value, root: &Path) -> bool {
+    let skills = root.parent();
+    let directories = entry["directories"].as_array().is_some_and(|list| {
+        !list.is_empty()
+            && list.iter().all(|value| {
+                value.as_str().map(Path::new).is_some_and(|path| {
+                    path.is_absolute() && (path.starts_with(root) || Some(path) == skills)
+                })
+            })
+    });
+    let hash = |value: &Value| value.as_str().is_some_and(|v| common::hex_id(v, 64));
+    let files = entry["files"].as_array().is_some_and(|list| {
+        let mut paths: Vec<_> = list
+            .iter()
+            .filter_map(|file| file["path"].as_str())
+            .collect();
+        paths.sort_unstable();
+        let mut expected = CLAUDE_MOD_FILES.map(|name| root.join(name));
+        expected.sort_unstable();
+        list.len() == CLAUDE_MOD_FILES.len()
+            && paths
+                .iter()
+                .map(Path::new)
+                .eq(expected.iter().map(PathBuf::as_path))
+            && list
+                .iter()
+                .all(|file| hash(&file["sha256"]) && file.get("prior_sha256").is_none_or(&hash))
+    });
+    entry["version"] == 1
+        && entry["root"].as_str().map(Path::new) == Some(root)
+        && directories
+        && files
+}
+/// Reporter guard 2 (design D3): the plugin's hook receipt, owned by this
+/// runtime, records the Claude Code mod for `home`. An entry left
+/// mid-refresh, with `prior_sha256` values, is accepted.
+pub fn claude_mod_recorded(root: &Path, home: &Path) -> bool {
+    let (_, extension, _) = paths(home);
+    common::read_owned(&root.join(".hooks-receipt.json"), LIMIT, false)
+        .and_then(|bytes| receipt_value(&bytes, &root.join("anton-runtime"), &extension))
+        .is_ok_and(|receipt| claude_mod_entry(&receipt["claude_mod"], &claude_mod_root(home)))
+}
 fn native_extension(receipt: &Value, bytes: &[u8], runtime: &Path) -> Result<()> {
     let declaration = format!(
         "const nativeRuntime = {};",
@@ -523,6 +579,50 @@ pub fn uninstall(root: &Path, home: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Reporter guard 2 accepts exactly the D5 `claude_mod` shape, also
+    /// mid-refresh with `prior_sha256` values.
+    #[test]
+    fn claude_mod_entry_has_the_receipt_shape() {
+        let root = claude_mod_root(Path::new("/home/a"));
+        let hash = common::sha256(b"fixture");
+        let files: Vec<_> = CLAUDE_MOD_FILES
+            .iter()
+            .map(|name| json!({"path":root.join(name),"sha256":hash}))
+            .collect();
+        let entry = json!({"version":1,"root":root,"directories":["/home/a/.claude/skills",root,root.join("hooks")],"files":files});
+        assert!(claude_mod_entry(&entry, &root));
+        let mut prior = entry.clone();
+        prior["files"][2]["prior_sha256"] = json!(hash);
+        assert!(claude_mod_entry(&prior, &root));
+        let mut broken = Vec::new();
+        for (pointer, value) in [
+            ("/version", json!(2)),
+            ("/root", json!("/home/b/.claude/skills/anton-observatory")),
+            ("/directories", json!([])),
+            ("/directories/0", json!("/home/a/.claude")),
+            ("/directories/0", json!("relative")),
+            ("/files/0/sha256", json!("short")),
+            ("/files/0/path", json!("/home/a/other.json")),
+            ("/files", json!(files[..2])),
+        ] {
+            let mut value_entry = entry.clone();
+            *value_entry.pointer_mut(pointer).unwrap() = value;
+            broken.push(value_entry);
+        }
+        let mut bad_prior = prior.clone();
+        bad_prior["files"][2]["prior_sha256"] = json!("short");
+        broken.push(bad_prior);
+        let mut extra = entry.clone();
+        extra["files"]
+            .as_array_mut()
+            .unwrap()
+            .push(files[0].clone());
+        broken.push(extra);
+        broken.push(json!(null));
+        for entry in broken {
+            assert!(!claude_mod_entry(&entry, &root), "{entry}");
+        }
+    }
     #[test]
     fn removes_only_exact_owned_callbacks() {
         let original = json!({"other":true,"hooks":{"Stop":[{"matcher":"*","hooks":[{"type":"command","command":"sh /owned"},{"type":"command","command":"herdr native"}]}],"Custom":[{"hooks":[{"type":"command","command":"sh /owned"}]}]}});
