@@ -418,6 +418,63 @@ fn a_refresh_interrupted_from_a_to_b_completes_with_build_c() {
     }
 }
 
+/// Review round 6: a retry takes hashes from files a crashed refresh renamed
+/// into place without syncing. Before its first receipt write it syncs each
+/// existing mod directory, so the receipt cannot reach disk ahead of those
+/// renames. Checked for a same-build retry (state c writes the receipt once,
+/// with no dual step) and for a retry with build C, in every state that
+/// writes the receipt before the mod files.
+#[test]
+fn a_retry_syncs_the_mod_directories_before_the_receipt_write() {
+    for (new, debris, state) in STATES {
+        for (build, tag) in [
+            (variant("build-b", [true, true, true]), "same build"),
+            (variant("build-c", [true, false, true]), "build C"),
+        ] {
+            let m = Mod::new();
+            interrupted(&m, new, debris);
+            let receipt = m.f.root.join(".hooks-receipt.json");
+            let events = std::cell::RefCell::new(Vec::new());
+            claude_mod::install_mod_with(
+                &m.f.root,
+                &m.f.home,
+                &m.env,
+                &build,
+                &mut |path, bytes| {
+                    events.borrow_mut().push(("write", path.to_owned()));
+                    common::atomic_owned_write(path, bytes)
+                },
+                &mut |path| {
+                    events.borrow_mut().push(("sync", path.to_owned()));
+                    claude_mod::sync_directory(path)
+                },
+            )
+            .unwrap();
+            let events = events.into_inner();
+            // The step-2 receipt write is a receipt write before any mod file
+            // write. Only a same-build retry with every file still at A has
+            // none: its receipt already matches.
+            let first = events
+                .iter()
+                .position(|(kind, path)| *kind == "write" && *path != receipt)
+                .unwrap_or(events.len());
+            let Some(first) = events[..first]
+                .iter()
+                .position(|event| *event == ("write", receipt.clone()))
+            else {
+                assert_eq!((new, tag), ([false; 3], "same build"), "{events:?}");
+                continue;
+            };
+            for directory in [m.file(".claude-plugin"), m.file("hooks"), m.root()] {
+                assert!(
+                    events[..first].contains(&("sync", directory.clone())),
+                    "{state}, {tag}: {directory:?} synced before the receipt in {events:?}"
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn a_retry_after_the_receipt_write_lists_each_directory_once() {
     let m = Mod::new();

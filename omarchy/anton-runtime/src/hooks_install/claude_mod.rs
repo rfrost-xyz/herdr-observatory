@@ -441,6 +441,20 @@ pub(super) fn install_mod(
     payload: Payload,
     write: Writer,
 ) -> Result<()> {
+    install_mod_with(root, home, env, payload, write, &mut |path| {
+        sync_directory(path)
+    })
+}
+/// `install_mod` with its directory syncs passed in; fixtures record them
+/// alongside the writes to check their order.
+pub(super) fn install_mod_with(
+    root: &Path,
+    home: &Path,
+    env: &ClaudeEnv,
+    payload: Payload,
+    write: Writer,
+    sync: &mut dyn FnMut(&Path) -> Result<()>,
+) -> Result<()> {
     if root
         .file_name()
         .is_some_and(|name| name == "herdr.observatory-peer")
@@ -520,13 +534,27 @@ pub(super) fn install_mod(
         return Err("Invalid Claude Code mod receipt".into());
     }
     if prior.as_ref() != Some(&entry) {
+        // Hashes taken from files on disk may come from renames a crashed
+        // run never synced; those must be durable before a receipt that
+        // relies on them.
+        if !present.is_empty() {
+            for directory in [
+                mod_root.join(".claude-plugin"),
+                mod_root.join("hooks"),
+                mod_root.clone(),
+            ] {
+                if real_directory(&directory)? {
+                    sync(&directory)?;
+                }
+            }
+        }
         receipt["claude_mod"] = entry;
         write(
             &receipt_path,
             &serde_json::to_vec(&receipt).map_err(|_| "Invalid hook receipt")?,
         )?;
         // The receipt rename reaches disk before any mod file rename.
-        sync_directory(root)?;
+        sync(root)?;
     }
     for directory in &create {
         use std::os::unix::fs::DirBuilderExt;
@@ -546,7 +574,7 @@ pub(super) fn install_mod(
     }
     if dual {
         for directory in [mod_root.join(".claude-plugin"), mod_root.join("hooks")] {
-            sync_directory(&directory)?;
+            sync(&directory)?;
         }
         for file in receipt["claude_mod"]["files"]
             .as_array_mut()
@@ -561,7 +589,7 @@ pub(super) fn install_mod(
             &receipt_path,
             &serde_json::to_vec(&receipt).map_err(|_| "Invalid hook receipt")?,
         )?;
-        sync_directory(root)?;
+        sync(root)?;
     }
     Ok(())
 }

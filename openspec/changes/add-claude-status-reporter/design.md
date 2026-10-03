@@ -681,7 +681,13 @@ refuses a peer root (`herdr.observatory-peer`) as a second guard.
    `prior_sha256`. `directories` is the prior list plus each directory that is
    missing now, will be created in step 3 and is not already listed (a retry
    after a crash that followed this step finds them listed), in creation
-   order.
+   order. When step 1 hashed any file on disk, each mod directory that
+   exists (`.claude-plugin/`, `hooks/` and the mod root) is synced (`fsync`)
+   before this write, whether or not the entry is dual: a retry can hash
+   files that a crashed refresh renamed into place without syncing, and the
+   receipt that relies on those hashes must not reach disk ahead of them
+   (review round 6). The plugin root is synced after the write, so the
+   receipt rename reaches disk before any mod file rename.
 3. Create missing directories with mode 0700.
 4. Write each changed file with `atomic_owned_write` (mode 0600), skipping a
    file whose bytes already match, in the order `hooks/hooks.json`,
@@ -691,8 +697,9 @@ refuses a peer root (`herdr.observatory-peer`) as a second guard.
    receipt that already holds exactly the new entry (no `prior_sha256`)
    performs no file write and no receipt write (idempotent); steps 2 and 5
    are skipped when the entry they would write equals the recorded one.
-5. If any `prior_sha256` was recorded, rewrite the receipt with the new hashes
-   only.
+5. If any `prior_sha256` was recorded, sync `.claude-plugin/` and `hooks/`,
+   so the step 4 renames are durable, then rewrite the receipt with the new
+   hashes only and sync the plugin root.
 
 A crash at any step leaves every recorded file absent, at its prior hash or at
 its new hash, each of which the receipt accepts. A crash during a file write
@@ -901,7 +908,10 @@ New behaviour (must fail on `80f6295`):
   file, and, separately, `--uninstall-hooks` succeeds and leaves an empty
   tree. A further state, a dual receipt A→B with build C installing, also
   succeeds. A retry after a crash that followed the receipt write (directories
-  already listed) leaves `directories` without duplicates.
+  already listed) leaves `directories` without duplicates. From each state,
+  with the same build and with build C, a recording sync and write seam shows
+  `.claude-plugin/`, `hooks/` and the mod root synced before the step 2
+  receipt write (review round 6).
 - Write order: a fresh install writes `hooks/hooks.json`, `hooks/register.js`
   and `.claude-plugin/plugin.json` in that order (asserted through inode
   creation order or a recording write hook).
