@@ -66,7 +66,10 @@ The files and their hashes are recorded in the plugin's `.hooks-receipt.json`.
 Installation refuses a target it cannot prove absent or owned, symlinks, a set
 `CLAUDE_CONFIG_DIR` other than `~/.claude`, a target (or, for chezmoi, its
 `~/.claude` or `~/.claude/skills` parent) managed by chezmoi, mise
-dotfiles or a Git repository with a real `.git` marker. A refusal leaves the
+dotfiles (a history entry or a `[dotfiles]` declaration in any mode, such
+as a copy of `~/.claude/skills`) or a Git repository with a real `.git`
+marker. When `mise` is installed and its declarations cannot be read, the
+mod is refused too. A refusal leaves the
 plugin installed and the dial unknown. To remove only the mod:
 
 ```sh

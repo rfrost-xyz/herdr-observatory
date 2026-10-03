@@ -112,7 +112,9 @@ Keep private config/accounts, concealment preferences and owner marker inode on
 updates. Explicit migration removes retired publication/music and known container
 export fields. Installers refuse conflicts/symlinks/managed configuration and
 preserve unrelated hooks. For the Claude Code mod, managed configuration also
-covers mise dotfiles and Git repositories with a real `.git` marker; it installs
+covers mise dotfiles (history entries and `[dotfiles]` declarations in every
+mode, read with `mise config get -f`, never a command that renders templates)
+and Git repositories with a real `.git` marker; it installs
 only locally under `~/.claude/skills/anton-observatory/`, never on a peer, and
 removal refuses a changed recorded file and keeps the receipt. Hook receipt
 writers hold one exclusive lock and refuse as busy after a bounded wait. Remove old callbacks/files only with proven ownership.
