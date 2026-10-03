@@ -2808,6 +2808,36 @@ fn claude_mod_installed_by_the_cli_is_accepted_by_the_reporter() {
     assert!(!f.root.join(".hooks-receipt.json").exists());
 }
 
+/// D5 removal step 2 (review round 6): every kept recorded directory is
+/// reported on stderr, including a recorded `~/.claude/skills` that now
+/// holds another skill, and the removal still succeeds.
+#[test]
+fn claude_mod_removal_reports_a_kept_skills_directory() {
+    let f = Reporter::new();
+    f.installable();
+    f.install_step("--install-hooks");
+    for mode in ["--uninstall-claude-mod", "--uninstall-hooks"] {
+        f.install_step("--install-claude-mod");
+        let skills = f.home.join(".claude/skills");
+        let other = skills.join("other/SKILL.md");
+        fs::create_dir_all(other.parent().unwrap()).unwrap();
+        fs::write(&other, "another skill").unwrap();
+        let output = f.installer(mode).output().unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{mode}: {stderr}");
+        assert!(
+            stderr.contains(&format!("Kept {}:", skills.display())),
+            "{mode}: {stderr}"
+        );
+        assert_eq!(fs::read_to_string(&other).unwrap(), "another skill");
+        assert!(!f.mod_root().exists(), "{mode}");
+        fs::remove_dir_all(&skills).unwrap();
+        if mode == "--uninstall-hooks" {
+            assert!(!f.root.join(".hooks-receipt.json").exists());
+        }
+    }
+}
+
 /// D1: the CLI reads `CLAUDE_CONFIG_DIR` from its own environment, and a
 /// value naming another configuration refuses the mod and changes nothing.
 #[test]

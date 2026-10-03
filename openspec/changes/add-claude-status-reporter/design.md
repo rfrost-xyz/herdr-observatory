@@ -746,8 +746,10 @@ and removal would refuse.
    parent while it still holds them. Debris is deleted only after the preflight passes, so a refused
    removal still keeps everything. An absent recorded directory is fine. `remove_dir` removes
    only empty directories, so a directory holding an unrecorded file stays
-   (`ENOTEMPTY`); the command reports it on stderr and still succeeds, because
-   that file was never Anton's. Any other `remove_dir` failure (for example
+   (`ENOTEMPTY`); the command reports every such kept recorded directory on
+   stderr (`Kept <directory>: ...`), including a recorded `skills/` that now
+   holds another skill, and still succeeds, because that file was never
+   Anton's. Any other `remove_dir` failure (for example
    `EACCES` on a read-only parent) fails the removal with "Claude Code mod
    removal failed: cannot remove <directory>; the receipt is unchanged, fix it
    and retry" before step 3, so the receipt keeps the entry and a retry
@@ -970,7 +972,9 @@ New behaviour (must fail on `80f6295`):
   `~/.claude`, `anton-observatory/`, `hooks/` or recorded file refuses the
   removal the same way, names the link, and succeeds once the link is
   replaced by the real entry; with an extra unrecorded file it removes
-  the recorded files and keeps the directory; with a read-only mod root
+  the recorded files and keeps the directory; a recorded `skills/` holding
+  another skill is kept and named on stderr by both removal commands, which
+  succeed; with a read-only mod root
   both removals fail with the receipt (and, for `--uninstall-hooks`, Pi and
   the shim) kept, and a retry after the mode is restored completes; a mod directory listed by a fake
   `mise` is still removed (removal runs chezmoi only); a chezmoi-managed one is

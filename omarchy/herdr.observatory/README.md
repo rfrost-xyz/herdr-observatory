@@ -86,7 +86,8 @@ Removal refuses, keeping every file and the receipt, when a recorded file was
 changed; restore or delete that file and retry. It also refuses when a
 directory on the way, such as `~/.claude`, has become a symlink, and names that
 link; replace the link with the real directory and retry. A directory holding a file Anton
-did not write is kept and reported. A directory that cannot be removed for
+did not write, including `~/.claude/skills` when it holds other skills, is
+kept and reported on stderr. A directory that cannot be removed for
 any other reason, such as a read-only parent, fails the removal with the
 receipt kept; fix it and retry. The complete uninstall below also removes
 the mod.

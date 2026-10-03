@@ -646,12 +646,10 @@ pub(super) fn remove_with(
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             // Only a directory that still holds entries is kept.
             Err(e) if e.kind() == std::io::ErrorKind::DirectoryNotEmpty => {
-                if directory.starts_with(&mod_root) {
-                    eprintln!(
-                        "Kept {}: it holds files the Claude Code mod installer did not write",
-                        directory.display()
-                    );
-                }
+                eprintln!(
+                    "Kept {}: it holds files the Claude Code mod installer did not write",
+                    directory.display()
+                );
             }
             // Any other failure keeps the receipt entry, so a retry works.
             Err(_) => {
