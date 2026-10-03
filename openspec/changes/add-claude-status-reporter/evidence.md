@@ -1126,6 +1126,20 @@ validate --all --strict`: 4 passed. Private `TMPDIR` under `/tmp/c3n-*`,
 removed afterwards. No write under the real `~/.claude`, no `claude` CLI run;
 every fixture is synthetic.
 
+## Confirming check after round 6
+
+An independent read-only review of `git diff 63c30ca 103ac9b` returned
+**CLEAN**: each round-6 nit is fixed correctly and completely, with no
+regressions and no change to the Pi files. The two `session.end` mutants
+each fail one test, restoring `starts_with(mod_root)` fails
+`claude_mod_removal_reports_a_kept_skills_directory`, and limiting the new
+syncs to `dual` fails
+`a_retry_syncs_the_mod_directories_before_the_receipt_write`. The reviewer
+re-ran the gates on a `git archive` copy of `103ac9b` in a private
+`TMPDIR`: `cargo test --locked --offline` 271 + 22 + 6 + 48 passed and
+`node --test` 115 passed. Task 5.2 is complete: rounds 1 to 6 plus this
+check, with no outstanding findings.
+
 ## Live installed check
 
 _Pending (task 5.3)._
