@@ -61,7 +61,8 @@ session in which mods are off (for example an untrusted workspace,
 
 The files and their hashes are recorded in the plugin's `.hooks-receipt.json`.
 Installation refuses a target it cannot prove absent or owned, symlinks, a set
-`CLAUDE_CONFIG_DIR` other than `~/.claude`, and a target managed by chezmoi, mise
+`CLAUDE_CONFIG_DIR` other than `~/.claude`, a target (or, for chezmoi, its
+`~/.claude` or `~/.claude/skills` parent) managed by chezmoi, mise
 dotfiles or a Git repository with a real `.git` marker. A refusal leaves the
 plugin installed and the dial unknown. To remove only the mod:
 

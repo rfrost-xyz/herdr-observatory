@@ -468,7 +468,12 @@ refuses a peer root (`herdr.observatory-peer`) as a second guard.
   `regular` no-symlink walk.
 - `CLAUDE_CONFIG_DIR` is unset or names `~/.claude` (D1).
 - **Managed configuration.** A new `claude_managed(path)` runs the existing
-  `managed` (chezmoi), then refuses when:
+  `managed` (chezmoi) on the mod directory, each mod file and each ancestor
+  below the home directory (`~/.claude/skills` and `~/.claude`), so a
+  chezmoi-managed parent refuses as the mise and Git checks already do. The
+  home directory itself is not asked: it is chezmoi's destination root, for
+  which `chezmoi source-path` succeeds on any host that uses chezmoi. It then
+  refuses when:
   - **mise.** If no `mise` executable is on `PATH`, the target is not
     mise-managed and this check passes. If `mise` is present,
     `mise -C <home> dotfiles paths --json` runs with null stdin, its working
@@ -775,7 +780,8 @@ New behaviour (must fail on `80f6295`):
   inode, mode), so a directory created or removed fails them.
 - Refusals: existing unowned directory, unrecorded file, modified recorded
   file, symlinked `~/.claude`, `skills` or target; chezmoi; a fake `mise` on
-  `PATH` printing a covering entry; a fake `mise` that fails and one that
+  `PATH` printing a covering entry; a fake `chezmoi` that manages only
+  `~/.claude` or only `~/.claude/skills`; a fake `mise` that fails and one that
   hangs past 3 s; a `.git` directory with a regular `HEAD` and a `.git` file
   starting `gitdir:` in an ancestor, and a `.git` symlink to such a directory,
   to such a file, and one that does not resolve; a fake `mise` listing the target only in
@@ -789,7 +795,8 @@ New behaviour (must fail on `80f6295`):
   working directory and a null stdin, with the installer started from a
   different temporary directory that holds its own `mise.toml`.
 - Not refused: an empty `.git` directory in the temporary home; a `.git`
-  directory without `HEAD`; no `mise` on `PATH`.
+  directory without `HEAD`; no `mise` on `PATH`; a fake `chezmoi` that
+  answers only for the home directory.
 - Removal: with a modified file it refuses before any Pi, shim or mod deletion,
   keeps everything (including any debris) and names the path; a symlinked
   `anton-observatory/` or `hooks/` refuses the removal the same way; with an extra unrecorded file it removes
@@ -947,6 +954,11 @@ for that.
   absolute `XDG_STATE_HOME` than the collector's, the reporter's `hook.lock`
   differs. Only Claude reporters write Claude pane metadata and guard 6 orders
   them by `seq`, so the effect is limited to weaker serialisation (D3).
+- **[chezmoi-managed Claude directory]** A user whose chezmoi source state
+  holds any file under `~/.claude` (a `dot_claude/` directory) has a managed
+  `~/.claude`, so the mod is refused there, even when nothing tracks the
+  skills directory. This is the conservative reading of "refuse managed
+  configuration"; the development host has no `chezmoi`.
 - **[Undetected Git dotfiles]** A bare dotfile repository used through
   `--git-dir`/`--work-tree` leaves no marker under the home directory and is
   not detected (D5). The files Anton writes are new, hash-recorded and
