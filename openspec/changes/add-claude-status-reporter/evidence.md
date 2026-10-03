@@ -161,6 +161,21 @@ string or null values. The Claude report therefore needs no `display_agent` or
 - The Pi extension starts the runtime with `node:child_process` `spawn`, so it
   inherits Pi's environment; the runtime root comes from `current_exe()`.
 - `State.js` uses `context_percent` when present, otherwise `context / window`.
+- `telemetry_from_agent` accepts `obs_v` `1` or `2`; its v1 branch reads every
+  numeric key, including the window, from `obs_<key>` tokens.
+- `common::atomic_write` (used by `atomic_owned_write`) writes a temporary
+  file named `.anton-write-<pid>-<bits>` (both decimal) in the destination's
+  own directory and unlinks it only if the process survives to do so.
+- `common::owner_guard` takes `LOCK_SH`; `hooks_install::uninstall` takes no
+  guard; peer removal (`packaging.rs`) calls `hooks_install::uninstall`
+  directly.
+- `uninstall.sh` refuses any file in the plugin root outside its allowlist
+  ("Unknown plugin file remains"), and removes only allowlisted names from the
+  state directory.
+- `install.sh` moves the staged plugin directory into place before it runs
+  `--install-hooks`.
+- `cli()` (`main.rs`) parses `--root` and `--state` anywhere in argv and
+  resolves `state` to a path before dispatching the command.
 
 ## Host configuration (counts and kinds only)
 
@@ -168,7 +183,10 @@ string or null values. The Claude report therefore needs no `display_agent` or
   entries under the personal skills directory individually, and the user
   settings file is tracked (encrypted). No entry covers the proposed
   `anton-observatory` directory. `mise dotfiles paths --json` returns an
-  `entries` list with `path` values using `~`. This is why D5 checks mise
+  `entries` list with `path` values using `~`, beside `exclude`, `invalid`,
+  `omitted`, `plaintext`, `nested` and `incomplete` lists (all empty on this
+  host). `mise` accepts `-C <dir>` to fix the directory whose configuration it
+  loads. This is why D5 checks mise
   entries by path containment rather than refusing the whole Claude directory.
 - The home directory contains an empty `.git` directory. Git does not treat
   the Claude configuration directory as inside a repository. D5 therefore

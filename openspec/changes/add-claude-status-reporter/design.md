@@ -61,7 +61,8 @@ Pi behaviour, output, checkpoints and the Pi extension bytes must not change.
   directory gains no file and `install.sh` and `uninstall.sh` file lists are
   unchanged.
 - **`src/main.rs`:** `--report claude` is dispatched before the existing stdin
-  read and takes exactly six arguments. `State::sample` drops `window` and
+  read and takes exactly four verbatim positional values after `claude`;
+  `cli()` keeps `state` optional until dispatch (D3). `State::sample` drops `window` and
   `context_percent` from peer Claude telemetry.
 - **`src/reporter.rs`:** a sibling `report_claude` with argv-only input and the
   same guards as Pi. `metadata()` takes the agent as a parameter and builds the
@@ -114,7 +115,7 @@ literals, and no Node APIs, `import`, timer globals or `Date` dependence
 
 | Event | Why | Window source |
 |---|---|---|
-| `session.measure` | Primary. Fires after each turn and after a plan-limit change, so the latest report carries the window after a `/model` switch's next turn. Never skipped on the confirmed key (step 4), so a window lost from Herdr's metadata returns on the next turn. | `e.context.window`, else `(await $.session.usage()).context.window` |
+| `session.measure` | Primary. Fires after each turn and after a plan-limit change, so the latest report carries the window after a `/model` switch's next turn. Never skipped on the confirmed key (step 4), so a window lost from Herdr's metadata returns on the next turn. | `e.context.window` (the documented payload always carries `context`; an absent one skips) |
 | `session.start` | Covers mod reload and a launch with `--resume`, where replay already has context before any new turn. | `(await $.session.usage()).context.window` |
 | `classic.SessionStart` | Covers `/clear`, `/resume` and `/branch` inside a running process, which do not refire `session.start`. Useful mainly for `/resume`, whose transcript already has context. | `(await $.session.usage()).context.window`, only when `e.session_id` equals the session id read below |
 | `session.end` | Clears the confirmed key (step 7), so the next session reports again. | none |
@@ -135,7 +136,10 @@ on('session.measure', async ($, e, next) => {
 Each hook also has a `.catch` handler that returns quietly. A hook never
 returns anything other than `next(e)` and never awaits the runtime process, so
 `session.start`, which Claude Code waits for before the first prompt
-[api: Add a command], is not delayed.
+[api: Add a command], is not delayed. The mod starts a run only inside a hook
+invocation, with that invocation's `$`; nothing is queued or started after a
+hook has returned, and every promise the mod creates ends in a terminal
+`.catch`.
 
 **`sample($, window, source)`** (`source` is `measure`, `start` or `classic`):
 
@@ -159,23 +163,29 @@ returns anything other than `next(e)` and never awaits the runtime process, so
    that is not epoch milliseconds fails closed instead of sending a small
    `seq` that guard 6 would refuse for good.
    If a run is in flight (`inflight !== null`) and
-   `now - inflight.startedAt <= 3000`, store `pending = {id, window, source}`
-   (latest wins) and return. A run older than 3 s (above the 2 s `timeoutMs`)
-   is stale: it is abandoned and a new run starts. This covers a worker that
-   never settles an un-awaited promise (open question 3).
+   `now - inflight.startedAt <= 3000`, return: the sample is skipped, not
+   held. The next `session.measure`, which is never deduplicated, carries the
+   latest window. A run older than 3 s (above the 2 s `timeoutMs`) is stale:
+   it is abandoned and a new run starts. This covers a worker that never
+   settles an un-awaited promise (open question 3).
 5. `seq = Math.max(lastSeq + 1, Math.floor(now) * 1000)`, kept in module scope,
    so sequences are strictly increasing epoch microseconds, also across a mod
    reload (which resets `lastSeq`).
-6. `const token = ++generation; inflight = {token, startedAt: now};
-   pending = null;` (the sample being started is the latest, so any held
-   sample is older and is dropped), then start, without awaiting:
-   `$.process.run([nativeRuntime, '--report', 'claude', pane, String(seq), id, String(window)], {timeoutMs: 2000})`.
-   `.then(r => { if (token === generation && r.exitCode === 0) confirmed = key; })`,
-   `.catch(() => {})`, and `.finally(() => { if (token !== generation) return;
-   inflight = null; start pending if its key differs from confirmed or its
-   source is measure })`. A late callback from an abandoned run (its token is
-   no longer current) changes nothing: it cannot set `confirmed`, clear the
-   newer run's in-flight state or drain `pending`.
+6. Call `$.process.run([nativeRuntime, '--report', 'claude', pane, String(seq), id, String(window)], {timeoutMs: 2000})`
+   synchronously inside `sample`, without awaiting it and never from a
+   deferred callback. Only after the call returns a promise:
+   `const token = ++generation; inflight = {token, startedAt: now};`, so a
+   synchronous throw (caught by the hook's `try`) leaves `inflight` and
+   `generation` unchanged; only `lastSeq` has advanced, which keeps `seq`
+   strictly increasing.
+   The chain is
+   `run.then(r => { if (token === generation && r.exitCode === 0) confirmed = key; })
+   .finally(() => { if (token === generation) inflight = null; })
+   .catch(() => {})`, with the terminal `.catch` last, because `.finally`
+   returns a new promise. The `.finally` callback starts nothing. A late
+   callback from an abandoned run (its token is no longer current) changes
+   nothing: it cannot set `confirmed` or clear the newer run's in-flight
+   state.
 7. `session.end` clears `confirmed` (but not `lastSeq`), so the next session
    reports again.
 
@@ -195,10 +205,15 @@ returns anything other than `next(e)` and never awaits the runtime process, so
   report that loses the race with Herdr's own SessionStart hook (Herdr still
   shows the previous session id) exits non-zero and is retried on the next
   event.
+- No held sample. An earlier plan kept the latest sample skipped during a run
+  and started it from `.finally`, after the hook had returned, with a `$`
+  whose lifetime is undocumented and outside any `try`. It is dropped: a
+  skipped sample is at most one turn old, and the next `session.measure`
+  carries the current window.
 - If the worker does not keep an un-awaited promise alive after a hook returns
   (open question 3), neither `.then` nor `.finally` runs. The stale rule in step
-  4 then lets the next event after 3 s start a new run, so at worst one event
-  inside the 3 s window is dropped, and `session.measure` keeps reporting each
+  4 then lets the next event after 3 s start a new run, so at worst the events
+  inside the 3 s window are skipped, and `session.measure` keeps reporting each
   later turn. The node test pins this with a promise that never settles.
 - The mod reads no model, cost, rate limits, messages, files or settings, and
   makes no network call. Change 4 can extend `sample` to carry rate limits
@@ -206,10 +221,21 @@ returns anything other than `next(e)` and never awaits the runtime process, so
 
 ### D3. Reporter wire (`anton-runtime --report claude`)
 
-**Command line.** `--report claude <pane> <seq> <session-id> <window>`, exactly
-six arguments. `main.rs` dispatches it before the existing `input()` call, so
-stdin is never read and a closed or absent stdin cannot stall it. The Pi form
+**Command line.** `--report claude <pane> <seq> <session-id> <window>`.
+`main.rs` dispatches it before the existing `input()` call, so stdin is never
+read and a closed or absent stdin cannot stall it. The Pi form
 (`--report pi <pane> <seq>` with JSON stdin) is unchanged.
+
+- Option parsing is unchanged for every other command, including
+  `--report pi`. Only `--report claude` stops it: once `cli()` reads
+  `--report claude`, it takes the next four values verbatim as positionals,
+  so a pane or session id spelt `--state` is a value, not an option, and
+  `--root` or `--state` for this command must come before `--report`. Any
+  value after the window exits 2.
+- `cli()` keeps `state` as an `Option` until dispatch, so `--report claude`
+  can tell an explicit `--state` (refused when relative) from an
+  environment-derived one (a relative `XDG_STATE_HOME` is ignored). Other
+  commands resolve the default exactly as today.
 
 **Validation, before any file or socket access:**
 
@@ -244,7 +270,8 @@ reporter takes a different `hook.lock`. That only weakens serialisation between
 Claude reporters on the same host, which guard 6 (`obs_seq`) already orders;
 the collector writes no metadata. This is recorded under Risks.
 
-**Guards, in the Pi order:**
+**Guards, in the Pi order, with a new receipt guard 2** (the Pi reporter has
+no receipt guard; it goes from `owner_guard` to `.config.json`):
 
 1. `owner_guard` on `.herdr-observatory-install`.
 2. `.hooks-receipt.json` exists, passes `receipt_value`, and has a valid
@@ -307,7 +334,8 @@ path's statuses are unchanged.
 **Where the window comes from.** For a local Claude pane, only from bound
 reporter metadata:
 
-- `telemetry_from_agent` accepts it only when `obs_v` is `2` and `obs_bind`
+- `telemetry_from_agent` accepts it only when `obs_v` is `1` or `2` (both
+  are accepted today, for migration; the reporter writes `2`) and `obs_bind`
   equals `session_binding(agent)`, the hash of `claude:id:<value>`. That is the
   pane's current Claude session, so a report for an earlier session, another
   harness or another pane is ignored.
@@ -376,12 +404,32 @@ window through. The peer never installs the mod (D5).
 - `--uninstall-hooks`: also removes a recorded mod, preflighting it with the Pi
   extension and the compatibility shim before deleting anything.
 
+**Receipt lock.** `--install-hooks`, `--install-claude-mod`,
+`--uninstall-claude-mod` and `--uninstall-hooks` (including the call from peer
+removal in `packaging.rs`) all read, modify and write `.hooks-receipt.json`.
+Each takes an exclusive `flock` on the plugin root directory itself (opened
+`O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC`) around its whole
+read-modify-write. Each command takes it once, at its public entry point in
+`hooks_install` (`install`, `uninstall`, `install_claude_mod`,
+`uninstall_claude_mod`), so the CLI and peer removal are both covered; the
+internal helpers, such as the mod removal that `uninstall` reuses, run under
+the held lock and never take it again (a second `flock` from another
+descriptor of the same directory would conflict with the first). The wait is bounded to 3 s; a lock still held
+then refuses with `Hook receipt busy; retry` and writes nothing. `owner_guard`
+stays shared, because the running collector holds it. The directory is used
+instead of a lock file because `uninstall.sh` refuses any unknown file in the
+plugin root, and `install.sh` moves the staged directory into place before it
+runs any installer, so the locked inode is stable. This lock is the one change
+to the Pi install path: its receipt bytes are unchanged, and the busy refusal
+is its only new error.
+
 **Recommendation: a separate command, run by default by the local installer.**
 The peer provisioning instructions run `--install-hooks --adopt-legacy-hooks` on
 every SSH peer. If the mod rode on `--install-hooks`, re-provisioned peers would
 install it and report remote windows, which this change excludes. A separate
-command also keeps the Pi install path, its errors and its receipt writes
-byte-identical, and lets the user remove the mod alone. `--install-claude-mod`
+command also keeps the Pi install path and its receipt writes byte-identical
+(apart from the shared receipt lock above), and lets the user remove the mod
+alone. `--install-claude-mod`
 refuses a peer root (`herdr.observatory-peer`) as a second guard.
 
 **Preconditions (all checked before any write):**
@@ -397,12 +445,20 @@ refuses a peer root (`herdr.observatory-peer`) as a second guard.
 - **Managed configuration.** A new `claude_managed(path)` runs the existing
   `managed` (chezmoi), then refuses when:
   - **mise.** If no `mise` executable is on `PATH`, the target is not
-    mise-managed and this check passes. If `mise` is present, `mise dotfiles
-    paths --json` runs bounded to 3 s and 1 MiB. The target is refused when an
-    entry, after `~` expansion, equals, contains or is contained by the mod
-    directory. The check also fails closed (refuses) when the command exits
-    non-zero, times out, exceeds the bound or prints unparseable JSON, for
-    example a `mise` without `dotfiles`.
+    mise-managed and this check passes. If `mise` is present,
+    `mise -C <home> dotfiles paths --json` runs with null stdin, its working
+    directory set to the home directory, bounded to 3 s and 1 MiB, so a
+    `mise.toml` in the installer's own working directory plays no part. The
+    output's `entries`, `incomplete`, `invalid`, `nested` and `omitted` lists
+    are all read, because a declaration that history could not honour may
+    still be meant to cover the target. `exclude` and `plaintext` are not
+    read: they qualify what an entry tracks, and the entry itself already
+    decides coverage. The target is refused when any item
+    in those lists, after `~` expansion of its `path`, equals, contains or is
+    contained by the mod directory, or when an item has no readable string
+    `path`. The check also fails closed (refuses) when the command exits
+    non-zero, times out, exceeds the bound, prints unparseable JSON or lacks
+    `entries`, for example a `mise` without `dotfiles`.
   - **Git.** Any directory from the mod directory up to and including the
     home directory holds a real repository marker: a `.git` directory that
     contains a regular file `HEAD`, or a regular `.git` file whose first line
@@ -413,7 +469,20 @@ refuses a peer root (`herdr.observatory-peer`) as a second guard.
     dotfile repositories driven by `--git-dir`/`--work-tree` leave no marker
     and are not detected (see Review resolutions).
 
-  The Pi path keeps calling plain `managed`, so its behaviour is unchanged.
+  `claude_managed` takes the environment it consults (`PATH` and
+  `CLAUDE_CONFIG_DIR`) as a parameter and uses that `PATH` for both the
+  chezmoi and the mise lookups; the CLI passes the process environment.
+  `managed` stays a thin wrapper that passes the process `PATH`, so the Pi
+  path keeps its behaviour.
+- **Installer debris.** Inside the directories recorded in `claude_mod`, a
+  regular, user-owned, non-symlink file whose name matches
+  `^\.anton-write-[0-9]+-[0-9]+$` is Anton's own `atomic_write` temporary
+  file (`.anton-write-<pid>-<bits>`, created in the destination's directory
+  and left behind only when the process dies before its `unlinkat`). After
+  the preconditions above pass, install deletes such files before the
+  target-state check. The receipt lock serialises installers, so no live
+  write's temporary file can be deleted. Any other unrecorded entry remains a
+  conflict.
 - **Target state.** The mod directory is absent, or every entry under it is a
   regular file or directory owned by the user and recorded in the receipt's
   `claude_mod` entry, and each recorded file present has one of its accepted
@@ -441,8 +510,9 @@ refuses a peer root (`herdr.observatory-peer`) as a second guard.
 - `directories` lists only directories this installer created, in creation
   order. If `~/.claude/skills` did not exist, it is created and listed first.
   A refresh keeps the prior `directories` list unchanged and adds only a
-  directory it creates itself; it never recomputes the list from scratch,
-  because on a refresh every directory already exists.
+  directory it creates itself that the list does not already hold; it never
+  recomputes the list from scratch, because on a refresh every directory
+  already exists.
 - `prior_sha256` is present only while a refresh is in progress (below). It
   is the hash of the bytes verified on disk at the start of that refresh.
 - Older receipts without `claude_mod` stay valid. `install` already copies the
@@ -459,10 +529,15 @@ refuses a peer root (`herdr.observatory-peer`) as a second guard.
    whose new bytes differ from `on_disk`, the entry records the new `sha256`
    and `prior_sha256 = on_disk`. A fresh install (no files) records no
    `prior_sha256`. `directories` is the prior list plus each directory that is
-   missing now and will be created in step 3.
+   missing now, will be created in step 3 and is not already listed (a retry
+   after a crash that followed this step finds them listed), in creation
+   order.
 3. Create missing directories with mode 0700.
 4. Write each changed file with `atomic_owned_write` (mode 0600), skipping a
-   file whose bytes already match. Reinstalling identical bytes over a
+   file whose bytes already match, in the order `hooks/hooks.json`,
+   `hooks/register.js`, then `.claude-plugin/plugin.json` last, so a Claude
+   Code session that starts during a fresh install, or after a crash between
+   writes, finds no manifest whose module is missing. Reinstalling identical bytes over a
    receipt that already holds exactly the new entry (no `prior_sha256`)
    performs no file write and no receipt write (idempotent); steps 2 and 5
    are skipped when the entry they would write equals the recorded one.
@@ -470,7 +545,8 @@ refuses a peer root (`herdr.observatory-peer`) as a second guard.
    only.
 
 A crash at any step leaves every recorded file absent, at its prior hash or at
-its new hash, each of which the receipt accepts. A retry restarts from step 1:
+its new hash, each of which the receipt accepts, plus at most one
+`.anton-write-*` temporary file, which install and removal delete as debris. A retry restarts from step 1:
 it rebuilds `prior_sha256` from the bytes verified on disk, never from the old
 receipt, so an interrupted refresh from build A to B followed by an install of
 build C still works. `--uninstall-hooks` and `--uninstall-claude-mod` accept
@@ -483,8 +559,10 @@ and removal would refuse.
 **Removal:**
 
 1. Preflight, before any Pi, shim or mod deletion: every recorded file must be
-   absent, or a regular, user-owned, non-symlink file with one of its accepted
-   hashes. A modified or replaced recorded file refuses the whole removal,
+   absent, or a regular, user-owned file with one of its accepted hashes, read
+   through the same `regular()` walk the install path uses, so a symlink in
+   any component from the home directory (for example a symlinked
+   `anton-observatory/` or `hooks/`) refuses the removal. A modified or replaced recorded file refuses the whole removal,
    keeps every file and the receipt, and exits non-zero with
    `Claude Code mod file changed: <path>; restore or remove it, then retry`
    (open question 6, confirmed). This matches the Pi extension rule and avoids
@@ -498,8 +576,10 @@ and removal would refuse.
    whose `mise` lacks `dotfiles`. A fixture covers a mise-tracked mod
    directory (fake `mise` listing it) that is still removed, and a
    chezmoi-managed one that is refused.
-2. Remove the recorded files, then `remove_dir` each recorded directory in
-   reverse order. An absent recorded directory is fine. `remove_dir` removes
+2. Remove the recorded files and any installer debris (defined above) in the
+   recorded directories, then `remove_dir` each recorded directory in reverse
+   order. Debris is deleted only after the preflight passes, so a refused
+   removal still keeps everything. An absent recorded directory is fine. `remove_dir` removes
    only empty directories, so a directory holding an unrecorded file stays;
    the command reports it on stderr and still succeeds, because that file was
    never Anton's.
@@ -538,7 +618,16 @@ session ids and panes. No test reads or writes the real `~/.claude`, and the
 Rust and node harnesses set `HOME` to a temporary directory and remove
 `CLAUDE_CONFIG_DIR`. No automated fixture relies on guard order to avoid real
 state: every reporter process fixture passes an explicit `--root` and `--state`
-under a temporary directory.
+under a temporary directory, before `--report` (as the existing fixture
+helper already does).
+
+Installer fixtures never consult the host's `mise` or `chezmoi` and never call
+`std::env::set_var`, which races under the parallel test runner. In-process
+fixtures pass `claude_managed` an explicit environment (a `PATH` holding only a
+temporary directory with the fake `mise` or `chezmoi`, or none, and the
+`CLAUDE_CONFIG_DIR` value under test). CLI-level cases run as process fixtures
+with `env_clear()` and an explicit `HOME` and `PATH`, as
+`tests/native_process.rs` already does with `.env(...)`.
 
 Each list is split in two. **New behaviour** tests must fail on `80f6295`
 (the feature is absent there). **Regression guards** pin existing behaviour and
@@ -549,8 +638,12 @@ must pass on both `80f6295` and the change.
 New behaviour (must fail on `80f6295`):
 
 - Argument validation: pane, `seq` bound, unsafe ids (`.`, `/`, 129 bytes),
-  windows `0`, `-1`, `+5`, `1e6`, 100,000,001 and non-ASCII digits; each exits 2
-  with no socket connection.
+  windows `0`, `-1`, `+5`, `1e6`, 100,000,001 and non-ASCII digits, and an
+  extra value after the window; each exits 2 with no socket connection.
+- Verbatim positionals: a session id spelt `--state` (which passes `safe_id`)
+  is taken as the id, not as an option, and exits 3 at the binding check; a
+  pane spelt `--state` (which passes `valid_pane`) is likewise taken as the
+  pane and exits 3 after `pane.get`, with no metadata write.
 - `--report claude` with stdin left open never blocks (process fixture with a
   held pipe, finishing well inside 1.5 s).
 - Environment: a run as `env -i HOME=<temporary absolute home>` with explicit
@@ -580,7 +673,7 @@ Regression guards (must pass on both):
 
 New behaviour (must fail on `80f6295`):
 
-- A bound report plus caught-up replay gives `window` and `context_percent`
+- A bound v2 report plus caught-up replay gives `window` and `context_percent`
   rounded half up, with no reserve: 150,000 of 200,000 gives 75; context 1 of
   window 200 (a tie at 0.5) gives 1; context equal to the window gives 100.
 - Context over window: context kept, window and percentage absent.
@@ -591,8 +684,9 @@ New behaviour (must fail on `80f6295`):
 
 Regression guards (must pass on both):
 
-- A report bound to another session id, a v1 report, a missing `obs_n*` group
-  and a Pi-bound report on a Claude pane: no window, no percentage.
+- A report bound to another session id, a missing `obs_n*` group and a
+  Pi-bound report on a Claude pane: no window, no percentage. (v1 reports
+  stay accepted for migration, as today, and are not pinned here.)
 - Replay unknown with a bound report: no percentage and no zero invented
   anywhere. (On `80f6295` the window already passes through; the guard
   asserts only the absent percentage and the absent zeroes.)
@@ -614,10 +708,20 @@ New behaviour (must fail on `80f6295`):
   preserved.
 - Interrupted refresh, built as on-disk states rather than injected faults:
   (a) dual receipt written, all files old; (b) dual receipt, files mixed old
-  and new; (c) dual receipt, all files new. From each state a retry succeeds
-  and ends with new hashes only, and, separately, `--uninstall-hooks` succeeds
-  and leaves an empty tree. A further state, a dual receipt A→B with build C
-  installing, also succeeds.
+  and new; (c) dual receipt, all files new; (d) dual receipt, files mixed,
+  and a leftover `.anton-write-<pid>-<bits>` temporary file in `hooks/`. From
+  each state a retry succeeds and ends with new hashes only and no temporary
+  file, and, separately, `--uninstall-hooks` succeeds and leaves an empty
+  tree. A further state, a dual receipt A→B with build C installing, also
+  succeeds. A retry after a crash that followed the receipt write (directories
+  already listed) leaves `directories` without duplicates.
+- Write order: a fresh install writes `hooks/hooks.json`, `hooks/register.js`
+  and `.claude-plugin/plugin.json` in that order (asserted through inode
+  creation order or a recording write hook).
+- Receipt lock: with the plugin root directory locked by the fixture, each of
+  `--install-hooks`, `--install-claude-mod`, `--uninstall-claude-mod` and
+  `--uninstall-hooks` refuses as busy within its bound and leaves every file
+  and the receipt unchanged.
 - Refresh then uninstall: a refresh keeps the prior `directories` list, and a
   later `--uninstall-claude-mod` leaves no `anton-observatory/` (and no
   `skills/` when the installer created it).
@@ -625,11 +729,19 @@ New behaviour (must fail on `80f6295`):
   file, symlinked `~/.claude`, `skills` or target; chezmoi; a fake `mise` on
   `PATH` printing a covering entry; a fake `mise` that fails and one that
   hangs past 3 s; a `.git` directory with a regular `HEAD` and a `.git` file
-  starting `gitdir:` in an ancestor; `CLAUDE_CONFIG_DIR` elsewhere; peer root.
+  starting `gitdir:` in an ancestor; a fake `mise` listing the target only in
+  `incomplete`, `invalid`, `nested` or `omitted`; `CLAUDE_CONFIG_DIR`
+  elsewhere; peer root; a file named like debris that is a symlink or does not
+  match the pattern (kept and refused as unrecorded).
+- mise invocation: the fake `mise` records its argv and working directory; the
+  fixture asserts `-C <home> dotfiles paths --json`, the home directory as
+  working directory and a null stdin, with the installer started from a
+  different temporary directory that holds its own `mise.toml`.
 - Not refused: an empty `.git` directory in the temporary home; a `.git`
   directory without `HEAD`; no `mise` on `PATH`.
 - Removal: with a modified file it refuses before any Pi, shim or mod deletion,
-  keeps everything and names the path; with an extra unrecorded file it removes
+  keeps everything (including any debris) and names the path; a symlinked
+  `anton-observatory/` or `hooks/` refuses the removal the same way; with an extra unrecorded file it removes
   the recorded files and keeps the directory; a mod directory listed by a fake
   `mise` is still removed (removal runs chezmoi only); a chezmoi-managed one is
   refused; `--uninstall-hooks` removes Pi, the shim and the mod together after
@@ -656,20 +768,29 @@ All cases are new behaviour (the file does not exist on `80f6295`):
   `{timeoutMs:2000}`, with no `env`, `cwd` or `stdin`;
 - `.jsonl` stripped once; other ids passed through for the runtime to validate;
 - invalid windows skipped (0, negative, fractional, string, over the bound,
-  missing);
+  missing, and a `session.measure` with no `e.context`);
 - `session.start` and `classic.SessionStart` skipped after exit 0 on the same
   key, while `session.measure` on the same key still runs; retry after a
-  non-zero exit or a rejection; latest pending sample sent after an in-flight
-  run;
-- a `process.run` that never settles: an event inside 3 s is held as pending,
-  and a later event with a new window after 3 s (stubbed clock) starts a second
+  non-zero exit or a rejection;
+- an event during an in-flight run starts nothing, and nothing is started
+  when that run settles (no held sample): the number of `process.run` calls
+  stays at one until the next event after it settles;
+- a `process.run` that never settles: an event inside 3 s starts nothing, and
+  a later event with a new window after 3 s (stubbed clock) starts a second
   run;
 - a first run that settles late, after a second run started: its `.then` does
-  not set `confirmed`, and its `.finally` neither clears the second run's
-  in-flight state nor drains `pending`;
-- take-over drops older pending samples: run 1 hangs, event A inside 3 s is
-  held, event B after 3 s starts run 2, run 2 settles, and no third run
-  starts (A is never sent over B);
+  not set `confirmed`, and its `.finally` does not clear the second run's
+  in-flight state;
+- take-over: run 1 hangs, event A inside 3 s is skipped, event B after 3 s
+  starts run 2, run 2 settles, and no third run starts (A is never sent);
+- no unhandled rejection: with a `process.on('unhandledRejection')` listener
+  installed by the test, cases where `$.clock.now` throws, `$.clock.now`
+  rejects, `$.process.run` throws synchronously, `$.process.run` rejects, and
+  the run's result makes the `.then` callback throw; after each the test lets
+  the event loop turn (`await new Promise(setImmediate)`), then asserts the
+  listener saw nothing, the hook resolved to `next(e)`, and the module state
+  is consistent (a synchronous `process.run` throw leaves no run in flight,
+  so the next event starts one; a rejection clears the in-flight state);
 - `session.end` clears `confirmed`, so the next `session.start` reports again;
 - strictly increasing `seq`, including equal clock readings;
 - `$.clock.now()` below `1e12` (and a non-number): no run;
@@ -682,9 +803,11 @@ All cases are new behaviour (the file does not exist on `80f6295`):
   applies to any other forbidden name that also exists under `$`; every
   `$.env.get` argument is a literal.
 
-`claude plugin validate --strict --json` on a staged copy is run at the live
-check, with the user's consent, not in automated tests (it needs the Claude
-binary).
+`claude plugin validate --strict --json` runs on a staged copy (a temporary
+directory holding the installed bytes), never on the installed mod directory,
+so nothing it might write lands under `~/.claude/skills/anton-observatory/`.
+It runs at the live check (task 5.3), with the user's consent, not in
+automated tests (it needs the Claude binary).
 
 **State.js and the shell harness** (new behaviour): a Claude thread with
 `window` and `context_percent` projects a percentage; one with only `window`
@@ -767,6 +890,11 @@ for that.
   not detected (D5). The files Anton writes are new, hash-recorded and
   removable, and such a repository shows them as untracked.
 - **[Downgrade orphan]** See D6.
+- **[Receipt lock contention]** A receipt writer waits at most 3 s for
+  another and then refuses as busy; `install.sh` prints its warning and the
+  user reruns. No writer holds the lock for longer than its own bounded
+  checks.
+- **[Subagent windows (unverified)]** See open question 9.
 - **[Metadata without expiry]** As for Pi. `obs_bind` stops a stale report
   applying to a new session.
 - **[Window and context from different moments]** The window can lag one turn
@@ -799,7 +927,9 @@ for that.
    elsewhere instead of guessing.
 3. **Un-awaited promises after a hook returns.** Not documented. If the
    worker drops them, the stale-after-3-s rule (D2 step 4) still lets later
-   events report; the node test pins it with a never-settling promise.
+   events report; the node test pins it with a never-settling promise. The
+   mod never starts work after a hook has returned, so this affects only
+   whether `confirmed` and `inflight` are updated.
 4. **`$.process.run` options.** Answered by the published types [types]:
    `ProcessRunInit` has `cwd` (default: the session's), `env` (set over the
    host process's own environment), `stdin` and `timeoutMs`. The mod uses only
@@ -824,6 +954,20 @@ for that.
    whether a personal mod's hooks run in an untrusted folder. The design treats
    an untrusted workspace as fail-closed (window unknown), and the live check
    runs the Claude Code session in a trusted folder.
+9. **Subagent turns and `session.measure`.** Not documented: whether a
+   subagent's turn fires `session.measure` with the subagent's
+   `context.window` while `$.session.id()` still returns the parent's id. If it
+   does, a subagent on a model with a different window would pass every
+   reporter guard and write a wrong window. Task 5.3 starts a subagent on a
+   model with a different window when the account offers one and confirms
+   `obs_n1` does not change. If it changes, the change does not ship until
+   `sample` filters on a payload field that identifies the main session; if it
+   cannot be exercised, that is recorded as an open risk.
+10. **Claude Code writing into the plugin directory.** Not documented. Any
+    file Claude Code (or `claude plugin validate`) writes under the mod
+    directory is unrecorded, so later refreshes would refuse and removal would
+    keep the directory. Task 5.3 lists the directory after a live session and
+    re-runs the installer to confirm nothing appeared.
 
 ## Review resolutions
 
@@ -854,3 +998,28 @@ Plan review findings that were declined or narrowed, with the reason:
 - **Changed-runtime refresh test.** Replaced: a different runtime path cannot
   reach the mod code (`receipt_value` refuses it). The plan tests a payload
   change with the same runtime path and refuses a changed root instead (D7).
+
+Second plan review:
+
+- **Pending-sample drain.** Removed rather than guarded, by coordinator
+  decision: a sample skipped during a run is not held, and the next
+  `session.measure` carries the window (D2).
+- **v1 reports on Claude panes.** The plan text was corrected to say
+  `telemetry_from_agent` accepts versions 1 and 2, and the v1 case was dropped
+  from the regression guard. Rejecting v1 was not chosen, because the
+  unchanged "Scoped cumulative harness metrics" requirement accepts valid
+  previous-version samples during migration.
+- **Receipt lock file (`.hooks-receipt.lock`).** Narrowed to an exclusive
+  `flock` on the plugin root directory. A new file in the plugin root would
+  make `uninstall.sh` refuse ("Unknown plugin file remains"), and a state-file
+  lock would need new allowlist entries in `uninstall.sh` and `packaging.rs`.
+- **Session-measure fallback to `$.session.usage()`.** Removed from the events
+  table rather than implemented: the documented payload always carries
+  `context`, and an absent one is skipped (and tested).
+- **Rejecting a pane value before the reporter runs (mod-side
+  `valid_pane`).** Not used: the reporter reads its four values verbatim, so
+  an option-like value cannot be misparsed, and the mod stays free of
+  duplicated validation.
+- **Settings file hash in evidence.** The live check compares the hash before
+  and after but records only equality, because evidence.md holds no private
+  values.

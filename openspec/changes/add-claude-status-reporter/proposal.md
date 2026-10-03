@@ -29,7 +29,9 @@ This is change 3 of 4 in the Claude Code parity programme.
 - The mod observes `session.start`, `session.measure` and `classic.SessionStart`.
   Inside a Herdr pane it starts the installed runtime with argv only:
   `anton-runtime --report claude <pane> <seq> <session-id> <window>`. It never
-  blocks, alters or answers an event, and always returns `next(e)`.
+  blocks, alters or answers an event, and always returns `next(e)`. It starts
+  a run only inside a hook, skips a sample while a run is in flight (the next
+  turn carries the window) and catches every promise it creates.
 - `anton-runtime --report claude` validates its arguments, checks the owner,
   the local host and the hook lock, then requires Herdr's pane to be agent
   `claude` with session kind `id` equal to the reported session id. It then
@@ -52,8 +54,10 @@ This is change 3 of 4 in the Claude Code parity programme.
   builds. The installer refuses targets it cannot prove are its own, symlinks,
   managed configuration (chezmoi, mise dotfiles when `mise` is present, and
   enclosing Git repositories with a real `.git` marker) and peer roots. A
-  refresh records both old and new hashes until it completes, so an
-  interrupted refresh can be retried or removed. Removal refuses a changed
+  refresh records both old and new hashes until it completes and deletes its
+  own leftover temporary files, so an interrupted refresh can be retried or
+  removed. Every hook-receipt writer, including the Pi install, takes one
+  exclusive lock and refuses as busy after a bounded wait. Removal refuses a changed
   file and keeps everything, so the plugin uninstall stops for a retry. The
   Pi extension is unchanged byte for byte.
 - Update the `harness-telemetry` spec, AGENTS.md and the READMEs. The statusLine

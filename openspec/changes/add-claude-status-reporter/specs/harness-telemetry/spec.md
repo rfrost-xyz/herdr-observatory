@@ -3,7 +3,7 @@
 ## ADDED Requirements
 
 ### Requirement: Claude Code context window reporter
-The plugin MAY install a Claude Code mod as a personal skills-directory plugin that reports the context window Claude Code uses for its current session. The mod SHALL observe events only, SHALL always pass each event on unchanged, SHALL never throw into or wait on the harness for the reporter process, and SHALL run the installed native reporter only inside a Herdr pane, with the pane, a strictly increasing epoch-based sequence, the Claude Code session id and a positive bounded integer window as arguments only, with no standard input, environment or working directory passed to the reporter process. The mod SHALL skip a report when its clock does not read epoch milliseconds. The reporter SHALL NOT depend on its working directory and SHALL fail closed when it cannot resolve absolute home and state paths. It SHALL NOT send the model, prompts, messages, costs, rate limits or account data. The native reporter SHALL require the plugin owner, a receipt recording the mod, exactly one configured local host and a Herdr pane whose agent is `claude` with a `herdr:claude` session of kind `id` equal to the reported id, and SHALL write one bound versioned metadata report for agent `claude` carrying only the window, with no display label, usage source time or totals. An unchanged bound window SHALL NOT be rewritten. Any failure SHALL write no metadata; without an earlier bound report for the same session the window stays unknown, and a stale window never hides replay context.
+The plugin MAY install a Claude Code mod as a personal skills-directory plugin that reports the context window Claude Code uses for its current session. The mod SHALL observe events only, SHALL always pass each event on unchanged, SHALL never throw into or wait on the harness for the reporter process, and SHALL run the installed native reporter only inside a Herdr pane, with the pane, a strictly increasing epoch-based sequence, the Claude Code session id and a positive bounded integer window as arguments only, without setting the process-run standard input, environment or working-directory options. The mod SHALL start a reporter run only within a hook invocation, SHALL skip a sample while a recent run is in flight rather than holding it for later, and SHALL handle every rejection of the promises it creates. The mod SHALL skip a report when its clock does not read epoch milliseconds. The reporter SHALL NOT depend on its working directory and SHALL fail closed when it cannot resolve absolute home and state paths. It SHALL NOT send the model, prompts, messages, costs, rate limits or account data. The native reporter SHALL require the plugin owner, a receipt recording the mod, exactly one configured local host and a Herdr pane whose agent is `claude` with a `herdr:claude` session of kind `id` equal to the reported id, and SHALL write one bound versioned metadata report for agent `claude` carrying only the window, with no display label, usage source time or totals. An unchanged bound window SHALL NOT be rewritten. Any failure SHALL write no metadata; without an earlier bound report for the same session the window stays unknown, and a stale window never hides replay context.
 
 #### Scenario: First turn in a bound Claude Code session
 - **WHEN** a Claude Code session that loaded the mod completes a turn in a Herdr pane bound to its session id
@@ -27,7 +27,11 @@ The plugin MAY install a Claude Code mod as a personal skills-directory plugin t
 
 #### Scenario: Report process that never finishes
 - **WHEN** a reporter run started by the mod has not settled after a bounded time
-- **THEN** a later event may start a new run that supersedes any older held sample, and the late result of the earlier run does not change the mod's state.
+- **THEN** events inside that time start no run and are not replayed later, a later event may start a new run, and the late result of the earlier run does not change the mod's state.
+
+#### Scenario: Mod API failure during a report
+- **WHEN** the mod's clock or process-run call throws or rejects while it starts or awaits a reporter run
+- **THEN** the event continues unchanged, no unhandled rejection reaches the harness, and a later event can still report.
 
 ## MODIFIED Requirements
 
@@ -51,15 +55,15 @@ The installed Pi adapter SHALL report supported tool, model, phase and compactio
 - **THEN** no metadata is written, the event continues unchanged, and a later event in the bound session may report again.
 
 ### Requirement: Minimal adapter lifecycle
-Telemetry processing and required install payloads SHALL ship with the native plugin or its marked native peer. No Python or Docker process SHALL be required. Redundant plugin Codex callbacks SHALL be removed only when proven owned; native Herdr integrations SHALL remain untouched. The Claude Code mod SHALL be the one owned Claude Code integration: its files SHALL be recorded with their hashes in the plugin's hook receipt, installed only into a target proven absent or owned and not managed by a dotfile manager or a Git repository with a real repository marker, never installed on a peer, refreshed so that an interruption at any step leaves a state that a retry or removal accepts, and removed only while every recorded file still matches a hash the installer wrote. A removal refused for a changed file SHALL leave the plugin, its integrations and its receipt in place so that removal can be retried. Installation and removal SHALL be idempotent, preserve unrelated/native integrations and require no additional persistent service or network listener.
+Telemetry processing and required install payloads SHALL ship with the native plugin or its marked native peer. No Python or Docker process SHALL be required. Redundant plugin Codex callbacks SHALL be removed only when proven owned; native Herdr integrations SHALL remain untouched. The Claude Code mod SHALL be the one owned Claude Code integration: its files SHALL be recorded with their hashes in the plugin's hook receipt, installed only into a target proven absent or owned and not managed by chezmoi, mise dotfiles or a Git repository with a real repository marker, never installed on a peer, refreshed so that an interruption at any step, including one that leaves the installer's own temporary file behind, leaves a state that a retry or removal accepts, and removed only while every recorded file still matches a hash the installer wrote and no path component to it is a symlink. Installers that write the hook receipt SHALL be serialised, and one that cannot obtain the receipt within a bounded time SHALL refuse without writing. A removal refused for a changed file SHALL leave the plugin, its integrations and its receipt in place so that removal can be retried. Installation and removal SHALL be idempotent, preserve unrelated/native integrations and require no additional persistent service or network listener.
 
 #### Scenario: Repeat installation and removal
 - **WHEN** an operator installs twice and later removes the adapters
 - **THEN** there is one owned integration per harness and removal leaves unrelated hooks and extensions intact.
 
 #### Scenario: Interrupted mod refresh
-- **WHEN** a refresh of the mod is interrupted after its receipt or some of its files were written
-- **THEN** a later install or removal succeeds without refusing the files the interrupted refresh wrote or kept.
+- **WHEN** a refresh of the mod is interrupted after its receipt or some of its files were written, possibly leaving the installer's temporary file in a mod directory
+- **THEN** a later install or removal succeeds without refusing the files the interrupted refresh wrote or kept, deletes the leftover temporary file, and a removal leaves no mod directory behind.
 
 #### Scenario: Modified or unowned Claude Code mod
 - **WHEN** the mod directory exists without a receipt entry, contains an unrecorded file at install, is managed configuration, or a recorded file was changed before removal
