@@ -38,3 +38,37 @@ test('supported application excludes legacy web and Python sources',()=>{
   assert.doesNotMatch(source,/Command::new\("(?:python3?|docker)"\)/);
   assert.doesNotMatch(source,/\.arg\("native-adapter\.py"\)/);
 });
+test('the Claude Code mod payload is embedded in the runtime, not installed as plugin files',()=>{
+  const mod='hooks/claude/anton-observatory';
+  const source=fs.readFileSync('omarchy/anton-runtime/src/hooks_install/claude_mod.rs','utf8');
+  for(const file of ['.claude-plugin/plugin.json','hooks/hooks.json','hooks/register.js']){
+    assert.ok(fs.statSync(`${mod}/${file}`).isFile(),file);
+    assert.ok(source.includes(`include_str!("../../../../${mod}/${file}")`),`embedded: ${file}`);
+  }
+  const manifest=JSON.parse(fs.readFileSync(`${mod}/.claude-plugin/plugin.json`,'utf8'));
+  const version=fs.readFileSync('omarchy/anton-runtime/Cargo.toml','utf8').match(/^version = "(.*)"$/m)[1];
+  assert.deepEqual(Object.keys(manifest).sort(),['defaultEnabled','description','name','version']);
+  assert.equal(manifest.name,'anton-observatory');
+  assert.ok(!manifest.name.startsWith('claude-'));
+  assert.equal(manifest.version,version);
+  assert.equal(manifest.defaultEnabled,true);
+  assert.deepEqual(JSON.parse(fs.readFileSync(`${mod}/hooks/hooks.json`,'utf8')),{modules:['./register.js']});
+  assert.equal(fs.readFileSync(`${mod}/hooks/register.js`,'utf8').split("const nativeRuntime = '';").length,2);
+  const walk=(dir)=>fs.readdirSync(dir,{withFileTypes:true}).flatMap(e=>e.isDirectory()?walk(`${dir}/${e.name}`):[`${dir}/${e.name}`]);
+  for(const path of walk('hooks'))assert.ok(!path.endsWith('.py'),path);
+  // The installed plugin file lists are unchanged: the mod lives only in the runtime.
+  const installer=fs.readFileSync(`${root}/install.sh`,'utf8');
+  const uninstaller=fs.readFileSync(`${root}/uninstall.sh`,'utf8');
+  assert.equal(installer.match(/^files=\((.*)\)$/m)[1],'manifest.json Panel.qml PopupContent.qml SectionHeader.qml AntonText.qml AntonSurface.qml ThreadSignal.qml SheenTitle.qml BurnEffect.qml MetricDial.qml ThreadCard.qml AllowanceCard.qml AntonTheme.qml AntonToolTip.qml AntonPreferences.qml AntonController.qml AntonKeyedModel.qml SnapshotStore.qml State.js README.md uninstall.sh');
+  assert.equal(uninstaller.match(/^\s*(\.hooks-receipt\.json\|.*)\) ;;$/m)[1],'.hooks-receipt.json|.hooks-before-native.json|.peers.json|anton-runtime|.config.json|manifest.json|Panel.qml|PopupContent.qml|SectionHeader.qml|AntonText.qml|AntonSurface.qml|ThreadSignal.qml|SheenTitle.qml|BurnEffect.qml|MetricDial.qml|ThreadCard.qml|AllowanceCard.qml|AntonTheme.qml|AntonToolTip.qml|AntonPreferences.qml|AntonController.qml|AntonKeyedModel.qml|.accounts.json|SnapshotStore.qml|State.js|README.md|uninstall.sh|.herdr-observatory-install');
+  for(const source of [installer,uninstaller])assert.doesNotMatch(source,/anton-observatory|\.claude\//);
+});
+test('install.sh installs the Claude Code mod after the hooks and only warns on refusal',()=>{
+  const installer=fs.readFileSync(`${root}/install.sh`,'utf8');
+  const hooks=installer.indexOf('"$target/anton-runtime" --install-hooks\n');
+  const mod=installer.indexOf('"$target/anton-runtime" --install-claude-mod || echo "Claude Code context reporter not installed; the context dial stays unknown" >&2\n');
+  assert.ok(hooks>=0,'--install-hooks');
+  assert.ok(mod>hooks,'--install-claude-mod runs after --install-hooks, with a warning');
+  assert.equal(installer.match(/--install-claude-mod/g).length,1);
+  assert.doesNotMatch(fs.readFileSync(`${root}/uninstall.sh`,'utf8'),/--uninstall-claude-mod/);
+});
