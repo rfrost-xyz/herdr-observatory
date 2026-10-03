@@ -281,6 +281,19 @@ test('the confirmed key carries the session id across session.end with a run in 
   assert.equal(state.runs[1].argv[6], '200000');
 });
 
+test('a clock reading earlier than the run start treats the run as stale', async () => {
+  const { hooks } = await load();
+  const { $, state } = host();
+  await fire(hooks, 'session.measure', $, measure(200000));
+  // The run never settles, and the clock steps back an hour.
+  state.now = start - 3_600_000;
+  await fire(hooks, 'session.measure', $, measure(100000));
+  assert.equal(state.runs.length, 2);
+  // The sequence still increases, from the last one sent.
+  assert.equal(state.runs[1].argv[4], String(start * 1000 + 1));
+  assert.equal(state.runs[1].argv[6], '100000');
+});
+
 test('sequences increase strictly, also for equal clock readings', async () => {
   const { hooks } = await load();
   const { $, state } = host();
