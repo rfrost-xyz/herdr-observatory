@@ -1444,30 +1444,42 @@ mod tests {
             (Some(7), 15.0)
         );
     }
-    /// D4: a peer never reports a Claude window, so one in a peer sample,
-    /// from any peer version, is dropped with its percentage. Other peer
-    /// harnesses keep theirs.
-    #[test]
-    fn peer_claude_window_and_context_percent_are_dropped() {
+    /// A peer sample of `harness` whose caught-up telemetry carries a window
+    /// and a percentage, after `State::sample`.
+    fn peer_windowed(harness: &str) -> Telemetry {
         let now = common::now();
         let mut telemetry = caught_up((now as u64 - 60) * 1_000_000);
         telemetry["window"] = json!(200_000);
         telemetry["context_percent"] = json!(1);
-        for harness in ["claude", "codex", "pi"] {
-            let mut state = peer();
-            let mut value = sample("working", now);
-            value.agents[0] = claude(7, telemetry.clone());
-            value.agents[0].harness = harness.into();
-            state.sample("test", Ok(value));
-            let kept = state.hosts[0].agents[0].technical.telemetry.as_ref();
-            let kept = kept.expect("revalidated telemetry");
-            assert_eq!(kept.context, Some(1201), "{harness}");
-            assert_eq!(kept.total_input, Some(3461), "{harness}");
-            let expected = (harness != "claude").then_some((200_000, 1));
-            assert_eq!(kept.window.zip(kept.context_percent), expected, "{harness}");
-            if harness == "claude" {
-                assert_eq!((kept.window, kept.context_percent), (None, None));
-            }
+        let mut state = peer();
+        let mut value = sample("working", now);
+        value.agents[0] = claude(7, telemetry);
+        value.agents[0].harness = harness.into();
+        state.sample("test", Ok(value));
+        let kept = state.hosts[0].agents[0].technical.telemetry.clone();
+        let kept = kept.expect("revalidated telemetry");
+        assert_eq!(kept.context, Some(1201), "{harness}");
+        assert_eq!(kept.total_input, Some(3461), "{harness}");
+        kept
+    }
+    /// D4: a peer never reports a Claude window, so one in a peer sample,
+    /// from any peer version, is dropped with its percentage.
+    #[test]
+    fn peer_claude_window_and_context_percent_are_dropped() {
+        let kept = peer_windowed("claude");
+        assert_eq!((kept.window, kept.context_percent), (None, None));
+    }
+    /// Regression guard: peer Codex and Pi telemetry keep their window and
+    /// percentage.
+    #[test]
+    fn peer_codex_and_pi_windows_are_kept() {
+        for harness in ["codex", "pi"] {
+            let kept = peer_windowed(harness);
+            assert_eq!(
+                (kept.window, kept.context_percent),
+                (Some(200_000), Some(1)),
+                "{harness}"
+            );
         }
     }
     /// Peer revalidation allows the 1 s transport skew `sampled_at` allows,
