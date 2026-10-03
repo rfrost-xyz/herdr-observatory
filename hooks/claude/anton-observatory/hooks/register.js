@@ -32,9 +32,10 @@ async function sample($, source, e) {
   if (source !== 'measure' && key === confirmed) return;
   const now = await $.clock.now();
   if (typeof now !== 'number' || !Number.isSafeInteger(Math.floor(now)) || now < 1e12) return;
-  // Skipped, not held: the next turn carries the latest window. A reading
-  // before the run started (the clock stepped back) counts as stale.
-  if (inflight !== null && now >= inflight.startedAt && now - inflight.startedAt <= staleMs) return;
+  // Skipped, not held: the next turn carries the latest window. A run is
+  // stale once the clock has moved more than staleMs either way from its
+  // start, so overlapping hooks whose readings arrive out of order still see it.
+  if (inflight !== null && Math.abs(now - inflight.startedAt) <= staleMs) return;
   const seq = Math.max(lastSeq + 1, Math.floor(now) * 1000);
   // A microsecond or nanosecond clock overflows the sequence: skip, keep lastSeq.
   if (!Number.isSafeInteger(seq)) return;

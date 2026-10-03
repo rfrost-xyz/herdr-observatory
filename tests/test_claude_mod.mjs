@@ -294,6 +294,31 @@ test('a clock reading earlier than the run start treats the run as stale', async
   assert.equal(state.runs[1].argv[6], '100000');
 });
 
+test('overlapping dispatches start one run when the earlier reading arrives last', async () => {
+  const { hooks } = await load();
+  // Each hook gets its own $ whose clock the test resolves by hand, so the
+  // result does not depend on which hook reads the clock first.
+  const shared = host().state;
+  const manual = () => {
+    const { $ } = host();
+    const clock = {};
+    clock.reading = new Promise((resolve) => { clock.resolve = resolve; });
+    $.clock = { now: () => clock.reading };
+    $.process = { run: (argv, init) => shared.runs.push({ argv, init }) && new Promise(() => {}) };
+    return { $, clock };
+  };
+  const b = manual();
+  const a = manual();
+  const firedB = fire(hooks, 'session.start', b.$);
+  const firedA = fire(hooks, 'session.measure', a.$, measure(200000));
+  a.clock.resolve(start + 5);
+  await firedA;
+  b.clock.resolve(start);
+  await firedB;
+  assert.equal(shared.runs.length, 1, 'a run five milliseconds old is in flight');
+  assert.equal(shared.runs[0].argv[4], String((start + 5) * 1000));
+});
+
 test('sequences increase strictly, also for equal clock readings', async () => {
   const { hooks } = await load();
   const { $, state } = host();
