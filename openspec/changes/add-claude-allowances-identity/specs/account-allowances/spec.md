@@ -140,8 +140,8 @@ Each account mapping SHALL have a provider, `codex` when the field is absent or 
 - **THEN** the configuration is valid, Codex rows are unchanged, and the Claude account appears as one row under provider `claude` once observed.
 
 #### Scenario: Unknown provider or unmapped account
-- **WHEN** a mapping names an unknown provider, or a Claude account reports without a mapping
-- **THEN** the configuration is rejected, or the unmapped account's data is absent from the popover.
+- **WHEN** a mapping names an unknown provider, or a Claude account without a mapping reports or appears in the reporter's account state
+- **THEN** the configuration is rejected, or the unmapped account's data is absent from the popover while mapped accounts keep their rows.
 
 #### Scenario: Key command
 - **WHEN** the user runs the key command with an attributable local Claude account

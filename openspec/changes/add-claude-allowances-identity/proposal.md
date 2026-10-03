@@ -20,7 +20,8 @@ This is change 4 of 4, the last change of the Claude Code parity programme.
   has fresh evidence for to the change 3 argv: at most two windows, kind
   `five_hour` or `seven_day`, `percentUsed` (0 to 100, at most one decimal) and
   `resetsAt` as epoch seconds. A sample is fresh only when it is not the first
-  measurement since the mod loaded or the session ended, and either
+  measurement since the mod loaded or the session ended, nor for another
+  session id, and either
   `rateLimits` is in `changed` with a window's used value moved or a window
   appeared, or `cost` is in `changed` and the session's cost total strictly
   grew over the previous measurement (a real API response; plan-gate answer
@@ -32,8 +33,9 @@ This is change 4 of 4, the last change of the Claude Code parity programme.
   and never blocking.
 - **Reporter.** `anton-runtime --report claude` accepts the optional rate-limit
   tail with strict validation; four values keep their change 3 meaning. After
-  the pane binding and sequence checks and the unchanged window report, still
-  under the hook lock, it decides attribution: it refuses when any environment
+  the pane binding and sequence checks and the unchanged window report, and
+  only when the window report did not fail, still under the hook lock, it
+  decides attribution: it refuses when any environment
   variable name matches the credential refusal patterns (with a closed
   exemption list naming only `CLAUDE_CODE_MESSAGING_TOKEN`, G3),
   `ANTHROPIC_BASE_URL` is set (G1), `CLAUDE_CONFIG_DIR` is set, a legacy

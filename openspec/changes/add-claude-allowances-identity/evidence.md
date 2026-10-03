@@ -122,8 +122,10 @@ Key names, types and format classes only.
 - `State.js` `diagnostics()` emits only label and availability per allowance;
   `--allowances-probe` and `--identity-probe` return only mapped accounts.
 - `native_process.rs` collector and peer fixtures set `CLAUDE_CONFIG_DIR`;
-  the Claude report fixture at `:2267` expects exit 2 for five values and the
-  one at `:2344` asserts no "account" or "rate" in the wire.
+  `claude_report_rejects_invalid_arguments_without_socket_access` expects exit
+  2 for five values, and
+  `claude_report_writes_the_bound_window_once_and_repeats_read_only` asserts
+  no "account" or "rate" in the wire.
 - `uninstall.sh` removes only the listed state file names.
 
 ## Plan gate outcome (2026-10-04)
@@ -156,6 +158,52 @@ Validation of the updated artefacts: `OPENSPEC_TELEMETRY=0 openspec validate
 add-claude-allowances-identity --strict` reported the change valid, and a
 search of the change directory found no em or en dash. No code or test was
 changed, so no new test exists yet to show failing on `7a9fefb`.
+
+## Plan review (2026-10-04)
+
+An independent review of the planning artefacts after the plan gate raised one
+blocking, six non-blocking and five nit findings. All were applied; none was
+declined. No code or test exists yet, so no fail-on-old proof is claimed here;
+the tasks now require it for each new test.
+
+1. Peer-side Claude prohibition and "Codex cache untouched" untested: applied.
+   D11 and tasks 2.4 and 2.5 add `--allowances-probe`, `--identity-probe` and
+   `allowances.json` process fixtures with a Claude mapping, state file and
+   synthetic `.claude.json`, each asserting exit 0 and a Codex row or identity
+   so they fail on `7a9fefb`.
+2. Cost growth during a rewind: applied. D2 now says any measurement with
+   strict cost growth and `cost` in `changed` is fresh, whatever triggered it,
+   citing Risks [Cost without rate limits]; a mod test (D11, task 3.2) and a
+   harness-telemetry scenario pin it; tasks 5.2 and 5.3 adjusted.
+3. Regression guards: applied. D11 and the tasks limit them to existing tests;
+   new no-change assertions sit in tests that also assert new behaviour.
+   Fixtures with a Claude mapping that assert an absence or rejection also
+   assert an accepted outcome, and each rejection is paired with an accepted
+   neighbour. The State.js and QML cases (task 4.2) cannot fail on `7a9fefb`
+   because D9 makes no presentation change, so they are added as assertions
+   inside the existing provider-neutral tests and counted as regression
+   guards, with no new test function.
+4. Lane ordering: applied. Tasks preamble, 3.1, 3.3 and D10 state 3.1 after
+   2.1 and 3.3 after 3.1.
+5. AGENTS.md timing: applied. New task 1.3 applies the D12 amendments,
+   wording unchanged, before 2.1; 4.1 keeps the README work. AGENTS.md itself
+   is not edited in this planning commit.
+6. Collector tests: applied. Shared four-account cap, ids unique across
+   providers, Claude `window_seconds` and an unmapped key in
+   `claude-allowances.json`, each with an accepted neighbour (D11, task 2.4,
+   account-allowances scenario).
+7. Attribution after a failed window report: applied. The harness-telemetry
+   requirement says "only when the window report did not fail", with a new
+   scenario; the proposal matches.
+8. Lock budget: applied as the absolute ten-value `hook.lock` hold of at most
+   100 ms in D4, D5, D11, Risks and tasks 1.1 and 5.1.
+9. Line cites: applied. Test names replace `:2344` and `:2267` in design D3,
+   D10, tasks 2.1 and 2.3 and the [repo] facts above.
+10. Proposal first-measurement rule: applied ("nor for another session id").
+11. Decision 3 against D2: applied ("strengthened in D2").
+12. Measure builder: applied. The builder fix moves to task 3.1, with defaults
+    that keep existing argv at four values, so 3.1's `node --test` exercises
+    the new path.
 
 ## Implementation
 

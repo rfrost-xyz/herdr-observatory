@@ -85,6 +85,10 @@ The Claude Code mod SHALL pass rate-limit windows only from a `session.measure` 
 - **WHEN** a compaction changes the context fill and the measurement shows no cost growth over the previous measurement and no window that moved or appeared
 - **THEN** no rate limits are passed and no account window stamp is renewed.
 
+#### Scenario: Cost grows during a rewind or compaction
+- **WHEN** a measurement taken for a rewind or compaction names the cost as changed and its cost total is strictly greater than the previous measurement's, for example because a priced call completed since then
+- **THEN** the measurement is fresh, and the reporter receives the `five_hour` and `seven_day` windows it lists with their current used values and reset times.
+
 #### Scenario: Reset time passes
 - **WHEN** a window's reset time passes, or the window leaves the rate-limit list, without a new value for any remaining window and without cost growth
 - **THEN** nothing is passed as a new sample, and the earlier stamp and the collector's past-reset invalidation decide what is shown.
@@ -98,7 +102,11 @@ The Claude Code mod SHALL pass rate-limit windows only from a `session.measure` 
 - **THEN** the measurement is skipped as in change 3, it still becomes the comparison point, cost total included, and its evidence is not replayed later.
 
 ### Requirement: Claude Code account attribution
-The reporter SHALL attribute passed rate limits to the account that `$HOME/.claude.json` names when it runs, and only after the pane binding and sequence checks and after the window report's outcome is decided, so attribution can never change that outcome. It SHALL read that file bounded, owner-checked, without following links, extracting only `oauthAccount.accountUuid` and the presence of `primaryApiKey`. It SHALL refuse attribution whenever the environment, the configuration location or user settings could select another credential or API endpoint, and SHALL never retain, log or store any other value. A refused attribution SHALL write no account state and SHALL NOT change the window report or its exit status.
+The reporter SHALL attribute passed rate limits to the account that `$HOME/.claude.json` names when it runs, and only after the pane binding and sequence checks and after the window report's outcome is decided, and only when the window report did not fail, so attribution can never change that outcome. It SHALL read that file bounded, owner-checked, without following links, extracting only `oauthAccount.accountUuid` and the presence of `primaryApiKey`. It SHALL refuse attribution whenever the environment, the configuration location or user settings could select another credential or API endpoint, and SHALL never retain, log or store any other value. A refused attribution SHALL write no account state and SHALL NOT change the window report or its exit status.
+
+#### Scenario: Window report fails
+- **WHEN** a report carries rate limits and its pane metadata write fails
+- **THEN** the reporter exits with its failure status, does not attempt attribution and writes no account state.
 
 #### Scenario: Credential variable present
 - **WHEN** any variable name in the reporter's environment is not valid UTF-8, or a name matches `ANTHROPIC_*KEY*`, `ANTHROPIC_*TOKEN*`, `ANTHROPIC_CUSTOM_HEADERS`, `ANTHROPIC_BASE_URL`, `CLAUDE_CODE_*TOKEN*`, `CLAUDE_CODE_*_FILE_DESCRIPTOR`, `CLAUDE_CODE_HOST_*`, `CLAUDE_CODE_USE_*`, `CCR_OAUTH_TOKEN_FILE` or `CLAUDE_CODE_CUSTOM_OAUTH_URL`, where `*` matches zero or more characters, and the name is not on the closed exemption list

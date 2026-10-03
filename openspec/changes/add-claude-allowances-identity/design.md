@@ -20,7 +20,8 @@ revised by the user's change 4 decisions and by what change 3 shipped:
   passes rate limits to its reporter as extra argv values: at most two windows, kind `five_hour`
   or `seven_day`, `percentUsed` (0 to 100, at most one decimal) and `resetsAt`
   as epoch seconds. Any `spend_limit` window means no attribution for that
-  sample. Still argv-only, never awaited, never blocking.
+  sample (strengthened in D2: no rate limits for that sample or any later one
+  until `session.end`). Still argv-only, never awaited, never blocking.
 
 D11 assumed the statusLine payload (research surface A). Change 3 shipped the
 function-hook mod (surface B) instead, so the source here is the mod's
@@ -199,14 +200,19 @@ reset times, even when none of them moved.
 
 Not fresh: the first measurement after the module loads, after `session.end`
 or for another session id, whatever `changed` names (including `cost` and
-`rateLimits`); a rewind, which changes `context` but adds no priced response,
-so `cost` is not in `changed` and the total is unchanged; a compaction whose
-measurement shows no cost growth; a window that only left; a limit status
+`rateLimits`); a rewind or compaction whose measurement shows no cost growth
+(a rewind itself makes no priced call, so normally `cost` is not in `changed`
+and the total is unchanged); a window that only left; a limit status
 change with unchanged used values; a change of `resetsAt` alone; a measurement
 whose only changed unit is `context`; and every start or classic reading. A
 compaction that does make a priced call, so the total grows and `cost` is in
 `changed`, is fresh under path B, because that response is a real API
-response. Path A compares the used value only: a reset time that moves without
+response. More generally, path B looks only at strict cost growth with `cost`
+in `changed`, whatever triggered the measurement: if a side or background
+priced call lands between measurements and folds into a rewind's measurement,
+that measurement is fresh too, and re-stamps the windows `e.rateLimits` holds
+(Risks, [Cost without rate limits]). A mod test pins this accepted behaviour.
+Path A compares the used value only: a reset time that moves without
 a used value moving proves no new API response. A fresh tail still carries
 each window's current `resetsAt`.
 
@@ -306,7 +312,8 @@ unchanged.
 
 **Compatibility.** A four-value run is byte-for-byte the change 3 behaviour.
 The change 3 regression fixtures that pass five values
-(`native_process.rs:2267`, the `reporter.rs` five-value parse case) change
+(`claude_report_rejects_invalid_arguments_without_socket_access` in
+`native_process.rs`, the `reporter.rs` five-value parse case) change
 intentionally: five and six values still exit 2, seven valid values now
 succeed. See D10 for mixed mod and runtime versions.
 
@@ -320,8 +327,9 @@ metadata write or the no-change return, still under `hook.lock`. It cannot
 change a status already decided, and an unchanged window still allows an
 account write. When the metadata write fails (exit 1) the account step does
 not run. Its lock-hold time is measured with the 4 MiB fixture (tasks 1.1 and
-5.1); the budget is at most 100 ms of extra lock hold for a ten-value run in
-the release build, well under the 400 ms that sibling reporters wait for the
+5.1); the budget is an absolute `hook.lock` hold time of at most 100 ms for a
+ten-value run in the release build (the whole hold, not the extra over a
+four-value run), well under the 400 ms that sibling reporters wait for the
 lock. A miss returns the plan to the gate. The steps, in order, each refusing
 with no account write:
 
@@ -417,8 +425,8 @@ settings remain residual risks (Risks).
 - The reporter parses the file only when a tail is present, which happens only
   on fresh evidence (D2). Under the G4 cost path that is about once per
   main-thread turn while a session is used, so the ten-value run is the
-  per-turn path and the D4 lock-hold budget applies per turn. Its cost is
-  measured (D11).
+  per-turn path and the D4 absolute lock-hold budget applies to every such
+  run. Its cost is measured (D11).
 
 ### D6. Per-account state file
 
@@ -587,12 +595,12 @@ settings remain residual risks (Risks).
 | Case | Result |
 |---|---|
 | New runtime, change 3 mod | Four values: window reports as before; no rate limits, so Claude rows stay unavailable until `--install-claude-mod` refreshes the mod. |
-| New mod, change 3 runtime | Seven or ten values exit 2 on the old parser, so fresh runs lose their window report; four-value runs still report. Fixed by updating the runtime. The installer updates both together; this arises only from a manual runtime downgrade. |
+| New mod, change 3 runtime | Seven or ten values exit 2 on the old parser, so fresh runs lose their window report; four-value runs still report. Fixed by updating the runtime. The installer updates both together; this arises only from a manual runtime downgrade. Within this branch, the mod change (task 3.1) is committed only after the parser change (task 2.1), so no commit pairs a seven- or ten-value mod with the four-value parser. |
 | Configuration with a Claude mapping, older runtime | `mapping()` rejects the `provider` key, so the allowances configuration is invalid. Rollback means removing Claude mappings first (Migration plan). |
 | Older peer, new local | Peers carry no Claude data either way. Codex rows unchanged. |
 | New peer, older local | The peer's probes are unchanged in shape. |
 | Codex and Pi | Codex rows, `allowances.json`, the probe and Pi reports unchanged; existing fixtures stay green. |
-| Pane metadata | The 16-key wire is unchanged; the `native_process.rs:2344` guard that no "account" or "rate" key appears stays. |
+| Pane metadata | The 16-key wire is unchanged; the guard in `claude_report_writes_the_bound_window_once_and_repeats_read_only` (`native_process.rs`) that no "account" or "rate" key appears stays. |
 
 ### D11. Tests and measurement
 
@@ -611,7 +619,19 @@ fixture keeps it and asserts no cache, no key and no email. No fixture calls
 test in the new `claude_account.rs` cannot compile on `7a9fefb`; that counts
 as failing and is recorded by test name, and every collector, reporter and
 command case also runs as a process fixture, which runs and fails on
-`7a9fefb`. **Regression guards** must pass on both `7a9fefb` and the change.
+`7a9fefb`. **Regression guards** are existing tests only; they must pass on
+both `7a9fefb` and the change. No new test is a regression guard: a new
+no-change assertion (Codex output, four-value runs, probe shape) sits in a
+test that also asserts new behaviour, as the mod tests do below.
+
+On `7a9fefb` any configuration holding a `provider` key is invalid, so a
+negative assertion over a configuration with a Claude mapping ("no Claude
+data", "nothing stored", "rejected", "no cache", "unchanged output") passes
+there trivially. Every such fixture also asserts something that needs the new
+configuration to be accepted: exit 0, the Codex row or email present, or the
+Claude row present with its identity. Every rejection case is paired, in the
+same test, with an accepted neighbour that differs only in the rejected
+property.
 
 New behaviour:
 
@@ -629,7 +649,11 @@ New behaviour:
   the previous used values sends both windows with their current used values
   and reset times; **rewind is not fresh**: `changed: ['context']` with the
   same `cost.usd` and windows sends no tail, then a cost-growth measurement
-  sends one; **compaction without cost growth is not fresh**: a context drop
+  sends one; **a rewind-shaped measurement with cost growth is fresh**:
+  `changed: ['context','cost']`, a context drop and a strictly larger
+  `cost.usd` (a side priced call folded into the rewind's measurement) sends
+  the tail, pinning the accepted behaviour of D2 path B; **compaction without
+  cost growth is not fresh**: a context drop
   with `cost.usd` unchanged sends no tail, also with `'cost'` in `changed` but
   an equal or lower total, then a cost-growth measurement sends one; **first
   measurement after load or `session.end` is not fresh**, even with
@@ -663,7 +687,8 @@ New behaviour:
   uses an array for `rateLimits`, a non-empty `changed` and a `cost` of the
   `SessionCost` shape `{usd}` unless a case removes or corrupts it.
 - **Reporter (`reporter.rs`, `tests/native_process.rs`):** parse of 4, 7 and 10
-  values and rejection of 5, 6, 8, 9 and 11 values, unknown and repeated kinds,
+  values in one test (the four-value result asserted unchanged beside the
+  seven- and ten-value results) and rejection of 5, 6, 8, 9 and 11 values, unknown and repeated kinds,
   used values `-1`, `100.1`, `1.25`, `01`, `5.0`, `1e1`, `+5`, resets in the
   past, at `seq`, beyond the bound and with 12 digits, all with no socket
   access; the environment rule over each pattern, the exemption, a non-exempt
@@ -694,42 +719,69 @@ New behaviour:
   directory while a ten-value Claude run with the 4 MiB fixture holds
   `hook.lock`, both completing within their lock waits.
 - **Collector (`claude_account.rs`, `allowances.rs`, `identity.rs`, `main.rs`):**
-  mapping with and without `provider`, unknown provider rejected, Codex mapping
-  output unchanged; rows for both windows, five_hour only, one fresh and one
+  mapping with and without `provider` in one configuration, the Codex
+  mapping's output asserted unchanged beside the accepted Claude mapping;
+  an unknown provider rejected beside the same configuration with `claude`
+  accepted; the four-account cap shared across providers (two Codex and two
+  Claude mappings accepted, a fifth mapping of either provider rejected); ids
+  unique across providers (distinct ids accepted, a Claude mapping reusing a
+  Codex id rejected); a Claude mapping's `window_seconds` absent or 604800
+  accepted and any other value rejected; a state file holding a mapped and an
+  unmapped Claude account key giving the mapped row available and no row,
+  label or key for the unmapped one; rows for both windows, five_hour only, one fresh and one
   stale window, past reset, no state (unavailable), cache fallback matched and
   fresh, cache for another account, stale and future cache, ambiguous cache
   scale (0.5 and 1 unknown, 0 and 1.5 read), cache `resets_at` with offset and
   fraction, `primaryApiKey` skipping the cache; newer reporter window over
   older cache and the reverse; a peer row carrying a Claude mapping's key
-  ignored; a mismatched state directory leaving the row unavailable; the
+  ignored while the Claude row is available from local state and the peer's
+  Codex row is present; **peer side carries no Claude data**: a process fixture
+  runs `--allowances-probe` and `--identity-probe` on a runtime whose
+  configuration holds a Claude mapping beside a Codex mapping, with a
+  `claude-allowances.json` holding that Claude account and a synthetic
+  `.claude.json` in its home, and asserts exit 0, the Codex row or identity
+  present and no Claude key, row, window, uuid or email in either output;
+  **Codex cache untouched**: with a Claude row available in the snapshot,
+  `allowances.json` and the `--allowances-probe` output hold only Codex rows in
+  their existing shape (both fail on `7a9fefb`, where the Claude mapping makes
+  the configuration invalid); a mismatched state directory leaving the row unavailable; the
   state file malformed, oversized, symlinked, at mode 0644, of another
   version, with an unknown key, or holding a used value `12.25`, each giving
   no state or a dropped window; `CLAUDE_CONFIG_DIR` set or a legacy
-  `.config.json` present in the collector's environment giving no cache;
+  `.config.json` present in the collector's environment giving no cache
+  while the Codex rows stay available;
   Claude email added only for a mapped key and never with `primaryApiKey`;
   identity refresh without a Claude mapping never calling the provider-state
   reader (a unit test on that gate); a peer or Codex RPC identity
-  row carrying a Claude mapping's key storing nothing;
+  row carrying a Claude mapping's key storing nothing for that key while the
+  Codex email and the local Claude email are stored;
   `--claude-account-key` printing only 65 bytes and exit 0, and nothing with
   exit 3 for `primaryApiKey`, a missing file, an invalid id,
   `CLAUDE_CONFIG_DIR` or a legacy file; `--claude-attribution-check` printing
   each step name and `ok`, matching variable names with exempt ones marked,
   `environment` and the name `ANTHROPIC_BASE_URL` (never its value) when it
   is set, and never a value, uuid, key or email; `ANTHROPIC_BASE_URL` set in
-  the collector's, identity refresh's and key command's environment changing
-  none of their outputs; no uuid or email
+  the collector's, identity refresh's and key command's environment leaving
+  the Claude row available, the Claude email stored and the key printed; no uuid or email
   bytes in any snapshot, state file, probe output or stderr (a literal
   `PRIVATE` marker in unlisted keys and the fixture uuid and email searched
   for).
-- **State.js and QML:** a Claude row with `seven_day` pacing shows a balance; a
-  `five_hour`-only Claude row shows none; email lookup by mapping id.
-
-Regression guards:
+Regression guards (existing tests only):
 
 - Change 3 window fixtures with four values, the wire constants, the no
   "account"/"rate" wire check, Pi report fixtures, Codex allowance contract
   tests, legacy cache and peer fixtures, `providerCoupling()` unchanged,
   `tst_popup.qml` provider-neutral rows and the diagnostics oracle.
+- **State.js and QML.** D9 plans no presentation change, so a Claude-shaped
+  row behaves the same on `7a9fefb`, and a new test for it could not fail
+  there. These cases are therefore added as further assertions inside the
+  existing provider-neutral tests (`providers group any configured accounts
+  in configured order` and `mapped weekly allowance preserves zero and rejects
+  expired reset` in `tests/test_omarchy_state.cjs`, and the existing allowance
+  cases in `tst_popup.qml`), with no new test function, and count as
+  regression guards: a Claude row with `seven_day` pacing shows a balance; a
+  `five_hour`-only Claude row shows none; an unavailable Claude row; email
+  lookup by mapping id and concealment covering it.
 
 **Measurement.** `tests/measure_anton_popover.mjs` gains an additive
 `claude_allowance` section, existing sections unchanged: reporter wall time,
@@ -744,8 +796,8 @@ Codex mappings; Claude row count, available count and snapshot bytes. Baseline
 on `7a9fefb` reports the new metrics as null where the feature is absent.
 Under the G4 cost path the ten-value run is the expected per-turn path in a
 used session, so its wall time, CPU and lock hold are reported as per-turn
-costs, and the 100 ms lock-hold budget (D4, task 5.1) is judged as a per-turn
-budget.
+costs, and the D4 budget (an absolute ten-value `hook.lock` hold of at most
+100 ms, task 5.1) is judged against each such run.
 
 ### D12. Spec, AGENTS.md and README wording
 
@@ -761,7 +813,8 @@ spec's Purpose, so task 5.4 edits these by hand at sync:
   allowance and fleet readings." New: "...for current Herdr threads, Codex and
   Claude allowance and fleet readings."
 
-AGENTS.md (task 4.1; not edited during planning):
+AGENTS.md (task 1.3, before any implementation commit, so no commit
+contradicts AGENTS.md; not edited during planning):
 
 - Boundaries, reporter line. Old: "The Claude Code mod only observes events,
   passes each on unchanged, never waits on its reporter and sends only the
@@ -880,7 +933,8 @@ programme. It implements the D11 rows of the research metric mapping
 - **[Lock hold]** The account step parses up to 4 MiB and writes under
   `hook.lock` after the window outcome is decided; sibling reporters wait at
   most 400 ms for the lock. Under the G4 cost path this happens about once per
-  turn. The hold time is measured against the 100 ms per-turn budget (D4).
+  turn. The absolute ten-value hold time is measured against the 100 ms budget
+  (D4).
 - **[Gateway without `spend_limit`]** A gateway sign-in that omits
   `spend_limit` and sets no `ANTHROPIC_BASE_URL` is not detected without
   `$.session.authorize()`, which is not built (G8).
