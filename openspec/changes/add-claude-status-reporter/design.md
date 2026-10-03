@@ -69,7 +69,10 @@ Pi behaviour, output, checkpoints and the Pi extension bytes must not change.
   `display_agent` label only for Pi (D3).
 - **`src/native.rs`:** `publish_claude` computes the percentage and applies the
   context-over-window rule (D4). `enrich_claude_panes` overlays each copied
-  pane's own bound window (D4).
+  pane's own bound window (D4). A `--probe` follower
+  (`NativeTelemetry::peer()`) ignores Claude reporter metadata, and
+  `collection::normalise` then skips the metadata fallback for Claude panes
+  (D4, Peers).
 - **`src/hooks_install.rs`:** `install_claude_mod`, `uninstall_claude_mod`, the
   receipt entry and the managed-configuration checks for the mod (D5).
   `uninstall` also removes a recorded mod.
@@ -397,6 +400,23 @@ agents whose harness is `claude`, after its existing revalidation. This holds
 whatever the peer version, including change 2 peers that would pass a metadata
 window through. The peer never installs the mod (D5).
 
+A peer's own Claude output does not depend on reporter metadata either. A host
+probed as a peer can also run the local plugin with the mod, so its Claude
+panes can carry bound reports. `--probe` uses `NativeTelemetry::peer()`, whose
+`publish_claude` starts from an empty object instead of `telemetry_from_agent`
+(so neither the window nor the report's `seq`, `event` or `phase` reaches the
+sample), and `collection::normalise` gives a Claude pane without
+`_native_telemetry` no telemetry instead of the metadata fallback. Peer Claude
+output is then byte for byte what change 2 produced. Without this, an
+incomplete replay pass on such a peer returned the window-only fallback, which
+the local's `retain_claude` treats as a sample: it dropped the retained copy
+instead of re-emitting it, against the "Intermittent Claude Code replay"
+scenario. Dropping only the window would still let the report's `seq` stamp
+the sample. The local collector is unaffected: its follower keeps the retained
+replay sample independently of metadata, and on an incomplete pass
+`publish_claude` merges that sample over the metadata, so a bound window only
+overlays it (review round 2, evidence.md).
+
 ### D5. Installer, receipt and removal
 
 **Commands.**
@@ -625,6 +645,7 @@ receipt), and both are caught.
 | Mod loaded, old runtime (no `--report claude` path) | The old runtime rejects the argument count with status 1. Nothing is written. |
 | Old local, new peer | The peer never runs the mod. No change. |
 | New local, change 2 peer | Peer Claude windows are dropped locally (D4). |
+| New local, change 2 peer on a host that also runs this change's mod locally | The old peer runtime returns the window-only metadata fallback on an incomplete pass, so the local drops its retained copy for that pass instead of re-emitting it; the values are unknown until the next caught-up pass. The local cannot tell this from an all-null sample. Upgrading the peer runtime fixes it. |
 | Downgrade to a build without `claude_mod` support | The older `--uninstall-hooks` ignores the key and removes the receipt, leaving the mod files unowned. Recorded under Risks; reinstalling a new build first avoids it. |
 | Pi extension | Byte-identical; `tests/test_pi_hooks.mjs` and the receipt fixtures stay green. |
 

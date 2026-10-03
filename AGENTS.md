@@ -66,7 +66,8 @@ not add features or compatibility work to the retired web application.
   report for the pane's current session; its percentage is replay context over
   that window, rounded half up, without the Codex reserve. Without such a report,
   or with a window smaller than the context, the window and percentage stay
-  unknown; peer Claude Code threads carry neither. Never invent a window from a
+  unknown; peer Claude Code threads carry neither, and a peer collects them
+  without reading reporter metadata. Never invent a window from a
   model table. Compactions require complete bounded coverage. Repeated or reset counters
   cannot create activity. Reported old values remain last-known for the same
   bound live session; session replacement invalidates them.

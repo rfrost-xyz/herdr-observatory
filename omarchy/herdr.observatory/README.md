@@ -51,8 +51,8 @@ It sends no model, prompt, message, cost, rate limit or account data, never
 blocks or changes the event, and runs only inside a Herdr pane. The reporter
 writes the window to that pane's metadata only when Herdr binds the pane to the
 same Claude Code session; the collector then shows the replay context as a
-percentage of that window. Peers never install the mod, so remote Claude Code
-threads show no window or percentage.
+percentage of that window. Peers never install the mod and ignore any report on
+their panes, so remote Claude Code threads show no window or percentage.
 
 The mod loads only at the next session start or after `/reload-plugins`. A
 session that was already running stays unknown until it reloads, as does any
