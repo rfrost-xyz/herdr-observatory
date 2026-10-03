@@ -72,10 +72,31 @@ used in design.md.
 - `$.env.get`: write the name as a string literal.
 - `$.process.run(argv)`: no shell; resolves to `{exitCode, stdout, stderr}`
   whatever the exit code; rejects if the program cannot start or is still
-  running at the timeout. Whether `env` in the options merges or replaces, and
-  whether stdin is supported, is not stated.
+  running at the timeout. The page does not name the options; the published
+  types below do.
 - Every mods API call is itself an event that earlier mods (for example an
   organisation guard) can refuse.
+
+**[types]** The published mods type declarations,
+`mods/types/claude-code.d.ts` in `anthropics/claude-code` (`main`, last changed
+by commit `684800b`, 2026-09-29), read on 2026-10-03. The reference page warns
+that this copy can be older than the installed build, so task 5.3 checks the
+build's own copy.
+
+- `$.clock.now`: "Resolves milliseconds since the epoch, now."
+  (`now: () => Promise<number>`).
+- `$.process.run(argv, init?: ProcessRunInit)`: "Runs a command on the host by
+  its argument vector (no shell) and resolves `{ exitCode, stdout, stderr }`
+  once it exits, any exit code." `init` is "`{ cwd, env, stdin, timeoutMs }`
+  (cwd the session's by default; timeout 30 s by default, ten minutes at
+  most)".
+- `ProcessRunInit`: `cwd?: string` ("absent, the session's working
+  directory"); `env?: Record<string, string>` ("Variables set over the host
+  process's own environment"); `stdin?: string` ("Text written to the child's
+  standard input, then closed"); `timeoutMs?: number` ("How long the child may
+  run before it is killed and the call rejects, in milliseconds; 30 seconds
+  when absent, ten minutes at most").
+- `ProcessRunResult.exitCode`: "a child ended by a signal reads as 1".
 
 **[loading]** `plugins/loading`
 
@@ -124,6 +145,21 @@ string or null values. The Claude report therefore needs no `display_agent` or
   an added `claude_mod` key survives `--install-hooks`.
 - The plugin README tells peers to run `--install-hooks --adopt-legacy-hooks`.
 - `managed()` detects chezmoi only.
+- `reporter.rs` `metadata()` always sets `"agent":"pi"` and a
+  `display_agent` label `pi · <phase>[ · <tool>]`.
+- `native.rs` `enrich_claude_panes` enriches each Claude session key once and
+  copies the first pane's `_native_telemetry` to later panes on the same key.
+- `hooks_install::install` (Pi) writes the extension, then the receipt, and
+  rolls the extension back only when the receipt write returns an error.
+- `hooks_install::uninstall` preflights the Pi extension and shim (including
+  `managed()`) before deleting either; a changed file returns an error.
+- `uninstall.sh` runs under `set -euo pipefail` and calls `--remove-peers`
+  then `--uninstall-hooks` before any local deletion. `--remove-peers` returns
+  success when `.peers.json` is absent, so a rerun after a refusal proceeds.
+- `common::expand_home` reads `HOME` and falls back to an empty path; the
+  state directory defaults to `XDG_STATE_HOME` or `~/.local/state`.
+- The Pi extension starts the runtime with `node:child_process` `spawn`, so it
+  inherits Pi's environment; the runtime root comes from `current_exe()`.
 - `State.js` uses `context_percent` when present, otherwise `context / window`.
 
 ## Host configuration (counts and kinds only)
@@ -134,6 +170,9 @@ string or null values. The Claude report therefore needs no `display_agent` or
   `anton-observatory` directory. `mise dotfiles paths --json` returns an
   `entries` list with `path` values using `~`. This is why D5 checks mise
   entries by path containment rather than refusing the whole Claude directory.
+- The home directory contains an empty `.git` directory. Git does not treat
+  the Claude configuration directory as inside a repository. D5 therefore
+  counts only a real repository marker.
 - No file under the real Claude configuration directory was written during
   planning.
 

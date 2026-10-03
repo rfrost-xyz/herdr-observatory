@@ -34,8 +34,9 @@ This is change 3 of 4 in the Claude Code parity programme.
   the local host and the hook lock, then requires Herdr's pane to be agent
   `claude` with session kind `id` equal to the reported session id. It then
   writes one bound v2 metadata report carrying only the `window` slot. It sends
-  no model, totals, `usage_seq`, `display_agent` or account data, and reads no
-  stdin.
+  no model, totals, `usage_seq`, `display_agent` or account data, reads no
+  stdin, does not depend on its working directory, and refuses home or state
+  paths it cannot resolve as absolute.
 - The collector takes the window for a local Claude pane only from a bound
   reporter sample for the pane's current Claude session. It computes
   `context_percent` from replay's context and that window without the Codex
@@ -49,8 +50,12 @@ This is change 3 of 4 in the Claude Code parity programme.
   also removes a receipt-recorded mod. Ownership is proven by a per-file sha256
   in the existing `.hooks-receipt.json`, which stays readable by older and newer
   builds. The installer refuses targets it cannot prove are its own, symlinks,
-  managed configuration (chezmoi, mise dotfiles and enclosing Git work trees)
-  and peer roots. The Pi extension is unchanged byte for byte.
+  managed configuration (chezmoi, mise dotfiles when `mise` is present, and
+  enclosing Git repositories with a real `.git` marker) and peer roots. A
+  refresh records both old and new hashes until it completes, so an
+  interrupted refresh can be retried or removed. Removal refuses a changed
+  file and keeps everything, so the plugin uninstall stops for a retry. The
+  Pi extension is unchanged byte for byte.
 - Update the `harness-telemetry` spec, AGENTS.md and the READMEs. The statusLine
   wrapper is recorded only as a documented fallback.
 - Measure before and after with `tests/measure_anton_popover.mjs`, adding a
