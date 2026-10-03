@@ -236,6 +236,13 @@ Commits (signed, no attribution):
   (task 2.2 and its fixtures).
 - `253d579` feat(runtime): add the claude context window reporter (task 2.1
   and its fixtures).
+- `f15c107` test(runtime): split the peer claude window drop from its guard.
+  The first version tested Claude, Codex and Pi in one loop, so on the old
+  code it stopped at Claude and the Codex/Pi guard never ran. After the
+  split, both tests were run with only the peer-drop block removed from
+  `State::sample` (the rest of the tree at `f15c107`, an exact old
+  `State::sample`): the Claude test fails with `(Some(200000), Some(1))`,
+  and `peer_codex_and_pi_windows_are_kept` passes.
 
 **Fail-on-old method.** The runtime source was unchanged from `80f6295` when
 the tests were written (`git diff --stat 80f6295 HEAD -- omarchy/anton-runtime`
@@ -248,6 +255,7 @@ the old code:
 | `claude_context_over_window_keeps_context_and_drops_window` | new | fails | `context` nulled, expected 1201 |
 | `claude_panes_on_one_session_key_show_their_own_windows` | new | fails | later pane window null, expected 2000 |
 | `peer_claude_window_and_context_percent_are_dropped` | new | fails | peer Claude keeps `(200000, 1)` |
+| `peer_codex_and_pi_windows_are_kept` | guard | passes | see below |
 | `claude_report_rejects_invalid_arguments_without_socket_access` | new | fails | exit 1, expected 2 |
 | `claude_report_takes_option_like_values_verbatim` | new | fails | exit 1, expected 3 |
 | `claude_report_with_open_stdin_completes_the_write` | new | fails | exit 1, expected 0 |
@@ -267,7 +275,7 @@ were added after the implementation: `claude_metadata_has_no_label_and_only_the_
 relative `XDG_STATE_HOME` ignored; absolute one used; relative `--state`
 refused) and `claude_mod_entry_has_the_receipt_shape`.
 
-After the change: `cargo test --locked --offline` passes 233 (lib), 20
+After the change: `cargo test --locked --offline` passes 233 (lib), 21
 (bin), 6 (navigation) and 39 (process) tests; `cargo fmt --check` and
 `cargo clippy --all-targets --locked -- -D warnings` (local clippy 0.1.96)
 are clean. Tests ran with a private `TMPDIR` and `CLAUDE_CONFIG_DIR` unset;
