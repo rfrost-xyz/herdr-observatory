@@ -272,6 +272,11 @@ environment and runs in the session's working directory (D2), so
 - An explicit relative `--state`, or a home that is still empty or relative
   after the fallback, exits 3 with no file access, so no path ever resolves
   against the Claude project directory.
+- The local host's `socket_path` from `.config.json` has `~` or a leading
+  `~/` expanded against that home, as the collector expands it with
+  `expand_home` (the same rule, here against the resolved home). A socket
+  path that is still relative exits 3 before the lock or any RPC. The Pi
+  reporter's socket handling is unchanged.
 
 If Claude Code runs with a different `XDG_STATE_HOME` from the collector, the
 reporter takes a different `hook.lock`. That only weakens serialisation between
@@ -334,7 +339,7 @@ no receipt guard; it goes from `owner_guard` to `.config.json`):
 
 **Exit statuses.** 0: the bound window is in the pane's metadata. 2: invalid
 arguments. 3: not applicable (not bound, other session, older `seq`, no single
-local host, lock busy, no mod receipt, no absolute home or state path). 1: any other error, as today. The Pi
+local host, lock busy, no mod receipt, no absolute home, state or socket path). 1: any other error, as today. The Pi
 path's statuses are unchanged.
 
 ### D4. Collector window and percentage
@@ -703,6 +708,12 @@ New behaviour (must fail on `80f6295`):
   pane and exits 3 after `pane.get`, with no metadata write.
 - `--report claude` with stdin left open never blocks (process fixture with a
   held pipe, finishing well inside 1.5 s).
+- Socket path: a `~/` socket path reaches the socket under the temporary home
+  (exit 0), and a relative one exits 3 with no RPC even when the working
+  directory holds a socket of that name.
+- As the mod runs it: the installed runtime copy with only `HOME`, no
+  `--root` or `--state`, derives its root from its own path and takes
+  `hook.lock` under `<home>/.local/state/herdr.observatory`.
 - Environment: a run as `env -i HOME=<temporary absolute home>` with explicit
   `--root` and `--state` under a temporary directory succeeds against the
   synthetic socket, proving nothing else in the environment is needed; an

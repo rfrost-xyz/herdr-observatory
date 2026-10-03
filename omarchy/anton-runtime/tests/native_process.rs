@@ -2478,6 +2478,39 @@ fn claude_report_as_the_mod_runs_it_derives_root_and_state() {
     assert_eq!(fs::read_dir(f.dir.join("cwd")).unwrap().count(), 0);
 }
 
+/// D3 (review round 2): the reporter expands a `~/` socket path against
+/// its home, as the collector does, and refuses a relative one (exit 3, no
+/// RPC), because it runs in the Claude session's working directory.
+#[test]
+fn claude_report_expands_a_home_socket_and_refuses_a_relative_one() {
+    let f = Reporter::new();
+    let socket_config = |path: &str| {
+        write(
+            &f.root.join(".config.json"),
+            serde_json::to_vec(&json!({"hosts":[{"id":"local","socket_path":path}]})).unwrap(),
+            0o600,
+        );
+    };
+    std::os::unix::fs::symlink(&f.socket, f.home.join("herdr.sock")).unwrap();
+    socket_config("~/herdr.sock");
+    assert_eq!(
+        f.report(&["w1:p1", &report_seq(20), CLAUDE_ID, "200000"]),
+        Some(0)
+    );
+    assert_eq!(f.methods(), ["pane.get", "pane.report_metadata"]);
+    // A relative path, run from a directory that holds a socket of that name.
+    socket_config("herdr.sock");
+    f.calls.lock().unwrap().clear();
+    let output = f
+        .command(&["w1:p1", &report_seq(10), CLAUDE_ID, "300000"])
+        .current_dir(&f.dir)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(3));
+    assert!(output.stdout.is_empty() && output.stderr.is_empty());
+    assert!(f.methods().is_empty());
+}
+
 /// D3: a pane that is not this exact Claude session, an older `obs_seq`,
 /// no mod receipt, two local hosts or a busy hook lock exit 3 without a
 /// write; a mod receipt mid-refresh is accepted.

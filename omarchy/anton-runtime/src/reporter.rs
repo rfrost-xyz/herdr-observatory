@@ -259,6 +259,12 @@ fn report_claude(root: &Path, state: &Path, home: &Path, report: &ClaudeReport) 
     let Some(socket) = local_socket(root)? else {
         return Ok(false);
     };
+    // As the collector does, but against the resolved home; a relative path
+    // would resolve against the Claude session's working directory.
+    let socket = common::expand_home_in(&socket.to_string_lossy(), home);
+    if !socket.is_absolute() {
+        return Ok(false);
+    }
     let Some(lock) = hook_lock(state)? else {
         return Ok(false);
     };

@@ -25,11 +25,18 @@ pub fn sha256(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 pub fn expand_home(value: &str) -> PathBuf {
+    expand_home_in(
+        value,
+        Path::new(&std::env::var_os("HOME").unwrap_or_default()),
+    )
+}
+/// `expand_home` against an explicit `home`: `~` and a leading `~/`.
+pub fn expand_home_in(value: &str, home: &Path) -> PathBuf {
     if value == "~" {
-        return PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+        return home.to_owned();
     }
     if let Some(relative) = value.strip_prefix("~/") {
-        return PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(relative);
+        return home.join(relative);
     }
     PathBuf::from(value)
 }
