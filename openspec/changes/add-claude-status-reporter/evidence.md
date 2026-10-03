@@ -674,7 +674,12 @@ new test catches.
   no native telemetry, then `State::sample`, re-emits `total_input` 3461 on
   the peer path and loses it on the local path) fails with the fallback half
   reverted; the process fixture `claude_peer_probe_ignores_a_bound_reporter_window`
-  fails with the `--probe` arm back on `NativeTelemetry::default()`. A change
+  fails with the `--probe` arm back on `NativeTelemetry::default()`. The
+  shared-session copy branch of the metadata half (`self.peer` passed to
+  `claude_metadata` for a later pane on the same key) had no failing test
+  until review round 3 added
+  `claude_peer_later_pane_on_a_shared_key_ignores_its_report`, which fails
+  with that argument mutated to `false`. A change
   2 peer runtime on such a host keeps the old behaviour until it is upgraded;
   D6 records the row.
 - **Local collector analysis (coordinator decision 1).** The local follower
@@ -774,6 +779,116 @@ new test catches.
 `Some(x).filter(|_| ..)` or argument-less `format!` added); `cargo test --locked
 --offline`: 260 + 22 + 6 + 46 passed. `node --test tests/test_*.cjs
 tests/test_*.mjs`: 112 passed. `tests/run-shell-harness.sh`: 0 failures, 6
+rows. `OPENSPEC_TELEMETRY=0 openspec validate --all --strict`: 4 passed.
+Private `TMPDIR` under `/tmp/c3f-*`, removed afterwards. No write under the
+real `~/.claude` and no `claude` CLI run; every fixture is synthetic.
+
+## Review round 3 and remediation
+
+Three lenses on `6947468`: the mod (one non-blocking, one nit), the
+collector (one non-blocking) and the installer (one blocking). A fourth lens
+was clean. Every finding was fixed; none was declined. Each code fix has a
+test that was run against the unfixed code (the fix reverted or mutated in
+place, then the file restored) and failed there.
+
+- **mise declarations outside history (installer lens, blocking).**
+  `mise dotfiles paths --json` lists only history-tracked entries, so a
+  `[dotfiles]` declaration of `~/.claude/skills` in copy (or template) mode
+  went unnoticed and the mod was written into a directory mise copies from
+  its source. The mise check now also reads every `[dotfiles]` declaration,
+  whatever its mode, and refuses under the same equals/contains/is-contained
+  rule (`bb359c9`; D5, D7, the spec delta, the plugin README and AGENTS.md
+  in `439810f` and `31ca964`).
+  - Choosing the read. On mise 2026.9.16 in a sandbox home, a config whose
+    `[env]` called `exec` to create a marker file showed which commands
+    evaluate templates: `mise config ls --json` and `mise dotfiles paths
+    --json` created the marker (as `dotfiles status --json` does; its help
+    also says template entries are rendered); `mise config get`, keyed or
+    whole-file, with or without `-f`, did not, and neither did
+    `config ls --tracked-configs` or `trust --show`, which do not list the
+    loaded files. A template-mode entry whose source calls `exec` was not
+    rendered by `config get -f`; in that sandbox `dotfiles status` did not
+    render it either (its source was probably not resolved), so the probe
+    shows only that `config get` does not read sources. `config get` without `-f` reads only the
+    highest-precedence file, so the installer lists candidate files itself
+    (D5) and reads each with `mise -C <home> config get -f <file>`, from the
+    home with null stdin, bounded as before. `run_process_in` discards
+    stderr, so a keyed read's "Key not found" cannot be told from a failure;
+    the whole file is read instead and parsed by a minimal TOML reader.
+  - Candidate coverage was checked in the sandbox against `mise config ls
+    --json` (a development-time check only; the installer never runs it):
+    with 24 loaded files spanning home, `.config`, `mise/`, `.mise/`,
+    `conf.d` files and folder fragments, `.local` variants, `MISE_ENV=dev`
+    variants and a moved system directory, every loaded file was a
+    candidate (two extra candidates: `settings.toml` and `.rtx.toml`). With
+    `XDG_CONFIG_HOME`, `MISE_CONFIG_DIR` and `MISE_GLOBAL_CONFIG_FILE` moved
+    in turn, none was missed either.
+  - Tests: `install_refuses_a_target_declared_in_mise_dotfiles_in_any_mode`
+    (empty `paths` output; copy, raw inline copy, link, template, track, a
+    plain string entry, the home itself, `conf.d` file and folder fragment,
+    `~/.mise.local.toml`, and directories moved by `MISE_CONFIG_DIR`,
+    `XDG_CONFIG_HOME` and `MISE_SYSTEM_CONFIG_DIR`; each refuses with the
+    home snapshot unchanged) and `install_refuses_unreadable_mise_declarations`
+    (`config get` failing, unparseable output, `[[dotfiles]]`, `~other`, an
+    unlistable `conf.d`) fail with the candidate list replaced by an empty
+    one. The process fixtures `claude_mod_install_refuses_a_copy_mode_mise_declaration`
+    and the D7 argv fixture `claude_mod_install_runs_mise_from_the_home_with_null_stdin`
+    (now asserting every run, `paths` first, then `config get -f` of the
+    home's config file, each from the home with null stdin) fail the same
+    way. The sibling case (`~/.claude/skills/other`, `~/.claude/settings.json`
+    and `~/.bashrc` declared, with a `[dotfiles]` line inside a task's
+    multi-line string) is accepted. The reader's unit tests cover each key
+    form, multi-line values and header-like lines inside strings. Installer
+    fixtures set `MISE_SYSTEM_CONFIG_DIR` so the host's `/etc/mise` is never
+    read.
+  - Real host (read-only). A throwaway harness in a private copy of the
+    crate ran the same check with the host's real `mise` from the real home
+    (`dotfiles paths --json` included, as the installer runs it), printing
+    only counts, relations and the verdict. The first run refused
+    as unreadable: one config file declares an array of tables under a
+    target (`[[dotfiles."<target>".<key>]]`), which the reader had refused.
+    That form names a target like any other subtable, so it is now recorded
+    as a declaration and only `[[dotfiles]]` itself refuses; the reader test
+    gained the case and fails under the earlier rule. After that fix the
+    real install is **not refused**: every declaration and every history
+    entry is unrelated to the mod directory, so no rule fired. No path or
+    content from the host was recorded.
+  - Finding against the round-3 brief: the retained `mise dotfiles paths
+    --json` evaluates `[env]` templates when it loads the config (the
+    sandbox marker above), so the mise check as a whole still runs one
+    command that can execute template functions. It is kept as the
+    coordinator instructed; D5 records it.
+- **Overlapping hook dispatches (mod lens #1, non-blocking).** A run now
+  counts as in flight while `Math.abs(now - inflight.startedAt) <= 3000`
+  (`2ccf320`). Node test `overlapping dispatches start one run when the
+  earlier reading arrives last`: `session.start` and `session.measure`, each
+  with its own stubbed `$` whose clock the test resolves by hand; the later
+  reading (5 ms later) arrives first and starts a run, then the earlier one
+  arrives. It failed before the fix with 2 runs. The one-hour step-back test
+  still passes. D2 step 4 and the D7 node list record the symmetric rule and
+  its cost: after a backward step of 3 s or less, a run that never settles
+  blocks until the clock passes `startedAt + 3000`, at most about 6 s
+  (`ff63222`).
+- **Open question 9 (mod lens #2, nit).** The published types answer it:
+  the `'session.measure'` doc comment reads "Fires when the engine measures
+  the session and a unit moved: after each main-thread turn, and when a
+  rate-limit window moves a whole point." (re-fetched on 2026-10-03, quoted
+  under [types] above). Open question 9, the subagent risk and task 5.3 now
+  cite it and keep the live subagent check as confirmation, because the
+  GitHub copy can lag the installed build (`ff63222`).
+- **Shared-key peer copy untested (collector lens, non-blocking).**
+  `claude_peer_later_pane_on_a_shared_key_ignores_its_report` runs
+  `NativeTelemetry::peer().enrich` on `[agent(), bound(2000)]` and asserts
+  the later pane's telemetry has no `window` or `context_percent`, keeps
+  `context` 1201, and equals the output for `[agent(), agent()]`
+  (`b621f89`). It fails with `self.peer` mutated to `false` on the copy
+  branch (`"window":2000`). The round-2 entry now names it.
+
+**Gates (HEAD after the fixes).** `cargo fmt --check` clean; `cargo clippy
+--all-targets --locked -- -D warnings` clean (local clippy 0.1.96; no
+`Some(x).filter(|_| ..)` or argument-less `format!` added); `cargo test --locked
+--offline`: 266 + 22 + 6 + 47 passed. `node --test tests/test_*.cjs
+tests/test_*.mjs`: 113 passed. `tests/run-shell-harness.sh`: 0 failures, 6
 rows. `OPENSPEC_TELEMETRY=0 openspec validate --all --strict`: 4 passed.
 Private `TMPDIR` under `/tmp/c3f-*`, removed afterwards. No write under the
 real `~/.claude` and no `claude` CLI run; every fixture is synthetic.
