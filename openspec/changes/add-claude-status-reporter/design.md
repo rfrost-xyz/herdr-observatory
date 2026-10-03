@@ -101,7 +101,14 @@ Pi behaviour, output, checkpoints and the Pi extension bytes must not change.
   which mods are off: an untrusted workspace (open question 8), `disableAllHooks`, `--bare`, `--safe-mode`,
   `allowManagedModsOnly`, `allowManagedHooksOnly`, the remote kill switch, a
   name conflict with a same-named `--plugin-dir` or marketplace plugin, or a
-  WSL Desktop session [reference, loading]. Each fails closed.
+  WSL Desktop session [reference, loading]. Each fails closed. Separately,
+  where `sec-default@builtin` loads (a Team or Enterprise sign-in, or a
+  machine with managed settings), the mod loads but its
+  `classic.SessionStart` hook never runs, because that guard continues
+  `classic.*` events past the user tier (the anthropics/claude-code
+  `mods/sec-default/README.md` and the mods reference, as read by review
+  round 2 on 2026-10-03). Only the early `/resume` window is lost there; the
+  next turn reports it.
 - The installer writes only under `~/.claude/skills/anton-observatory/`. It
   refuses when `CLAUDE_CONFIG_DIR` is set in its own environment to anything
   other than `~/.claude`, because the documentation names only
@@ -120,7 +127,7 @@ literals, and no Node APIs, `import`, timer globals or `Date` dependence
 |---|---|---|
 | `session.measure` | Primary. Fires after each turn and after a plan-limit change, so the latest report carries the window after a `/model` switch's next turn. Never skipped on the confirmed key (step 4), so a window lost from Herdr's metadata returns on the next turn. | `e.context.window` (the documented payload always carries `context`; an absent one skips) |
 | `session.start` | Covers mod reload and a launch with `--resume`, where replay already has context before any new turn. | `(await $.session.usage()).context.window` |
-| `classic.SessionStart` | Covers `/clear`, `/resume` and `/branch` inside a running process, which do not refire `session.start`. Useful mainly for `/resume`, whose transcript already has context. | `(await $.session.usage()).context.window`, only when `e.session_id` equals the session id read below |
+| `classic.SessionStart` | Covers `/clear`, `/resume` and `/branch` inside a running process, which do not refire `session.start`. Useful mainly for `/resume`, whose transcript already has context. Where Claude Code's built-in guard `sec-default@builtin` loads (Team or Enterprise sign-in, or managed settings), `classic.*` events continue past the user tier and never reach this personal mod, so after `/resume` the window arrives with the next turn's `session.measure`. | `(await $.session.usage()).context.window`, only when `e.session_id` equals the session id read below |
 | `session.end` | Clears the confirmed key (step 7), so the next session reports again. | none |
 
 A fresh `/clear` has no replay context until its first turn, so its percentage
@@ -166,12 +173,19 @@ hook has returned, and every promise the mod creates ends in a terminal
    that is not epoch milliseconds fails closed instead of sending a small
    `seq` that guard 6 would refuse for good. A reading that is too large (a
    microsecond or nanosecond clock) is caught in step 5.
-   If a run is in flight (`inflight !== null`) and
-   `now - inflight.startedAt <= 3000`, return: the sample is skipped, not
-   held. The next `session.measure`, which is never deduplicated, carries the
+   If a run is in flight (`inflight !== null`),
+   `now >= inflight.startedAt` and `now - inflight.startedAt <= 3000`, return:
+   the sample is skipped, not held. The next `session.measure`, which is never deduplicated, carries the
    latest window. A run older than 3 s (above the 2 s `timeoutMs`) is stale:
    it is abandoned and a new run starts. This covers a worker that never
-   settles an un-awaited promise (open question 3).
+   settles an un-awaited promise (open question 3). A reading earlier than
+   `startedAt` (the wall clock stepped back, for example a manual change, a
+   VM restore or an NTP step) also counts as stale; otherwise a run that never
+   settles would block every event until the clock passed `startedAt + 3000`
+   again. This restores run starts, not reports: step 5 then sends
+   `lastSeq + 1`, which is ahead of the stepped-back clock, so the reporter
+   refuses it as a future `seq` (exit 2), and Herdr's `obs_seq` refuses any
+   lower one, until the clock passes the earlier reading again.
 5. `seq = Math.max(lastSeq + 1, Math.floor(now) * 1000)`, kept in module scope,
    so sequences are strictly increasing epoch microseconds, also across a mod
    reload (which resets `lastSeq`). If `!Number.isSafeInteger(seq)`, return
@@ -194,8 +208,13 @@ hook has returned, and every promise the mod creates ends in a terminal
    callback from an abandoned run (its token is no longer current) changes
    nothing: it cannot set `confirmed` or clear the newer run's in-flight
    state.
-7. `session.end` clears `confirmed` (but not `lastSeq`), so the next session
-   reports again.
+7. `session.end` clears `confirmed` (but not `lastSeq` or `generation`), so the
+   next session reports again. A run still in flight across the end can
+   settle afterwards with its token current and put the old session's key
+   back into `confirmed`; the session id in the key keeps that from
+   suppressing the next session's `classic.SessionStart` for the same window.
+   `generation` is not reset, because the old run's `.finally` must still
+   clear `inflight`.
 
 **Why this shape.**
 
@@ -681,7 +700,9 @@ Rust and node harnesses set `HOME` to a temporary directory and remove
 `CLAUDE_CONFIG_DIR`. No automated fixture relies on guard order to avoid real
 state: every reporter process fixture passes an explicit `--root` and `--state`
 under a temporary directory, before `--report` (as the existing fixture
-helper already does).
+helper already does), except one that runs the installed runtime copy as the
+mod does, whose root is its own temporary directory and whose state derives
+from the temporary `HOME`.
 
 Installer fixtures never consult the host's `mise` or `chezmoi` and never call
 `std::env::set_var`, which races under the parallel test runner. In-process
@@ -857,7 +878,8 @@ All cases are new behaviour (the file does not exist on `80f6295`):
   stays at one until the next event after it settles;
 - a `process.run` that never settles: an event inside 3 s starts nothing, and
   a later event with a new window after 3 s (stubbed clock) starts a second
-  run;
+  run; a clock stepped back an hour also starts a second run, with `seq`
+  `lastSeq + 1`;
 - a first run that settles late, after a second run started: its `.then` does
   not set `confirmed`, and its `.finally` does not clear the second run's
   in-flight state;
@@ -872,6 +894,9 @@ All cases are new behaviour (the file does not exist on `80f6295`):
   is consistent (a synchronous `process.run` throw leaves no run in flight,
   so the next event starts one; a rejection clears the in-flight state);
 - `session.end` clears `confirmed`, so the next `session.start` reports again;
+  a run in flight across `session.end` that settles afterwards with exit 0
+  does not suppress the next session's `classic.SessionStart` for the same
+  window (the session id is in the key);
 - strictly increasing `seq`, including equal clock readings;
 - `$.clock.now()` below `1e12` (and a non-number), or a microsecond or
   nanosecond reading (`1.7e15`, `1.7e18`) whose `seq` is not a safe integer:

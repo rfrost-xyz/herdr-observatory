@@ -57,7 +57,10 @@ their panes, so remote Claude Code threads show no window or percentage.
 The mod loads only at the next session start or after `/reload-plugins`. A
 session that was already running stays unknown until it reloads, as does any
 session in which mods are off (for example an untrusted workspace,
-`disableAllHooks`, `--bare` or `--safe-mode`).
+`disableAllHooks`, `--bare` or `--safe-mode`). With a Team or Enterprise
+sign-in, or on a machine with managed settings, Claude Code's built-in
+`sec-default` guard keeps `SessionStart` events from personal mods, so after
+`/resume` the window appears with the next turn instead of at once.
 
 The files and their hashes are recorded in the plugin's `.hooks-receipt.json`.
 Installation refuses a target it cannot prove absent or owned, symlinks, a set
