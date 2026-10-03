@@ -29,8 +29,7 @@ impl Fixture {
     /// Writes the header and `lines` to a new file, replacing any old inode.
     fn write(&self, lines: &[String]) -> PathBuf {
         let path = self.path("entry-a", ID);
-        let _ = std::fs::remove_file(&path);
-        std::fs::write(&path, body(lines)).unwrap();
+        replace(&path, body(lines).as_bytes());
         path
     }
     fn append(&self, text: &str) {
@@ -40,6 +39,13 @@ impl Fixture {
         let mut file = std::fs::OpenOptions::new().append(true).open(path).unwrap();
         file.write_all(text.as_bytes()).unwrap();
     }
+}
+/// Replaces `path` by a new file through a rename, so the replacement has a
+/// distinct inode even on a filesystem that reuses a freed one (ext4).
+fn replace(path: &Path, bytes: &[u8]) {
+    let next = path.with_extension("next");
+    std::fs::write(&next, bytes).unwrap();
+    std::fs::rename(&next, path).unwrap();
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
@@ -296,8 +302,7 @@ fn claude_incomplete_replay_reemits_the_retained_sample_until_replacement() {
     assert_eq!(telemetry, retained(&first));
     // Replacement by a new inode with the same bytes restarts and drops it.
     let bytes = std::fs::read(fixture.path("entry-a", ID)).unwrap();
-    std::fs::remove_file(fixture.path("entry-a", ID)).unwrap();
-    std::fs::write(fixture.path("entry-a", ID), &bytes).unwrap();
+    replace(&fixture.path("entry-a", ID), &bytes);
     let (telemetry, _, cursors) = enrich(&mut follower, &cursors);
     unknown(&telemetry, micros(23));
     // It stays dropped on the next resumed incomplete pass.
@@ -1223,8 +1228,7 @@ fn claude_published_telemetry_never_carries_window_or_context_percent() {
     windowless(&telemetry);
     // The all-null sample of a replaced file.
     let bytes = std::fs::read(fixture.path("entry-a", ID)).unwrap();
-    std::fs::remove_file(fixture.path("entry-a", ID)).unwrap();
-    std::fs::write(fixture.path("entry-a", ID), &bytes).unwrap();
+    replace(&fixture.path("entry-a", ID), &bytes);
     let (telemetry, _, _) = enrich(&mut follower, &cursors);
     unknown(&telemetry, micros(30));
     windowless(&telemetry);
@@ -1504,8 +1508,7 @@ fn claude_two_panes_on_one_session_share_a_restart_that_is_not_caught_up() {
     let mut bytes = body(&session()).into_bytes();
     bytes.extend_from_slice(&partial.as_bytes()[..40]);
     let path = fixture.path("entry-a", ID);
-    std::fs::remove_file(&path).unwrap();
-    std::fs::write(&path, &bytes).unwrap();
+    replace(&path, &bytes);
     // Through the shared deadline, as a peer probe runs it.
     let mut agents = vec![agent(), agent()];
     let rows = NativeTelemetry::default().enrich_until(&mut agents, &cursors, far()[0]);
