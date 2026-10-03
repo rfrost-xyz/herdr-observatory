@@ -173,11 +173,21 @@ fn git_managed(target: &Path, home: &Path) -> Result<()> {
     Ok(())
 }
 /// The managed-configuration checks for the mod directory `target` (D5):
-/// chezmoi for it and each mod file, mise dotfiles, then Git markers.
+/// chezmoi for it, each mod file and each ancestor below `home` (so a
+/// managed `~/.claude` or `~/.claude/skills` refuses; the home itself is
+/// chezmoi's destination root and is not asked), mise dotfiles, then Git
+/// markers.
 pub(crate) fn claude_managed(target: &Path, home: &Path, env: &ClaudeEnv) -> Result<()> {
     chezmoi_managed(target, env)?;
     for name in CLAUDE_MOD_FILES {
         chezmoi_managed(&target.join(name), env)?;
+    }
+    for ancestor in target
+        .ancestors()
+        .skip(1)
+        .take_while(|d| d.starts_with(home) && *d != home)
+    {
+        chezmoi_managed(ancestor, env)?;
     }
     mise_managed(target, home, env)?;
     git_managed(target, home)

@@ -430,7 +430,7 @@ fn a_refresh_keeps_the_directories_and_uninstall_leaves_no_mod_tree() {
 fn install_refuses_targets_it_cannot_prove_are_its_own() {
     use std::os::unix::fs::symlink;
     type Setup = fn(&mut Mod);
-    let cases: [(&str, &str, Setup); 21] = [
+    let cases: [(&str, &str, Setup); 23] = [
         (
             "changed root",
             "Conflicting Claude Code mod directory",
@@ -508,6 +508,18 @@ fn install_refuses_targets_it_cannot_prove_are_its_own() {
             }
         }),
         ("chezmoi", "chezmoi", |m| m.tool("chezmoi", "exit 0")),
+        ("chezmoi-managed ~/.claude", "chezmoi", |m| {
+            m.tool(
+                "chezmoi",
+                "case \"$2\" in */.claude) exit 0;; *) exit 1;; esac",
+            );
+        }),
+        ("chezmoi-managed skills", "chezmoi", |m| {
+            m.tool(
+                "chezmoi",
+                "case \"$2\" in */.claude/skills) exit 0;; *) exit 1;; esac",
+            );
+        }),
         ("Git directory marker", "Git repository", |m| {
             common::ensure_private_directory(&m.f.home.join(".git")).unwrap();
             common::atomic_owned_write(&m.f.home.join(".git/HEAD"), b"ref: refs/heads/main\n")
@@ -618,7 +630,7 @@ fn install_refuses_a_target_listed_by_mise_or_an_unreadable_listing() {
 #[test]
 fn install_accepts_unrelated_markers_and_listings() {
     type Setup = fn(&Mod);
-    let cases: [(&str, Setup); 4] = [
+    let cases: [(&str, Setup); 5] = [
         ("empty .git directory", |m| {
             common::ensure_private_directory(&m.f.home.join(".git")).unwrap();
         }),
@@ -629,6 +641,14 @@ fn install_accepts_unrelated_markers_and_listings() {
             m.mise(&json!({"entries":[{"path":"~/.claude/skills/other"},{"path":"~/.claude/settings.json"}],"exclude":[{"path":"~/.claude"}],"plaintext":[{"path":"~/.claude"}]}));
         }),
         ("no mise on PATH", |_| {}),
+        // The home is chezmoi's destination root, so it is not asked.
+        ("chezmoi answering only for the home", |m| {
+            let home = m.f.home.to_string_lossy().into_owned();
+            m.tool(
+                "chezmoi",
+                &format!("[ \"$2\" = '{home}' ] && exit 0; exit 1"),
+            );
+        }),
     ];
     for (what, setup) in cases {
         let m = Mod::new();
