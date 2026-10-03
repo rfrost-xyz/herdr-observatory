@@ -414,9 +414,18 @@ environment (`PATH` holding only a fixture directory), and CLI fixtures use
 **Regression guards (pass on both).** The existing Pi install, uninstall,
 shim, repair and receipt fixtures, unchanged; `pi_extension_bytes_are_unchanged`
 pins `hooks/observatory.ts` to the `80f6295` sha256
-`d9a998b5…f2fb76`; `pi_receipt_writers_keep_the_mod_entry` (`--install-hooks`
-and `--repair-retired-hooks` keep `claude_mod`); the existing distribution
-tests and the pinned `install.sh` and `uninstall.sh` file lists.
+`d9a998b5…f2fb76`; the existing distribution tests.
+
+**Regression guards by behaviour (cannot run on `80f6295`).**
+`pi_receipt_writers_keep_the_mod_entry` (`--install-hooks` and
+`--repair-retired-hooks` keep `claude_mod`) calls `install_mod`, which does
+not exist on the base, so it does not compile there. The pinned `install.sh`
+and `uninstall.sh` file lists sit inside the new test `the Claude Code mod
+payload is embedded in the runtime...`, which fails on the base before it
+reaches them because the payload is missing. The behaviour holds on the
+base: the round-5 reviewer ran an adapted base fixture (a receipt with a
+`claude_mod` key, then base `install` and `repair_retired`) and the key was
+kept. Not re-run here; the reviewer's run is the source (review round 5).
 
 **Plan review findings applied in this stage.**
 
@@ -933,8 +942,11 @@ against the unfixed or mutated code and failed there.
   the round-3 entry above are corrected. Not re-probed here; the
   reviewer's sandbox (mise 2026.9.16) is the source.
 - **Receipt lock held throughout (installer lens, non-blocking).** The busy
-  tests only showed that each writer tries the lock once. Two probes now
-  show each writer holds it for its whole read-modify-write (`5a203b0`):
+  tests only showed that each writer tries the lock once. Two probes were
+  added (`5a203b0`). The Pi probe covers every write of the Pi writers; the
+  mod probe covers only the managed-configuration checks, so it did not show
+  the mod writers hold the lock for their whole read-modify-write. Review
+  round 5 found that gap and added a write and deletion probe (see below):
   - `mod_receipt_writers_hold_the_lock_while_checking`: a fake `chezmoi` on
     the fixture `PATH` runs the host's `flock -n` on the plugin root and
     logs `free` or `held`, then exits 1 (not managed). The mod install runs
@@ -971,6 +983,97 @@ tests/test_*.mjs`: 113 passed. `tests/run-shell-harness.sh`: 0 failures, 6
 rows. `OPENSPEC_TELEMETRY=0 openspec validate --all --strict`: 4 passed.
 Private `TMPDIR` under `/tmp/c3f-*`, removed afterwards. No write under the
 real `~/.claude` and no `claude` CLI run; every fixture is synthetic.
+
+## Review round 5 and remediation
+
+Review of `2f474b4`: one blocking finding and five nits across four lenses.
+Every finding was fixed; none was declined. Each fix has a test that fails
+with the fix reverted (checked by reverting it in place from a scratch copy,
+then restoring and confirming the diff).
+
+- **Lock probe covered only the checks (installer lens, blocking).**
+  `mod_receipt_writers_hold_the_lock_while_checking` probes through a fake
+  `chezmoi`, so it only saw the lock during the managed-configuration checks.
+  The reviewer's `drop(_receipt)` right after `claude_managed` in
+  `install_mod`, and right after `removal` in `uninstall_mod` and
+  `uninstall_in`, left every test green. Fix (`3663298`):
+  - New test `mod_receipt_writers_hold_the_lock_while_writing_and_deleting`.
+    A recording writer passed to `install_mod` and `uninstall_mod` tries
+    `flock(LOCK_EX|LOCK_NB)` on a fresh `open_directory(root)` before every
+    write. It asserts the exact sequences: fresh install (receipt, then
+    `hooks/hooks.json`, `hooks/register.js`, `.claude-plugin/plugin.json`),
+    a refresh that changes `register.js` (receipt, `register.js`, receipt)
+    and `uninstall_mod` (the receipt once), each with the lock held.
+  - `uninstall_in` gained a seam, `uninstall_with(.., deleting)`, and
+    `remove_with` a `deleting` hook. The probe runs before each recorded mod
+    file and directory removal, before each mod directory sync, and before
+    the shim, Pi extension and receipt removals; the test asserts each of
+    those paths was probed, the receipt last, every probe held. Installer
+    debris unlinks are not probed one by one. Production passes a no-op.
+  - The chezmoi test's doc comment now says "during its managed-configuration
+    checks"; D7, task 3.4 and the round-4 entry above say exactly what each
+    probe sees.
+  - Mutations: `drop(_receipt)` after `claude_managed` (`install_mod`), after
+    `removal` (`uninstall_mod`) and after `claude_mod::removal`
+    (`uninstall_in`), each applied alone: the new test fails for each; the
+    chezmoi and Pi probes still pass, as expected.
+- **Symlinked Git `HEAD` (installer lens, nit).** `git_managed` now counts a
+  `.git` directory whose `HEAD` is a regular file or a symlink (lstat, never
+  followed), as `core.preferSymlinkRefs` produces (`9a39cd3`). New case in
+  `install_refuses_targets_it_cannot_prove_are_its_own`: a dangling
+  `HEAD -> refs/heads/main`. It fails with the `is_file()`-only check. D5,
+  D7, task 3.4 and the doc comment updated.
+- **`remove_dir` failures reported as kept (installer lens, nit).** Only
+  `ErrorKind::DirectoryNotEmpty` now means kept (with the stderr line for
+  directories under the mod root); `NotFound` is still fine; any other error
+  returns "Claude Code mod removal failed: cannot remove <directory>; the
+  receipt is unchanged, fix it and retry" before the receipt changes. The
+  same rule covers a recorded `skills/` (`1421d93`). New fixture
+  `removal_failing_to_remove_a_directory_keeps_the_receipt`: with the mod root
+  at 0500, `--uninstall-claude-mod` fails and keeps the `claude_mod` entry,
+  and `--uninstall-hooks` fails and keeps the receipt, the Pi extension and
+  the shim; after the mode is restored each retry completes and leaves no mod
+  tree. It returns early as root, which ignores the mode; CI runs as a
+  normal user. With the old `Err(_) => {}` behaviour it fails. D5 step 2, D7,
+  task 3.4, the spec requirement, the plugin README and AGENTS.md updated.
+- **Local host without `socket_path` (runtime lens, nit).** Coordinator
+  decision: on the Claude path only, a single local host with no
+  `socket_path` (a `session` host, or neither key) is not applicable: exit 3,
+  no output, no RPC (`35282a6`). `local_host` now returns the single local
+  host and `local_socket` maps it, so Pi's report is unchanged.
+  `claude_report_expands_a_home_socket_and_refuses_a_relative_one` gained
+  both host shapes and asserts that `--report pi` on the same configuration
+  still exits 1 with "Missing local socket". Without the fix the Claude case
+  exits 1. D3 (guard 3, socket bullet, exit statuses), D7, task 2.3, the
+  plugin README and AGENTS.md now say the Claude reporter needs a local host
+  configured with `socket_path`.
+- **Harness turned `undefined` into `{}` (mod lens, nit).** `fire` no longer
+  defaults its event: an explicit `undefined` reaches the hook, and only an
+  omitted event becomes `{}` (`cd04893`). New test: with a valid `$`, an
+  `undefined` and a `null` event on each of the four hooks resolves to
+  `next(e)`; `session.measure`, `classic.SessionStart` and `session.end`
+  start no run, and `session.start`, which reads nothing from its event,
+  starts one. Mutations: `if (e === undefined) throw` outside the try in each
+  hook in turn fails 1 or 2 tests, and `const sid = e.session_id;` before the
+  try in `classic.SessionStart` fails 3; with the old defaulting harness the
+  `classic.SessionStart` throw mutation passed every test.
+- **Regression guards that cannot run on the base (spec lens, nit).** The
+  Lane B list now separates guards that pass on both from
+  `pi_receipt_writers_keep_the_mod_entry` and the pinned `install.sh` and
+  `uninstall.sh` file lists, which cannot compile or run on `80f6295`; their
+  behaviour on the base rests on the reviewer's adapted base fixture, not
+  re-run here.
+
+**Gates (HEAD after the fixes).** `cargo fmt --check` clean; `cargo clippy
+--all-targets --locked -- -D warnings` clean (local clippy 0.1.96; no
+`Some(x).filter(|_| ..)` or argument-less `format!` added; one
+`cloned_ref_to_slice_refs` hit in the new test was fixed before commit);
+`cargo test --locked --offline`: 270 + 22 + 6 + 47 passed. `node --test
+tests/test_*.cjs tests/test_*.mjs`: 114 passed. `tests/run-shell-harness.sh`:
+0 failures, 6 runtime invocations. `OPENSPEC_TELEMETRY=0 openspec validate
+--all --strict`: 4 passed. Private `TMPDIR` under `/tmp/c3f-*`, removed
+afterwards. No write under the real `~/.claude`, no `claude` CLI run and no
+authentication file read; every fixture is synthetic.
 
 ## Live installed check
 
