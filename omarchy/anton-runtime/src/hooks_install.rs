@@ -1024,29 +1024,51 @@ mod tests {
         assert!(!extension.exists());
         assert_eq!(std::fs::read(unrelated).unwrap(), b"unrelated");
     }
-    /// Every regular file under `dir` with its bytes and inode.
-    pub(super) fn tree(dir: &Path) -> std::collections::BTreeMap<PathBuf, (Vec<u8>, u64)> {
+    /// One snapshot entry: kind, bytes (regular files only), inode and mode.
+    #[derive(Debug, PartialEq, Eq)]
+    pub(super) struct Entry {
+        pub(super) kind: &'static str,
+        pub(super) bytes: Vec<u8>,
+        pub(super) inode: u64,
+        pub(super) mode: u32,
+    }
+    pub(super) type Tree = std::collections::BTreeMap<PathBuf, Entry>;
+    /// Every entry under and including `dir`: directories too, so a snapshot
+    /// comparison sees a directory created or removed as well as a file.
+    pub(super) fn tree(dir: &Path) -> Tree {
         use std::os::unix::fs::MetadataExt;
-        let mut files = std::collections::BTreeMap::new();
+        let mut entries = Tree::new();
         let mut pending = vec![dir.to_owned()];
         while let Some(path) = pending.pop() {
             let Ok(info) = std::fs::symlink_metadata(&path) else {
                 continue;
             };
-            if info.is_dir() {
+            let kind = if info.is_dir() {
                 for entry in std::fs::read_dir(&path).unwrap() {
                     pending.push(entry.unwrap().path());
                 }
+                "directory"
+            } else if info.is_file() {
+                "file"
+            } else if info.file_type().is_symlink() {
+                "symlink"
             } else {
-                let bytes = if info.is_file() {
-                    std::fs::read(&path).unwrap()
-                } else {
-                    Vec::new()
-                };
-                files.insert(path, (bytes, info.ino()));
-            }
+                "other"
+            };
+            let bytes = if kind == "file" {
+                std::fs::read(&path).unwrap()
+            } else {
+                Vec::new()
+            };
+            let entry = Entry {
+                kind,
+                bytes,
+                inode: info.ino(),
+                mode: info.mode(),
+            };
+            entries.insert(path, entry);
         }
-        files
+        entries
     }
     /// Holds the receipt lock on `root` from another open file description,
     /// as a concurrent writer would, until dropped.

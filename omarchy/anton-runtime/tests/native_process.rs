@@ -2590,28 +2590,35 @@ impl Reporter {
         self.home.join(".claude/skills/anton-observatory")
     }
 }
-/// Every regular file under `dir` with its bytes and inode; other entries
-/// (the fixture socket) with no bytes.
-fn file_tree(dir: &Path) -> std::collections::BTreeMap<PathBuf, (Vec<u8>, u64)> {
+/// Every entry under and including `dir`, keyed by path: kind, bytes (regular
+/// files only), inode and mode. Directories are recorded, so a comparison sees
+/// one created or removed.
+fn file_tree(dir: &Path) -> std::collections::BTreeMap<PathBuf, (&'static str, Vec<u8>, u64, u32)> {
     use std::os::unix::fs::MetadataExt;
-    let mut files = std::collections::BTreeMap::new();
+    let mut entries = std::collections::BTreeMap::new();
     let mut pending = vec![dir.to_owned()];
     while let Some(path) = pending.pop() {
         let info = fs::symlink_metadata(&path).unwrap();
-        if info.is_dir() {
+        let kind = if info.is_dir() {
             for entry in fs::read_dir(&path).unwrap() {
                 pending.push(entry.unwrap().path());
             }
+            "directory"
+        } else if info.is_file() {
+            "file"
+        } else if info.file_type().is_symlink() {
+            "symlink"
         } else {
-            let bytes = if info.is_file() {
-                fs::read(&path).unwrap()
-            } else {
-                Vec::new()
-            };
-            files.insert(path, (bytes, info.ino()));
-        }
+            "other"
+        };
+        let bytes = if kind == "file" {
+            fs::read(&path).unwrap()
+        } else {
+            Vec::new()
+        };
+        entries.insert(path, (kind, bytes, info.ino(), info.mode()));
     }
-    files
+    entries
 }
 
 /// D3 guard 2 and D5 agree: a mod installed through the CLI is accepted by

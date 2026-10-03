@@ -2,7 +2,7 @@
 //! Every check gets an explicit environment: `PATH` holds only a fixture
 //! directory, so the host's `chezmoi` and `mise` are never consulted.
 use super::claude_mod::{self, ClaudeEnv};
-use super::tests::{NativeFixture, hold_receipt_lock, tree};
+use super::tests::{NativeFixture, Tree, hold_receipt_lock, tree};
 use super::*;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::time::Instant;
@@ -38,8 +38,8 @@ impl Mod {
     fn entry(&self) -> Value {
         self.f.receipt()["claude_mod"].clone()
     }
-    /// Every file under the home with its bytes and inode.
-    fn snapshot(&self) -> std::collections::BTreeMap<PathBuf, (Vec<u8>, u64)> {
+    /// Every file and directory under the home (see `tree`).
+    fn snapshot(&self) -> Tree {
         tree(&self.f.home)
     }
     fn install_with(&self, files: claude_mod::Payload, write: claude_mod::Writer) -> Result<()> {
@@ -104,13 +104,7 @@ fn hash(bytes: &[u8]) -> String {
     common::sha256(bytes)
 }
 /// Asserts `result` refused for `reason` and nothing under the home changed.
-fn refused(
-    m: &Mod,
-    result: Result<()>,
-    before: &std::collections::BTreeMap<PathBuf, (Vec<u8>, u64)>,
-    what: &str,
-    reason: &str,
-) {
+fn refused(m: &Mod, result: Result<()>, before: &Tree, what: &str, reason: &str) {
     let error = result.expect_err(what);
     assert!(error.contains(reason), "{what}: {error}");
     assert_eq!(&m.snapshot(), before, "{what}: nothing changes");
@@ -202,7 +196,7 @@ fn a_payload_change_rewrites_only_the_changed_files() {
     }
     let manifest = m.file(".claude-plugin/plugin.json");
     assert_ne!(
-        after[&manifest].1, before[&manifest].1,
+        after[&manifest].inode, before[&manifest].inode,
         "manifest rewritten"
     );
     let files = variant("build-b", [false, false, true])(&m.runtime()).unwrap();
