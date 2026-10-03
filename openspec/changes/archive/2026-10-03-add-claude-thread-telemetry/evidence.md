@@ -833,3 +833,12 @@ The spec now promises a mask only for work the transcript records in a structure
 - **Shell harness:** `tests/run-shell-harness.sh` against the real Omarchy modules reported failures 0 and 4 rows, with 0 `--open-thread` invocations.
 - **User check:** the user opened the popover and confirmed it, with no synthetic input.
 - **SSH peers:** not redeployed, because the protocol is unchanged and backward compatible.
+
+## CI fixes before merge
+
+- **`be834de`:** CI's clippy 1.98 flagged two lints that local clippy 1.96 does not, `unnecessary_lazy_evaluations`-style `Some(x).filter` and `useless_format`. Both rewrites are behaviour-neutral. The installed runtime was rebuilt from this commit, with private state preserved, and the shell harness passed again (failures 0).
+- **`4d8bb52`:** `claude_two_panes_on_one_session_share_a_restart_that_is_not_caught_up` failed on CI only.
+  - Cause: the fixture replaced a file by delete-then-write, and ext4 reused the freed inode. The intended replacement then became an in-place append, for which withholding is correct.
+  - Reproduced locally by rewriting in place.
+  - Fixture replacements now write a sibling and rename it over the file, which guarantees a distinct inode.
+  - The fix is test-only and was confirmed by an independent check.
