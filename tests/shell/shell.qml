@@ -77,8 +77,12 @@ ShellRoot {
         var windowOnly = claude.filter(function (thread) {
             return thread.id === "claude-b";
         })[0];
-        check(claude.length === 2 && bound && bound.usage.inputTokens === 90000 && bound.usage.contextPercent === 24 && bound.children === null && bound.completion && bound.completion.total === 2 && bound.completion.done === 1 && bound.timing && bound.timing.active === true, label + ": the Claude thread lacks its transcript telemetry or reported window percentage");
+        var contextOnly = claude.filter(function (thread) {
+            return thread.id === "claude-c";
+        })[0];
+        check(claude.length === 3 && bound && bound.usage.inputTokens === 90000 && bound.usage.contextPercent === 25 && bound.children === null && bound.completion && bound.completion.total === 2 && bound.completion.done === 1 && bound.timing && bound.timing.active === true, label + ": the Claude thread lacks its transcript telemetry or reported window percentage");
         check(windowOnly && windowOnly.usage.inputTokens === 90000 && windowOnly.usage.contextPercent === null, label + ": the Claude thread with a window but no context shows a percentage");
+        check(contextOnly && contextOnly.usage.inputTokens === 90000 && contextOnly.usage.contextPercent === null, label + ": the Claude thread with context but no reported window shows a percentage");
         cards.forEach(function (row) {
             check(row.width > 0 && row.height > 0, label + ": a thread row has no size");
         });

@@ -831,8 +831,11 @@ automated tests (it needs the Claude binary).
 
 **State.js and the shell harness** (regression guards, since `State.js` does
 not change and both cases already hold on `80f6295`): a Claude thread with
-`window` and `context_percent` projects a percentage; one with only `window`
-(replay context unknown) projects none.
+`window` and `context_percent` projects the supplied percentage (the shell
+harness fixture's value differs from the plain ratio, so a recomputation would
+fail it); one with only `window` (replay context unknown) projects none; one
+with replay context and no window (the mod not installed or not reported yet)
+projects none.
 
 **Measurement (`tests/measure_anton_popover.mjs`, additive, own commit before
 code):** the Claude probe gives half of each host's Claude panes a synthetic

@@ -4,10 +4,11 @@
 // --open-thread call happened. Without arguments it acts as the collector: it
 // prints the synthetic mixed-fleet snapshot from the time oracle, shifted to
 // the current time, every 2 s and on each stdin line, and exits on stdin EOF
-// (owner close). Two synthetic Claude threads with transcript telemetry are
-// added to the first host: one with a reported window and percentage, and one
-// with a window but unknown replay context. Any other invocation exits at once
-// and launches nothing.
+// (owner close). Three synthetic Claude threads with transcript telemetry are
+// added to the first host: one with a reported window and percentage, one
+// with a window but unknown replay context, and one with replay context but no
+// reported window (the mod not installed or not reported yet). Any other
+// invocation exits at once and launches nothing.
 import fs from 'node:fs';
 
 fs.appendFileSync(process.env.ANTON_FAKE_LOG, JSON.stringify(process.argv.slice(2)) + '\n');
@@ -23,7 +24,9 @@ const claude = {
   technical: {
     telemetry: {
       event: 'session', phase: 'ready', usage_source: 'claude-transcript',
-      model: 'claude-synthetic-1', context: 48000, window: 200000, context_percent: 24, last_input: 2000, last_output: 300,
+      // context_percent differs from the plain ratio (24) to show State passes
+      // the collector's value through rather than recomputing it.
+      model: 'claude-synthetic-1', context: 48000, window: 200000, context_percent: 25, last_input: 2000, last_output: 300,
       total_input: 90000, total_output: 4000, total_cache_read: 70000, total_cache_write: 12000, total_uncached_input: 8000,
       subagent_total: 2, subagent_done: 1, subagent_running: 1, subagent_interrupted: 0, subagent_failed: 0, subagent_unknown: 0,
       // Native Claude telemetry has no hook start/stop observations.
@@ -40,7 +43,12 @@ Object.assign(windowOnly, { id: 'claude-b', status: 'idle', project: 'Project cl
   branch: 'feature/claude-b', checkout: 'branch-claude-b' });
 Object.assign(windowOnly.technical.telemetry, { context: null, context_percent: null });
 windowOnly.technical.turn_timing.active = false;
-base.hosts[0].agents.push(claude, windowOnly);
+const contextOnly = structuredClone(claude);
+Object.assign(contextOnly, { id: 'claude-c', status: 'idle', project: 'Project claude c', title: 'Task claude c',
+  branch: 'feature/claude-c', checkout: 'branch-claude-c' });
+Object.assign(contextOnly.technical.telemetry, { window: null, context_percent: null });
+contextOnly.technical.turn_timing.active = false;
+base.hosts[0].agents.push(claude, windowOnly, contextOnly);
 
 // Shift Unix-second and millisecond instants; sequence numbers stay as they are.
 function shift(value, seconds) {
