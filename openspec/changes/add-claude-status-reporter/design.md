@@ -502,15 +502,19 @@ refuses a peer root (`herdr.observatory-peer`) as a second guard.
   chezmoi and the mise lookups; the CLI passes the process environment.
   `managed` stays a thin wrapper that passes the process `PATH`, so the Pi
   path keeps its behaviour.
-- **Installer debris.** Inside the directories recorded in `claude_mod`, a
-  regular, user-owned, non-symlink file whose name matches
-  `^\.anton-write-[0-9]+-[0-9]+$` is Anton's own `atomic_write` temporary
-  file (`.anton-write-<pid>-<bits>`, created in the destination's directory
-  and left behind only when the process dies before its `unlinkat`). After
-  the preconditions above pass, install deletes such files before the
-  target-state check. The receipt lock serialises installers, so no live
-  write's temporary file can be deleted. Any other unrecorded entry remains a
-  conflict.
+- **Installer debris.** Inside the recorded mod directories that receive
+  atomic writes, `anton-observatory/.claude-plugin/` and
+  `anton-observatory/hooks/`, a regular, user-owned, non-symlink file whose
+  name matches `^\.anton-write-[0-9]+-[0-9]+$` is Anton's own `atomic_write`
+  temporary file (`.anton-write-<pid>-<bits>`, created in the destination's
+  directory and left behind only when the process dies before its
+  `unlinkat`). After the preconditions above pass, install deletes such files
+  before the target-state check. The receipt lock serialises installers, so no
+  live write's temporary file can be deleted. No file is written directly into
+  `skills/` or the mod root, so a debris-named entry there cannot be Anton's:
+  in the mod root it is an unrecorded conflict (refused and kept), and in
+  `skills/`, which the target-state check does not walk, it is kept. Any other
+  unrecorded entry remains a conflict.
 - **Target state.** The mod directory is absent, or every entry under it is a
   regular file or directory owned by the user and recorded in the receipt's
   `claude_mod` entry, and each recorded file present has one of its accepted
@@ -574,8 +578,8 @@ refuses a peer root (`herdr.observatory-peer`) as a second guard.
 
 A crash at any step leaves every recorded file absent, at its prior hash or at
 its new hash, each of which the receipt accepts. A crash during a file write
-in step 4 can also leave one `.anton-write-*` temporary file in a recorded mod
-directory, which install and removal delete as debris. A crash during a
+in step 4 can also leave one `.anton-write-*` temporary file in
+`.claude-plugin/` or `hooks/`, which install and removal delete as debris. A crash during a
 receipt write in step 2 or 5 can leave one in the plugin root instead; that
 file is outside this guarantee: the mod installer neither deletes it nor
 refuses because of it, but `uninstall.sh` refuses any unknown plugin-root file, so
@@ -611,8 +615,9 @@ and removal would refuse.
    whose `mise` lacks `dotfiles`. A fixture covers a mise-tracked mod
    directory (fake `mise` listing it) that is still removed, and a
    chezmoi-managed one that is refused.
-2. Remove the recorded files and any installer debris (defined above) in the
-   recorded directories, then `remove_dir` each recorded directory, deepest
+2. Remove the recorded files and any installer debris (defined above, so only
+   in `.claude-plugin/` and `hooks/`), then `remove_dir` each recorded
+   directory, deepest
    first (by path component count). A refresh appends a recreated parent such
    as `skills/` after its recorded children, so list order alone would try the
    parent while it still holds them. Debris is deleted only after the preflight passes, so a refused
@@ -776,7 +781,9 @@ New behaviour (must fail on `80f6295`):
   to such a file, and one that does not resolve; a fake `mise` listing the target only in
   `incomplete`, `invalid`, `nested` or `omitted`; `CLAUDE_CONFIG_DIR`
   elsewhere; peer root; a file named like debris that is a symlink or does not
-  match the pattern (kept and refused as unrecorded).
+  match the pattern, or a debris-named file in the mod root (each kept and
+  refused as unrecorded). A debris-named file in a recorded `skills/` is kept
+  by install, `--uninstall-claude-mod` and `--uninstall-hooks`.
 - mise invocation: the fake `mise` records its argv and working directory; the
   fixture asserts `-C <home> dotfiles paths --json`, the home directory as
   working directory and a null stdin, with the installer started from a
