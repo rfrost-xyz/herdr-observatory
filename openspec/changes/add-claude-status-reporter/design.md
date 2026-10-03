@@ -302,8 +302,12 @@ environment and runs in the session's working directory (D2), so
 - The local host's `socket_path` from `.config.json` has `~` or a leading
   `~/` expanded against that home, as the collector expands it with
   `expand_home` (the same rule, here against the resolved home). A socket
-  path that is still relative exits 3 before the lock or any RPC. The Pi
-  reporter's socket handling is unchanged.
+  path that is still relative exits 3 before the lock or any RPC. A local
+  host without `socket_path` (a `session` host, or one with neither key,
+  which the collector reaches through the `herdr` CLI) also exits 3 with no
+  output and no RPC: the Claude reporter needs a local host configured with
+  `socket_path` (review round 5). The Pi reporter's socket handling is
+  unchanged; it still exits 1 with "Missing local socket" on such a host.
 
 If Claude Code runs with a different `XDG_STATE_HOME` from the collector, the
 reporter takes a different `hook.lock`. That only weakens serialisation between
@@ -318,7 +322,8 @@ no receipt guard; it goes from `owner_guard` to `.config.json`):
    `claude_mod` entry (D5), including an entry still carrying `prior_sha256`
    values from an interrupted refresh. A mod that arrived by other means, or a
    runtime whose user uninstalled the mod, reports nothing.
-3. `.config.json` has exactly one local host; otherwise status 3.
+3. `.config.json` has exactly one local host, and it has a `socket_path`;
+   otherwise status 3.
 4. The state directory and `hook.lock`, with the same 400 ms bounded wait.
 5. `pane.get` (400 ms, 1 MiB). The pane must have `agent == "claude"`,
    `agent_session.agent == "claude"`, `source == "herdr:claude"`,
@@ -366,7 +371,8 @@ no receipt guard; it goes from `owner_guard` to `.config.json`):
 
 **Exit statuses.** 0: the bound window is in the pane's metadata. 2: invalid
 arguments. 3: not applicable (not bound, other session, older `seq`, no single
-local host, lock busy, no mod receipt, no absolute home, state or socket path). 1: any other error, as today. The Pi
+local host, a local host without `socket_path`, lock busy, no mod receipt,
+no absolute home, state or socket path). 1: any other error, as today. The Pi
 path's statuses are unchanged.
 
 ### D4. Collector window and percentage
@@ -818,7 +824,10 @@ New behaviour (must fail on `80f6295`):
   held pipe, finishing well inside 1.5 s).
 - Socket path: a `~/` socket path reaches the socket under the temporary home
   (exit 0), and a relative one exits 3 with no RPC even when the working
-  directory holds a socket of that name.
+  directory holds a socket of that name. A local `session` host and a local
+  host with neither key exit 3 with no output and no RPC, while `--report
+  pi` on the same configuration still exits 1 with "Missing local socket"
+  (review round 5).
 - As the mod runs it: the installed runtime copy with only `HOME`, no
   `--root` or `--state`, derives its root from its own path and takes
   `hook.lock` under `<home>/.local/state/herdr.observatory`.

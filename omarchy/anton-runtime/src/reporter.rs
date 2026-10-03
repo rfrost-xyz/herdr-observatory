@@ -101,6 +101,16 @@ pub fn report(
 /// The socket of the single local host in `.config.json`; `None` when
 /// there is not exactly one.
 fn local_socket(root: &Path) -> Result<Option<PathBuf>> {
+    let Some(host) = local_host(root)? else {
+        return Ok(None);
+    };
+    Ok(Some(PathBuf::from(
+        host["socket_path"].as_str().ok_or("Missing local socket")?,
+    )))
+}
+/// The single local host in `.config.json`; `None` when there is not
+/// exactly one.
+fn local_host(root: &Path) -> Result<Option<Value>> {
     let config: Value = serde_json::from_slice(&common::read_owned(
         &root.join(".config.json"),
         1_048_576,
@@ -116,11 +126,7 @@ fn local_socket(root: &Path) -> Result<Option<PathBuf>> {
     if hosts.len() != 1 {
         return Ok(None);
     }
-    Ok(Some(PathBuf::from(
-        hosts[0]["socket_path"]
-            .as_str()
-            .ok_or("Missing local socket")?,
-    )))
+    Ok(Some(hosts[0].clone()))
 }
 
 /// Exit status of `--report claude` for invalid arguments (design D3).
@@ -254,6 +260,11 @@ pub fn claude(root: &Path, state: Option<&Path>, values: &[String], leaf: &str) 
 fn report_claude(root: &Path, state: &Path, home: &Path, report: &ClaudeReport) -> Result<bool> {
     let _owner = common::owner_guard(&root.join(".herdr-observatory-install"))?;
     if !hooks_install::claude_mod_recorded(root, home) {
+        return Ok(false);
+    }
+    // A local host without `socket_path` reaches Herdr through the CLI, so
+    // there is no socket to report to (D3). Pi's report still refuses it.
+    if local_host(root)?.is_none_or(|host| host.get("socket_path").is_none()) {
         return Ok(false);
     }
     let Some(socket) = local_socket(root)? else {

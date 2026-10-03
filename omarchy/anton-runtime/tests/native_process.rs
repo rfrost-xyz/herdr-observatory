@@ -2480,7 +2480,8 @@ fn claude_report_as_the_mod_runs_it_derives_root_and_state() {
 
 /// D3 (review round 2): the reporter expands a `~/` socket path against
 /// its home, as the collector does, and refuses a relative one (exit 3, no
-/// RPC), because it runs in the Claude session's working directory.
+/// RPC), because it runs in the Claude session's working directory. A local
+/// host without `socket_path` is not applicable either (review round 5).
 #[test]
 fn claude_report_expands_a_home_socket_and_refuses_a_relative_one() {
     let f = Reporter::new();
@@ -2509,6 +2510,53 @@ fn claude_report_expands_a_home_socket_and_refuses_a_relative_one() {
     assert_eq!(output.status.code(), Some(3));
     assert!(output.stdout.is_empty() && output.stderr.is_empty());
     assert!(f.methods().is_empty());
+    // Review round 5: a local host without `socket_path` (a `session` host,
+    // or neither key, so Herdr's CLI default) has no socket to report to.
+    // The Claude reporter exits 3 without output or RPC; Pi still exits 1.
+    for host in [
+        json!({"id":"local","session":"main"}),
+        json!({"id":"local"}),
+    ] {
+        write(
+            &f.root.join(".config.json"),
+            serde_json::to_vec(&json!({"hosts":[host]})).unwrap(),
+            0o600,
+        );
+        f.calls.lock().unwrap().clear();
+        let output = f
+            .command(&["w1:p1", &report_seq(30), CLAUDE_ID, "200000"])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(3), "{host}");
+        assert!(
+            output.stdout.is_empty() && output.stderr.is_empty(),
+            "{host}"
+        );
+        let mut pi = Command::new(BIN)
+            .env_clear()
+            .env("HOME", &f.home)
+            .current_dir(f.dir.join("cwd"))
+            .args(["--report", "pi", "w1:p1", &report_seq(30)])
+            .args(["--root", f.root.to_str().unwrap()])
+            .args(["--state", f.state.to_str().unwrap()])
+            .stdin(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        pi.stdin
+            .take()
+            .unwrap()
+            .write_all(br#"{"event":"turn","phase":"working"}"#)
+            .unwrap();
+        let pi = pi.wait_with_output().unwrap();
+        assert_eq!(pi.status.code(), Some(1), "{host}");
+        assert_eq!(
+            String::from_utf8_lossy(&pi.stderr).trim(),
+            "Missing local socket",
+            "{host}"
+        );
+        assert!(f.methods().is_empty(), "{host}");
+    }
 }
 
 /// D3: a pane that is not this exact Claude session, an older `obs_seq`,
