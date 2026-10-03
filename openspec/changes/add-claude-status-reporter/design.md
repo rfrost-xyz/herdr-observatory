@@ -809,9 +809,10 @@ so nothing it might write lands under `~/.claude/skills/anton-observatory/`.
 It runs at the live check (task 5.3), with the user's consent, not in
 automated tests (it needs the Claude binary).
 
-**State.js and the shell harness** (new behaviour): a Claude thread with
+**State.js and the shell harness** (regression guards, since `State.js` does
+not change and both cases already hold on `80f6295`): a Claude thread with
 `window` and `context_percent` projects a percentage; one with only `window`
-projects none. Existing State.js cases are regression guards.
+(replay context unknown) projects none.
 
 **Measurement (`tests/measure_anton_popover.mjs`, additive, own commit before
 code):** the Claude probe gives half of each host's Claude panes a synthetic
@@ -841,6 +842,9 @@ The existing CPU, RSS and snapshot metrics are recorded with `--repeat 3`.
   a daemon.
 - README.md and the plugin README: what the mod is, where it is installed, how to
   remove only the mod, and that the dial needs a new or reloaded session.
+  For existing installations (updates are manual and `install.sh` refuses an
+  installed plugin), the plugin README says to run `--install-claude-mod`
+  after updating the runtime.
 
 ## Programme mapping
 

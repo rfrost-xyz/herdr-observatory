@@ -30,8 +30,8 @@ with `CLAUDE_CONFIG_DIR` removed. Run every `openspec` command with
 
 ## 4. Contracts and docs (coordinator)
 
-- [ ] 4.1 AGENTS.md: the reporter, Claude context and installer lines (design D8). README.md and the plugin README: the mod, its location, removal of the mod alone, the new-session requirement and the statusLine fallback note.
-- [ ] 4.2 State.js test and shell-harness fake: a Claude thread with a window and percentage, and one with a window only.
+- [x] 4.1 AGENTS.md: the reporter, Claude context and installer lines (design D8). README.md and the plugin README: the mod, its location, removal of the mod alone, the new-session requirement, the statusLine fallback note and, for existing installations, running `--install-claude-mod` after updating the runtime.
+- [x] 4.2 State.js test and shell-harness fake: a Claude thread with a window and percentage, and one with a window only.
 
 ## 5. Verify, review, publish
 

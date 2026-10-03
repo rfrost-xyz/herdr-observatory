@@ -458,6 +458,46 @@ tests and the pinned `install.sh` and `uninstall.sh` file lists.
 - The README step for existing installations (run `--install-claude-mod`
   after updating the runtime) belongs to task 4.1 and is not done here.
 
+### Contracts and docs (tasks 4.1 and 4.2)
+
+Commits `919ff72` and `ea1fc51` (AGENTS.md), `60322c2` (README.md and the plugin README)
+and `7805fde` (State.js test and shell harness).
+
+**4.1.** AGENTS.md (D8): the `pane.get` and `pane.report_metadata` boundary
+covers the Claude Code mod's reporter and its argv-only, observe-only rules;
+the reporter child is bounded and short-lived, not a daemon; the Claude context
+line names the bound local mod report as the only window source, with the
+rounding, smaller-window and peer rules from the delta spec; managed
+configuration for the mod names mise dotfiles and Git repositories with a real
+`.git` marker, with the receipt lock. The plugin README has a "Claude Code
+context window mod" section (location, what it sends, binding, new session or
+`/reload-plugins`, refusals, `--uninstall-claude-mod`, refused removal and
+retry, the statusLine fallback), the update step for existing installations
+(run `--install-claude-mod` after updating the runtime, from the plan review),
+the mod in complete uninstall, and `tests/test_claude_mod.mjs` in the
+development checks. The root README names the mod.
+
+**4.2.** `claude telemetry projects a reported window percentage and none from
+a window alone` in `tests/test_omarchy_state.cjs`; the shell-harness fake now
+serves `claude-a` (window 200,000, context 48,000, `context_percent` 24) and
+`claude-b` (window only, context unknown), and `shell.qml` checks 24 and null.
+Both are regression guards, as the plan review noted: `State.js` does not
+change, so both pass on `80f6295` (State suite 78 of 78 with the new test;
+shell harness against a `80f6295` plugin tree, 0 failures). Sensitivity check:
+with `State.js`'s `context !== null &&` guard removed, the State test fails
+(0 for null) and the harness fails 4 checks. `design.md` D7 now labels these
+cases as regression guards, and D8 names the update step for existing
+installations. AGENTS.md's in-flight wording was corrected in `ea1fc51` to match
+the spec's "Report process that never finishes" scenario (a later event may
+start a new run after the bounded time).
+
+**Gates.** `node --test` over the Pi hooks, Claude mod, State and distribution
+suites: 109 passed. `run-qml.sh`: 95 passed. `run-qmllint.sh`: no warnings
+outside `Panel.qml`. `run-shell-harness.sh`: 0 failures, no `--open-thread`.
+`OPENSPEC_TELEMETRY=0 openspec validate --all --strict`: 4 passed. Private
+`TMPDIR`, removed afterwards; `CLAUDE_CONFIG_DIR` unset. No Rust source changed
+in this stage, so `cargo fmt --check` and clippy (`--all-targets --locked -- -D warnings`, local clippy) were rerun clean on HEAD.
+
 ## After
 
 _Pending._
