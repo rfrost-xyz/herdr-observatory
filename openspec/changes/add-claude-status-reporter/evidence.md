@@ -688,7 +688,9 @@ new test catches.
   the bound metadata, whose `usage_seq` is null, so the window only overlays
   it. `State::sample` keeps no Claude copy for local hosts. No loss was found;
   `claude_local_incomplete_pass_overlays_a_bound_window_on_the_retained_sample`
-  pins it as a regression guard (it passes before and after).
+  pins it. It passes before and after the round-2 fix, but it fails on
+  `80f6295`, which has no percentage, so it is not a D7 regression guard
+  (corrected in review round 4).
 - **Debris outside the written directories (installer lens #1,
   blocking).** `delete_debris` now looks only in the recorded
   `anton-observatory/.claude-plugin/` and `anton-observatory/hooks/`, in both
@@ -804,7 +806,10 @@ place, then the file restored) and failed there.
     evaluate templates: `mise config ls --json` and `mise dotfiles paths
     --json` created the marker (as `dotfiles status --json` does; its help
     also says template entries are rendered); `mise config get`, keyed or
-    whole-file, with or without `-f`, did not, and neither did
+    whole-file, with or without `-f`, did not once mise's data directory
+    had been migrated (review round 4 found that on a cold data directory
+    `config get -f` evaluates `[env]` too, and on an unwritable one it does
+    so on every run; see that section), and neither did
     `config ls --tracked-configs` or `trust --show`, which do not list the
     loaded files. A template-mode entry whose source calls `exec` was not
     rendered by `config get -f`; in that sandbox `dotfiles status` did not
@@ -889,6 +894,79 @@ place, then the file restored) and failed there.
 --all-targets --locked -- -D warnings` clean (local clippy 0.1.96; no
 `Some(x).filter(|_| ..)` or argument-less `format!` added); `cargo test --locked
 --offline`: 266 + 22 + 6 + 47 passed. `node --test tests/test_*.cjs
+tests/test_*.mjs`: 113 passed. `tests/run-shell-harness.sh`: 0 failures, 6
+rows. `OPENSPEC_TELEMETRY=0 openspec validate --all --strict`: 4 passed.
+Private `TMPDIR` under `/tmp/c3f-*`, removed afterwards. No write under the
+real `~/.claude` and no `claude` CLI run; every fixture is synthetic.
+
+## Review round 4 and remediation
+
+Four lenses on `bb402b1`: two clean, the installer lens (one non-blocking,
+one nit) and the spec and design lens (one blocking, one non-blocking, one
+nit). Every finding was fixed or, where the coordinator decided so, recorded
+as accepted; none was declined. Each code fix has a test that was run
+against the unfixed or mutated code and failed there.
+
+- **mise template wording (spec lens, blocking).** The spec requirement,
+  the "Claude Code mod declared in mise dotfiles" scenario and AGENTS.md
+  said the check never renders templates, but the retained `mise dotfiles
+  paths --json` loads the config and evaluates `[env]`. Coordinator
+  decision, now fixed: the history call stays. Any mise invocation loads the
+  user's config and evaluates `[env]` exactly as the user's own `mise
+  activate` shell hook does on every prompt, so the installer runs the
+  user's own mise with the user's own config and adds no new kind of
+  execution. The spec, the scenario, AGENTS.md, the plugin README and D5 now
+  say that the `[dotfiles]` declarations are read with `mise config get -f`,
+  which renders no template-mode dotfile source, and that mise loads the
+  user's configuration, including `[env]`, as any mise command does. No
+  text claims the check never renders templates (`a051009`, `7dee0e3`).
+  Text only; no behaviour changed.
+- **Cold or unwritable mise data directory (spec lens, non-blocking).** The
+  reviewer showed that `config get -f` skips the `[env]` evaluation only once
+  mise's data-directory migrations have run. With a writable cold data
+  directory there is no added exposure, because `dotfiles paths` runs first
+  and performs the migration. With an unwritable data directory the
+  migration never persists, so each candidate read evaluates `[env]` again.
+  Coordinator decision: accepted and recorded, with no migration-marker
+  refusal. Each read is still bounded to 3 s and 1 MiB, and the number of
+  reads is bounded by the candidate list (at most 256). D5 and the round-3
+  entry above are corrected (`a051009`). Not re-probed here; the
+  reviewer's sandbox (mise 2026.9.16) is the source.
+- **Receipt lock held throughout (installer lens, non-blocking).** The busy
+  tests only showed that each writer tries the lock once. Two probes now
+  show each writer holds it for its whole read-modify-write (`5a203b0`):
+  - `mod_receipt_writers_hold_the_lock_while_checking`: a fake `chezmoi` on
+    the fixture `PATH` runs the host's `flock -n` on the plugin root and
+    logs `free` or `held`, then exits 1 (not managed). The mod install runs
+    it on each target and both removals on each present recorded file. It
+    runs `install_mod`, `uninstall_mod`, then a fresh install and
+    `uninstall_in`, and asserts at least three lines per writer, all `held`.
+  - `pi_receipt_writers_hold_the_lock_while_writing`: Pi `install` and
+    `repair_retired` gained a small writer seam (`install_with`,
+    `repair_retired_with`; the public functions pass
+    `common::atomic_owned_write`). A recording writer tries `flock` on a
+    fresh `open_directory(root)` before each write. Both receipt writes and
+    every other write find the lock held, and it is free afterwards.
+  - Mutation: each of the five guards (`repair_retired`, `install`,
+    `uninstall_in`, `install_mod`, `uninstall_mod`) was changed in turn to
+    `let _ = receipt_lock(...)`. The Pi probe failed for the first two and
+    the mod probe for the other three; the file was restored after each.
+- **`..` in recorded directories (installer lens, nit).** `claude_mod_entry`
+  now requires `root`, every `directories` value and every file path to be
+  absolute with only `RootDir` and `Normal` components (`f7143dc`; D5 entry
+  shape). `claude_mod_entry_has_the_receipt_shape` gained
+  `<root>/../../../outside` and `<root>/hooks/..`; with the check reverted to
+  `is_absolute` the test fails on the first.
+- **Round-2 regression-guard wording (spec lens, nit).** The round-2 entry
+  now says `claude_local_incomplete_pass_overlays_a_bound_window_on_the_retained_sample`
+  passes before and after the round-2 fix, fails on `80f6295`, and is not a
+  D7 regression guard. Not re-run against `80f6295` here; the reviewer's run
+  is the source.
+
+**Gates (HEAD after the fixes).** `cargo fmt --check` clean; `cargo clippy
+--all-targets --locked -- -D warnings` clean (local clippy 0.1.96; no
+`Some(x).filter(|_| ..)` or argument-less `format!` added); `cargo test --locked
+--offline`: 268 + 22 + 6 + 47 passed. `node --test tests/test_*.cjs
 tests/test_*.mjs`: 113 passed. `tests/run-shell-harness.sh`: 0 failures, 6
 rows. `OPENSPEC_TELEMETRY=0 openspec validate --all --strict`: 4 passed.
 Private `TMPDIR` under `/tmp/c3f-*`, removed afterwards. No write under the
