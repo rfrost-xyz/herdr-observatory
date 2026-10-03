@@ -1,8 +1,8 @@
 //! The Claude Code mod (design D1, D5): hash-proven install, refresh and
 //! removal of the files recorded in the hook receipt's `claude_mod` entry.
 use super::{
-    CLAUDE_MOD_FILES, LIMIT, RECEIPT_WAIT, claude_mod_entry, claude_mod_root, native_extension,
-    paths, receipt_lock, receipt_value, regular, runtime_owned,
+    CLAUDE_MOD_FILES, LIMIT, RECEIPT_WAIT, claude_mise, claude_mod_entry, claude_mod_root,
+    native_extension, paths, receipt_lock, receipt_value, regular, runtime_owned,
 };
 use crate::{Result, common};
 use serde_json::{Value, json};
@@ -29,12 +29,19 @@ pub(crate) struct ClaudeEnv {
     pub path: Option<OsString>,
     /// `CLAUDE_CONFIG_DIR`.
     pub config_dir: Option<OsString>,
+    /// The variables of `claude_mise::MISE_VARS` that are set: where mise
+    /// looks for its config files.
+    pub mise_vars: Vec<(&'static str, OsString)>,
 }
 impl ClaudeEnv {
     pub(crate) fn process() -> Self {
         Self {
             path: std::env::var_os("PATH"),
             config_dir: std::env::var_os("CLAUDE_CONFIG_DIR"),
+            mise_vars: claude_mise::MISE_VARS
+                .iter()
+                .filter_map(|name| std::env::var_os(name).map(|value| (*name, value)))
+                .collect(),
         }
     }
 }
@@ -99,30 +106,48 @@ fn mise_path(value: &str, home: &Path) -> Option<PathBuf> {
     };
     (!value.is_empty() && !path.components().any(|c| c == Component::ParentDir)).then_some(path)
 }
+/// Whether the mise path `value` equals, contains or is inside `target`.
+/// `Err` (refuse) for a path `mise_path` cannot take.
+fn mise_covers(value: &str, target: &Path, home: &Path) -> std::result::Result<bool, ()> {
+    let path = mise_path(value, home).ok_or(())?;
+    Ok(path.starts_with(target) || target.starts_with(&path))
+}
+/// One bounded mise run from `home` with null stdin; its stdout on exit 0.
+fn mise_run(mise: &Path, home: &Path, args: &[&OsStr]) -> std::result::Result<Vec<u8>, ()> {
+    let argv: Vec<String> = [mise.as_os_str(), OsStr::new("-C"), home.as_os_str()]
+        .iter()
+        .chain(args)
+        .map(|value| value.to_string_lossy().into_owned())
+        .collect();
+    let output =
+        common::run_process_in(&argv, None, Some(home), MISE_WAIT, LIMIT, None).map_err(drop)?;
+    (output.status == 0).then_some(output.stdout).ok_or(())
+}
 /// D5 mise check. Without `mise` on `PATH` the target is not mise-managed.
-/// Otherwise every item of `entries`, `incomplete`, `invalid`, `nested` and
-/// `omitted` that equals, contains or is inside `target` refuses, and any
-/// failure to read the list refuses too.
+/// Otherwise two reads, both from `home`, refuse when a path equals,
+/// contains or is inside `target`, and any failure to read refuses too:
+/// - history: every item of `entries`, `incomplete`, `invalid`, `nested`
+///   and `omitted` in `mise dotfiles paths --json`;
+/// - declarations: every `[dotfiles]` target, whatever its mode, of every
+///   config file mise could load (`claude_mise::candidates`), each read with
+///   `mise config get -f <file>`, which renders no templates.
 fn mise_managed(target: &Path, home: &Path, env: &ClaudeEnv) -> Result<()> {
     let Some(mise) = executable(env.path.as_deref(), "mise") else {
         return Ok(());
     };
     let unknown = || String::from("Cannot confirm mise dotfiles; refusing the Claude Code mod");
-    let argv = [
-        mise.as_os_str(),
-        OsStr::new("-C"),
-        home.as_os_str(),
-        OsStr::new("dotfiles"),
-        OsStr::new("paths"),
-        OsStr::new("--json"),
-    ]
-    .map(|value| value.to_string_lossy().into_owned());
-    let output = common::run_process_in(&argv, None, Some(home), MISE_WAIT, LIMIT, None)
-        .map_err(|_| unknown())?;
-    if output.status != 0 {
-        return Err(unknown());
-    }
-    let listing: Value = serde_json::from_slice(&output.stdout).map_err(|_| unknown())?;
+    let managed = || String::from("Claude Code mod directory is managed by mise dotfiles");
+    let stdout = mise_run(
+        &mise,
+        home,
+        &[
+            OsStr::new("dotfiles"),
+            OsStr::new("paths"),
+            OsStr::new("--json"),
+        ],
+    )
+    .map_err(|_| unknown())?;
+    let listing: Value = serde_json::from_slice(&stdout).map_err(|_| unknown())?;
     if !listing.get("entries").is_some_and(Value::is_array) {
         return Err(unknown());
     }
@@ -131,12 +156,28 @@ fn mise_managed(target: &Path, home: &Path, env: &ClaudeEnv) -> Result<()> {
             continue;
         };
         for item in items.as_array().ok_or_else(unknown)? {
-            let path = item["path"]
-                .as_str()
-                .and_then(|value| mise_path(value, home))
-                .ok_or_else(unknown)?;
-            if path.starts_with(target) || target.starts_with(&path) {
-                return Err("Claude Code mod directory is managed by mise dotfiles".into());
+            let value = item["path"].as_str().ok_or_else(unknown)?;
+            if mise_covers(value, target, home).map_err(|_| unknown())? {
+                return Err(managed());
+            }
+        }
+    }
+    let files = claude_mise::candidates(home, &env.mise_vars).ok_or_else(unknown)?;
+    for file in files {
+        let text = mise_run(
+            &mise,
+            home,
+            &[
+                OsStr::new("config"),
+                OsStr::new("get"),
+                OsStr::new("-f"),
+                file.as_os_str(),
+            ],
+        )
+        .map_err(|_| unknown())?;
+        for value in claude_mise::dotfiles_targets(&text).ok_or_else(unknown)? {
+            if mise_covers(&value, target, home).map_err(|_| unknown())? {
+                return Err(managed());
             }
         }
     }

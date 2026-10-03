@@ -2658,6 +2658,8 @@ impl Reporter {
             .env_clear()
             .env("HOME", &self.home)
             .env("PATH", self.dir.join("bin"))
+            // Keeps the host's `/etc/mise` out of the mise declaration read.
+            .env("MISE_SYSTEM_CONFIG_DIR", self.dir.join("etc-mise"))
             .current_dir(self.dir.join("cwd"))
             .args([
                 "--root",
@@ -2789,20 +2791,30 @@ fn claude_mod_install_refuses_another_claude_config_dir_through_the_cli() {
     assert!(f.mod_root().join("hooks/register.js").is_file());
 }
 
-/// D5: `mise -C <home> dotfiles paths --json` runs in the home directory with
-/// a null stdin, whatever the installer's own working directory holds and
-/// whatever stdin the installer itself has (here an open pipe).
+/// D5: every mise run (`dotfiles paths --json`, then `config get -f <file>`
+/// for each config file it could load) runs from the home directory with a
+/// null stdin, whatever the installer's own working directory holds and
+/// whatever stdin the installer itself has (here an open pipe). A sibling
+/// declaration does not refuse.
 #[test]
 fn claude_mod_install_runs_mise_from_the_home_with_null_stdin() {
     let f = Reporter::new();
     f.installable();
     f.install_step("--install-hooks");
     write(&f.dir.join("cwd/mise.toml"), b"[tools]\n", 0o600);
+    let config = f.home.join(".config/mise/config.toml");
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    write(
+        &config,
+        b"[dotfiles.\"~/.claude/skills/other\"]\nmode = \"copy\"\n",
+        0o600,
+    );
     let log = f.dir.join("mise.log");
+    let home = f.home.to_str().unwrap();
     support::write_executable(
         &f.dir.join("bin/mise"),
         format!(
-            "#!/bin/sh\n{{ printf '%s\\n' \"$@\"; pwd; if [ /proc/$$/fd/0 -ef /dev/null ]; then echo null; else echo other; fi; }} > '{}'\nprintf '%s' '{{\"entries\":[{{\"path\":\"~/.claude/skills/other\"}}]}}'\n",
+            "#!/bin/sh\n{{ printf '%s ' \"$@\"; printf '| %s | ' \"$(pwd)\"; if [ /proc/$$/fd/0 -ef /dev/null ]; then echo null; else echo other; fi; }} >> '{}'\ncase \"$3\" in\ndotfiles) printf '%s' '{{\"entries\":[{{\"path\":\"~/.claude/skills/other\"}}]}}' ;;\nconfig) case \"$6\" in '{home}'/*) while IFS= read -r line; do printf '%s\\n' \"$line\"; done < \"$6\" ;; esac ;;\n*) exit 1 ;;\nesac\n",
             log.display()
         )
         .as_bytes(),
@@ -2823,12 +2835,73 @@ fn claude_mod_install_runs_mise_from_the_home_with_null_stdin() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let home = f.home.to_str().unwrap();
+    let calls = fs::read_to_string(&log).unwrap();
+    let calls: Vec<&str> = calls.lines().collect();
     assert_eq!(
-        fs::read_to_string(&log).unwrap(),
-        format!("-C\n{home}\ndotfiles\npaths\n--json\n{home}\nnull\n")
+        calls[0],
+        format!("-C {home} dotfiles paths --json | {home} | null")
+    );
+    for call in &calls[1..] {
+        assert!(
+            call.starts_with(&format!("-C {home} config get -f /")),
+            "{call}"
+        );
+        assert!(call.ends_with(&format!(" | {home} | null")), "{call}");
+    }
+    // Of the fixture's own files, only the home's config file is read; the
+    // other calls are the host's directories above the fixture, if any.
+    let fixture = f.dir.to_str().unwrap();
+    let ours: Vec<&str> = calls[1..]
+        .iter()
+        .filter(|call| call.contains(&format!(" -f {fixture}/")))
+        .copied()
+        .collect();
+    assert_eq!(
+        ours,
+        [format!(
+            "-C {home} config get -f {} | {home} | null",
+            config.display()
+        )]
     );
     assert!(f.mod_root().join("hooks/register.js").is_file());
+}
+
+/// D5: a copy-mode `[dotfiles]` declaration of `~/.claude/skills` refuses
+/// through the CLI although history lists nothing, and nothing is written.
+#[test]
+fn claude_mod_install_refuses_a_copy_mode_mise_declaration() {
+    let f = Reporter::new();
+    f.installable();
+    f.install_step("--install-hooks");
+    let config = f.home.join(".config/mise/config.toml");
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    write(
+        &config,
+        b"[dotfiles.\"~/.claude/skills\"]\nmode = \"copy\"\n",
+        0o600,
+    );
+    let home = f.home.to_str().unwrap();
+    support::write_executable(
+        &f.dir.join("bin/mise"),
+        format!(
+            "#!/bin/sh\ncase \"$3\" in\ndotfiles) printf '%s' '{{\"entries\":[],\"incomplete\":[]}}' ;;\nconfig) case \"$6\" in '{home}'/*) while IFS= read -r line; do printf '%s\\n' \"$line\"; done < \"$6\" ;; esac ;;\n*) exit 1 ;;\nesac\n"
+        )
+        .as_bytes(),
+        0o700,
+    );
+    let receipt = fs::read(f.root.join(".hooks-receipt.json")).unwrap();
+    let output = f.installer("--install-claude-mod").output().unwrap();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("managed by mise"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!f.home.join(".claude/skills").exists());
+    assert_eq!(
+        fs::read(f.root.join(".hooks-receipt.json")).unwrap(),
+        receipt
+    );
 }
 
 /// D5: while the plugin root is locked, every receipt writer refuses as busy

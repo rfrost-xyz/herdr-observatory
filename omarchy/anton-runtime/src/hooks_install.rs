@@ -160,6 +160,7 @@ fn receipt_value(bytes: &[u8], runtime: &Path, extension: &Path) -> Result<Value
     }
     Ok(receipt)
 }
+mod claude_mise;
 mod claude_mod;
 #[cfg(test)]
 mod claude_mod_tests;

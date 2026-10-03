@@ -23,6 +23,10 @@ impl Mod {
         let env = ClaudeEnv {
             path: Some(f.home.join("bin").into_os_string()),
             config_dir: None,
+            mise_vars: vec![(
+                "MISE_SYSTEM_CONFIG_DIR",
+                f.home.join("etc-mise").into_os_string(),
+            )],
         };
         Self { f, env }
     }
@@ -81,9 +85,23 @@ impl Mod {
         assert!(writer.wait().unwrap().success());
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
     }
-    /// A fake `mise` printing `listing` for `dotfiles paths --json`.
+    /// A fake `mise` printing `listing` for `dotfiles paths --json` and, for
+    /// `config get -f <file>`, the file itself when it is in the fixture home
+    /// (written in the normalised form mise prints) and nothing otherwise.
     fn mise(&self, listing: &Value) {
-        self.tool("mise", &format!("printf '%s' '{listing}'"));
+        let home = self.f.home.display();
+        self.tool(
+            "mise",
+            &format!(
+                "case \"$3 $4 $5\" in\n'dotfiles paths --json') printf '%s' '{listing}' ;;\n'config get -f') case \"$6\" in '{home}'/*) exec cat -- \"$6\" ;; esac ;;\n*) exit 1 ;;\nesac"
+            ),
+        );
+    }
+    /// A mise config file at `relative` in the home holding `text`.
+    fn declare(&self, relative: &str, text: &str) {
+        let path = self.f.home.join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
     }
 }
 
@@ -627,10 +645,151 @@ fn install_refuses_a_target_listed_by_mise_or_an_unreadable_listing() {
     }
 }
 
+/// D5: a `[dotfiles]` declaration in any mode covering the target refuses,
+/// although history (`dotfiles paths`) lists nothing (review round 3).
+#[test]
+fn install_refuses_a_target_declared_in_mise_dotfiles_in_any_mode() {
+    let empty = json!({"entries":[],"exclude":[],"invalid":[],"omitted":[],"plaintext":[],"nested":[],"incomplete":[]});
+    let cases: [(&str, &str, &str); 10] = [
+        (
+            "copy mode",
+            ".config/mise/config.toml",
+            "[dotfiles.\"~/.claude/skills\"]\nmode = \"copy\"\n",
+        ),
+        (
+            "raw inline copy",
+            ".config/mise/config.toml",
+            "[dotfiles]\n\"~/.claude/skills\" = { mode = \"copy\" }\n",
+        ),
+        (
+            "link mode",
+            ".config/mise/config.toml",
+            "[dotfiles.\"~/.claude\"]\nmode = \"link\"\n",
+        ),
+        (
+            "template mode",
+            ".config/mise/config.toml",
+            "[dotfiles.\"~/.claude/skills/anton-observatory/hooks/hooks.json\"]\nmode = \"template\"\nsource = \"h.tmpl\"\n",
+        ),
+        (
+            "track mode",
+            ".config/mise/config.toml",
+            "[dotfiles.\"~/.claude/skills/anton-observatory\"]\nmode = \"track\"\n",
+        ),
+        (
+            "plain string entry",
+            ".config/mise/config.toml",
+            "[dotfiles]\n\"~/.claude/skills\" = \"claude/skills\"\n",
+        ),
+        (
+            "home directory",
+            ".config/mise/config.toml",
+            "[dotfiles]\n\"~\" = \"home\"\n",
+        ),
+        (
+            "conf.d fragment",
+            ".config/mise/conf.d/claude.toml",
+            "[dotfiles.\"~/.claude/skills\"]\nmode = \"copy\"\n",
+        ),
+        (
+            "conf.d folder fragment",
+            ".config/mise/conf.d/claude/mise.toml",
+            "[dotfiles.\"~/.claude/skills\"]\nmode = \"copy\"\n",
+        ),
+        (
+            "project file in the home",
+            ".mise.local.toml",
+            "[dotfiles.\"~/.claude/skills\"]\nmode = \"copy\"\n",
+        ),
+    ];
+    for (what, file, text) in cases {
+        let m = Mod::new();
+        m.mise(&empty);
+        m.declare(file, text);
+        let before = m.snapshot();
+        refused(&m, m.install(), &before, what, "managed by mise");
+    }
+    // Files that mise's variables move are read too.
+    for (name, dir) in [
+        ("MISE_CONFIG_DIR", "moved/mise"),
+        ("XDG_CONFIG_HOME", "xdg"),
+        ("MISE_SYSTEM_CONFIG_DIR", "etc-mise"),
+    ] {
+        let mut m = Mod::new();
+        m.mise(&empty);
+        let config = if name == "XDG_CONFIG_HOME" {
+            format!("{dir}/mise/config.toml")
+        } else {
+            format!("{dir}/config.toml")
+        };
+        m.declare(
+            &config,
+            "[dotfiles.\"~/.claude/skills\"]\nmode = \"copy\"\n",
+        );
+        m.env.mise_vars.retain(|(key, _)| *key != name);
+        m.env
+            .mise_vars
+            .push((name, m.f.home.join(dir).into_os_string()));
+        let before = m.snapshot();
+        refused(&m, m.install(), &before, name, "managed by mise");
+    }
+}
+
+/// D5: declarations that cannot be read or understood refuse.
+#[test]
+fn install_refuses_unreadable_mise_declarations() {
+    type Setup = fn(&Mod);
+    let cases: [(&str, Setup); 5] = [
+        ("config get fails", |m| {
+            m.declare(".config/mise/config.toml", "[tools]\n");
+            let home = m.f.home.display();
+            m.tool(
+                "mise",
+                &format!("[ \"$3\" = dotfiles ] && printf '%s' '{}' && exit 0; case \"$6\" in '{home}'/*) exit 1 ;; esac", json!({"entries":[]})),
+            );
+        }),
+        ("unparseable declarations", |m| {
+            m.mise(&json!({"entries":[]}));
+            m.declare(".config/mise/config.toml", "[dotfiles\n");
+        }),
+        ("array of dotfiles tables", |m| {
+            m.mise(&json!({"entries":[]}));
+            m.declare(".config/mise/config.toml", "[[dotfiles]]\nx = 1\n");
+        }),
+        ("another user's home", |m| {
+            m.mise(&json!({"entries":[]}));
+            m.declare(
+                ".config/mise/config.toml",
+                "[dotfiles]\n\"~other/.claude\" = \"x\"\n",
+            );
+        }),
+        // Made unlistable below, after the snapshot.
+        ("unlistable conf.d", |m| {
+            m.mise(&json!({"entries":[]}));
+            std::fs::create_dir_all(m.f.home.join(".config/mise/conf.d")).unwrap();
+        }),
+    ];
+    for (what, setup) in cases {
+        let m = Mod::new();
+        setup(&m);
+        let before = m.snapshot();
+        let conf = m.f.home.join(".config/mise/conf.d");
+        let original = std::fs::metadata(&conf).ok().map(|v| v.permissions());
+        if original.is_some() {
+            std::fs::set_permissions(&conf, std::fs::Permissions::from_mode(0o000)).unwrap();
+        }
+        let result = m.install();
+        if let Some(permissions) = original {
+            std::fs::set_permissions(&conf, permissions).unwrap();
+        }
+        refused(&m, result, &before, what, "Cannot confirm mise");
+    }
+}
+
 #[test]
 fn install_accepts_unrelated_markers_and_listings() {
     type Setup = fn(&Mod);
-    let cases: [(&str, Setup); 5] = [
+    let cases: [(&str, Setup); 6] = [
         ("empty .git directory", |m| {
             common::ensure_private_directory(&m.f.home.join(".git")).unwrap();
         }),
@@ -639,6 +798,13 @@ fn install_accepts_unrelated_markers_and_listings() {
         }),
         ("sibling mise entries", |m| {
             m.mise(&json!({"entries":[{"path":"~/.claude/skills/other"},{"path":"~/.claude/settings.json"}],"exclude":[{"path":"~/.claude"}],"plaintext":[{"path":"~/.claude"}]}));
+        }),
+        ("sibling mise declarations", |m| {
+            m.mise(&json!({"entries":[]}));
+            m.declare(
+                ".config/mise/config.toml",
+                "[dotfiles]\n\"~/.bashrc\" = \"bashrc\"\n\n[dotfiles.\"~/.claude/skills/other\"]\nmode = \"copy\"\n\n[dotfiles.\"~/.claude/settings.json\"]\nmode = \"copy\"\n\n[tasks.x]\nrun = \"\"\"\n[dotfiles]\n\"\"\"\n",
+            );
         }),
         ("no mise on PATH", |_| {}),
         // The home is chezmoi's destination root, so it is not asked.
