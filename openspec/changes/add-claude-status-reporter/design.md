@@ -507,20 +507,73 @@ refuses a peer root (`herdr.observatory-peer`) as a second guard.
   which `chezmoi source-path` succeeds on any host that uses chezmoi. It then
   refuses when:
   - **mise.** If no `mise` executable is on `PATH`, the target is not
-    mise-managed and this check passes. If `mise` is present,
-    `mise -C <home> dotfiles paths --json` runs with null stdin, its working
-    directory set to the home directory, bounded to 3 s and 1 MiB, so a
-    `mise.toml` in the installer's own working directory plays no part. The
-    output's `entries`, `incomplete`, `invalid`, `nested` and `omitted` lists
-    are all read, because a declaration that history could not honour may
-    still be meant to cover the target. `exclude` and `plaintext` are not
-    read: they qualify what an entry tracks, and the entry itself already
-    decides coverage. The target is refused when any item
-    in those lists, after `~` expansion of its `path`, equals, contains or is
-    contained by the mod directory, or when an item has no readable string
-    `path`. The check also fails closed (refuses) when the command exits
-    non-zero, times out, exceeds the bound, prints unparseable JSON or lacks
-    `entries`, for example a `mise` without `dotfiles`.
+    mise-managed and this check passes. If `mise` is present, two reads run,
+    each as `mise -C <home> …` with null stdin, its working directory set to
+    the home directory, bounded to 3 s and 1 MiB, so a `mise.toml` in the
+    installer's own working directory plays no part. The target is refused
+    when any path either read yields, after `~` expansion (a relative path is
+    taken against the home), equals, contains or is contained by the mod
+    directory. Each read fails closed (refuses) when a command exits
+    non-zero, times out, exceeds the bound or prints output the check cannot
+    parse, and when a path is another user's `~name` or has a `..`
+    component.
+    1. **History.** `mise dotfiles paths --json`. Its `entries`,
+       `incomplete`, `invalid`, `nested` and `omitted` lists are all read,
+       because a declaration that history could not honour may still be
+       meant to cover the target. `exclude` and `plaintext` are not read:
+       they qualify what an entry tracks, and the entry itself already
+       decides coverage. An item without a readable string `path`, or output
+       without `entries` (for example a `mise` without `dotfiles`), refuses.
+       This command lists only history-tracked entries (`mode = "track"`):
+       its help reads "Show what history tracks and under which policies".
+       Loading the config also evaluates `[env]` templates, so it can run
+       template functions such as `exec`; it is kept from earlier rounds
+       (review round 3).
+    2. **Declarations.** Every `[dotfiles]` target whatever its mode (copy,
+       link, template, track, or an edit entry), because history does not
+       list a copy- or template-mode entry and the mod would otherwise be
+       written into a directory mise copies from its source (review round 3).
+       The check never runs a command that renders templates: `mise dotfiles
+       status` renders template entries ("trusted template functions may
+       execute"), and `mise config ls` and `mise dotfiles paths` evaluate
+       `[env]` templates (shown with an `exec` marker in a sandbox,
+       evidence.md). `mise config get -f <file>` reads one file's stored
+       values without rendering or evaluating anything, but it does not say
+       which files mise loads, so the installer lists the candidates itself,
+       over-inclusively: in the home and each ancestor, `mise*.toml`,
+       `.mise*.toml` and `.rtx*.toml`, the same names in `.config/`, and the
+       mise directories `mise/`, `.mise/`, `.config/mise/` and
+       `.config/.mise/`; the global directory (`~/.config/mise`,
+       `$XDG_CONFIG_HOME/mise`, `$MISE_CONFIG_DIR`) and the system directory
+       (`$MISE_SYSTEM_CONFIG_DIR`, otherwise `/etc/mise`, and
+       `$MISE_SYSTEM_DIR`). A mise directory contributes every `*.toml` in
+       it, every non-hidden `conf.d/*.toml` and every `*.toml` in a
+       non-hidden `conf.d` folder fragment. `MISE_CONFIG_ROOT` and
+       `MISE_GLOBAL_CONFIG_ROOT` add a project directory, the variables
+       `MISE_CONFIG_FILE`, `MISE_GLOBAL_CONFIG_FILE` and
+       `MISE_SYSTEM_CONFIG_FILE` add a file, and
+       `MISE_DEFAULT_CONFIG_FILENAME(S)` and `MISE_OVERRIDE_CONFIG_FILENAMES`
+       add their names in every directory of the hierarchy. A relative value
+       is taken against the home. Environment-specific and `.local` variants
+       match the name patterns, so `MISE_ENV` needs no special case. An extra
+       candidate can only over-refuse; a missing one would miss a
+       declaration, so the set was checked in a sandbox to contain every file
+       `mise config ls` reports, including `MISE_ENV`, conf.d folder
+       fragments and moved global and system directories (evidence.md).
+       `.tool-versions` files are not read: they cannot declare `[dotfiles]`.
+       A directory that exists but cannot be listed, a candidate that cannot
+       be inspected, or more than 256 candidates refuses.
+       Each candidate is read with `mise -C <home> config get -f <file>`. Its
+       output, normalised TOML, is read by a minimal reader that skips values
+       (strings of all four kinds, arrays, inline tables, scalars) without
+       decoding them and records the second key of every key path under
+       `dotfiles`: `[dotfiles]` keys, `[dotfiles."<target>"]` tables and
+       their subtables, arrays of tables under a target such as
+       `[[dotfiles."<target>".edits]]`, and top-level `dotfiles."<target>"`
+       keys. A header-like line inside a multi-line string is not a header.
+       Anything the reader does not understand refuses: an unknown escape, an
+       unterminated string, a malformed line, nesting deeper than 64,
+       `[[dotfiles]]` or a top-level `dotfiles = …` value.
   - **Git.** Any directory from the mod directory up to and including the
     home directory holds a real repository marker: a `.git` directory that
     contains a regular file `HEAD`, a regular `.git` file whose first line
@@ -534,9 +587,10 @@ refuses a peer root (`herdr.observatory-peer`) as a second guard.
     dotfile repositories driven by `--git-dir`/`--work-tree` leave no marker
     and are not detected (see Review resolutions).
 
-  `claude_managed` takes the environment it consults (`PATH` and
-  `CLAUDE_CONFIG_DIR`) as a parameter and uses that `PATH` for both the
-  chezmoi and the mise lookups; the CLI passes the process environment.
+  `claude_managed` takes the environment it consults (`PATH`,
+  `CLAUDE_CONFIG_DIR` and the mise location variables above) as a parameter
+  and uses that `PATH` for both the chezmoi and the mise lookups; the CLI
+  passes the process environment, which the mise runs also inherit.
   `managed` stays a thin wrapper that passes the process `PATH`, so the Pi
   path keeps its behaviour.
 - **Installer debris.** Inside the recorded mod directories that receive
@@ -839,10 +893,26 @@ New behaviour (must fail on `80f6295`):
   match the pattern, or a debris-named file in the mod root (each kept and
   refused as unrecorded). A debris-named file in a recorded `skills/` is kept
   by install, `--uninstall-claude-mod` and `--uninstall-hooks`.
-- mise invocation: the fake `mise` records its argv and working directory; the
-  fixture asserts `-C <home> dotfiles paths --json`, the home directory as
-  working directory and a null stdin, with the installer started from a
-  different temporary directory that holds its own `mise.toml`.
+- mise invocation: the fake `mise` records the argv, working directory and
+  stdin of every run; the fixture asserts `-C <home> dotfiles paths --json`
+  first, then only `-C <home> config get -f <file>` runs, of which the only
+  one inside the fixture reads the home's `.config/mise/config.toml`, each
+  with the home directory as working directory and a null stdin, with the
+  installer started from a different temporary directory that holds its own
+  `mise.toml`. Every installer fixture sets `MISE_SYSTEM_CONFIG_DIR` to a
+  fixture directory so the host's `/etc/mise` is never read.
+- mise declarations: with `paths` listing nothing, a declaration covering the
+  target refuses with nothing changed in copy mode (also through the CLI),
+  as a raw inline table, in link, template and track mode, as a plain string
+  entry, for the home itself, in a `conf.d` file and a `conf.d` folder
+  fragment, in `~/.mise.local.toml`, and in global and system directories
+  moved by `MISE_CONFIG_DIR`, `XDG_CONFIG_HOME` and
+  `MISE_SYSTEM_CONFIG_DIR`. Refused as unreadable: `config get` failing,
+  unparseable output, `[[dotfiles]]`, another user's `~name` and an
+  unlistable `conf.d`. Not refused: declarations of `~/.claude/skills/other`,
+  `~/.claude/settings.json` and `~/.bashrc`, with a `[dotfiles]` line inside
+  a task's multi-line string. Reader unit tests cover each key form, values
+  that span lines and header-like lines inside strings.
 - Not refused: an empty `.git` directory in the temporary home; a `.git`
   directory without `HEAD`; no `mise` on `PATH`; a fake `chezmoi` that
   answers only for the home directory.
@@ -996,9 +1066,16 @@ for that.
   (`session.measure` is never deduplicated), plus at most one per session
   start. A repeat costs one `pane.get` and no write. Measured in evidence.md.
 - **[mise check fails closed]** A host with a `mise` lacking `dotfiles` cannot
-  install the mod until `mise` is updated or removed from `PATH`. This is the
-  conservative reading of "refuse managed configuration". Removal does not run
-  the mise check (D5), so it never blocks uninstall.
+  install the mod until `mise` is updated or removed from `PATH`. Nor can a
+  host whose mise config uses TOML the declaration reader does not
+  understand, or that holds an unreadable file at a candidate location. This
+  is the conservative reading of "refuse managed configuration". Removal does
+  not run the mise check (D5), so it never blocks uninstall.
+- **[mise config discovery]** The declaration read lists mise's config files
+  itself (D5), because the only listing command evaluates `[env]` templates.
+  A config location added by a later mise that matches none of the patterns
+  would be missed. The patterns are deliberately wide, and `dotfiles paths`
+  still covers history-tracked entries wherever they are declared.
 - **[Herdr clears metadata (unverified)]** Whether Herdr clears pane metadata
   on a Herdr restart, reattach or agent re-detection is unverified (research
   design, change 3 risk). Because `session.measure` always reports, a cleared
