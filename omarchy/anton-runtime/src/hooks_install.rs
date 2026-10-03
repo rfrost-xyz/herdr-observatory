@@ -180,14 +180,23 @@ pub(crate) const CLAUDE_MOD_FILES: [&str; 3] = [
 /// Whether `entry` has the D5 `claude_mod` shape for the mod directory
 /// `root`: version 1, that root, absolute `directories` at or under it (or
 /// its `skills` parent), and exactly the three mod files, each with a
-/// SHA-256 and, while a refresh is in progress, a `prior_sha256`.
+/// SHA-256 and, while a refresh is in progress, a `prior_sha256`. Every
+/// path has only root and normal components, because `starts_with`
+/// compares components lexically and would accept a `..` that leaves `root`.
 pub(crate) fn claude_mod_entry(entry: &Value, root: &Path) -> bool {
+    use std::path::Component;
+    let plain = |path: &Path| {
+        path.is_absolute()
+            && path
+                .components()
+                .all(|part| matches!(part, Component::RootDir | Component::Normal(_)))
+    };
     let skills = root.parent();
     let directories = entry["directories"].as_array().is_some_and(|list| {
         !list.is_empty()
             && list.iter().all(|value| {
                 value.as_str().map(Path::new).is_some_and(|path| {
-                    path.is_absolute() && (path.starts_with(root) || Some(path) == skills)
+                    plain(path) && (path.starts_with(root) || Some(path) == skills)
                 })
             })
     });
@@ -201,6 +210,7 @@ pub(crate) fn claude_mod_entry(entry: &Value, root: &Path) -> bool {
         let mut expected = CLAUDE_MOD_FILES.map(|name| root.join(name));
         expected.sort_unstable();
         list.len() == CLAUDE_MOD_FILES.len()
+            && paths.iter().all(|path| plain(Path::new(path)))
             && paths
                 .iter()
                 .map(Path::new)
@@ -210,6 +220,7 @@ pub(crate) fn claude_mod_entry(entry: &Value, root: &Path) -> bool {
                 .all(|file| hash(&file["sha256"]) && file.get("prior_sha256").is_none_or(&hash))
     });
     entry["version"] == 1
+        && plain(root)
         && entry["root"].as_str().map(Path::new) == Some(root)
         && directories
         && files
@@ -664,6 +675,8 @@ mod tests {
             ("/directories", json!([])),
             ("/directories/0", json!("/home/a/.claude")),
             ("/directories/0", json!("relative")),
+            ("/directories/1", json!(root.join("../../../outside"))),
+            ("/directories/1", json!(root.join("hooks/.."))),
             ("/files/0/sha256", json!("short")),
             ("/files/0/path", json!("/home/a/other.json")),
             ("/files", json!(files[..2])),
