@@ -553,8 +553,15 @@ refuses a peer root (`herdr.observatory-peer`) as a second guard.
    only.
 
 A crash at any step leaves every recorded file absent, at its prior hash or at
-its new hash, each of which the receipt accepts, plus at most one
-`.anton-write-*` temporary file, which install and removal delete as debris. A retry restarts from step 1:
+its new hash, each of which the receipt accepts. A crash during a file write
+in step 4 can also leave one `.anton-write-*` temporary file in a recorded mod
+directory, which install and removal delete as debris. A crash during a
+receipt write in step 2 or 5 can leave one in the plugin root instead; that
+file is outside this guarantee: the installer neither deletes it nor refuses
+because of it, but `uninstall.sh` refuses any unknown plugin-root file, so
+plugin removal then stops until it is deleted by hand. Pi's receipt writes
+already had this exposure; it is recorded as a follow-up in evidence.md.
+A retry restarts from step 1:
 it rebuilds `prior_sha256` from the bytes verified on disk, never from the old
 receipt, so an interrupted refresh from build A to B followed by an install of
 build C still works. `--uninstall-hooks` and `--uninstall-claude-mod` accept
