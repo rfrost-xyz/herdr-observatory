@@ -113,7 +113,9 @@ updates. Explicit migration removes retired publication/music and known containe
 export fields. Installers refuse conflicts/symlinks/managed configuration and
 preserve unrelated hooks. For the Claude Code mod, managed configuration also
 covers mise dotfiles (history entries and `[dotfiles]` declarations in every
-mode, read with `mise config get -f`, never a command that renders templates)
+mode; the declarations are read with `mise config get -f`, which renders no
+template-mode dotfile source, and mise loads the user's configuration, including
+`[env]`, as any mise command does)
 and Git repositories with a real `.git` marker; it installs
 only locally under `~/.claude/skills/anton-observatory/`, never on a peer, and
 removal refuses a changed recorded file and keeps the receipt. Hook receipt

@@ -69,7 +69,10 @@ Installation refuses a target it cannot prove absent or owned, symlinks, a set
 dotfiles (a history entry or a `[dotfiles]` declaration in any mode, such
 as a copy of `~/.claude/skills`) or a Git repository with a real `.git`
 marker. When `mise` is installed and its declarations cannot be read, the
-mod is refused too. A refusal leaves the
+mod is refused too. The `[dotfiles]` declarations are read with `mise config
+get -f`, which renders no template-mode dotfile source; like any mise command,
+the check loads your mise configuration, including `[env]`, as the `mise
+activate` shell hook does. A refusal leaves the
 plugin installed and the dial unknown. To remove only the mod:
 
 ```sh
