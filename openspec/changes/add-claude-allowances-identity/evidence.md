@@ -41,6 +41,13 @@ during change 3 and re-read on 2026-10-04. Line numbers refer to that copy.
 - `SessionUsage` (10983-11010) and `$.session.usage` (2603-2624): the same
   `rateLimits`, plus `startedAt` (session start, not a sample time).
 - `UsageUnit` (13562): `'context' | 'rateLimits' | 'cost'`.
+- `SessionCost` (10260-10268): `{usd: number}`, "US dollars, summed over every
+  priced API response this session". `SessionMeasureInput.cost?`
+  (10391-10394): "absent where the host keeps no ledger".
+  `SessionUsage.cost?` (11005-11009): "absent only where the host keeps no
+  cost ledger (the CLI always has one)". The `changed` doc in
+  `SessionMeasureInput`: "`cost`: the total grew". Re-read on 2026-10-04 for
+  plan-gate answer G4 (design D2 path B).
 - `SessionContextUsage` (10225-10258): `tokens` and `percent` are absent until
   the first response of the live window, including just after compaction.
 - `$.env` (3354-3372): "The environment of this process, the one every Bash
@@ -91,7 +98,10 @@ Key names, types and format classes only.
   `CLAUDE_CODE_*` names that Claude Code sets itself; no `ANTHROPIC_*`,
   `CLAUDE_CONFIG_DIR`, `CCR_*`, `CLAUDE_CODE_USE_*` or
   `CLAUDE_CODE_CUSTOM_OAUTH_URL`. The only name matching a D11 refusal pattern
-  is `CLAUDE_CODE_MESSAGING_TOKEN` (design D4, G3).
+  is `CLAUDE_CODE_MESSAGING_TOKEN` (design D4, G3). No `ANTHROPIC_*` name,
+  so no `ANTHROPIC_BASE_URL`, was present in that environment (G1). The
+  settings `env` names were not checked against the G1 rule and settings were
+  not read again for this.
 - `~/.claude/settings.json`: `apiKeyHelper` absent; its `env` block sets two
   names, neither matching a refusal pattern. No `settings.local.json` and no
   managed settings file.
@@ -115,6 +125,37 @@ Key names, types and format classes only.
   the Claude report fixture at `:2267` expects exit 2 for five values and the
   one at `:2344` asserts no "account" or "rate" in the wire.
 - `uninstall.sh` removes only the listed state file names.
+
+## Plan gate outcome (2026-10-04)
+
+The user answered every plan-gate item on 2026-10-04. No item remains open.
+Planning artefacts updated in the commit `docs(openspec): record the claude
+allowances plan gate`.
+
+- G1: accepted, and attribution is also refused when `ANTHROPIC_BASE_URL` is
+  set (any value, name only; design D4 step 1). Differs from the earlier
+  default.
+- G2: accepted default; evidence skipped while a run is in flight is lost.
+- G3: exactly `CLAUDE_CODE_MESSAGING_TOKEN` is exempt, on a closed list
+  naming only it.
+- G4: a sample is also fresh when `cost` is in `changed` and the session cost
+  total (`SessionCost.usd`) strictly increased over the mod's baseline; rewinds
+  and compactions without cost growth stay not fresh; the whole-point and
+  window-appears path is kept (design D2 paths A and B). Differs from the
+  earlier default.
+- G5: accepted default; one stamp per sample.
+- G6: accepted default; a session is refused for good after an account
+  switch.
+- G7: accepted default; `--refresh-identities`, `--claude-account-key` and
+  `--claude-attribution-check` may read the same three allowlisted
+  `~/.claude.json` fields.
+- G8: accepted default; no `$.session.authorize()` and no merged-settings
+  `apiKeyHelper` check.
+
+Validation of the updated artefacts: `OPENSPEC_TELEMETRY=0 openspec validate
+add-claude-allowances-identity --strict` reported the change valid, and a
+search of the change directory found no em or en dash. No code or test was
+changed, so no new test exists yet to show failing on `7a9fefb`.
 
 ## Implementation
 

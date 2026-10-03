@@ -12,12 +12,12 @@ revised by the user's change 4 decisions and by what change 3 shipped:
   read, logged, persisted or retained. The whole file is skipped, attributing
   nothing, when `primaryApiKey` is present. `~/.claude.json` is provider-owned
   state, not an authentication file.
-- **Decision 2 (accepted, confirm at plan gate).** Rate limits carry no account
-  id, so the reporter attributes them to the account `~/.claude.json` names at
-  report time, refusing whenever the environment or settings could select a
-  different credential.
-- **Decision 3 (accepted, confirm at plan gate).** The mod passes rate limits
-  to its reporter as extra argv values: at most two windows, kind `five_hour`
+- **Decision 2 (accepted, confirmed at the 2026-10-04 plan gate).** Rate
+  limits carry no account id, so the reporter attributes them to the account
+  `~/.claude.json` names at report time, refusing whenever the environment or
+  settings could select a different credential or API endpoint.
+- **Decision 3 (accepted, confirmed at the 2026-10-04 plan gate).** The mod
+  passes rate limits to its reporter as extra argv values: at most two windows, kind `five_hour`
   or `seven_day`, `percentUsed` (0 to 100, at most one decimal) and `resetsAt`
   as epoch seconds. Any `spend_limit` window means no attribution for that
   sample. Still argv-only, never awaited, never blocking.
@@ -36,6 +36,10 @@ function-hook mod (surface B) instead, so the source here is the mod's
   100 with at most one decimal (past 100 only on an exceeded spend limit);
   `resetsAt` is an optional ISO 8601 string. `rateLimits` holds "the rate-limit
   windows the last API response reported".
+- `cost?` is a `SessionCost`, `{usd: number}`: "US dollars, summed over every
+  priced API response this session", absent only where the host keeps no
+  ledger (the CLI always has one). `cost` is in `changed` when "the total
+  grew".
 - `session.measure` fires after each main-thread turn and when a rate-limit
   window moves a whole point, one at a time, with bursts folding into one.
 - No measure or usage field carries an account id, email, sample time, window
@@ -92,7 +96,8 @@ pane metadata. They go to a private per-account state file (D6).
 ## Architecture
 
 - **`hooks/claude/anton-observatory/hooks/register.js`:** a freshness baseline
-  and the rate-limit tail on `session.measure` only (D2). Refreshed through the
+  (used values and the cost total) and the rate-limit tail on
+  `session.measure` only (D2). Refreshed through the
   existing `--install-claude-mod`; receipt version 1 unchanged.
 - **`src/reporter.rs`:** `ClaudeReport::parse` accepts 4, 7 or 10 values (D3).
   After the binding and `obs_seq` guards, the change 3 no-change check and
@@ -121,7 +126,7 @@ pane metadata. They go to a private per-account state file (D6).
 ### D1. Source and scope
 
 - The only source of fresh Claude rate limits is the mod's `session.measure`
-  event (`e.rateLimits`, `e.changed`). `session.start` and
+  event (`e.rateLimits`, `e.changed` and, for the cost path, `e.cost`). `session.start` and
   `classic.SessionStart` read `$.session.usage()`, which has no change signal
   and after a reload or `/resume` returns an old reading; they never send rate
   limits and never touch the freshness baseline.
@@ -143,60 +148,94 @@ first measurement names every unit (so an old reading after a reload or
 `/resume` looks changed); `rateLimits` is also flagged when a window leaves
 (which can be a reset with no API response behind it) or when the limit status
 changes with the same values; and a context change proves nothing (rewinds and
-compactions). The rule is therefore:
+compactions). The engine's `cost` unit, by contrast, grows only when a priced
+API response arrives, and `rateLimits` is what the last response reported. The
+user chose (G4, 2026-10-04) to stamp on either signal: a whole-point window
+movement or a strict growth of the session's cost total.
 
-A measurement is **fresh** when all of these hold:
+**Cost tracking.** The mod reads `e.cost` only on `session.measure`. The
+measurement's cost total `c` is `e.cost.usd` when `e.cost` is a non-null object
+whose `usd` is a number with `Number.isFinite(usd)` and `usd >= 0`; in every
+other case (`e.cost` absent, `null`, not an object, `usd` missing, not a
+number, `NaN`, infinite or negative) `c` is `null`. Reading `e.cost` or `usd`
+never throws into the hook: the read sits inside the same guarded block as the
+rest of `sample()`. The cost total is held only in the mod's memory as part of
+the baseline. It is never passed as argv, logged or written anywhere, so the
+reporter requirement that the mod sends no costs still holds.
+
+**Per-session baseline.** The baseline is one record per module load:
+`{session, used: {five_hour, seven_day}, costUsd}`, where `session` is the
+session id of the measurement that set it, each `used` value is that
+measurement's `percentUsed` for the kind or absent, and `costUsd` is that
+measurement's `c` (possibly `null`). An empty baseline means no measurement
+has been seen since the module loaded or since the last `session.end`.
+
+A measurement is **fresh** when rules 1 and 2 hold and at least one of the
+paths A or B holds:
 
 1. it is not the first measurement this module load has seen since it loaded
    or since the last `session.end` (the baseline is empty), and its session id
    equals the baseline's session id (a measurement for another id is treated as
    the first measurement);
-2. `e.changed` is an array that includes `'rateLimits'`;
-3. `e.rateLimits` lists no window of kind `spend_limit`, and no earlier
+2. `e.rateLimits` lists no window of kind `spend_limit`, and no earlier
    measurement in this module load since the last `session.end` listed one
    (once seen, `spend_limit` blocks every tail until `session.end`);
-4. at least one `five_hour` or `seven_day` window in `e.rateLimits` has a
-   `percentUsed` different from the baseline's value for that kind, or is
-   absent from the baseline (it appeared).
 
-A window that only left, a status change with unchanged used values, a change
-of `resetsAt` alone, a measurement that changed only `context` or `cost`, and
-every start or classic reading are not fresh. Rule 4 compares the used value
-only, the honest-staleness choice: a reset time that moves without a used
-value moving (for example a status change) proves no new API response, so it
-stamps nothing. A fresh tail still carries each window's current `resetsAt`.
+- **A. Window path (unchanged):** `e.changed` is an array that includes
+  `'rateLimits'`, and at least one `five_hour` or `seven_day` window in
+  `e.rateLimits` has a `percentUsed` different from the baseline's value for
+  that kind, or is absent from the baseline (it appeared).
+- **B. Cost path (G4):** `e.changed` is an array that includes `'cost'`, the
+  measurement's `c` is not `null`, the baseline's `costUsd` is not `null`, and
+  `c > costUsd` (strictly). Both conditions are required: `'cost'` in
+  `changed` without a strictly larger total (equal, lower or unknown) is not
+  fresh, and a larger total without `'cost'` in `changed` is not fresh either.
 
-**Why the honest option.** The alternative (option b in the code map) treats
-`cost` in `changed` as proof of an API response, because cost grows only with a
-priced response and `rateLimits` is what the last response reported. That would
-keep rows fresh through steady use, but nothing pins it: a response could
-update cost without rate-limit headers, and no fixture or documentation says
-the two move together. The chosen rule only stamps when the engine itself says
-the windows moved. The cost is staleness: at an even pace that uses the whole
-window, `seven_day` moves one point every 6,048 s, ten times the 600 s rule,
-and `five_hour` one point every 180 s. Because a fresh sample stamps every
-window it carries (D6), `five_hour` movement also refreshes `seven_day`. At 30%
-of the 5-hour window per five hours, `five_hour` moves one point every 600 s,
-exactly the staleness limit, so rows flicker between available and
-unavailable. Rows therefore stay fresh only during heavy use and turn stale in
-moderate or quiet periods. This is recorded under Risks and as plan-gate item
-G4; task 5.3 records the number of stamps and the largest gap between them.
+A fresh measurement sends a tail only when the tail construction below keeps at
+least one window; a fresh measurement with no `five_hour` or `seven_day`
+window sends the four-value run. Under path B the windows sent are the ones
+`e.rateLimits` holds at that measurement, with their current used values and
+reset times, even when none of them moved.
+
+Not fresh: the first measurement after the module loads, after `session.end`
+or for another session id, whatever `changed` names (including `cost` and
+`rateLimits`); a rewind, which changes `context` but adds no priced response,
+so `cost` is not in `changed` and the total is unchanged; a compaction whose
+measurement shows no cost growth; a window that only left; a limit status
+change with unchanged used values; a change of `resetsAt` alone; a measurement
+whose only changed unit is `context`; and every start or classic reading. A
+compaction that does make a priced call, so the total grows and `cost` is in
+`changed`, is fresh under path B, because that response is a real API
+response. Path A compares the used value only: a reset time that moves without
+a used value moving proves no new API response. A fresh tail still carries
+each window's current `resetsAt`.
+
+**Staleness under the combined rule.** `session.measure` fires after each
+main-thread turn, and each turn makes at least one priced response, so path B
+stamps once per turn while a session is used, independent of how fast the
+windows move. Rows therefore stay fresh while a session completes a turn at
+least every ten minutes, and turn stale after ten minutes without a turn or a
+whole-point movement. Path A still stamps a whole-point movement that arrives
+between turns. The residual risk (Risks, [Cost without rate limits]) is that a
+priced response whose answer carried no rate-limit reading re-stamps the
+previous response's values.
 
 **Baseline ordering.** Freshness is evaluated, and the baseline replaced with
-this measurement's session id and `five_hour` and `seven_day` used values,
-immediately after the session-id step and before the window guard, the dedupe,
-the clock check and the in-flight skip. A skipped measurement therefore still
-moves the baseline, so its evidence is lost rather than replayed with a later
-value. `session.end` clears the baseline, the `spend_limit` flag and
-`confirmed`. Only `session.measure` reads or writes the baseline and sets the
-flag.
+this measurement's session id, `five_hour` and `seven_day` used values and
+cost total `c`, immediately after the session-id step and before the window
+guard, the dedupe, the clock check and the in-flight skip. A skipped
+measurement therefore still moves the baseline, so its evidence is lost rather
+than replayed with a later value. `session.end` clears the baseline (session,
+used values and `costUsd`), the `spend_limit` flag and `confirmed`. A
+measurement for another session id replaces the whole baseline, cost total
+included. Only `session.measure` reads or writes the baseline and sets the
+flag; `session.start` and classic events never touch it.
 
 **Evidence lost while a run is in flight.** Change 3 skips a sample while a
 run started within 3 s is in flight and holds nothing. A fresh measurement
-skipped this way is not raised again until another window moves. This change
-keeps that behaviour (decision 3 lists no further argv value) and records the
-loss. The alternative, a pending flag plus an evidence-time argv value, is
-plan-gate item G2.
+skipped this way is not raised again; the next measurement with cost growth or
+a moved window stamps again. This change keeps that behaviour (decision 3
+lists no further argv value) and records the loss, as the user accepted (G2).
 
 **Tail construction**, when the measurement is fresh, for each of
 `five_hour` and `seven_day` present in `e.rateLimits` (at most one of each; a
@@ -293,6 +332,7 @@ with no account write:
    `std::env::vars_os()` is the session's environment. Only names are read. It
    refuses when any name is not valid UTF-8, or matches:
    - `ANTHROPIC_*KEY*`, `ANTHROPIC_*TOKEN*`, `ANTHROPIC_CUSTOM_HEADERS`;
+   - `ANTHROPIC_BASE_URL` (exact name, G1);
    - `CLAUDE_CODE_*TOKEN*`, `CLAUDE_CODE_*_FILE_DESCRIPTOR`, `CLAUDE_CODE_HOST_*`;
    - `CCR_OAUTH_TOKEN_FILE`, `CLAUDE_CODE_CUSTOM_OAUTH_URL`;
    - `CLAUDE_CODE_USE_*`;
@@ -301,11 +341,15 @@ with no account write:
    `CLAUDE_CODE_MESSAGING_TOKEN`. Claude Code sets that name for its own
    children (seen in Bash children of a shell-launched session with agent teams
    enabled, evidence.md [environment]); a literal D11 rule would refuse every
-   sample in such a session. The exemption deviates from the refusal list the
-   user accepted in decision 2 and needs explicit consent (plan-gate item G3);
-   without it, attribution is refused in any session that exports the name. The
-   patterns are matched as ASCII globs where `*` matches zero or more
-   characters, case-sensitively, so `ANTHROPIC_KEY` matches `ANTHROPIC_*KEY*`.
+   sample in such a session. The user consented to this single exemption on
+   2026-10-04 (G3); no other name can be added to the list without a new
+   decision. The patterns are matched as ASCII globs where `*` matches zero or
+   more characters, case-sensitively, so `ANTHROPIC_KEY` matches
+   `ANTHROPIC_*KEY*`. `ANTHROPIC_BASE_URL` has no wildcard: the name being
+   set refuses, with any value, including an empty one, because a proxy or
+   gateway at another endpoint would report windows that are not the profile
+   account's (G1, 2026-10-04). Like every step 1 rule it reads the name only,
+   never the value.
 2. **Configuration directory.** `CLAUDE_CONFIG_DIR` set to any value, even
    empty or naming `~/.claude`, refuses. This is stricter than the change 3
    installer rule on purpose: the collector reads a fixed `$HOME/.claude.json`
@@ -319,7 +363,7 @@ with no account write:
    presence of `apiKeyHelper`; every other key is skipped with `IgnoredAny`.
    Present (any value) refuses; unreadable, unsafe, oversized or malformed
    refuses. Nothing else in the file is extracted, including `env`. Project,
-   local and managed settings are not read (Risks, G8).
+   local and managed settings are not read (Risks; not built, G8).
 5. **Provider state.** `<home>/.claude.json` through the reporter extraction
    (D5). `primaryApiKey` present refuses; an invalid or missing account id
    refuses.
@@ -330,8 +374,11 @@ with no account write:
 the password database).
 
 `CLAUDE_CODE_CUSTOM_OAUTH_URL` and the legacy file both change which file
-Claude Code uses, and the variable patterns cover credentials selected from the
-environment. A token read from a well-known path with no variable, a gateway
+Claude Code uses, the variable patterns cover credentials selected from the
+environment, and `ANTHROPIC_BASE_URL` covers an API endpoint selected from the
+environment. The collector, identity refresh and `--claude-account-key` apply
+only steps 2 and 3 (D7, D8); G1 concerns attribution, so `ANTHROPIC_BASE_URL`
+does not stop them. A token read from a well-known path with no variable, a gateway
 session without `spend_limit`, and `apiKeyHelper` in project, local or managed
 settings remain residual risks (Risks).
 
@@ -362,13 +409,16 @@ settings remain residual risks (Risks).
     only) and `primaryApiKey` presence.
 - The readers are exactly the Claude reporter, the collector, identity
   refresh, `--claude-account-key` and `--claude-attribution-check`. Decision 1
-  names only the reporter and collector, so the last three widen its reader
-  list and need explicit consent (G7).
+  names only the reporter and collector; the user consented on 2026-10-04 (G7)
+  to the last three reading the same three allowlisted paths.
 - The account id must be a string of 1 to 256 characters with no control
   character. The key is `sha256("observatory-claude-account-v1:" + id)` as 64
   lowercase hex characters. The id itself is dropped once hashed.
 - The reporter parses the file only when a tail is present, which happens only
-  on fresh evidence (D2), not on every turn. Its cost is measured (D11).
+  on fresh evidence (D2). Under the G4 cost path that is about once per
+  main-thread turn while a session is used, so the ten-value run is the
+  per-turn path and the D4 lock-hold budget applies per turn. Its cost is
+  measured (D11).
 
 ### D6. Per-account state file
 
@@ -399,15 +449,15 @@ settings remain residual risks (Risks).
   for that account and kind is replaced only when the new `sampled_at` is
   greater. A window absent from the tail keeps its stored value and stamp.
   Every window in a fresh tail gets the same stamp, because all come from the
-  same last response; this departs from D11's per-window value-change rule and
-  is plan-gate item G5.
+  same last response; this departs from D11's per-window value-change rule, as
+  the user accepted (G5).
 - **Session attribution:** the first attributed report for a session records
   its account. A later report for that session that resolves another account
   sets the entry's account to `null` and writes nothing else; every later
   report for that session is refused. D11 instead resumed after the next
   change, but with this source a sample after a `/login` elsewhere cannot be
-  told apart from one under the new account, so the stricter rule is chosen
-  (plan-gate item G6). New sessions attribute normally.
+  told apart from one under the new account, so the stricter rule is chosen,
+  as the user accepted (G6). New sessions attribute normally.
 - **Write:** under the `hook.lock` that `report_claude` already holds, so Claude
   and Pi reporters on the same state directory are serialised and no second
   lock is needed. The state directory's owner is checked as `receive()` does.
@@ -499,8 +549,8 @@ settings remain residual risks (Risks).
   environment and home. With either refusing, `primaryApiKey`, no file or no
   valid id it prints nothing and exits 3. It never prints the id or email,
   needs no owner guard or configuration, and is documented in the plugin README
-  with the mapping format. The popover diagnostics are unchanged. This is
-  plan-gate item G7.
+  with the mapping format. The popover diagnostics are unchanged. The user
+  accepted this command and its reads (G7).
 - **Attribution check.** Refusals are silent in the reporter, so the live check
   could not otherwise find why attribution fails. A private dry run,
   `anton-runtime --claude-attribution-check`, runs D4 steps 1 to 5 against its
@@ -510,10 +560,11 @@ settings remain residual risks (Risks).
   the environment step it also prints each matching variable name on its own
   line, never a value, and it prints exempt matches too, marked `exempt`, so
   the live check can record whether `CLAUDE_CODE_MESSAGING_TOKEN` is present.
-  It prints no id, key, email or value, writes nothing and needs no owner
-  guard. Run from a Bash tool call inside a Claude Code session, it inherits
-  that session's environment, as the reporter does. It reads the same paths as
-  the reporter and is part of G7.
+  `ANTHROPIC_BASE_URL`, when set, is printed under `environment` like any other
+  matching name. It prints no id, key, email or value, writes nothing and
+  needs no owner guard. Run from a Bash tool call inside a Claude Code
+  session, it inherits that session's environment, as the reporter does. It
+  reads the same paths as the reporter, as the user accepted (G7).
 
 ### D9. Presentation
 
@@ -564,12 +615,40 @@ command case also runs as a process fixture, which runs and fails on
 
 New behaviour:
 
-- **Mod (`tests/test_claude_mod.mjs`):** fresh on a moved or appeared window;
-  not fresh on the first measurement after load or after `session.end`, on
-  `changed` without `rateLimits`, on a window that only left, on a status-only
-  change, on `spend_limit` present (tail absent, window run still made), on
-  start and classic events (and the baseline untouched by them); a skipped
-  in-flight measurement moves the baseline and is not replayed; percent text
+- **Mod (`tests/test_claude_mod.mjs`):** the old mod never sends a tail, so a
+  test that only asserts "no tail" would pass on `7a9fefb`. Every test that
+  asserts no tail, a dropped window or the four-value run, whether the
+  measurement is fresh or not, also asserts, in the same test and session, the
+  exact tail of another measurement, which fails on `7a9fefb` and, for a
+  not-fresh case, proves it moved the baseline as specified. The check that
+  the cost total never appears in argv sits inside a test that asserts a
+  tail. Cases:
+  fresh on a moved or appeared window (path A); **cost growth with unchanged
+  percentages is fresh**: a measurement with `changed: ['context','cost']`,
+  `cost.usd` strictly above the previous measurement's and both windows at
+  the previous used values sends both windows with their current used values
+  and reset times; **rewind is not fresh**: `changed: ['context']` with the
+  same `cost.usd` and windows sends no tail, then a cost-growth measurement
+  sends one; **compaction without cost growth is not fresh**: a context drop
+  with `cost.usd` unchanged sends no tail, also with `'cost'` in `changed` but
+  an equal or lower total, then a cost-growth measurement sends one; **first
+  measurement after load or `session.end` is not fresh**, even with
+  `changed: ['context','rateLimits','cost']` and a non-zero total, for a fresh
+  load and for a measurement right after `session.end`, then a second
+  measurement with cost growth sends a tail; a larger total without `'cost'`
+  in `changed` not fresh; `e.cost` absent, `null`, `usd` missing, a string,
+  `NaN`, infinite or negative on the current or the baseline measurement not
+  fresh by path B (then a measurement with valid growth over a valid baseline
+  sends a tail); cost growth with a `spend_limit` window sending no tail, and
+  no tail after it until `session.end`, then a tail after a new session's
+  second measurement; cost growth with no `five_hour` or `seven_day` window
+  sending the four-value run; cost growth in a measurement for another
+  session id treated as the first; the cost total never appearing in argv;
+  not fresh on `changed` without `rateLimits` or `cost`, on a window that only
+  left, on a status-only change, on `spend_limit` present (tail absent, window
+  run still made), on start and classic events (and the baseline untouched by
+  them); a skipped in-flight measurement with cost growth moves the baseline
+  (used values and total) and is not replayed; percent text
   for 0, 7, 23.5, 99.9, 100, 0.7 and noisy values; ISO conversion against a
   `Date.parse` oracle in the test for `Z`, numeric offsets, fractions, leap
   days, and rejection of invalid dates, hours, offsets and shapes; past and
@@ -581,13 +660,20 @@ New behaviour:
   one measurement blocking the tail of a later measurement without it until
   `session.end`; repeated kinds drop the tail; argv order and count; the source
   scan still finds no `Date`. The fixture's measure builder
-  uses an array for `rateLimits` and a non-empty `changed`.
+  uses an array for `rateLimits`, a non-empty `changed` and a `cost` of the
+  `SessionCost` shape `{usd}` unless a case removes or corrupts it.
 - **Reporter (`reporter.rs`, `tests/native_process.rs`):** parse of 4, 7 and 10
   values and rejection of 5, 6, 8, 9 and 11 values, unknown and repeated kinds,
   used values `-1`, `100.1`, `1.25`, `01`, `5.0`, `1e1`, `+5`, resets in the
   past, at `seq`, beyond the bound and with 12 digits, all with no socket
   access; the environment rule over each pattern, the exemption, a non-exempt
   `CLAUDE_CODE_*TOKEN*` beside the exempt one, and a non-UTF-8 name;
+  `ANTHROPIC_BASE_URL` set to a URL carrying the `PRIVATE` marker and set
+  empty, each refusing (unit test on the name rule, and a process fixture
+  showing exit 0, the window bound, no `claude-allowances.json` written and
+  the marker absent from stdout, stderr and the state directory), and a name
+  that only contains it, such as `ANTHROPIC_BASE_URL_X`, not matching that
+  exact rule;
   `CLAUDE_CONFIG_DIR` set empty, to `~/.claude` and elsewhere; legacy config
   as a file and as a dangling symlink; `apiKeyHelper` present, `null`, absent,
   settings missing, symlinked, oversized and malformed; `.claude.json` with
@@ -628,7 +714,10 @@ New behaviour:
   exit 3 for `primaryApiKey`, a missing file, an invalid id,
   `CLAUDE_CONFIG_DIR` or a legacy file; `--claude-attribution-check` printing
   each step name and `ok`, matching variable names with exempt ones marked,
-  and never a value, uuid, key or email; no uuid or email
+  `environment` and the name `ANTHROPIC_BASE_URL` (never its value) when it
+  is set, and never a value, uuid, key or email; `ANTHROPIC_BASE_URL` set in
+  the collector's, identity refresh's and key command's environment changing
+  none of their outputs; no uuid or email
   bytes in any snapshot, state file, probe output or stderr (a literal
   `PRIVATE` marker in unlisted keys and the fixture uuid and email searched
   for).
@@ -653,6 +742,10 @@ asserts exit 0 and that the state file was written, otherwise the metric is
 null); collector snapshot time with one Claude mapping beside
 Codex mappings; Claude row count, available count and snapshot bytes. Baseline
 on `7a9fefb` reports the new metrics as null where the feature is absent.
+Under the G4 cost path the ten-value run is the expected per-turn path in a
+used session, so its wall time, CPU and lock hold are reported as per-turn
+costs, and the 100 ms lock-hold budget (D4, task 5.1) is judged as a per-turn
+budget.
 
 ### D12. Spec, AGENTS.md and README wording
 
@@ -676,8 +769,9 @@ AGENTS.md (task 4.1; not edited during planning):
   window report for agent `claude` and nothing else." New: "The Claude Code mod
   only observes events, passes each on unchanged, never waits on its reporter
   and sends only the pane, sequence, session id, window and, from a measurement
-  with fresh rate-limit evidence, at most two `five_hour`/`seven_day` windows
-  as argv; its reporter writes one bound window report for agent `claude` and,
+  with fresh evidence (a rate-limit window that moved or appeared, or a grown
+  session cost total), at most two `five_hour`/`seven_day` windows as argv,
+  never the cost itself; its reporter writes one bound window report for agent `claude` and,
   when attribution is allowed, those windows to the private Claude account
   state file, and nothing else."
 - Boundaries, authentication line. Old: "Never parse authentication files.
@@ -694,7 +788,7 @@ AGENTS.md (task 4.1; not edited during planning):
   observations use native read-only Codex account RPCs and, for Claude, mod
   rate limits attributed to the account `~/.claude.json` names at report time,
   refused whenever the environment, configuration location or settings could
-  select another credential, or Claude Code's usage cache when it names the
+  select another credential or API endpoint, or Claude Code's usage cache when it names the
   same account and is fresh. No login/reset/redemption mutation." The
   sentences after it are unchanged.
 - Native data contracts, allowances line. Old: "Allowances use explicit
@@ -712,45 +806,34 @@ need an active Claude Code session in a Herdr pane, the refusal conditions in
 one list, rerunning `--install-claude-mod` after updating, and removing Claude
 mappings before a runtime downgrade.
 
-## Plan-gate confirmations
+## Plan gate outcome
 
-These change specs or tasks and need the user's answer before implementation.
-The artefacts are written for the default shown.
+The user answered every plan-gate item on 2026-10-04. No gate item remains
+open. G1 and G4 differ from the earlier defaults; the design, specs and tasks
+are written for the answers below.
 
-- **G1. Decision 2 (inferred attribution).** Default: accepted as recommended,
-  with the refusal list in D4 and the residual risks below. Option: also
-  refuse when `ANTHROPIC_BASE_URL` is set, since a proxy's windows would
-  otherwise be attributed to the profile account (Risks); not in the default
-  because it is outside the D11 list the user accepted.
-- **G2. Decision 3 (argv) and in-flight evidence.** Default: decision 3 as
-  stated; evidence skipped while a run is in flight is lost and recorded.
-  Alternative: one extra argv value (the evidence time in epoch seconds) plus a
-  pending flag in the mod, which keeps that evidence with an honest older stamp.
-- **G3. Exemption for `CLAUDE_CODE_MESSAGING_TOKEN`.** Deviation from
-  decision 2, needs explicit consent. Proposed: a closed list holding only
-  that name, any other match refusing; the artefacts are written with it, and
-  its spec scenario stays only if the user agrees. Alternative: no exemption,
-  so attribution is refused in any session that exports this name (for
-  example with agent teams on); rows then come only from the fresh cache. The
-  name's purpose is unverified (Risks).
-- **G4. Source-time rule.** Default: stamp only on engine-reported window
-  movement (D2), accepting stale rows in quiet periods. Alternative: also
-  stamp when `cost` grew (option b), fresher but unproven.
-- **G5. One stamp for every window of a fresh sample.** Default: yes, because
-  `rateLimits` is one response's report (departure from D11's per-window rule).
-- **G6. Account switch within a session.** Default: the session is refused for
-  good (stricter than D11's "until the next change").
-- **G7. Key discovery, attribution check and readers.** Default: the new
-  `--claude-account-key` command, since diagnostics has no key path, and the
-  `--claude-attribution-check` dry run for the live check. With identity
-  refresh, these add three readers of `~/.claude.json` beyond decision 1's
-  reporter and collector, reading only the allowlisted paths; this widening
-  needs explicit consent.
-- **G8. Not built without explicit consent.** `$.session.authorize()` (would
-  require a `bearer` credential kind and close the gateway-without-spend-limit
-  risk) and a merged-settings `apiKeyHelper` check through `$.settings.read()`
-  (would cover project, local and managed settings). Both touch credential
-  configuration and need a further argv value.
+- **G1. Decision 2 (inferred attribution).** Accepted, and attribution is also
+  refused when `ANTHROPIC_BASE_URL` is set, with any value (D4 step 1). The
+  collector, identity refresh and `--claude-account-key` are unchanged.
+- **G2. Decision 3 (argv) and in-flight evidence.** Accepted as the default:
+  decision 3 as stated, and evidence skipped while a run is in flight is lost
+  (D2). No pending flag or evidence-time argv value.
+- **G3. Exemption.** Exactly `CLAUDE_CODE_MESSAGING_TOKEN` is exempt, on a
+  closed list naming only it; any other matching name refuses (D4 step 1).
+- **G4. Source-time rule.** A sample is also fresh, beyond the D2 rules, when
+  `cost` is in `changed` and the session's cost total strictly increased over
+  the mod's baseline (a real API response). Rewinds and compactions without
+  cost growth stay not fresh. The whole-point and window-appears path is kept
+  (D2 paths A and B).
+- **G5. One stamp per sample.** Accepted: every window of a fresh sample gets
+  the same stamp (D6).
+- **G6. Account switch within a session.** Accepted: the session is refused for
+  good (D6).
+- **G7. Readers.** Accepted: `--refresh-identities`, `--claude-account-key` and
+  `--claude-attribution-check` may read the same three allowlisted
+  `~/.claude.json` fields as the reporter and collector (D5, D8).
+- **G8.** Accepted as not built: no `$.session.authorize()` and no
+  merged-settings `apiKeyHelper` check through `$.settings.read()`.
 
 ## Programme mapping
 
@@ -785,19 +868,22 @@ programme. It implements the D11 rows of the research metric mapping
   not detected either: it relies on the next response carrying the new
   account's windows, which the profile then also names. Accepted by decision
   2; recorded.
-- **[Base URL proxy]** `ANTHROPIC_BASE_URL` without a credential variable is
-  not refused (it is outside the D11 list); a proxy's windows would be
-  attributed to the profile account. Refusing it is an option under G1.
+- **[Base URL proxy]** `ANTHROPIC_BASE_URL` set in the session's environment
+  refuses attribution (G1). A proxy or gateway configured without that
+  variable, for example only through settings `env` that Claude Code does not
+  export to children, is not detected (see [Credentials outside the
+  checks]).
 - **[API key appears later]** When `primaryApiKey` appears in `~/.claude.json`,
   nothing new is attributed, but windows stamped earlier stay visible for up to
   ten minutes until they turn stale. This fits decision 1, which forbids new
   attribution, and is recorded so the gate sees it.
 - **[Lock hold]** The account step parses up to 4 MiB and writes under
   `hook.lock` after the window outcome is decided; sibling reporters wait at
-  most 400 ms for the lock. The hold time is measured against the 100 ms
-  budget (D4).
+  most 400 ms for the lock. Under the G4 cost path this happens about once per
+  turn. The hold time is measured against the 100 ms per-turn budget (D4).
 - **[Gateway without `spend_limit`]** A gateway sign-in that omits
-  `spend_limit` is not detected without `$.session.authorize()` (G8).
+  `spend_limit` and sets no `ANTHROPIC_BASE_URL` is not detected without
+  `$.session.authorize()`, which is not built (G8).
 - **[Credentials outside the checks]** A token read from a well-known path
   without any variable, `apiKeyHelper` in project, local or managed settings,
   and a credential variable set only through settings `env` that Claude Code
@@ -807,12 +893,19 @@ programme. It implements the D11 rows of the research metric mapping
 - **[Exemption assumption]** `CLAUDE_CODE_MESSAGING_TOKEN` is assumed to serve
   Claude Code's in-session messaging, not API authentication. Unverified;
   task 5.3 records whether the name is present (names only, through
-  `--claude-attribution-check`). The exemption is G3.
-- **[Honest staleness]** Rows stay fresh only during heavy use; they are
-  stale in quiet periods and flicker or stay stale during moderate use (D2
-  arithmetic). Unknown is shown, never an old value
-  as current.
-- **[Evidence lost in flight]** See D2 and G2.
+  `--claude-attribution-check`). The user accepted the exemption (G3).
+- **[Staleness]** With the G4 cost path, rows stay fresh while a session
+  completes a turn at least every ten minutes, and turn unavailable after ten
+  minutes without a turn or a whole-point movement. Unknown is shown, never
+  an old value as current.
+- **[Cost without rate limits]** The cost path treats a strictly grown cost
+  total as proof of a priced API response, and `rateLimits` holds what the
+  last response reported. If a priced response carried no rate-limit reading,
+  for example a side request the engine does not take rate limits from, the
+  sample re-stamps the previous response's values at the new time, so a value
+  can look up to one turn newer than its response. Accepted by the user
+  (G4); the window values themselves are never invented.
+- **[Evidence lost in flight]** See D2; accepted (G2).
 - **[Different state or home directory]** A session with another
   `XDG_STATE_HOME` or `HOME` writes account state where the collector does not
   read it; the row stays unavailable.
@@ -829,7 +922,9 @@ programme. It implements the D11 rows of the research metric mapping
   argv and visible in `/proc/<pid>/cmdline` for under 2 s. They are not
   account identity. Accepted as for change 3's session id.
 - **[Mods API changes]** A changed `SessionRateLimit` or `changed` shape fails
-  the tail checks, so no rate limits are sent; the window report continues.
+  the tail checks, so no rate limits are sent; the window report continues. A
+  changed `SessionCost` shape makes the cost total unknown, so only the window
+  path can stamp.
 - **[Rollback]** A configuration with a `provider` field is rejected by older
   runtimes (Migration plan).
 
@@ -837,9 +932,10 @@ programme. It implements the D11 rows of the research metric mapping
 
 - **statusLine payload (research surface A).** Not used; change 3 shipped the
   mod.
-- **`cost` as response evidence.** G4.
-- **Pending evidence with an evidence-time argv value.** G2.
-- **Per-window value-change stamps (D11).** G5.
+- **Stamping only on window movement.** Rejected at the plan gate (G4): rows
+  would stay fresh only during heavy use.
+- **Pending evidence with an evidence-time argv value.** Not chosen (G2).
+- **Per-window value-change stamps (D11).** Not chosen (G5).
 - **Rate limits in pane metadata.** No free keys, and rate limits belong to an
   account, not a pane.
 - **A separate lock for the account state file.** Unneeded: `hook.lock`
@@ -851,8 +947,8 @@ programme. It implements the D11 rows of the research metric mapping
 
 ## Open questions
 
-Questions 1 to 4 do not change the specs or tasks; task 5.3 records answers
-where it can. Questions 5 to 8 are for the user at the plan gate.
+These do not change the specs or tasks; task 5.3 records answers where it
+can. The former plan-gate questions are answered (Plan gate outcome).
 
 1. **Cache utilisation scale.** Settled by comparing a non-zero cache value with
    the mod's `percentUsed` for the same window at the live check.
@@ -863,13 +959,3 @@ where it can. Questions 5 to 8 are for the user at the plan gate.
    staleness timing differs.
 4. **Unknown reset count on Claude cards.** A later change could add a provider-neutral
    row field for sources without reset passes.
-5. **Exemption (G3).** Consent to exempt `CLAUDE_CODE_MESSAGING_TOKEN` from
-   the accepted refusal list, or keep the list literal and accept refusal in
-   sessions that export it.
-6. **Readers (G7).** Consent to identity refresh, `--claude-account-key` and
-   `--claude-attribution-check` reading the allowlisted `~/.claude.json` paths
-   beyond decision 1's reporter and collector.
-7. **`ANTHROPIC_BASE_URL` (G1).** Whether to refuse attribution when it is
-   set.
-8. **Freshness (G4).** Whether stamping only on a moved used value, with rows
-   fresh only during heavy use, is acceptable.

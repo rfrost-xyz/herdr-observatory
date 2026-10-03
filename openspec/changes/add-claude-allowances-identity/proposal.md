@@ -19,20 +19,24 @@ This is change 4 of 4, the last change of the Claude Code parity programme.
 - **Mod.** On `session.measure` only, the mod appends the rate-limit windows it
   has fresh evidence for to the change 3 argv: at most two windows, kind
   `five_hour` or `seven_day`, `percentUsed` (0 to 100, at most one decimal) and
-  `resetsAt` as epoch seconds. A sample is fresh only when `rateLimits` is in
-  `changed`, a window's used value moved or a window appeared, and it is not
-  the first measurement since the mod loaded. Rewinds, compactions, reset
-  expiry, a reset time moving alone and start or `/resume` readings are never
-  fresh. Any `spend_limit` window means no rate limits are sent for that
-  sample or any later one until the session ends. The mod stays argv-only,
-  never awaited and never blocking.
+  `resetsAt` as epoch seconds. A sample is fresh only when it is not the first
+  measurement since the mod loaded or the session ended, and either
+  `rateLimits` is in `changed` with a window's used value moved or a window
+  appeared, or `cost` is in `changed` and the session's cost total strictly
+  grew over the previous measurement (a real API response; plan-gate answer
+  G4, 2026-10-04). The cost total stays in the mod's memory and is never
+  sent. Rewinds and compactions without cost growth, reset expiry, a reset
+  time moving alone and start or `/resume` readings are never fresh. Any
+  `spend_limit` window means no rate limits are sent for that sample or any
+  later one until the session ends. The mod stays argv-only, never awaited
+  and never blocking.
 - **Reporter.** `anton-runtime --report claude` accepts the optional rate-limit
   tail with strict validation; four values keep their change 3 meaning. After
   the pane binding and sequence checks and the unchanged window report, still
   under the hook lock, it decides attribution: it refuses when any environment
   variable name matches the credential refusal patterns (with a closed
-  exemption list proposed for `CLAUDE_CODE_MESSAGING_TOKEN`, subject to the
-  user's consent), `CLAUDE_CONFIG_DIR` is set, a legacy
+  exemption list naming only `CLAUDE_CODE_MESSAGING_TOKEN`, G3),
+  `ANTHROPIC_BASE_URL` is set (G1), `CLAUDE_CONFIG_DIR` is set, a legacy
   `~/.claude/.config.json` exists, user settings set `apiKeyHelper`, or
   `~/.claude.json` holds `primaryApiKey`. Otherwise it hashes
   `oauthAccount.accountUuid` with the prefix `observatory-claude-account-v1:`
@@ -55,7 +59,8 @@ This is change 4 of 4, the last change of the Claude Code parity programme.
   `--claude-attribution-check`, prints only the first refusing step's name and
   matching variable names, so a refused live session can be diagnosed. These
   and identity refresh widen decision 1's readers of `~/.claude.json` (reporter
-  and collector) and need the user's consent.
+  and collector) to the same three allowlisted fields, as the user accepted
+  at the plan gate (G7).
 - **Contracts.** Amend `account-allowances`, `omarchy-companion`,
   `harness-telemetry`, AGENTS.md and the READMEs to allow the three allowlisted
   `~/.claude.json` paths, the presence-only `apiKeyHelper` read, the inferred
@@ -92,8 +97,8 @@ None.
   (`--claude-account-key`, `--claude-attribution-check`, periodic
   provider-state read).
 - **Mod:** `hooks/claude/anton-observatory/hooks/register.js` (rate-limit tail,
-  freshness baseline, no `Date`). Installed mods refresh through
-  `--install-claude-mod`; the receipt version is unchanged.
+  freshness baseline with the cost total, no `Date`). Installed mods refresh
+  through `--install-claude-mod`; the receipt version is unchanged.
 - **Shell:** `uninstall.sh` removes the new state file. No new installed file.
 - **Tests:** Rust unit and process fixtures, `tests/test_claude_mod.mjs`,
   `tests/test_omarchy_state.cjs`, QML provider-neutral checks and an additive
