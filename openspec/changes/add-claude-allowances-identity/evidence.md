@@ -473,6 +473,99 @@ goes through the same object-only adaptor as the top level.
 - On the change: `cargo test --locked --offline` 283 + 22 + 6 + 54 passed,
   0 failed; fmt and clippy (`-D warnings`) clean.
 
+### Task 2.4: Claude allowance rows in the collector
+
+`allowances::mapping` accepts an optional `provider` (`codex` or `claude`);
+a Codex mapping's output is unchanged with or without it, and a Claude
+mapping's output carries `"provider":"claude"` and no `window_seconds`.
+`allowances::mapped` matches a key to a mapping of one provider, and every
+Codex match uses it: Codex cache and peer rows in the snapshot, `receive`
+(so `allowances.json` never stores a row for a Claude mapping) and the
+`--allowances-probe` filter. `snapshot_with` routes Claude mappings to
+`claude_account::row`, which reads `claude-allowances.json` from the
+collector's own state directory on each snapshot (`read_state`, with its
+own object-only structs, separate from the reporter's) and the in-memory
+provider-state reading. The local allowance worker replaces that reading
+with `claude_account::collector_reading()` at start and every 60 s, before
+the Codex refresh, only when a Claude mapping exists; a refusal or failure
+stores none, never an older reading. `model.rs` now says at most one window
+per row is pacing.
+
+Readings of the plan, recorded here:
+
+- A Claude row is available only when every window stamp lies within
+  `[-1, 600]` seconds of now. D7 bounds the oldest stamp; a window stamped
+  more than 1 s ahead now also makes the row unavailable, matching the
+  future bound on every other source.
+- A cache utilisation that is absent, not finite, negative, in (0, 1] or
+  above 100 leaves that window's used value unknown and keeps its reset; a
+  reset that does not parse, or parses before 1970, drops the window.
+- The collector, identity refresh and the key command read
+  `$HOME/.claude.json` only for an absolute `HOME`; otherwise nothing.
+- In the state file, an account key that is not 64 hex characters or
+  appears twice rejects the whole file; a window value of the wrong type
+  drops that window; session entries are checked only for their three keys
+  and count, their values are skipped.
+
+- Unit tests (`allowances::tests::`):
+  `provider_mappings_keep_codex_output_and_validate_claude`,
+  `account_cap_and_ids_are_shared_across_providers`,
+  `claude_rows_come_from_the_account_state_file` (both windows, an
+  unmapped key giving no row, one stale window, a window over 1 s ahead,
+  a past reset, `five_hour` only, no state),
+  `claude_state_file_is_rejected_whole_or_loses_bad_windows` (other
+  version, unknown keys at three depths, an unknown window kind, an array
+  where an object belongs, 33 sessions, 5 accounts, a bad or repeated key,
+  oversized, 0644, a link, each beside the valid file; ten bad window
+  values, `12.25` among them, each dropping only that window),
+  `claude_cache_fallback_matches_account_freshness_and_scale` (0 and 1.5
+  read, 0.5 and 1 unknown, half-up rounding, another account, stale and
+  future fetches, no cache, newer stamp per window both ways) and
+  `codex_sources_never_fill_claude_mappings` (a peer row carrying the
+  Claude key ignored beside the Claude row and the Codex row; `receive`
+  refusing a Claude-mapped row and keeping the Codex one).
+- Process fixtures (`native_process.rs`, cleared environment with no
+  `CLAUDE_CONFIG_DIR`, stderr captured):
+  `claude_collector_rows_follow_the_account_state_file` (state in another
+  directory leaves the row unavailable while both Codex rows are
+  available; then both windows exactly, no row or value for an unmapped
+  key, a peer row carrying the Claude key ignored while the peer's Codex
+  row is present; malformed, oversized, other-version, unknown-key, 0644
+  and symlinked files each unavailable and then available again; `12.25`
+  dropping one window; one stale window; a past reset; with
+  `ANTHROPIC_BASE_URL` set throughout; then `allowances.json` and
+  `--allowances-probe` holding one Codex row in the legacy key shape;
+  no `PRIVATE` marker, uuid, email or Claude key in any snapshot, stderr,
+  probe output or cache),
+  `claude_collector_cache_fallback_and_refusals` (eleven collectors: a
+  matched fresh cache whose resets carry `+01:00` with `.999` and `-02:30`
+  with `.5`, the ambiguous scale, the newer stamp per window,
+  `ANTHROPIC_BASE_URL` set, each available; another account, stale,
+  future, `primaryApiKey`, a mistyped `fetchedAtMs`, `CLAUDE_CONFIG_DIR`
+  and a legacy file, each unavailable with the Codex row available) and
+  `claude_mappings_share_the_account_cap_and_ids_through_the_cli` (two
+  Codex and two Claude mappings accepted with the probe output equal to the
+  Codex-only configuration's, a fifth of either provider rejected, a
+  shared id rejected beside a distinct one, `window_seconds` 604800
+  accepted and 18000 rejected, an unknown provider rejected, and the Codex
+  account mapped as Claude giving an empty probe).
+- Task 2.2's deferred process coverage of the collector extraction is
+  closed here: the matched cache, another account's cache, a mistyped
+  `fetchedAtMs` and the ISO parser (offsets and fractions) run through the
+  collector in `claude_collector_cache_fallback_and_refusals`. The email
+  extraction is covered in task 2.5.
+- On `7a9fefb` (full `git archive` extract, new `native_process.rs`
+  copied in): all three process fixtures fail, the two collector fixtures
+  at their first snapshot wait (`snapshot deadline`: the collector exits on
+  the `provider` key) and the CLI fixture at the four-mapping probe (exit 1).
+  The six unit tests cannot compile there (`claude_account`,
+  `snapshot_full`, `provider`, `has_claude` do not exist).
+- Mutation check on the change: dropping the D4 steps 2 and 3 check from
+  `collector_reading` fails the cache fixture at its `CLAUDE_CONFIG_DIR`
+  and legacy-file cases (`left: "available"`); reverted.
+- On the change: `cargo test --locked --offline` 289 + 22 + 6 + 57 passed,
+  0 failed; fmt and clippy (`-D warnings`) clean.
+
 ## After
 
 _Pending (task 5.1)._

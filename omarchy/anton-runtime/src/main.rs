@@ -1,7 +1,7 @@
 //! Native plugin-owned coordinator and bounded command entry points. No listener,
 //! interpreter, web feed, independent service or background observer installation.
 use anton_runtime::{
-    Result, allowances, collection, common, config, fleet, hooks_install, identity,
+    Result, allowances, claude_account, collection, common, config, fleet, hooks_install, identity,
     model::{Agent, AllowanceRow, Telemetry},
     native, navigation, packaging, reporter, telemetry,
 };
@@ -833,13 +833,25 @@ fn stream(root: PathBuf, state_path: PathBuf) -> Result<()> {
             }
         }));
     }
+    // The collector's Claude provider-state reading (D7): hashed key and
+    // usage cache only, replaced whole on every read.
+    let claude_reading = Arc::new(Mutex::new(None));
     if allowances::configuration(&base).is_some() {
         let config = base.clone();
         let path = state_path.clone();
         let owner = owner.clone();
         let stop = cancel.clone();
+        let reading = claude_reading.clone();
+        let reads_claude = allowances::has_claude(&base);
         workers.push(thread::spawn(move || {
             while !stop.stopped() {
+                // Before the Codex refresh, so a Codex row written in this
+                // pass is never newer than the Claude reading beside it. A
+                // refusal or failure stores `None`, never keeping an older
+                // reading alive.
+                if reads_claude {
+                    *reading.lock().unwrap() = claude_account::collector_reading();
+                }
                 let _ = allowances::refresh(&config, &path, Some(&owner), Some(&stop.flag));
                 stop.wait(Duration::from_secs(60));
             }
@@ -884,7 +896,9 @@ fn stream(root: PathBuf, state_path: PathBuf) -> Result<()> {
         }
         if last_allowances.elapsed() >= Duration::from_secs(2) {
             let remote: Vec<_> = remote_rows.values().flatten().cloned().collect();
-            let rows = allowances::snapshot(&state.config, &state_path, &remote);
+            let claude = claude_reading.lock().unwrap().clone();
+            let rows =
+                allowances::snapshot_with(&state.config, &state_path, &remote, claude.as_ref());
             if rows != state.allowances {
                 state.allowances = rows;
                 state.revision += 1;
@@ -1199,9 +1213,10 @@ fn cli() -> Result<()> {
             output(&json!(
                 allowances::probe(Some(&SIGNAL_STOP))
                     .ok()
-                    .filter(|row| row["account_key"]
-                        .as_str()
-                        .is_some_and(|key| config["allowances"]["accounts"].get(key).is_some()))
+                    .filter(|row| row["account_key"].as_str().is_some_and(|key| {
+                        allowances::mapped(&config["allowances"]["accounts"], key, "codex")
+                            .is_some()
+                    }))
                     .into_iter()
                     .collect::<Vec<_>>()
             ))

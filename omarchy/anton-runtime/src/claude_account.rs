@@ -647,6 +647,249 @@ pub fn record(
     common::atomic_owned_write(&path, &bytes).map_err(|_| STATE_UNSAFE)
 }
 
+/// The collector's provider-state reading (D7): the hashed account key and
+/// Claude Code's usage cache when it names the same account.
+pub type Reading = (String, Option<Cache>);
+
+/// The collector's provider-state read, made at most once per 60 s (D7).
+/// `$HOME` is the collector's own and must be absolute; D4 steps 2 and 3
+/// apply against its own environment, so `CLAUDE_CONFIG_DIR` or a legacy
+/// file means no reading. Any failure is `None`, never an older reading.
+pub fn collector_reading() -> Option<Reading> {
+    let home = absolute_home()?;
+    if location_refusal(&environment_names(), &home).is_some() {
+        return None;
+    }
+    collector(&home).ok()
+}
+/// `$HOME` when it is absolute: the collector, identity refresh and the
+/// key command never resolve `.claude.json` against the working directory.
+pub fn absolute_home() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .filter(|home| home.is_absolute())
+}
+
+/// One window of the account state file as the collector reads it. Its
+/// values are checked by hand, so a bad value drops the window and never
+/// the file (D7).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReadWindow {
+    #[serde(default)]
+    used_percent: serde_json::Value,
+    #[serde(default)]
+    resets_at: serde_json::Value,
+    #[serde(default)]
+    sampled_at: serde_json::Value,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReadWindows {
+    #[serde(default, deserialize_with = "optional_object")]
+    five_hour: Option<ReadWindow>,
+    #[serde(default, deserialize_with = "optional_object")]
+    seven_day: Option<ReadWindow>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReadAccount {
+    account_key: String,
+    #[serde(deserialize_with = "object")]
+    windows: ReadWindows,
+}
+/// Session entries are not read by the collector: only their shape and
+/// count are checked.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+struct ReadSession {
+    session: IgnoredAny,
+    account_key: IgnoredAny,
+    at: IgnoredAny,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReadState {
+    version: u64,
+    #[serde(deserialize_with = "objects")]
+    accounts: Vec<ReadAccount>,
+    #[serde(deserialize_with = "objects")]
+    sessions: Vec<ReadSession>,
+}
+/// One stamped Claude window: the used value in tenths (`None` when
+/// unknown), the reset in epoch seconds and the source stamp.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Observed {
+    tenths: Option<u16>,
+    resets_at: u64,
+    at: f64,
+}
+/// The `five_hour` and `seven_day` windows of one account.
+pub type Observations = [Option<Observed>; 2];
+/// A used percentage under the D3 grammar (0 to 100, at most one decimal),
+/// in tenths.
+fn tenths(value: f64) -> Option<u16> {
+    let tenths = (value * 10.0).round();
+    ((0.0..=1000.0).contains(&tenths) && (value * 10.0 - tenths).abs() <= 1e-6)
+        .then_some(tenths as u16)
+}
+fn read_window(window: Option<ReadWindow>) -> Option<Observed> {
+    let window = window?;
+    let tenths = tenths(window.used_percent.as_f64()?)?;
+    let resets_at = window
+        .resets_at
+        .as_u64()
+        .filter(|&reset| reset <= 99_999_999_999)?;
+    let at = window
+        .sampled_at
+        .as_f64()
+        .filter(|at| at.is_finite() && *at > 0.0)?;
+    Some(Observed {
+        tenths: Some(tenths),
+        resets_at,
+        at,
+    })
+}
+/// The account state file as the collector reads it on each snapshot (D7):
+/// `read_owned(16 KiB, private = true)`, version 1 only, at most 4 accounts
+/// and 32 sessions, no unknown key and no malformed structure, or nothing
+/// at all. A window with a bad value is dropped. No lock: the reporter
+/// replaces the file atomically.
+pub fn read_state(state: &Path) -> std::collections::BTreeMap<String, Observations> {
+    let mut result = std::collections::BTreeMap::new();
+    let Ok(bytes) = common::read_owned(&state.join(STATE_FILE), STATE_LIMIT, true) else {
+        return result;
+    };
+    let Ok(Object(file)) = serde_json::from_slice::<Object<ReadState>>(&bytes) else {
+        return result;
+    };
+    if file.version != 1
+        || file.accounts.len() > STATE_ACCOUNTS
+        || file.sessions.len() > STATE_SESSIONS
+    {
+        return result;
+    }
+    for account in file.accounts {
+        if !common::hex_id(&account.account_key, 64) || result.contains_key(&account.account_key) {
+            return std::collections::BTreeMap::new();
+        }
+        let windows = account.windows;
+        result.insert(
+            account.account_key,
+            [
+                read_window(windows.five_hour),
+                read_window(windows.seven_day),
+            ],
+        );
+    }
+    result
+}
+/// A cache utilisation read as a percentage (D7): 0, or above 1 up to 100,
+/// rounded half up to one decimal. A value in (0, 1] could be a fraction
+/// or a percentage and stays unknown, as does any other value.
+fn cache_tenths(value: Option<f64>) -> Option<u16> {
+    let value = value.filter(|v| v.is_finite())?;
+    if value == 0.0 || (value > 1.0 && value <= 100.0) {
+        // The small bias keeps a decimal half such as 12.35 from rounding
+        // down through binary noise.
+        Some((value * 10.0 + 0.5 + 1e-9).floor().min(1000.0) as u16)
+    } else {
+        None
+    }
+}
+/// The cache windows for `key` when the reading names that account and its
+/// fetch time is within `[-1, 600]` seconds of `now`; otherwise none.
+fn cache_windows(key: &str, reading: Option<&Reading>, now: f64) -> Observations {
+    let Some((reading_key, Some(cache))) = reading else {
+        return [None, None];
+    };
+    let at = cache.fetched_at_ms / 1000.0;
+    if reading_key != key || !(at.is_finite() && now - at >= -1.0 && now - at <= 600.0) {
+        return [None, None];
+    }
+    let window = |window: Option<CacheWindow>| {
+        let window = window?;
+        Some(Observed {
+            tenths: cache_tenths(window.utilization),
+            resets_at: u64::try_from(window.resets_at).ok()?,
+            at,
+        })
+    };
+    [window(cache.five_hour), window(cache.seven_day)]
+}
+/// The popover row of one Claude mapping (D7). Per window the newer of the
+/// reporter state and the cache wins by stamp. The row's source time is
+/// the oldest window stamp; the row is available only when every stamp is
+/// within `[-1, 600]` seconds of `now`, otherwise it is unavailable with no
+/// windows. A past reset keeps its stamp and loses its values.
+pub fn row(
+    mapping: &serde_json::Value,
+    key: &str,
+    state: Option<&Observations>,
+    reading: Option<&Reading>,
+    now: f64,
+) -> Option<crate::model::AllowanceRow> {
+    use crate::model::{AllowanceRow, AllowanceStatus, AllowanceWindow};
+    let unavailable = AllowanceRow {
+        provider: "claude".into(),
+        provider_label: "Claude".into(),
+        account_id: mapping["id"].as_str()?.to_owned(),
+        label: mapping["label"].as_str()?.to_owned(),
+        status: AllowanceStatus::Unavailable,
+        status_text: None,
+        plan: None,
+        sampled_at: None,
+        reset_count: None,
+        reset_expires_at: None,
+        windows: vec![],
+    };
+    let cache = cache_windows(key, reading, now);
+    let state = state.copied().unwrap_or([None, None]);
+    let mut windows = Vec::new();
+    let mut stamps = Vec::new();
+    for (index, (kind, label, duration_s, pacing)) in [
+        ("five_hour", "5-hour", 18_000, false),
+        ("seven_day", "7-day", 604_800, true),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let chosen = match (state[index], cache[index]) {
+            (Some(reported), Some(cached)) if cached.at > reported.at => Some(cached),
+            (Some(reported), _) => Some(reported),
+            (None, cached) => cached,
+        };
+        let Some(window) = chosen else {
+            continue;
+        };
+        stamps.push(window.at);
+        let current = window.resets_at as f64 > now;
+        windows.push(AllowanceWindow {
+            kind: kind.into(),
+            label: label.into(),
+            used_percent: match window.tenths {
+                Some(tenths) if current => Some(f64::from(tenths) / 10.0),
+                _ => None,
+            },
+            resets_at: current.then_some(window.resets_at),
+            duration_s,
+            pacing,
+        });
+    }
+    let oldest = stamps.iter().copied().fold(f64::INFINITY, f64::min);
+    let newest = stamps.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    if windows.is_empty() || now - oldest > 600.0 || newest - now > 1.0 {
+        return Some(unavailable);
+    }
+    Some(AllowanceRow {
+        status: AllowanceStatus::Available,
+        sampled_at: Some(oldest),
+        windows,
+        ..unavailable
+    })
+}
+
 /// Days since 1970-01-01 of a proleptic Gregorian date.
 fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     let year = if month <= 2 { year - 1 } else { year };

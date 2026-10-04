@@ -243,11 +243,15 @@ struct Stream {
 }
 impl Stream {
     fn new(f: &Fixture) -> Self {
-        let mut child = f
-            .command()
+        let mut command = f.command();
+        command.stderr(Stdio::null());
+        Self::spawn(command)
+    }
+    /// A collector from `command`, whose stderr the caller has set.
+    fn spawn(mut command: Command) -> Self {
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
             .spawn()
             .unwrap();
         let stdout = child.stdout.take().unwrap();
@@ -3728,4 +3732,636 @@ fn hook_receipt_writers_refuse_as_busy_through_the_cli() {
     drop(lock);
     f.install_step("--uninstall-claude-mod");
     assert!(!f.mod_root().exists());
+}
+
+/// A Claude collector or command (design D11): a cleared environment with
+/// an absolute `HOME`, `PATH` and the ssh stub's variables, then `env`. The
+/// default `CLAUDE_CONFIG_DIR` of `Fixture::command` is not set.
+fn claude_command(f: &Fixture, env: &[(&str, &str)]) -> Command {
+    let mut command = Command::new(BIN);
+    command
+        .env_clear()
+        .args([
+            "--root",
+            f.root.to_str().unwrap(),
+            "--state",
+            f.state.to_str().unwrap(),
+        ])
+        .env("HOME", f.dir.join("home"))
+        .env(
+            "PATH",
+            format!("{}:/usr/bin:/bin", f.dir.join("bin").display()),
+        )
+        .env("ANTON_TEST_BINARY", BIN)
+        .env("ANTON_TEST_PEER", &f.peer)
+        .env("ANTON_TEST_PEER_STATE", f.dir.join("peer-state"))
+        .envs(env.iter().copied());
+    command
+}
+/// A collector from `claude_command`, its stderr kept in `collector.err`.
+fn claude_stream(f: &Fixture, env: &[(&str, &str)]) -> Stream {
+    let mut command = claude_command(f, env);
+    command.stderr(fs::File::create(f.dir.join("collector.err")).unwrap());
+    Stream::spawn(command)
+}
+/// The Codex key the fixture `codex` reports.
+fn codex_key() -> String {
+    anton_runtime::allowances::account_key("synthetic-account").unwrap()
+}
+/// A configuration with the local host, `accounts` and optional `sources`.
+fn claude_config(f: &Fixture, accounts: Value, sources: Option<Value>) {
+    let mut allowances = json!({ "accounts": accounts });
+    if let Some(sources) = sources {
+        allowances["sources"] = sources;
+    }
+    write(
+        &f.root.join(".config.json"),
+        json!({"hosts":[{"id":"local","socket_path":f.dir.join("herdr.sock")}],
+            "allowances":allowances})
+        .to_string(),
+        0o600,
+    );
+}
+/// One Codex mapping for the fixture `codex` and one Claude mapping for the
+/// fixture profile.
+fn mixed_accounts() -> Value {
+    json!({codex_key():{"id":"codex","label":"Codex","category":"Work"},
+        claude_account_key(CLAUDE_UUID):{"id":"claude","label":"Claude","category":"Personal","provider":"claude"}})
+}
+/// Replaces `path` atomically with `bytes` at `mode`, so a polling reader
+/// never sees a torn file.
+fn replace(path: &Path, bytes: impl AsRef<[u8]>, mode: u32) {
+    let temporary = path.with_extension("fixture-tmp");
+    write(&temporary, bytes, mode);
+    let _ = fs::remove_file(path);
+    fs::rename(temporary, path).unwrap();
+}
+/// A version 1 account state file: `windows` as (kind, used, reset, stamp)
+/// for the fixture profile's account, then `extra` accounts.
+fn account_state(windows: &[(&str, Value, u64, f64)], extra: &[Value]) -> Value {
+    let mut map = serde_json::Map::new();
+    for (kind, used, reset, at) in windows {
+        map.insert(
+            kind.to_string(),
+            json!({"used_percent":used,"resets_at":reset,"sampled_at":at}),
+        );
+    }
+    let mut accounts = vec![json!({"account_key":claude_account_key(CLAUDE_UUID),"windows":map})];
+    accounts.extend(extra.iter().cloned());
+    json!({"version":1,"accounts":accounts,"sessions":[
+        {"session":claude_session_key(CLAUDE_ID),"account_key":claude_account_key(CLAUDE_UUID),"at":common::now()}]})
+}
+/// The allowance row with `id`, if any.
+fn allowance<'a>(snapshot: &'a Value, id: &str) -> Option<&'a Value> {
+    snapshot["allowances"]
+        .as_array()?
+        .iter()
+        .find(|row| row["account_id"] == id)
+}
+fn available(snapshot: &Value, id: &str) -> bool {
+    allowance(snapshot, id).is_some_and(|row| row["status"] == "available")
+}
+/// A Claude window as the popover carries it.
+fn claude_window(kind: &str, used: Value, reset: Value) -> Value {
+    let (label, duration, pacing) = match kind {
+        "five_hour" => ("5-hour", 18000, false),
+        _ => ("7-day", 604800, true),
+    };
+    json!({"kind":kind,"label":label,"used_percent":used,"resets_at":reset,
+        "duration_s":duration,"pacing":pacing})
+}
+/// `epoch` as an ISO 8601 time at `offset` minutes with `fraction`.
+fn iso(epoch: i64, offset: i64, fraction: &str) -> String {
+    let local = epoch + offset * 60;
+    let (days, seconds) = (local.div_euclid(86400), local.rem_euclid(86400));
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    let zone = if offset == 0 {
+        "Z".to_owned()
+    } else {
+        let sign = if offset < 0 { '-' } else { '+' };
+        format!("{sign}{:02}:{:02}", offset.abs() / 60, offset.abs() % 60)
+    };
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}{fraction}{zone}",
+        seconds / 3600,
+        seconds / 60 % 60,
+        seconds % 60
+    )
+}
+/// A synthetic `.claude.json` for `profile` with a usage cache naming
+/// `cache` fetched at `fetched` (raw JSON) with windows `five` and `seven`.
+fn cache_body(profile: &str, cache: &str, fetched: &str, five: &str, seven: &str) -> String {
+    format!(
+        r#"{{"projects":{{"/PRIVATE/path":{{"history":["PRIVATE"]}}}},"oauthAccount":{{"accountUuid":"{profile}","emailAddress":"{CLAUDE_EMAIL}","organizationName":"PRIVATE"}},"cachedUsageUtilization":{{"accountUuid":"{cache}","fetchedAtMs":{fetched},"utilization":{{"five_hour":{five},"seven_day":{seven},"seven_day_opus":{{"utilization":"PRIVATE"}},"limits":[{{"kind":"PRIVATE"}}]}},"spend":"PRIVATE"}}}}"#
+    )
+}
+/// The legacy Codex source-row keys of the probe and `allowances.json`.
+fn codex_row_keys() -> Vec<String> {
+    legacy_allowances()["legacy_keys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_owned())
+        .collect()
+}
+
+/// D7: the collector builds the Claude row from its own state directory's
+/// account state file: unavailable while the state lives elsewhere, then
+/// both windows; unmapped accounts and a peer row carrying the Claude key
+/// add nothing while the peer's Codex row is present; each unsafe or
+/// invalid file is rejected beside the valid one; a `12.25` window is
+/// dropped; one stale window makes the row stale; a past reset keeps the
+/// row. `ANTHROPIC_BASE_URL` does not affect the collector (G1). Then
+/// `allowances.json` and `--allowances-probe` hold only Codex rows in
+/// their existing shape, and nothing private reaches any output.
+#[test]
+fn claude_collector_rows_follow_the_account_state_file() {
+    let f = Fixture::new();
+    f.codex();
+    let now = common::now();
+    let peer_key = "b".repeat(64);
+    let claude_key = claude_account_key(CLAUDE_UUID);
+    let peer_row = |key: &str, remaining: u64| {
+        json!({"account_key":key,"sampled_at":now,"plan":"pro","weekly_remaining":remaining,
+            "weekly_resets_at":now as u64 + 3600,"reset_count":1,"reset_expires_at":null})
+    };
+    write(
+        &f.dir.join("remote-allowances.json"),
+        json!([peer_row(&claude_key, 1), peer_row(&peer_key, 60)]).to_string(),
+        0o600,
+    );
+    write(&f.dir.join("bin/ssh"),b"#!/bin/sh\nfor arg do last=$arg; done\nbase=\"$ANTON_TEST_PEER/..\"\ncase $last in\n *--allowances-probe*) cat > /dev/null; cat \"$base/remote-allowances.json\";;\n *) exit 91;;\nesac\n",0o755);
+    let mut accounts = mixed_accounts();
+    accounts[&peer_key] = json!({"id":"peer","label":"Peer","category":"Work"});
+    claude_config(&f, accounts, Some(json!([{"target":"fixture"}])));
+    // A stale cache and private values in the provider state.
+    write(
+        &f.dir.join("home/.claude.json"),
+        provider_body(CLAUDE_UUID, ""),
+        0o600,
+    );
+    let reset = now as u64 + 7200;
+    let fresh = now - 30.0;
+    let good = account_state(
+        &[
+            ("five_hour", json!(12.5), reset, fresh),
+            ("seven_day", json!(40), reset + 86400, fresh - 0.5),
+        ],
+        &[json!({"account_key":"d".repeat(64),"windows":{"seven_day":
+            {"used_percent":77.7,"resets_at":reset,"sampled_at":fresh}}})],
+    );
+    // The reporter wrote to another state directory.
+    let other = f.dir.join("other-state");
+    fs::create_dir(&other).unwrap();
+    replace(
+        &other.join("claude-allowances.json"),
+        good.to_string(),
+        0o600,
+    );
+    let path = f.state.join("claude-allowances.json");
+    let mut stream = claude_stream(&f, &[("ANTHROPIC_BASE_URL", "https://PRIVATE.invalid")]);
+    let mut seen = vec![];
+    let snapshot = stream.until(|v| available(v, "codex") && available(v, "peer"));
+    assert_eq!(
+        allowance(&snapshot, "claude").unwrap()["status"],
+        "unavailable"
+    );
+    seen.push(snapshot);
+    // In the collector's own state directory: both windows.
+    replace(&path, good.to_string(), 0o600);
+    let snapshot = stream.until(|v| available(v, "claude"));
+    let row = allowance(&snapshot, "claude").unwrap();
+    assert_eq!(
+        *row,
+        json!({"provider":"claude","provider_label":"Claude","account_id":"claude",
+            "label":"Claude","status":"available","status_text":null,"plan":null,
+            "sampled_at":fresh - 0.5,"reset_count":null,"reset_expires_at":null,
+            "windows":[claude_window("five_hour",json!(12.5),json!(reset)),
+                claude_window("seven_day",json!(40.0),json!(reset + 86400))]})
+    );
+    let rows = snapshot["allowances"].as_array().unwrap();
+    assert_eq!(rows.len(), 3);
+    assert_eq!(
+        allowance(&snapshot, "peer").unwrap()["windows"][0]["used_percent"],
+        40.0
+    );
+    assert_eq!(
+        allowance(&snapshot, "codex").unwrap()["windows"][0]["used_percent"],
+        25.0
+    );
+    assert!(!snapshot.to_string().contains("77.7"));
+    assert!(!snapshot.to_string().contains(&claude_key));
+    seen.push(snapshot.clone());
+    // Each rejected file, then the valid one again.
+    let mut version = good.clone();
+    version["version"] = json!(2);
+    let mut unknown = good.clone();
+    unknown["accounts"][0]["windows"]["five_hour"]["theme"] = json!("PRIVATE");
+    let mut oversized = good.clone();
+    oversized["sessions"][0]["session"] = json!("x".repeat(16_384));
+    let rejected: Vec<(&str, Vec<u8>, u32)> = vec![
+        ("malformed", b"{\"version\":1,".to_vec(), 0o600),
+        ("oversized", oversized.to_string().into_bytes(), 0o600),
+        ("version", version.to_string().into_bytes(), 0o600),
+        ("unknown key", unknown.to_string().into_bytes(), 0o600),
+        ("mode 0644", good.to_string().into_bytes(), 0o644),
+        ("symlink", vec![], 0o600),
+    ];
+    for (name, bytes, mode) in rejected {
+        if name == "symlink" {
+            let real = f.dir.join("real-claude-allowances.json");
+            write(&real, good.to_string(), 0o600);
+            fs::remove_file(&path).unwrap();
+            std::os::unix::fs::symlink(&real, &path).unwrap();
+        } else {
+            replace(&path, bytes, mode);
+        }
+        let snapshot = stream.until(|v| !available(v, "claude"));
+        assert_eq!(
+            allowance(&snapshot, "claude").unwrap()["windows"],
+            json!([]),
+            "{name}"
+        );
+        assert!(available(&snapshot, "codex"), "{name}");
+        seen.push(snapshot);
+        replace(&path, good.to_string(), 0o600);
+        seen.push(stream.until(|v| available(v, "claude")));
+    }
+    // A `12.25` used value drops only that window.
+    let mut quarter = good.clone();
+    quarter["accounts"][0]["windows"]["five_hour"]["used_percent"] = json!(12.25);
+    replace(&path, quarter.to_string(), 0o600);
+    let snapshot = stream.until(|v| {
+        allowance(v, "claude")
+            .is_some_and(|row| row["windows"].as_array().is_some_and(|w| w.len() == 1))
+    });
+    assert_eq!(
+        allowance(&snapshot, "claude").unwrap()["windows"],
+        json!([claude_window(
+            "seven_day",
+            json!(40.0),
+            json!(reset + 86400)
+        )])
+    );
+    seen.push(snapshot);
+    // One stale window makes the row stale.
+    let stale = account_state(
+        &[
+            ("five_hour", json!(12.5), reset, fresh),
+            ("seven_day", json!(40), reset + 86400, now - 700.0),
+        ],
+        &[],
+    );
+    replace(&path, stale.to_string(), 0o600);
+    seen.push(stream.until(|v| !available(v, "claude")));
+    // A past reset keeps the row and its stamp, without values.
+    let past = account_state(
+        &[
+            ("five_hour", json!(12.5), now as u64 - 1, fresh),
+            ("seven_day", json!(40), reset + 86400, fresh),
+        ],
+        &[],
+    );
+    replace(&path, past.to_string(), 0o600);
+    let snapshot = stream.until(|v| available(v, "claude"));
+    let row = allowance(&snapshot, "claude").unwrap();
+    assert_eq!(row["sampled_at"], fresh);
+    assert_eq!(
+        row["windows"],
+        json!([
+            claude_window("five_hour", Value::Null, Value::Null),
+            claude_window("seven_day", json!(40.0), json!(reset + 86400))
+        ])
+    );
+    seen.push(snapshot);
+    stream.close();
+    // The Codex cache and probe keep their shape and hold no Claude data.
+    let cache: Value =
+        serde_json::from_slice(&fs::read(f.state.join("allowances.json")).unwrap()).unwrap();
+    let cache = cache.as_array().unwrap();
+    assert_eq!(cache.len(), 1);
+    assert_eq!(keys(&cache[0]), codex_row_keys());
+    assert_eq!(cache[0]["account_key"], codex_key());
+    let probe = claude_command(&f, &[])
+        .arg("--allowances-probe")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(probe.status.success());
+    let rows: Value = serde_json::from_slice(&probe.stdout).unwrap();
+    assert_eq!(rows.as_array().unwrap().len(), 1);
+    assert_eq!(keys(&rows[0]), codex_row_keys());
+    assert_eq!(rows[0]["account_key"], codex_key());
+    assert_eq!(rows[0]["weekly_remaining"], 75);
+    for bytes in [
+        probe.stdout.clone(),
+        probe.stderr.clone(),
+        fs::read(f.dir.join("collector.err")).unwrap(),
+        serde_json::to_vec(&seen).unwrap(),
+        fs::read(f.state.join("allowances.json")).unwrap(),
+    ] {
+        assert_no_secret(&bytes);
+        assert!(!String::from_utf8_lossy(&bytes).contains(&claude_key));
+    }
+}
+
+/// D7, D5: Claude Code's usage cache as the collector's fallback, one
+/// collector per case: a matched fresh cache with offset and fractional
+/// resets (0 and 1.5 read, 0.5 and 1 unknown), the newer stamp winning per
+/// window over the reporter state, `ANTHROPIC_BASE_URL` set; and no cache
+/// for another account, a stale or future fetch, `primaryApiKey`, a
+/// mistyped `fetchedAtMs`, `CLAUDE_CONFIG_DIR` or a legacy file, each with
+/// the Codex row still available.
+#[test]
+fn claude_collector_cache_fallback_and_refusals() {
+    let now = common::now();
+    let fetched = ((now - 30.0) * 1000.0).floor() as u64;
+    let at = fetched as f64 / 1000.0;
+    let reset = now as i64 + 7200;
+    let window = |used: &str, epoch: i64, offset: i64, fraction: &str| {
+        format!(
+            r#"{{"utilization":{used},"resets_at":"{}"}}"#,
+            iso(epoch, offset, fraction)
+        )
+    };
+    let body = |profile: &str, cache: &str, fetched: &str, five: &str, seven: &str| {
+        cache_body(profile, cache, fetched, five, seven)
+    };
+    let fetched_text = fetched.to_string();
+    let read = body(
+        CLAUDE_UUID,
+        CLAUDE_UUID,
+        &fetched_text,
+        &window("0", reset, 60, ".999"),
+        &window("1.5", reset + 3600, -150, ".5"),
+    );
+    let expected = json!([
+        claude_window("five_hour", json!(0.0), json!(reset)),
+        claude_window("seven_day", json!(1.5), json!(reset + 3600))
+    ]);
+    let other = "00000000-0000-4000-8000-0000000000ff";
+    struct Case {
+        name: &'static str,
+        body: String,
+        env: Vec<(&'static str, &'static str)>,
+        legacy: bool,
+        state: Option<Value>,
+        expected: Option<(f64, Value)>,
+    }
+    let case = |name, body: String, expected| Case {
+        name,
+        body,
+        env: vec![],
+        legacy: false,
+        state: None,
+        expected,
+    };
+    let mut cases = vec![
+        case("matched", read.clone(), Some((at, expected.clone()))),
+        case(
+            "ambiguous scale",
+            body(
+                CLAUDE_UUID,
+                CLAUDE_UUID,
+                &fetched_text,
+                &window("0.5", reset, 0, ""),
+                &window("1", reset, 0, ""),
+            ),
+            Some((
+                at,
+                json!([
+                    claude_window("five_hour", Value::Null, json!(reset)),
+                    claude_window("seven_day", Value::Null, json!(reset))
+                ]),
+            )),
+        ),
+        case(
+            "other account",
+            body(
+                CLAUDE_UUID,
+                other,
+                &fetched_text,
+                &window("5", reset, 0, ""),
+                "null",
+            ),
+            None,
+        ),
+        case(
+            "stale",
+            body(
+                CLAUDE_UUID,
+                CLAUDE_UUID,
+                &(fetched - 700_000).to_string(),
+                &window("5", reset, 0, ""),
+                "null",
+            ),
+            None,
+        ),
+        case(
+            "future",
+            body(
+                CLAUDE_UUID,
+                CLAUDE_UUID,
+                &(fetched + 60_000).to_string(),
+                &window("5", reset, 0, ""),
+                "null",
+            ),
+            None,
+        ),
+        case(
+            "primaryApiKey",
+            read.replacen('{', r#"{"primaryApiKey":"PRIVATE","#, 1),
+            None,
+        ),
+        case(
+            "mistyped fetchedAtMs",
+            body(
+                CLAUDE_UUID,
+                CLAUDE_UUID,
+                r#""PRIVATE""#,
+                &window("5", reset, 0, ""),
+                "null",
+            ),
+            None,
+        ),
+    ];
+    let mut base_url = case(
+        "ANTHROPIC_BASE_URL",
+        read.clone(),
+        Some((at, expected.clone())),
+    );
+    base_url.env = vec![("ANTHROPIC_BASE_URL", "https://PRIVATE.invalid")];
+    cases.push(base_url);
+    let mut config_dir = case("CLAUDE_CONFIG_DIR", read.clone(), None);
+    config_dir.env = vec![("CLAUDE_CONFIG_DIR", "")];
+    cases.push(config_dir);
+    let mut legacy = case("legacy file", read.clone(), None);
+    legacy.legacy = true;
+    cases.push(legacy);
+    // The reporter's `five_hour` is newer than the cache, its `seven_day`
+    // older.
+    let mut newer = case(
+        "newer stamp wins",
+        body(
+            CLAUDE_UUID,
+            CLAUDE_UUID,
+            &((now - 100.0) as u64 * 1000).to_string(),
+            &window("5", reset, 0, ""),
+            &window("6", reset, 0, ""),
+        ),
+        Some((
+            (now - 100.0) as u64 as f64,
+            json!([
+                claude_window("five_hour", json!(20.0), json!(reset + 1)),
+                claude_window("seven_day", json!(6.0), json!(reset))
+            ]),
+        )),
+    );
+    newer.state = Some(account_state(
+        &[
+            ("five_hour", json!(20), reset as u64 + 1, now - 10.0),
+            ("seven_day", json!(30), reset as u64 + 1, now - 200.0),
+        ],
+        &[],
+    ));
+    cases.push(newer);
+    let runs: Vec<_> = cases
+        .into_iter()
+        .map(|case| {
+            thread::spawn(move || {
+                let f = Fixture::new();
+                f.codex();
+                claude_config(&f, mixed_accounts(), None);
+                write(&f.dir.join("home/.claude.json"), &case.body, 0o600);
+                if case.legacy {
+                    fs::create_dir_all(f.dir.join("home/.claude")).unwrap();
+                    write(&f.dir.join("home/.claude/.config.json"), "{}", 0o600);
+                }
+                if let Some(state) = &case.state {
+                    replace(
+                        &f.state.join("claude-allowances.json"),
+                        state.to_string(),
+                        0o600,
+                    );
+                }
+                let mut stream = claude_stream(&f, &case.env);
+                let want = case.expected.is_some();
+                let snapshot =
+                    stream.until(|v| available(v, "codex") && (!want || available(v, "claude")));
+                stream.close();
+                let row = allowance(&snapshot, "claude").unwrap();
+                match &case.expected {
+                    Some((at, windows)) => {
+                        assert_eq!(row["status"], "available", "{}", case.name);
+                        assert_eq!(row["sampled_at"].as_f64(), Some(*at), "{}", case.name);
+                        assert_eq!(row["windows"], *windows, "{}", case.name);
+                    }
+                    None => {
+                        assert_eq!(row["status"], "unavailable", "{}", case.name);
+                        assert_eq!(row["windows"], json!([]), "{}", case.name);
+                    }
+                }
+                assert_no_secret(snapshot.to_string().as_bytes());
+                assert_no_secret(&fs::read(f.dir.join("collector.err")).unwrap());
+            })
+        })
+        .collect();
+    for run in runs {
+        run.join().unwrap();
+    }
+}
+
+/// D7 through the CLI: `--allowances-probe` accepts a Claude mapping beside
+/// Codex mappings with the Codex output unchanged; the four-account cap
+/// and unique ids are shared across providers, a Claude `window_seconds`
+/// must be absent or 604800, and an unknown provider is rejected, each
+/// beside its accepted neighbour.
+#[test]
+fn claude_mappings_share_the_account_cap_and_ids_through_the_cli() {
+    let f = Fixture::new();
+    f.codex();
+    let probe = |accounts: Value| {
+        claude_config(&f, accounts, None);
+        let output = claude_command(&f, &[])
+            .arg("--allowances-probe")
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert_no_secret(&output.stderr);
+        output
+    };
+    let codex = json!({"id":"codex","label":"Codex","category":"Work"});
+    let claude =
+        |id: &str| json!({"id":id,"label":"Claude","category":"Personal","provider":"claude"});
+    let strip = |output: &std::process::Output| {
+        let mut rows: Value = serde_json::from_slice(&output.stdout).unwrap();
+        rows[0]["sampled_at"] = Value::Null;
+        rows
+    };
+    let alone = probe(json!({codex_key():codex}));
+    assert!(alone.status.success());
+    let key = |n: u8| format!("{n}").repeat(64);
+    let four = json!({codex_key():codex,key(1):{"id":"codex-b","label":"B","category":"Work"},
+        key(2):claude("claude-a"),key(3):claude("claude-b")});
+    let accepted = probe(four.clone());
+    assert!(
+        accepted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&accepted.stderr)
+    );
+    assert_eq!(strip(&accepted), strip(&alone));
+    assert_eq!(keys(&strip(&accepted)[0]), codex_row_keys());
+    for fifth in [
+        claude("claude-c"),
+        json!({"id":"codex-c","label":"C","category":"Work"}),
+    ] {
+        let mut five = four.clone();
+        five[key(4)] = fifth;
+        assert!(!probe(five).status.success());
+    }
+    // Ids unique across providers.
+    assert!(
+        !probe(json!({codex_key():codex,key(2):claude("codex")}))
+            .status
+            .success()
+    );
+    assert!(
+        probe(json!({codex_key():codex,key(2):claude("other")}))
+            .status
+            .success()
+    );
+    // A Claude `window_seconds`.
+    for (window, ok) in [(json!(604800), true), (json!(18000), false)] {
+        let mut mapping = claude("claude");
+        mapping["window_seconds"] = window;
+        assert_eq!(
+            probe(json!({codex_key():codex,key(2):mapping}))
+                .status
+                .success(),
+            ok
+        );
+    }
+    // An unknown provider.
+    let mut unknown = claude("claude");
+    unknown["provider"] = json!("openai");
+    assert!(
+        !probe(json!({codex_key():codex,key(2):unknown}))
+            .status
+            .success()
+    );
+    // The Codex account mapped as Claude is no Codex row for the probe.
+    let output = probe(json!({codex_key():claude("claude")}));
+    assert!(output.status.success());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        json!([])
+    );
 }
