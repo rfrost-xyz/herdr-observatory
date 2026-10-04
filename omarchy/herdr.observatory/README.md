@@ -318,7 +318,9 @@ Omitting or disabling `fleet_discovery` keeps the fixed configuration behaviour.
 
 Use the installed executable's `--refresh-identities` command to refresh verified
 emails into `.accounts.json`. A mapped Claude account's email comes only from the
-local `~/.claude.json`, never from a peer or a Codex account read. Clicking any allowance conceals every email, Codex and Claude
+local `~/.claude.json`, never from a peer or a Codex account read. When no Codex
+source answers, a refresh that finds only the Claude email keeps the stored
+Codex emails. Clicking any allowance conceals every email, Codex and Claude
 alike, using locally persisted aliases. Concealed identities stay out of tooltips and
 accessibility text. `--refresh-allowances` requests a bounded local account
 refresh without starting an agent; periodic remote account reads run independently.

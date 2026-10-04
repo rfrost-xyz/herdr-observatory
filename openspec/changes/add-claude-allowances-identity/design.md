@@ -553,7 +553,13 @@ settings remain residual risks (Risks).
   email passes the existing `email()` check, it is added to `.accounts.json`
   under the mapping id. No peer is asked for Claude identity. A file with
   `primaryApiKey`, an unmapped key or an invalid email adds nothing. The email
-  never enters snapshots, diagnostics or the account state file.
+  never enters snapshots, diagnostics or the account state file. When neither
+  the Codex RPC nor any peer matched a Codex mapping, a run that finds only the
+  Claude email keeps the existing file's emails for current Codex mappings
+  (read with `read_owned`, private, at most 16 KiB; valid emails only),
+  because before this change such a run wrote nothing and kept them. Unmapped
+  ids and the earlier Claude entry are not carried, and the reported count is
+  the fresh matches only.
 - **Provider check on identity rows.** The Codex RPC row and peer
   `--identity-probe` rows are matched to Codex mappings only (`identity::mapped`
   today checks no provider). A Claude email comes only from the local provider

@@ -89,6 +89,41 @@ fn claude_email<S: AsRef<OsStr>>(
     let address = address.filter(|v| email(v))?;
     Some((mapping["id"].as_str()?.to_owned(), address))
 }
+/// The earlier file's emails for Codex mappings, carried into `result`
+/// when no Codex source answered: before Claude mappings existed such a run
+/// wrote nothing, so a local Claude email alone must not wipe them (D8).
+/// Only ids that are current Codex mappings and valid emails are kept; a
+/// Claude entry is never carried, so it always reflects the latest read.
+fn carry_codex(result: &mut serde_json::Map<String, Value>, previous: &Value, accounts: &Value) {
+    let Some(accounts) = accounts.as_object() else {
+        return;
+    };
+    for value in accounts.values() {
+        let Ok(mapping) = allowances::mapping(value) else {
+            continue;
+        };
+        if allowances::provider(&mapping) != "codex" {
+            continue;
+        }
+        let Some(id) = mapping["id"].as_str() else {
+            continue;
+        };
+        if let Some(address) = previous[id].as_str().filter(|v| email(v)) {
+            result
+                .entry(id.to_owned())
+                .or_insert_with(|| json!(address));
+        }
+    }
+}
+/// The existing private identity file, or `null` when it is missing,
+/// unsafe or malformed.
+fn previous_identities(output: &Path) -> Value {
+    common::read_owned(output, IDENTITY_LIMIT, true)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .unwrap_or(Value::Null)
+}
+const IDENTITY_LIMIT: usize = 16 * 1024;
 pub fn refresh(config: &Value, output: &Path, cancel: Option<&AtomicBool>) -> Result<usize> {
     let cfg = allowances::configuration(config).ok_or("No configured allowance identities")?;
     allowances::validate_config(Some(cfg))?;
@@ -130,6 +165,7 @@ pub fn refresh(config: &Value, output: &Path, cancel: Option<&AtomicBool>) -> Re
         }
     }
     let mut result = mapped(&rows, &cfg["accounts"]);
+    let codex_answered = !result.as_object().unwrap().is_empty();
     // No peer is asked for Claude identity: only the local provider state.
     if let Some((id, address)) = claude_email(
         &cfg["accounts"],
@@ -142,6 +178,13 @@ pub fn refresh(config: &Value, output: &Path, cancel: Option<&AtomicBool>) -> Re
     let count = result.as_object().unwrap().len();
     if count == 0 {
         return Err("No account identities matched configured allowances".into());
+    }
+    if !codex_answered {
+        carry_codex(
+            result.as_object_mut().unwrap(),
+            &previous_identities(output),
+            &cfg["accounts"],
+        );
     }
     common::atomic_owned_write(
         output,

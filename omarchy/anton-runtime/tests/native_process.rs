@@ -4667,6 +4667,52 @@ fn claude_identity_refresh_stores_the_local_email_for_a_mapped_key() {
     refresh("no Claude mapping", &[], &codex);
 }
 
+/// D8: when no Codex source answers, a local Claude email alone keeps the
+/// earlier emails of current Codex mappings, drops unmapped ids, and counts
+/// only the fresh match; once the Codex RPC answers its email is fresh again.
+#[test]
+fn claude_identity_refresh_keeps_codex_emails_when_codex_does_not_answer() {
+    let f = Fixture::new();
+    write(&f.dir.join("bin/codex"), "#!/bin/sh\nexit 1\n", 0o755);
+    write(
+        &f.dir.join("home/.claude.json"),
+        provider_body(CLAUDE_UUID, ""),
+        0o600,
+    );
+    claude_config(&f, mixed_accounts(), None);
+    write(
+        &f.root.join(".accounts.json"),
+        json!({"codex":"earlier-codex@example.invalid","claude":"earlier-claude@example.invalid",
+            "gone":"gone@example.invalid"})
+        .to_string(),
+        0o600,
+    );
+    let stored = || -> Value {
+        serde_json::from_slice(&fs::read(f.root.join(".accounts.json")).unwrap()).unwrap()
+    };
+    let output = claude_run(&f, &["--refresh-identities"], &[]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "Saved 1 verified account labels locally.\n"
+    );
+    assert_eq!(
+        stored(),
+        json!({"codex":"earlier-codex@example.invalid","claude":CLAUDE_EMAIL})
+    );
+    identity_codex(&f);
+    let output = claude_run(&f, &["--refresh-identities"], &[]);
+    assert!(output.status.success());
+    assert_eq!(
+        stored(),
+        json!({"codex":"codex@example.invalid","claude":CLAUDE_EMAIL})
+    );
+}
+
 /// D8: identity rows from the Codex RPC and from peers match Codex mappings
 /// only: a peer row carrying the Claude key and the Codex RPC row whose key
 /// a Claude mapping names store nothing, while a peer's Codex email and the
