@@ -470,8 +470,9 @@ settings remain residual risks (Risks).
   and Pi reporters on the same state directory are serialised and no second
   lock is needed. The state directory's owner is checked as `receive()` does.
   The existing file is read with `read_owned(LIMIT, private = true)`; a missing
-  file starts empty; an owned file that is malformed or the wrong version is
-  replaced; an unsafe one (symlink, other owner, loose mode) refuses the write.
+  file starts empty; an owned file that is malformed (including a repeated
+  account or session key, which the collector rejects) or the wrong version
+  is replaced; an unsafe one (symlink, other owner, loose mode) refuses the write.
   The result is written with `atomic_owned_write`. The collector only reads
   it, without a lock, relying on the atomic rename (D7).
 - **Errors** in attribution or the write are silent (no output) and never

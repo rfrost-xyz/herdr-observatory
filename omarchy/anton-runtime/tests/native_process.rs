@@ -3256,6 +3256,13 @@ fn claude_report_account_state_bounds_and_replacement() {
         json!({"version":1,"accounts":[{"account_key":hex("account-9"),"windows":[]}],"sessions":[]}).to_string(),
         json!({"version":1,"accounts":[{"account_key":hex("account-9"),"windows":{"five_hour":[1,now + 600,1.0]}}],"sessions":[]}).to_string(),
         json!({"version":1,"accounts":[],"sessions":[[hex("session-9"),null,(now - 10) as f64]]}).to_string(),
+        // A repeated account or session key, which the collector rejects.
+        json!({"version":1,"accounts":[
+            {"account_key":hex("account-9"),"windows":{"seven_day":stamp(now - 10)}},
+            {"account_key":hex("account-9"),"windows":{"seven_day":stamp(now - 20)}}],"sessions":[]}).to_string(),
+        json!({"version":1,"accounts":[],"sessions":[
+            {"session":hex("session-9"),"account_key":null,"at":(now - 10) as f64},
+            {"session":hex("session-9"),"account_key":null,"at":(now - 20) as f64}]}).to_string(),
     ] {
         write(&f.account_path(), &body, 0o600);
         let seq = report();

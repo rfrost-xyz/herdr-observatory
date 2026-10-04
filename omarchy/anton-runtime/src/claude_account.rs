@@ -534,8 +534,16 @@ impl StateFile {
             ..Self::default()
         }
     }
-    /// Version 1 within its bounds, with hashed keys and finite times.
+    /// Version 1 within its bounds, with hashed keys, no repeated account
+    /// or session key, and finite times.
     fn valid(&self) -> bool {
+        let unique = |keys: Vec<&str>| {
+            let count = keys.len();
+            keys.into_iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                == count
+        };
         let time = |t: f64| t.is_finite() && t > 0.0;
         let windows_ok = |w: &StoredWindows| {
             [w.five_hour, w.seven_day]
@@ -546,6 +554,13 @@ impl StateFile {
         self.version == 1
             && self.accounts.len() <= STATE_ACCOUNTS
             && self.sessions.len() <= STATE_SESSIONS
+            && unique(
+                self.accounts
+                    .iter()
+                    .map(|a| a.account_key.as_str())
+                    .collect(),
+            )
+            && unique(self.sessions.iter().map(|s| s.session.as_str()).collect())
             && self
                 .accounts
                 .iter()
