@@ -135,9 +135,17 @@ pub fn location_refusal<S: AsRef<OsStr>>(names: &[S], home: &Path) -> Option<Ref
     }
     // No read and no link following: a dangling link still refuses.
     match std::fs::symlink_metadata(home.join(".claude/.config.json")) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) if absent(&error) => None,
         _ => Some(Refusal::LegacyConfig),
     }
+}
+/// A lookup under `<home>/.claude` that proves the file cannot exist: it is
+/// missing, or `.claude` is not a directory. Any other error refuses.
+fn absent(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+    )
 }
 
 /// Key presence with any value, including `null` (D5). `Option<IgnoredAny>`
@@ -201,7 +209,7 @@ struct Settings {
 pub fn api_key_helper_refuses(home: &Path) -> bool {
     let path = home.join(".claude/settings.json");
     match std::fs::symlink_metadata(&path) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return false,
+        Err(error) if absent(&error) => return false,
         Err(_) => return true,
         Ok(_) => {}
     }
@@ -1196,6 +1204,19 @@ mod tests {
             location_refusal(&["PATH"], &home.0),
             Some(Refusal::LegacyConfig)
         );
+        // `.claude` as a regular file: no legacy file can exist under it.
+        let plain = Home::new();
+        fs::remove_dir(plain.0.join(".claude")).unwrap();
+        plain.write(".claude", b"", 0o600);
+        assert_eq!(location_refusal(&["PATH"], &plain.0), None);
+        // A `.claude` that cannot be searched still refuses.
+        let closed = Home::new();
+        fs::set_permissions(closed.0.join(".claude"), fs::Permissions::from_mode(0o000)).unwrap();
+        let refusal = location_refusal(&["PATH"], &closed.0);
+        fs::set_permissions(closed.0.join(".claude"), fs::Permissions::from_mode(0o700)).unwrap();
+        if unsafe { libc::geteuid() } != 0 {
+            assert_eq!(refusal, Some(Refusal::LegacyConfig));
+        }
     }
 
     /// D4 step 4: absent settings or key pass; any `apiKeyHelper` value,
@@ -1234,6 +1255,11 @@ mod tests {
         )
         .unwrap();
         assert!(api_key_helper_refuses(&home.0));
+        // `.claude` as a regular file: no settings file can exist under it.
+        let plain = Home::new();
+        fs::remove_dir(plain.0.join(".claude")).unwrap();
+        plain.write(".claude", b"", 0o600);
+        assert!(!api_key_helper_refuses(&plain.0));
     }
 
     /// D5: the account key from a valid id; `primaryApiKey` with any value,

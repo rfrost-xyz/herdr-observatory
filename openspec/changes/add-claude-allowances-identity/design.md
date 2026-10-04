@@ -364,8 +364,11 @@ with no account write:
    with the shell's environment and cannot follow a session's config directory.
 3. **Legacy configuration.** `<home>/.claude/.config.json` existing in any form
    (checked with `symlink_metadata`, no read) refuses, because Claude Code then
-   uses it instead of `~/.claude.json`.
-4. **`apiKeyHelper`.** `<home>/.claude/settings.json`: absent passes. Present,
+   uses it instead of `~/.claude.json`. Absent (`ENOENT`, or `ENOTDIR` when
+   `<home>/.claude` is not a directory, so no file can exist under it) passes;
+   any other lookup error refuses.
+4. **`apiKeyHelper`.** `<home>/.claude/settings.json`: absent (as in step 3)
+   passes. Present,
    it is read with `read_owned` (no-follow, owner-checked, not required to be
    private, at most 1 MiB) and parsed into a struct whose only field is the
    presence of `apiKeyHelper`; every other key is skipped with `IgnoredAny`.

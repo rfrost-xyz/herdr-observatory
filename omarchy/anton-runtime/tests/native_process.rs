@@ -4577,6 +4577,15 @@ fn claude_attribution_check_names_only_the_first_refusing_step() {
     check(&[], "provider-state\n");
     write(&home.join(".claude/.config.json"), "{}", 0o600);
     check(&[], "legacy-config\n");
+    // `~/.claude` as a regular file holds no legacy file and no settings.
+    write(
+        &home.join(".claude.json"),
+        provider_body(CLAUDE_UUID, ""),
+        0o600,
+    );
+    fs::remove_dir_all(home.join(".claude")).unwrap();
+    write(&home.join(".claude"), "", 0o600);
+    check(&[], "ok\n");
 }
 
 /// D8: `--refresh-identities` adds the local Claude email for a mapped
