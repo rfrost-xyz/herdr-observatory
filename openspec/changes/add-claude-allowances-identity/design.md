@@ -569,7 +569,13 @@ settings remain residual risks (Risks).
   line, never a value, and it prints exempt matches too, marked `exempt`, so
   the live check can record whether `CLAUDE_CODE_MESSAGING_TOKEN` is present.
   `ANTHROPIC_BASE_URL`, when set, is printed under `environment` like any other
-  matching name. It prints no id, key, email or value, writes nothing and
+  matching name. The names follow the first line whatever the outcome
+  (so an `ok` run still shows an exempt name), sorted, one per line, an
+  exempt one as `<name> exempt`; a name that is not valid UTF-8 adds one
+  line `non-utf8-name` instead of itself. The home is resolved as the
+  reporter's (an absolute `HOME`, else the password database); without one
+  the provider state cannot be located, so after steps 1 and 2 the step is
+  `provider-state`. It prints no id, key, email or value, writes nothing and
   needs no owner guard. Run from a Bash tool call inside a Claude Code
   session, it inherits that session's environment, as the reporter does. It
   reads the same paths as the reporter, as the user accepted (G7).
