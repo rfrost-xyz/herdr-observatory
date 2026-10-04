@@ -284,8 +284,14 @@ the tasks now require it for each new test.
 
 ## Implementation
 
-_Pending: one section per task group, with commits, test counts and the
-new-behaviour tests shown failing on `7a9fefb`._
+### Task 1.3: AGENTS.md amendments
+
+The three D12 amendments are applied to AGENTS.md with the wording quoted in
+design.md and the lines rewrapped to 80 columns. A script collapsing all
+whitespace runs to one space confirmed, for each of the three, that the old
+sentence no longer occurs and the new sentence occurs verbatim. The sentences
+after each amendment are unchanged. AGENTS.md contains no em dash (U+2014).
+No test is added, so no fail-on-old proof applies.
 
 ## After
 

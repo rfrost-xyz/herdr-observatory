@@ -17,17 +17,33 @@ omarchy/herdr.observatory/README.md for current operation.
   and write bounded owned presentation metadata through `pane.report_metadata`.
   Native Herdr remains authoritative. The Claude Code mod only observes events,
   passes each on unchanged, never waits on its reporter and sends only the pane,
-  sequence, session id and window as argv; its reporter writes one bound window
-  report for agent `claude` and nothing else. Codex and Claude Code transcript
-  enrichment belong to collection, not synchronous Observatory callbacks.
+  sequence, session id, window and, from a measurement with fresh evidence (a
+  rate-limit window that moved or appeared, or a grown session cost total), at
+  most two `five_hour`/`seven_day` windows as argv, never the cost itself; its
+  reporter writes one bound window report for agent `claude` and, when
+  attribution is allowed, those windows to the private Claude account state
+  file, and nothing else. Codex and Claude Code transcript enrichment belong to
+  collection, not synchronous Observatory callbacks.
 - No Python or Docker subprocess, web listener, independent daemon or autostart
   service is part of the supported plugin. QML owns the Rust collector lifetime.
   Peers are invoked over existing authenticated SSH and exit after bounded work.
   The reporter child the Claude Code mod starts is bounded and short-lived, and
   the mod skips a sample while a recent run is in flight; it is not a daemon.
-- Never parse authentication files. Account observations use native read-only
-  Codex account RPCs. No login/reset/redemption mutation. Verify hashed mapping
-  before displaying an email; private email identity never enters normal snapshots.
+- Never parse authentication files. `~/.claude.json` is provider-owned state,
+  not an authentication file: it is read only by the Claude reporter, the
+  collector, identity refresh, `--claude-account-key` and
+  `--claude-attribution-check`, which read only `oauthAccount.accountUuid`,
+  `oauthAccount.emailAddress` and `cachedUsageUtilization`, never log, persist
+  or retain any other value, store the email only in the private identity file,
+  and skip the whole file when `primaryApiKey` is present; the Claude reporter
+  and attribution check may also read whether `~/.claude/settings.json` sets
+  `apiKeyHelper`. Account observations use native read-only Codex account RPCs
+  and, for Claude, mod rate limits attributed to the account `~/.claude.json`
+  names at report time, refused whenever the environment, configuration location
+  or settings could select another credential or API endpoint, or Claude Code's
+  usage cache when it names the same account and is fresh. No
+  login/reset/redemption mutation. Verify hashed mapping before displaying an
+  email; private email identity never enters normal snapshots.
 - Preserve unknown, stale and zero distinctly. Never invent tokens, allowances,
   child completion, timing, or measurement freshness from transport heartbeats.
 - No private configuration, credentials, live snapshots, project names, session
@@ -95,10 +111,13 @@ not add features or compatibility work to the retired web application.
   Throttle meaningful writes and use installed-owner retirement to exclude late
   writes, delayed startup and final flush. Uninstall must fail safely if busy.
 - Allowances use explicit account mappings and source identity, independent of
-  thread activity. Weekly windows are selected by duration, not field order.
-  Past resets invalidate balances; pass expiry invalidates count without a refill.
-  Use native availableCount, not pass-list length or credits. Cache bounds and
-  original source times remain enforced locally and on peer responses.
+  thread activity, except Claude: its rows are local-only and need an active
+  local reporting session or Claude Code's fresh account-matched cache. Weekly
+  windows are selected by duration (Codex) or by window name (Claude
+  `seven_day`), never field order. Past resets invalidate balances; pass expiry
+  invalidates count without a refill. Use native availableCount, not pass-list
+  length or credits. Cache bounds and original source times remain enforced
+  locally and on peer responses.
 
 ## Installation and peer contract
 
