@@ -39,6 +39,7 @@ if (flag('--help')) {
   --no-refresh-probe   skip the separate refresh latency and burst probe
   --no-allowance-probe skip the separate allowance wire probe
   --no-claude-probe    skip the separate Claude transcript probes
+  --no-claude-allowance-probe  skip the separate Claude allowance reporter and collector probe
   --claude-agents N    Claude agents per synthetic host in the Claude probes, 1 to 16 (default 4)
   --claude-seconds N   fixed window of each Claude probe, 10 to 300 (default 30)
   --claude-large-mb N  bytes per transcript in the large Claude variant, in MB, 0 to 32 (default 6; 0 skips it)
@@ -672,6 +673,179 @@ async function claudeMetrics(base) {
 }
 const sha256 = file => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 
+// ---------------------------------------------------------------- claude allowance
+// Added for add-claude-allowances-identity (design D11), additive only: every
+// definition above is unchanged. One fixture holds the owner marker, a mod receipt
+// written by --install-claude-mod in a temporary home, a synthetic ~/.claude.json
+// (the D11 fixture uuid and email, padded to 165 KB or exactly 4 MiB) and a fake
+// Herdr socket that answers pane.get with a bound herdr:claude session, applies
+// pane.report_metadata and serves the collector's snapshot. Reporter children get
+// a built environment (absolute HOME and the fixture bin directory as PATH only),
+// so no inherited ANTHROPIC_*, CLAUDE_CODE_* or CLAUDE_CONFIG_DIR name reaches them
+// and no passwd home is used. Reporter variants run one at a time, then the
+// collector runs with the same --state. Any failed run, or a ten-value run that
+// leaves the state file unchanged, makes that variant's metrics null with a reason.
+const CLAUDE_ALLOWANCE_RUNS = 15;
+const CLAUDE_ALLOWANCE_SECONDS = 10;
+const CLAUDE_LOCK_BUDGET_MS = 100;
+const CLAUDE_FIXTURE_UUID = '00000000-0000-4000-8000-000000000001';
+const CLAUDE_FIXTURE_EMAIL = 'fixture@example.invalid';
+const CLAUDE_ALLOWANCE_SESSION = 'c1a0de00-0a11-4000-8000-000000000001';
+const CLAUDE_JSON_SIZES = { claude_json_165kb: 165000, claude_json_4mib: 4194304 };
+const claudeAccountKey = id => createHash('sha256').update(`observatory-claude-account-v1:${id}`).digest('hex');
+// A synthetic ~/.claude.json of exactly `size` bytes: the three allowlisted paths,
+// a stale cache for the same account and nested synthetic padding objects.
+function claudeJson(size) {
+  const fetched = Date.now() - 86400000, reset = new Date(Date.now() + 3600000).toISOString();
+  const value = { numStartups: 1, oauthAccount: { accountUuid: CLAUDE_FIXTURE_UUID, emailAddress: CLAUDE_FIXTURE_EMAIL },
+    cachedUsageUtilization: { accountUuid: CLAUDE_FIXTURE_UUID, fetchedAtMs: fetched, utilization: { five_hour: { utilization: 0, resets_at: reset }, seven_day: { utilization: 0, resets_at: reset } } },
+    projects: {}, filler: '' };
+  const entry = i => ({ allowedTools: [], history: [{ display: `synthetic entry ${i}`, pastedContents: {} }], mcpServers: {}, lastCost: 0, exampleFiles: ['a.txt', 'b.txt'], hasTrustDialogAccepted: false });
+  let i = 0;
+  while (Buffer.byteLength(JSON.stringify(value)) < size - 512) value.projects[`/synthetic/project-${i}`] = entry(i++);
+  while (Buffer.byteLength(JSON.stringify(value)) > size) delete value.projects[`/synthetic/project-${--i}`];
+  value.filler = 'x'.repeat(size - Buffer.byteLength(JSON.stringify(value)));
+  const text = JSON.stringify(value);
+  if (Buffer.byteLength(text) !== size) throw new Error('Synthetic .claude.json size mismatch');
+  return text;
+}
+// The fake Herdr socket. Each connection reads one request line; the first
+// connection's time after `mark()` is the reporter's pane.get arrival, taken
+// just after it acquires hook.lock.
+async function claudeAllowanceServer(file, pane) {
+  const server = net.createServer(socket => {
+    server.sockets.add(socket); socket.on('close', () => server.sockets.delete(socket));
+    if (server.firstAt === null) server.firstAt = performance.now();
+    let buffer = '';
+    socket.on('data', data => { buffer += data; const i = buffer.indexOf('\n'); if (i < 0) return;
+      let request; try { request = JSON.parse(buffer.slice(0, i)); } catch { socket.destroy(); return; }
+      server.methods.push(request.method);
+      const reply = result => socket.end(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }) + '\n');
+      if (request.method === 'pane.get') reply({ pane: request.params?.pane_id === pane.pane_id ? pane : {} });
+      else if (request.method === 'pane.report_metadata') { if (request.params?.pane_id === pane.pane_id) pane.tokens = request.params.tokens; reply({}); }
+      else reply({ snapshot: { protocol: 1, version: 'fixture', workspaces: [{ workspace_id: 'w1', label: 'Synthetic', worktree: { checkout_path: '/synthetic/branch' } }], agents: [{ ...pane, cwd: '/synthetic/branch', workspace_id: 'w1', agent_status: 'idle' }] } }); });
+    socket.on('error', () => {});
+  });
+  server.firstAt = null; server.methods = []; server.sockets = new Set();
+  server.mark = () => { server.firstAt = null; server.methods = []; };
+  await new Promise((resolve, reject) => { server.once('error', reject); server.listen(file, resolve); });
+  return server;
+}
+// One timed child under bash `time`, which stays the last command so the exit
+// status is the child's. Times come from the timing file's last line.
+function claudeTimed(command, env, timefile) {
+  if (!path.isAbsolute(env.HOME ?? '')) throw new Error('Claude allowance child without an absolute HOME');
+  return new Promise((resolve, reject) => {
+    const child = spawn('/bin/bash', ['-c', 'TIMEFORMAT="%3R %3U %3S"; { time "$@"; } 2>"$ANTON_TEST_TIMING"', 'anton-measure', ...command],
+      { env: { ...env, ANTON_TEST_TIMING: timefile }, stdio: ['ignore', 'pipe', 'pipe'] });
+    let output = '';
+    child.stdout.on('data', d => { output = (output + d).slice(-2048); }); child.stderr.on('data', d => { output = (output + d).slice(-2048); });
+    const timer = setTimeout(() => child.kill('SIGKILL'), 10000);
+    child.once('error', reject);
+    child.once('exit', code => { const at = performance.now(); clearTimeout(timer);
+      const [real, user, system] = (readText(timefile) || '').trim().split('\n').at(-1).split(' ').map(Number);
+      resolve({ code, at, output, wall_ms: real * 1000, cpu_ms: (user + system) * 1000 }); });
+  });
+}
+const claudeSpread = values => ({ median: round(median(values), 1), max: round(Math.max(...values), 1) });
+async function claudeReporterVariant(c, values) {
+  const runs = [], codes = {};
+  const statePath = path.join(c.state, 'claude-allowances.json');
+  for (let i = 0; i < CLAUDE_ALLOWANCE_RUNS; i++) {
+    c.seq = Math.max(c.seq + 1, Date.now() * 1000 - 1000);
+    const tail = values === 10 ? (() => { const s = Math.floor(c.seq / 1e6); return ['five_hour', '12.5', String(s + 9000), 'seven_day', '40', String(s + 302400)]; })() : [];
+    const before = readText(statePath);
+    c.server.mark();
+    const r = await claudeTimed([path.join(c.root, 'anton-runtime'), '--root', c.root, '--state', c.state, '--report', 'claude', c.pane.pane_id, String(c.seq), CLAUDE_ALLOWANCE_SESSION, '200000', ...tail], c.reporterEnv, c.timefile);
+    codes[r.code] = (codes[r.code] || 0) + 1;
+    if (r.code !== 0) return { runs: i + 1, exit_codes: codes, error: `run ${i + 1} exited ${r.code}`, wall_ms: null, cpu_ms: null, lock_hold_ms: null };
+    if (values === 10 && readText(statePath) === before) return { runs: i + 1, exit_codes: codes, error: `run ${i + 1}: state file unchanged`, wall_ms: null, cpu_ms: null, lock_hold_ms: null };
+    if (c.server.firstAt === null) return { runs: i + 1, exit_codes: codes, error: `run ${i + 1}: no pane.get arrival`, wall_ms: null, cpu_ms: null, lock_hold_ms: null };
+    runs.push({ wall: r.wall_ms, cpu: r.cpu_ms, hold: r.at - c.server.firstAt, methods: c.server.methods.join(',') });
+  }
+  const out = { runs: runs.length, exit_codes: codes, error: null, first_run_methods: runs[0].methods, later_run_methods: runs.at(-1).methods,
+    wall_ms: claudeSpread(runs.map(x => x.wall)), cpu_ms: claudeSpread(runs.map(x => x.cpu)),
+    lock_hold_ms: { first: round(runs[0].hold, 1), ...claudeSpread(runs.map(x => x.hold)) } };
+  if (values === 10) { out.state_file_written = true; out.within_budget = out.lock_hold_ms.max <= CLAUDE_LOCK_BUDGET_MS; }
+  return out;
+}
+async function claudeCollector(c) {
+  const codexId = 'synthetic-claude-section-codex', codexKey = accountHash(codexId), workKey = accountHash('synthetic-claude-section-work');
+  const claudeKey = claudeAccountKey(CLAUDE_FIXTURE_UUID);
+  const config = JSON.parse(fs.readFileSync(path.join(c.root, '.config.json'), 'utf8'));
+  config.allowances = { accounts: { [codexKey]: { id: 'codex-personal', label: 'Codex Personal', category: 'Personal' }, [workKey]: { id: 'codex-work', label: 'Codex Work', category: 'Work' },
+    [claudeKey]: { id: 'claude-personal', label: 'Claude Personal', category: 'Personal', provider: 'claude' } } };
+  fs.writeFileSync(path.join(c.root, '.config.json'), JSON.stringify(config), { mode: 0o600 });
+  const reset = Math.floor(Date.now() / 1000) + 302400;
+  const reply = JSON.stringify({ id: 2, result: { accountId: codexId, rateLimits: { planType: 'pro', primary: { windowDurationMins: 300, usedPercent: 10, resetsAt: reset - 290000 }, secondary: { windowDurationMins: 10080, usedPercent: 40, resetsAt: reset } }, rateLimitResetCredits: { availableCount: 0, credits: [] } } });
+  fs.writeFileSync(path.join(c.dir, 'bin/codex'), `#!/bin/sh\nwhile IFS= read -r line; do\n case "$line" in\n *'"method":"initialize"'*) printf '%s\\n' '{"id":1,"result":{}}';;\n *'"method":"account/rateLimits/read"'*) printf '%s\\n' '${reply}';;\n *'"method":"account/usage/read"'*) printf '%s\\n' '{"id":3,"result":{"summary":{},"dailyUsageBuckets":[]}}';;\n esac\ndone\n`, { mode: 0o755 });
+  const nil = { error: null, runtime_exit: null, snapshots: null, mean_snapshot_bytes: null, rows: null, claude_rows: null, claude_available: null, codex_available: null,
+    allowances_bytes: null, claude_row_bytes: null, time_to_claude_row_ms: null, runtime_cpu_seconds: null, cpu_ms_per_snapshot: null };
+  const run = launch({ root: c.root, dir: c.dir, env: c.collectorEnv, timefile: c.collectorTime }); const start = performance.now();
+  const claudeRow = fr => (Array.isArray(fr.value?.allowances) ? fr.value.allowances : []).find(r => r?.provider === 'claude' && (r.available === true || r.status === 'available'));
+  try {
+    while (performance.now() - start < CLAUDE_ALLOWANCE_SECONDS * 1000 && !run.exit) await delay(50);
+    const result = await run.close();
+    // bash `time` sends the runtime's stderr to the timing file; its last line is the times.
+    const frames = run.frames.filter(fr => Array.isArray(fr.value?.hosts));
+    if (result.code !== 0 || !frames.length) return { ...nil, runtime_exit: result.code, error: `collector exited ${result.code}: ${(readText(c.collectorTime) || '').trim().split('\n').slice(0, -1).at(-1) ?? ''}`.slice(0, 200) };
+    const last = frames.at(-1), rows = Array.isArray(last.value.allowances) ? last.value.allowances : [];
+    const hit = frames.find(claudeRow), row = claudeRow(last);
+    const [user, system] = (readText(c.collectorTime) || '').trim().split('\n').at(-1).split(' ').map(Number);
+    const cpu = Number.isFinite(user + system) ? user + system : null;
+    return { ...nil, runtime_exit: result.code, error: hit ? null : `no available Claude row within ${CLAUDE_ALLOWANCE_SECONDS} s`, snapshots: frames.length,
+      mean_snapshot_bytes: round(frames.reduce((a, f) => a + f.bytes, 0) / frames.length, 1), rows: rows.length,
+      claude_rows: rows.filter(r => r?.provider === 'claude').length, claude_available: rows.filter(r => r?.provider === 'claude' && (r.available === true || r.status === 'available')).length,
+      codex_available: rows.filter(r => r?.provider !== 'claude' && (r.available === true || r.status === 'available')).length,
+      allowances_bytes: Buffer.byteLength(JSON.stringify(rows)), claude_row_bytes: row ? Buffer.byteLength(JSON.stringify(row)) : null,
+      time_to_claude_row_ms: hit ? round(hit.at - start, 0) : null, runtime_cpu_seconds: cpu === null ? null : round(cpu, 3),
+      cpu_ms_per_snapshot: cpu === null ? null : round(cpu * 1000 / frames.length, 2) };
+  } finally {
+    if (!run.exit) { run.child.kill('SIGKILL'); await run.done; }
+  }
+}
+async function claudeAllowanceMetrics(base) {
+  const dir = path.join(base, 'claude-allowance'), root = path.join(dir, 'plugin'), home = path.join(dir, 'home'), state = path.join(dir, 'state'), bin = path.join(dir, 'bin');
+  for (const p of [dir, root, home, state, bin, path.join(dir, 'install-bin'), path.join(dir, 'etc-mise'), path.join(home, '.claude')]) fs.mkdirSync(p, { recursive: true, mode: 0o700 });
+  fs.copyFileSync(binary, path.join(root, 'anton-runtime')); fs.chmodSync(path.join(root, 'anton-runtime'), 0o700);
+  fs.writeFileSync(path.join(root, '.herdr-observatory-install'), 'herdr.observatory\n', { mode: 0o600 });
+  const socket = path.join(dir, 'herdr.sock');
+  fs.writeFileSync(path.join(root, '.config.json'), JSON.stringify({ interval: 2, hosts: [{ id: 'local', socket_path: socket }] }), { mode: 0o600 });
+  const pane = { pane_id: 'w1:p1', agent: 'claude', agent_session: { agent: 'claude', source: 'herdr:claude', kind: 'id', value: CLAUDE_ALLOWANCE_SESSION }, tokens: {} };
+  const reporterEnv = { HOME: home, PATH: bin };
+  const installEnv = { HOME: home, PATH: path.join(dir, 'install-bin'), MISE_SYSTEM_CONFIG_DIR: path.join(dir, 'etc-mise') };
+  const collectorEnv = { ...process.env, HOME: home, CODEX_HOME: path.join(home, '.codex'), XDG_STATE_HOME: path.join(dir, 'xdg-state'), PATH: `${bin}:/usr/bin:/bin`, ANTON_TEST_TIMING: path.join(dir, 'collector-time.txt') };
+  delete collectorEnv.CLAUDE_CONFIG_DIR; delete collectorEnv.OBSERVATORY_SSH_CONFIG;
+  const c = { dir, root, home, state, pane, reporterEnv, collectorEnv, seq: 0, timefile: path.join(dir, 'time.txt'), collectorTime: path.join(dir, 'collector-time.txt') };
+  const result = { scope: `Reporter: ${CLAUDE_ALLOWANCE_RUNS} sequential runs per variant of --report claude against a fake Herdr socket bound to one synthetic herdr:claude session, after --install-claude-mod in a temporary home. wall_ms and cpu_ms (user+sys) come from bash time around the runtime. lock_hold_ms is an upper bound on the hook.lock hold: from the first connection to the fake socket (pane.get, taken right after the lock) to the reporter's exit as Node sees it, so it includes process teardown. Ten-value runs are the per-turn path under the G4 cost path; the D4 budget is an absolute ten-value hold of at most ${CLAUDE_LOCK_BUDGET_MS} ms per run in the release build, judged on max. A failed run or a ten-value run that leaves claude-allowances.json unchanged makes the variant null with a reason. Collector: one ${CLAUDE_ALLOWANCE_SECONDS}s run with the same --state, two Codex mappings (one served by a fake codex) and one Claude mapping; counts are from the last snapshot.`,
+    lock_budget_ms: CLAUDE_LOCK_BUDGET_MS, install: null, claude_json_bytes: null, reporter: null, collector: null };
+  let server = null;
+  try {
+    // As the Rust installer fixtures do: the hook receipt first, then the mod entry in it.
+    const hooks = spawnSyncLike([path.join(root, 'anton-runtime'), '--root', root, '--state', state, '--install-hooks'], installEnv);
+    const install = hooks.code !== 0 ? hooks : spawnSyncLike([path.join(root, 'anton-runtime'), '--root', root, '--state', state, '--install-claude-mod'], installEnv);
+    result.install = { hooks_exit: hooks.code, exit: install.code, receipt: fs.existsSync(path.join(root, '.hooks-receipt.json')) };
+    if (install.code !== 0 || !result.install.receipt) { result.install.error = install.output.trim().split('\n').at(-1)?.slice(0, 200) ?? null; return result; }
+    server = await claudeAllowanceServer(socket, pane); c.server = server;
+    result.claude_json_bytes = {}; result.reporter = { runs_per_variant: CLAUDE_ALLOWANCE_RUNS, four_value: {}, ten_value_per_turn_path: {} };
+    for (const [name, size] of Object.entries(CLAUDE_JSON_SIZES)) {
+      fs.writeFileSync(path.join(home, '.claude.json'), claudeJson(size), { mode: 0o600 }); fs.chmodSync(path.join(home, '.claude.json'), 0o600);
+      result.claude_json_bytes[name] = fs.statSync(path.join(home, '.claude.json')).size;
+      result.reporter.four_value[name] = await claudeReporterVariant(c, 4);
+      result.reporter.ten_value_per_turn_path[name] = await claudeReporterVariant(c, 10);
+    }
+    fs.writeFileSync(path.join(home, '.claude.json'), claudeJson(CLAUDE_JSON_SIZES.claude_json_165kb), { mode: 0o600 });
+    result.collector = await claudeCollector(c);
+    return result;
+  } finally {
+    if (server) { for (const s of server.sockets) s.destroy(); server.close(); }
+  }
+}
+function spawnSyncLike(command, env) {
+  try { const output = execFileSync(command[0], command.slice(1), { env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 30000 }); return { code: 0, output }; }
+  catch (error) { return { code: error.status ?? null, output: `${error.stdout ?? ''}${error.stderr ?? ''}` }; }
+}
+
 // ---------------------------------------------------------------- report
 const base = fs.mkdtempSync(path.join(os.tmpdir(), 'anton-measure-'));
 fs.chmodSync(base, 0o700);
@@ -680,6 +854,7 @@ try {
   const report = { scope: 'Synthetic fixtures only. Runtime CPU is user+sys of the runtime and reaped descendants (fake-SSH peer probes) over the fixed window; RSS is sampled every 50 ms over the runtime family. colors.toml opens include local and peer samples sharing the fixture HOME. Remote hosts, Qt and GPU are not measured.',
     source_root: sourceRoot, git_head: (() => { try { return execFileSync('git', ['-C', sourceRoot, 'rev-parse', '--short', 'HEAD'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return null; } })(),
     runtime: null, refresh: null, projection: projectionMetrics(State), replacements: replacementMetrics(State), static: staticMetrics(), allowance_contract: allowanceContractMetrics(State), provider_coupling: providerCoupling(), allowance_wire: null, architecture: architectureMetrics(State), allowance_readings: allowanceReadingMetrics(State), claude: null };
+  report.claude_allowance = null;
   if (!flag('--skip-runtime')) {
     if (!fs.existsSync(binary)) throw new Error(`Runtime binary not found: ${binary}`);
     const counter = colorsCounter();
@@ -695,6 +870,7 @@ try {
     if (!flag('--no-refresh-probe')) report.refresh = await refreshProbe(base);
     if (!flag('--no-allowance-probe')) report.allowance_wire = await allowanceProbe(base);
     if (!flag('--no-claude-probe')) report.claude = await claudeMetrics(base);
+    if (!flag('--no-claude-allowance-probe')) report.claude_allowance = await claudeAllowanceMetrics(base);
   }
   if (flag('--json')) console.log(JSON.stringify(report, null, 2));
   else {
@@ -719,6 +895,11 @@ try {
         [`Claude ${name}: native agents local/peer`, c && `${c.claude_agents_with_native_telemetry.local}/${c.claude_agents_with_native_telemetry.peer} of ${c.claude_agents.local}/${c.claude_agents.peer}`],
         [`Claude ${name}: runtime CPU seconds`, c?.runtime_cpu_seconds],
         [`Claude ${name}: window / context_percent agents local/peer`, c?.claude_agents_with_window && `${c.claude_agents_with_window.local}/${c.claude_agents_with_window.peer} / ${c.claude_agents_with_context_percent.local}/${c.claude_agents_with_context_percent.peer}`]])];
+    const ca = report.claude_allowance, caRep = ca?.reporter, caCol = ca?.collector;
+    for (const name of Object.keys(CLAUDE_JSON_SIZES)) rows.push(
+      [`Claude allowance ${name}: four-value wall/cpu/hold max ms`, caRep?.four_value?.[name]?.wall_ms && [caRep.four_value[name].wall_ms.max, caRep.four_value[name].cpu_ms.max, caRep.four_value[name].lock_hold_ms.max].join('/')],
+      [`Claude allowance ${name}: ten-value (per-turn) wall/cpu/hold max ms`, caRep?.ten_value_per_turn_path?.[name]?.wall_ms && [caRep.ten_value_per_turn_path[name].wall_ms.max, caRep.ten_value_per_turn_path[name].cpu_ms.max, caRep.ten_value_per_turn_path[name].lock_hold_ms.max].join('/')]);
+    rows.push(['Claude allowance collector: Claude rows / available', Number.isFinite(caCol?.claude_rows) ? `${caCol.claude_rows} / ${caCol.claude_available}` : null], ['Claude allowance collector: allowances bytes', caCol?.allowances_bytes]);
     const width = Math.max(...rows.map(x => x[0].length));
     console.log(`Anton popover measurement (${report.git_head ?? 'unknown head'}, ${r.duration_seconds ?? 0}s x${r.repeats ?? 0}, ${count} agents/host)`);
     for (const [k, value] of rows) console.log(`${k.padEnd(width)}  ${value ?? 'null'}`);

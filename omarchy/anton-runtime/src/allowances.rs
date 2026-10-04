@@ -4,7 +4,7 @@
 //! keep their original Codex shape so older peers and caches stay readable.
 //! `snapshot` is the only conversion to the provider-neutral popover row.
 use crate::model::{AllowanceRow, AllowanceStatus, AllowanceWindow};
-use crate::{Result, common};
+use crate::{Result, claude_account, common};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
@@ -65,6 +65,11 @@ pub fn account_key(value: &str) -> Option<String> {
         .then(|| common::sha256(format!("observatory-codex-account-v1:{value}").as_bytes()))
 }
 
+/// One validated account mapping (design D7). `provider` is optional:
+/// absent or `codex` gives the unchanged Codex mapping, `claude` adds
+/// `"provider":"claude"`, and any other value is rejected. A Claude
+/// mapping takes the same `id`, `label` and `category` rules, and its
+/// `window_seconds`, ignored, must be absent or 604800.
 pub fn mapping(value: &Value) -> Result<Value> {
     if matches!(value.as_str(), Some("Personal" | "Work")) {
         return Ok(json!({"id":value,"label":value,"category":value,"window_seconds":604800}));
@@ -74,10 +79,16 @@ pub fn mapping(value: &Value) -> Result<Value> {
         .ok_or("Invalid allowance account mapping")?;
     if object
         .keys()
-        .any(|k| !["id", "label", "category", "window_seconds"].contains(&k.as_str()))
+        .any(|k| !["id", "label", "category", "window_seconds", "provider"].contains(&k.as_str()))
     {
         return Err("Invalid allowance account mapping".into());
     }
+    let claude = match object.get("provider") {
+        None => false,
+        Some(value) if value == "codex" => false,
+        Some(value) if value == "claude" => true,
+        Some(_) => return Err("Invalid allowance account mapping".into()),
+    };
     let id = value["id"].as_str().unwrap_or("");
     let label = value["label"].as_str().unwrap_or("");
     if id.is_empty()
@@ -98,7 +109,32 @@ pub fn mapping(value: &Value) -> Result<Value> {
     {
         return Err("Invalid allowance account mapping".into());
     }
+    if claude {
+        return Ok(json!({"id":id,"label":label,"category":value["category"],"provider":"claude"}));
+    }
     Ok(json!({"id":id,"label":label,"category":value["category"],"window_seconds":604800}))
+}
+/// The provider of a mapping returned by `mapping`.
+pub fn provider(mapping: &Value) -> &str {
+    mapping["provider"].as_str().unwrap_or("codex")
+}
+/// The validated mapping of `key` in `accounts` when its provider is
+/// `provider`. Codex sources (the account RPC, the cache, peer rows and
+/// identity rows) match Codex mappings only, so they can never fill a
+/// Claude row or identity (D7, D8).
+pub fn mapped(accounts: &Value, key: &str, provider: &str) -> Option<Value> {
+    let mapping = mapping(accounts.get(key)?).ok()?;
+    (self::provider(&mapping) == provider).then_some(mapping)
+}
+/// Whether the allowance configuration maps at least one Claude account.
+pub fn has_claude(config: &Value) -> bool {
+    configuration(config)
+        .and_then(|cfg| cfg["accounts"].as_object())
+        .is_some_and(|accounts| {
+            accounts
+                .values()
+                .any(|value| mapping(value).is_ok_and(|m| provider(&m) == "claude"))
+        })
 }
 
 pub fn validate_config(config: Option<&Value>) -> Result<()> {
@@ -352,7 +388,7 @@ pub fn receive(config: &Value, state: &Path, row: &Value, owner: Option<&Path>) 
         return Ok(false);
     };
     let key = row["account_key"].as_str().unwrap();
-    if cfg["accounts"].get(key).is_none() {
+    if mapped(&cfg["accounts"], key, "codex").is_none() {
         return Ok(false);
     }
     let directory = common::open_directory(state)?;
@@ -453,10 +489,34 @@ fn public_row(account: &Value, source: Option<&Value>) -> Option<AllowanceRow> {
 }
 
 pub fn snapshot(config: &Value, state: &Path, remote: &[Value]) -> Vec<AllowanceRow> {
-    snapshot_at(config, state, remote, common::now())
+    snapshot_with(config, state, remote, None)
+}
+/// The popover rows, with `claude` the collector's latest provider-state
+/// reading (D7): the hashed account key and Claude Code's usage cache.
+pub fn snapshot_with(
+    config: &Value,
+    state: &Path,
+    remote: &[Value],
+    claude: Option<&claude_account::Reading>,
+) -> Vec<AllowanceRow> {
+    snapshot_full(config, state, remote, claude, common::now())
 }
 
+#[cfg(test)]
 fn snapshot_at(config: &Value, state: &Path, remote: &[Value], now: f64) -> Vec<AllowanceRow> {
+    snapshot_full(config, state, remote, None, now)
+}
+
+/// One row per configured account in key order. Codex cache and peer rows
+/// fill Codex mappings only; Claude rows come only from the local account
+/// state file and the in-memory provider-state reading (D7).
+fn snapshot_full(
+    config: &Value,
+    state: &Path,
+    remote: &[Value],
+    claude: Option<&claude_account::Reading>,
+    now: f64,
+) -> Vec<AllowanceRow> {
     let Some(cfg) = configuration(config) else {
         return vec![];
     };
@@ -467,7 +527,7 @@ fn snapshot_at(config: &Value, state: &Path, remote: &[Value], now: f64) -> Vec<
     for raw in read_cache(state, now).iter().chain(remote) {
         if let Some(row) = sanitise(raw, now) {
             let key = row["account_key"].as_str().unwrap().to_owned();
-            if accounts.contains_key(&key)
+            if mapped(&cfg["accounts"], &key, "codex").is_some()
                 && rows
                     .get(&key)
                     .is_none_or(|old| old["sampled_at"].as_f64() < row["sampled_at"].as_f64())
@@ -476,9 +536,21 @@ fn snapshot_at(config: &Value, state: &Path, remote: &[Value], now: f64) -> Vec<
             }
         }
     }
+    let observed = if has_claude(config) {
+        claude_account::read_state(state)
+    } else {
+        BTreeMap::new()
+    };
     accounts
         .iter()
-        .filter_map(|(key, value)| public_row(&mapping(value).ok()?, rows.get(key)))
+        .filter_map(|(key, value)| {
+            let mapping = mapping(value).ok()?;
+            if provider(&mapping) == "claude" {
+                claude_account::row(&mapping, key, observed.get(key), claude, now)
+            } else {
+                public_row(&mapping, rows.get(key))
+            }
+        })
         .collect()
 }
 
@@ -1481,5 +1553,489 @@ done
         assert_eq!(cache.as_array().unwrap().len(), 1);
         assert_eq!(keys(&cache[0]), expected);
         assert_eq!(cache[0]["weekly_remaining"], 60);
+    }
+
+    /// D7: `provider` is optional; Codex mappings, with or without it, keep
+    /// their exact output beside an accepted Claude mapping, and an unknown
+    /// provider or a Claude `window_seconds` other than 604800 is rejected.
+    #[test]
+    fn provider_mappings_keep_codex_output_and_validate_claude() {
+        let codex = json!({"id":"work","label":"Work A","category":"Work"});
+        let expected =
+            json!({"id":"work","label":"Work A","category":"Work","window_seconds":604800});
+        assert_eq!(mapping(&codex).unwrap(), expected);
+        let mut explicit = codex.clone();
+        explicit["provider"] = json!("codex");
+        assert_eq!(mapping(&explicit).unwrap(), expected);
+        assert_eq!(
+            mapping(&json!("Personal")).unwrap(),
+            json!({"id":"Personal","label":"Personal","category":"Personal","window_seconds":604800})
+        );
+        let claude =
+            json!({"id":"claude","label":"Claude A","category":"Personal","provider":"claude"});
+        assert_eq!(
+            mapping(&claude).unwrap(),
+            json!({"id":"claude","label":"Claude A","category":"Personal","provider":"claude"})
+        );
+        assert_eq!(provider(&mapping(&claude).unwrap()), "claude");
+        assert_eq!(provider(&mapping(&codex).unwrap()), "codex");
+        for (window, accepted) in [
+            (None, true),
+            (Some(json!(604800)), true),
+            (Some(json!(18000)), false),
+            (Some(json!("604800")), false),
+        ] {
+            let mut value = claude.clone();
+            if let Some(window) = window {
+                value["window_seconds"] = window;
+            }
+            assert_eq!(mapping(&value).is_ok(), accepted, "{value}");
+        }
+        for bad in [json!("openai"), json!("Claude"), json!(null), json!(1)] {
+            let mut value = claude.clone();
+            value["provider"] = bad;
+            assert!(mapping(&value).is_err(), "{value}");
+        }
+        // The same configuration with `claude` accepted, an unknown
+        // provider rejected.
+        let config = |provider: &str| {
+            json!({"accounts":{"a".repeat(64):codex,
+                "b".repeat(64):{"id":"claude","label":"Claude A","category":"Personal","provider":provider}}})
+        };
+        assert!(validate_config(Some(&config("claude"))).is_ok());
+        assert!(validate_config(Some(&config("openai"))).is_err());
+    }
+
+    /// D7: the four-account cap and unique ids are shared across providers.
+    #[test]
+    fn account_cap_and_ids_are_shared_across_providers() {
+        let claude =
+            |id: &str| json!({"id":id,"label":"Claude","category":"Work","provider":"claude"});
+        let codex = |id: &str| json!({"id":id,"label":"Codex","category":"Work"});
+        let mut accounts = serde_json::Map::new();
+        accounts.insert("a".repeat(64), codex("codex-a"));
+        accounts.insert("b".repeat(64), codex("codex-b"));
+        accounts.insert("c".repeat(64), claude("claude-c"));
+        accounts.insert("d".repeat(64), claude("claude-d"));
+        let four = json!({"accounts":accounts.clone()});
+        assert!(validate_config(Some(&four)).is_ok());
+        for fifth in [codex("codex-e"), claude("claude-e")] {
+            let mut five = accounts.clone();
+            five.insert("e".repeat(64), fifth);
+            assert!(validate_config(Some(&json!({"accounts":five}))).is_err());
+        }
+        // A Claude mapping reusing a Codex id is rejected; a distinct id is
+        // accepted.
+        let shared =
+            json!({"accounts":{"a".repeat(64):codex("same"),"c".repeat(64):claude("same")}});
+        assert!(validate_config(Some(&shared)).is_err());
+        let distinct =
+            json!({"accounts":{"a".repeat(64):codex("same"),"c".repeat(64):claude("other")}});
+        assert!(validate_config(Some(&distinct)).is_ok());
+        assert!(has_claude(&distinct));
+        assert!(!has_claude(
+            &json!({"accounts":{"a".repeat(64):codex("same")}})
+        ));
+    }
+
+    const CODEX_KEY: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const CLAUDE_KEY: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+    const UNMAPPED_KEY: &str = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+    /// One Codex and one Claude mapping.
+    fn mixed() -> Value {
+        json!({"accounts":{CODEX_KEY:{"id":"codex","label":"Codex","category":"Work"},
+            CLAUDE_KEY:{"id":"claude","label":"Claude","category":"Personal","provider":"claude"}}})
+    }
+    fn state_window(used: Value, reset: Value, at: Value) -> Value {
+        json!({"used_percent":used,"resets_at":reset,"sampled_at":at})
+    }
+    /// A version 1 account state file holding `accounts`.
+    fn state_file(accounts: Value) -> Value {
+        json!({"version":1,"accounts":accounts,"sessions":[]})
+    }
+    fn write_state(fixture: &Fixture, value: &[u8]) {
+        let path = fixture.0.join(claude_account::STATE_FILE);
+        let _ = fs::remove_file(&path);
+        fs::write(&path, value).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    fn claude_rows(fixture: &Fixture, reading: Option<&claude_account::Reading>) -> AllowanceRow {
+        let rows = snapshot_full(&mixed(), &fixture.0, &[], reading, NOW);
+        assert_contract(&rows);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].provider, "codex");
+        rows[1].clone()
+    }
+    fn window(kind: &str, used: Option<f64>, reset: Option<u64>) -> AllowanceWindow {
+        let (label, duration_s, pacing) = match kind {
+            "five_hour" => ("5-hour", 18000, false),
+            _ => ("7-day", 604800, true),
+        };
+        AllowanceWindow {
+            kind: kind.into(),
+            label: label.into(),
+            used_percent: used,
+            resets_at: reset,
+            duration_s,
+            pacing,
+        }
+    }
+
+    /// D7: a Claude row from the account state file: both windows, the
+    /// `five_hour` window alone, one fresh and one stale window, a past
+    /// reset, and an unmapped account giving no row.
+    #[test]
+    fn claude_rows_come_from_the_account_state_file() {
+        let fixture = Fixture::new();
+        let reset = NOW as u64 + 3600;
+        let both = |five_at: f64, seven_at: f64, five_reset: u64| {
+            state_file(json!([
+                {"account_key":CLAUDE_KEY,"windows":{
+                    "five_hour":state_window(json!(12.5),json!(five_reset),json!(five_at)),
+                    "seven_day":state_window(json!(40),json!(reset + 86400),json!(seven_at))}},
+                {"account_key":UNMAPPED_KEY,"windows":{
+                    "seven_day":state_window(json!(77.7),json!(reset),json!(NOW))}}]))
+        };
+        write_state(
+            &fixture,
+            both(NOW - 60.0, NOW - 60.5, reset).to_string().as_bytes(),
+        );
+        let rows = snapshot_full(&mixed(), &fixture.0, &[], None, NOW);
+        assert_eq!(rows.len(), 2);
+        let row = claude_rows(&fixture, None);
+        assert_eq!(
+            serde_json::to_value(&row).unwrap(),
+            json!({"provider":"claude","provider_label":"Claude","account_id":"claude",
+                "label":"Claude","status":"available","status_text":null,"plan":null,
+                "sampled_at":NOW - 60.5,"reset_count":null,"reset_expires_at":null,
+                "windows":[
+                {"kind":"five_hour","label":"5-hour","used_percent":12.5,"resets_at":reset,
+                 "duration_s":18000,"pacing":false},
+                {"kind":"seven_day","label":"7-day","used_percent":40.0,"resets_at":reset + 86400,
+                 "duration_s":604800,"pacing":true}]})
+        );
+        // The unmapped account adds no row, label or key.
+        let text = serde_json::to_string(&rows).unwrap();
+        assert!(!text.contains(UNMAPPED_KEY) && !text.contains("77.7"));
+        // One stale window makes the whole row stale.
+        write_state(
+            &fixture,
+            both(NOW - 60.0, NOW - 660.0, reset).to_string().as_bytes(),
+        );
+        let row = claude_rows(&fixture, None);
+        assert_eq!(row.status, AllowanceStatus::Unavailable);
+        assert!(row.windows.is_empty() && row.sampled_at.is_none());
+        // A window stamped more than one second ahead does too.
+        write_state(
+            &fixture,
+            both(NOW + 1.5, NOW - 60.0, reset).to_string().as_bytes(),
+        );
+        assert_eq!(
+            claude_rows(&fixture, None).status,
+            AllowanceStatus::Unavailable
+        );
+        write_state(
+            &fixture,
+            both(NOW + 1.0, NOW - 600.0, reset).to_string().as_bytes(),
+        );
+        assert_eq!(
+            claude_rows(&fixture, None).status,
+            AllowanceStatus::Available
+        );
+        // A past reset keeps the stamp and loses the values.
+        write_state(
+            &fixture,
+            both(NOW - 60.0, NOW - 60.0, NOW as u64)
+                .to_string()
+                .as_bytes(),
+        );
+        let row = claude_rows(&fixture, None);
+        assert_eq!(row.status, AllowanceStatus::Available);
+        assert_eq!(row.sampled_at, Some(NOW - 60.0));
+        assert_eq!(row.windows[0], window("five_hour", None, None));
+        assert_eq!(
+            row.windows[1],
+            window("seven_day", Some(40.0), Some(reset + 86400))
+        );
+        // `five_hour` alone: available, no pacing window.
+        write_state(
+            &fixture,
+            state_file(json!([{"account_key":CLAUDE_KEY,"windows":{
+                "five_hour":state_window(json!(0),json!(reset),json!(NOW - 5.0))}}]))
+            .to_string()
+            .as_bytes(),
+        );
+        let row = claude_rows(&fixture, None);
+        assert_eq!(row.status, AllowanceStatus::Available);
+        assert_eq!(row.windows, [window("five_hour", Some(0.0), Some(reset))]);
+        // No state: unavailable, identity kept.
+        fs::remove_file(fixture.0.join(claude_account::STATE_FILE)).unwrap();
+        let row = claude_rows(&fixture, None);
+        assert_eq!(row.status, AllowanceStatus::Unavailable);
+        assert_eq!(
+            (row.account_id.as_str(), row.label.as_str()),
+            ("claude", "Claude")
+        );
+    }
+
+    /// D7: an unsafe, oversized, malformed, other-version or unknown-key
+    /// state file contributes nothing; a bad window value drops only that
+    /// window. Each rejection sits beside the accepted file it differs from.
+    #[test]
+    fn claude_state_file_is_rejected_whole_or_loses_bad_windows() {
+        let fixture = Fixture::new();
+        let reset = NOW as u64 + 3600;
+        let good = || {
+            state_file(json!([{"account_key":CLAUDE_KEY,"windows":{
+                "five_hour":state_window(json!(12.5),json!(reset),json!(NOW - 1.0)),
+                "seven_day":state_window(json!(40),json!(reset),json!(NOW - 1.0))}}]))
+        };
+        let available = |fixture: &Fixture| claude_rows(fixture, None).status;
+        let mut rejected = vec![];
+        let mut version = good();
+        version["version"] = json!(2);
+        rejected.push(version.to_string());
+        let mut unknown = good();
+        unknown["theme"] = json!("PRIVATE");
+        rejected.push(unknown.to_string());
+        let mut inner = good();
+        inner["accounts"][0]["windows"]["five_hour"]["extra"] = json!(1);
+        rejected.push(inner.to_string());
+        let mut kind = good();
+        kind["accounts"][0]["windows"]["spend_limit"] =
+            kind["accounts"][0]["windows"]["five_hour"].clone();
+        rejected.push(kind.to_string());
+        let mut array = good();
+        array["accounts"][0]["windows"] = json!([1]);
+        rejected.push(array.to_string());
+        let mut session = good();
+        session["sessions"] = json!([{"session":"x","account_key":null,"at":1,"other":1}]);
+        rejected.push(session.to_string());
+        let mut sessions = good();
+        sessions["sessions"] = json!(vec![json!({"session":"x","account_key":null,"at":1}); 33]);
+        rejected.push(sessions.to_string());
+        let mut accounts = good();
+        let five: Vec<_> = (0..5)
+            .map(|n| json!({"account_key":format!("{n}").repeat(64),"windows":{}}))
+            .collect();
+        accounts["accounts"] = json!(five);
+        rejected.push(accounts.to_string());
+        let mut key = good();
+        key["accounts"][0]["account_key"] = json!("PRIVATE");
+        rejected.push(key.to_string());
+        let mut twice = good();
+        twice["accounts"] = json!([good()["accounts"][0], good()["accounts"][0]]);
+        rejected.push(twice.to_string());
+        rejected.push("[]".into());
+        rejected.push("{".into());
+        for body in &rejected {
+            write_state(&fixture, good().to_string().as_bytes());
+            assert_eq!(available(&fixture), AllowanceStatus::Available);
+            write_state(&fixture, body.as_bytes());
+            assert_eq!(available(&fixture), AllowanceStatus::Unavailable, "{body}");
+        }
+        // Up to 32 sessions and 4 accounts are accepted.
+        let mut full = good();
+        full["sessions"] = json!(vec![json!({"session":"x","account_key":null,"at":1}); 32]);
+        write_state(&fixture, full.to_string().as_bytes());
+        assert_eq!(available(&fixture), AllowanceStatus::Available);
+        // Oversized, 0644 and a link.
+        let mut big = good();
+        big["sessions"] = json!([{"session":"x".repeat(16_384),"account_key":null,"at":1}]);
+        write_state(&fixture, big.to_string().as_bytes());
+        assert_eq!(available(&fixture), AllowanceStatus::Unavailable);
+        let path = fixture.0.join(claude_account::STATE_FILE);
+        write_state(&fixture, good().to_string().as_bytes());
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(available(&fixture), AllowanceStatus::Unavailable);
+        fs::remove_file(&path).unwrap();
+        let real = fixture.0.join("real.json");
+        fs::write(&real, good().to_string()).unwrap();
+        fs::set_permissions(&real, fs::Permissions::from_mode(0o600)).unwrap();
+        std::os::unix::fs::symlink(&real, &path).unwrap();
+        assert_eq!(available(&fixture), AllowanceStatus::Unavailable);
+        fs::remove_file(&path).unwrap();
+        // Bad window values drop only their window.
+        for (used, reset_value, at) in [
+            (json!(12.25), json!(reset), json!(NOW - 1.0)),
+            (json!(100.1), json!(reset), json!(NOW - 1.0)),
+            (json!(-1), json!(reset), json!(NOW - 1.0)),
+            (json!("12.5"), json!(reset), json!(NOW - 1.0)),
+            (json!(null), json!(reset), json!(NOW - 1.0)),
+            (json!(12.5), json!(100_000_000_000u64), json!(NOW - 1.0)),
+            (json!(12.5), json!(-1), json!(NOW - 1.0)),
+            (json!(12.5), json!(1.5), json!(NOW - 1.0)),
+            (json!(12.5), json!(reset), json!(0)),
+            (json!(12.5), json!(reset), json!("1")),
+        ] {
+            let mut file = good();
+            file["accounts"][0]["windows"]["five_hour"] = state_window(used, reset_value, at);
+            write_state(&fixture, file.to_string().as_bytes());
+            let row = claude_rows(&fixture, None);
+            assert_eq!(row.status, AllowanceStatus::Available, "{file}");
+            assert_eq!(
+                row.windows,
+                [window("seven_day", Some(40.0), Some(reset))],
+                "{file}"
+            );
+        }
+        write_state(&fixture, good().to_string().as_bytes());
+        assert_eq!(claude_rows(&fixture, None).windows.len(), 2);
+    }
+
+    fn reading(
+        key: &str,
+        fetched_at: f64,
+        five: Option<f64>,
+        seven: Option<f64>,
+    ) -> claude_account::Reading {
+        let reset = NOW as i64 + 7200;
+        let cache = claude_account::Cache {
+            fetched_at_ms: fetched_at * 1000.0,
+            five_hour: Some(claude_account::CacheWindow {
+                utilization: five,
+                resets_at: reset,
+            }),
+            seven_day: Some(claude_account::CacheWindow {
+                utilization: seven,
+                resets_at: reset,
+            }),
+        };
+        (key.to_owned(), Some(cache))
+    }
+
+    /// D7: Claude Code's cache fills windows for the same account when fresh,
+    /// with the ambiguous (0, 1] scale unknown; the newer stamp wins per
+    /// window between the cache and the reporter state.
+    #[test]
+    fn claude_cache_fallback_matches_account_freshness_and_scale() {
+        let fixture = Fixture::new();
+        let reset = NOW as u64 + 7200;
+        let fresh = reading(CLAUDE_KEY, NOW - 30.0, Some(0.0), Some(1.5));
+        let row = claude_rows(&fixture, Some(&fresh));
+        assert_eq!(row.status, AllowanceStatus::Available);
+        assert_eq!(row.sampled_at, Some(NOW - 30.0));
+        assert_eq!(
+            row.windows,
+            [
+                window("five_hour", Some(0.0), Some(reset)),
+                window("seven_day", Some(1.5), Some(reset))
+            ]
+        );
+        for (five, seven, expected) in [
+            (Some(0.5), Some(1.0), [None, None]),
+            (Some(12.25), Some(100.0), [Some(12.3), Some(100.0)]),
+            (Some(12.35), Some(99.94), [Some(12.4), Some(99.9)]),
+            (Some(-1.0), Some(100.5), [None, None]),
+            (None, Some(f64::NAN), [None, None]),
+        ] {
+            let row = claude_rows(
+                &fixture,
+                Some(&reading(CLAUDE_KEY, NOW - 30.0, five, seven)),
+            );
+            assert_eq!(row.status, AllowanceStatus::Available);
+            assert_eq!(
+                row.windows,
+                [
+                    window("five_hour", expected[0], Some(reset)),
+                    window("seven_day", expected[1], Some(reset))
+                ],
+                "{five:?} {seven:?}"
+            );
+        }
+        // Another account's reading, a stale cache and a future cache add
+        // nothing; the fresh neighbour above is available.
+        for other in [
+            reading(UNMAPPED_KEY, NOW - 30.0, Some(5.0), Some(5.0)),
+            reading(CLAUDE_KEY, NOW - 600.5, Some(5.0), Some(5.0)),
+            reading(CLAUDE_KEY, NOW + 1.5, Some(5.0), Some(5.0)),
+            (CLAUDE_KEY.to_owned(), None),
+        ] {
+            assert_eq!(
+                claude_rows(&fixture, Some(&other)).status,
+                AllowanceStatus::Unavailable
+            );
+        }
+        assert_eq!(
+            claude_rows(
+                &fixture,
+                Some(&reading(CLAUDE_KEY, NOW + 1.0, Some(5.0), None))
+            )
+            .status,
+            AllowanceStatus::Available
+        );
+        // Newer reporter window over older cache, and the reverse.
+        write_state(
+            &fixture,
+            state_file(json!([{"account_key":CLAUDE_KEY,"windows":{
+                "five_hour":state_window(json!(20),json!(reset + 1),json!(NOW - 10.0)),
+                "seven_day":state_window(json!(30),json!(reset + 1),json!(NOW - 200.0))}}]))
+            .to_string()
+            .as_bytes(),
+        );
+        let row = claude_rows(
+            &fixture,
+            Some(&reading(CLAUDE_KEY, NOW - 100.0, Some(5.0), Some(6.0))),
+        );
+        assert_eq!(row.sampled_at, Some(NOW - 100.0));
+        assert_eq!(
+            row.windows,
+            [
+                window("five_hour", Some(20.0), Some(reset + 1)),
+                window("seven_day", Some(6.0), Some(reset))
+            ]
+        );
+        // A stale cache does not rescue a stale reporter window.
+        let row = claude_rows(
+            &fixture,
+            Some(&reading(CLAUDE_KEY, NOW - 700.0, Some(5.0), Some(6.0))),
+        );
+        assert_eq!(row.status, AllowanceStatus::Available);
+        assert_eq!(
+            row.windows[1],
+            window("seven_day", Some(30.0), Some(reset + 1))
+        );
+    }
+
+    /// D7: Codex cache and peer rows match Codex mappings only, so a row
+    /// carrying a Claude mapping's key never fills the Claude row, and the
+    /// Codex cache never stores one.
+    #[test]
+    fn codex_sources_never_fill_claude_mappings() {
+        let fixture = Fixture::new();
+        let reset = NOW as u64 + 3600;
+        write_state(
+            &fixture,
+            state_file(json!([{"account_key":CLAUDE_KEY,"windows":{
+                "seven_day":state_window(json!(40),json!(reset),json!(NOW - 1.0))}}]))
+            .to_string()
+            .as_bytes(),
+        );
+        let remote = [
+            source(CLAUDE_KEY, NOW, json!(1), json!(reset)),
+            source(CODEX_KEY, NOW, json!(70), json!(reset)),
+        ];
+        let rows = snapshot_full(&mixed(), &fixture.0, &remote, None, NOW);
+        assert_contract(&rows);
+        assert_eq!(rows[0].provider, "codex");
+        assert_eq!(rows[0].windows, weekly(Some(30.0), Some(reset)));
+        assert_eq!(rows[1].provider, "claude");
+        assert_eq!(rows[1].plan, None);
+        assert_eq!(
+            rows[1].windows,
+            [window("seven_day", Some(40.0), Some(reset))]
+        );
+        // `receive` refuses a row for a Claude mapping and keeps a Codex one.
+        let now = common::now();
+        let row = |key: &str| {
+            json!({"account_key":key,"sampled_at":now,"plan":"pro","weekly_remaining":50,
+                "weekly_resets_at":now as u64 + 3600,"reset_count":null,"reset_expires_at":null})
+        };
+        assert!(!receive(&mixed(), &fixture.0, &row(CLAUDE_KEY), None).unwrap());
+        assert!(receive(&mixed(), &fixture.0, &row(CODEX_KEY), None).unwrap());
+        let cache: Value =
+            serde_json::from_slice(&fs::read(fixture.0.join("allowances.json")).unwrap()).unwrap();
+        assert_eq!(cache.as_array().unwrap().len(), 1);
+        assert_eq!(cache[0]["account_key"], CODEX_KEY);
     }
 }

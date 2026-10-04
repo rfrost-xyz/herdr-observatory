@@ -243,11 +243,15 @@ struct Stream {
 }
 impl Stream {
     fn new(f: &Fixture) -> Self {
-        let mut child = f
-            .command()
+        let mut command = f.command();
+        command.stderr(Stdio::null());
+        Self::spawn(command)
+    }
+    /// A collector from `command`, whose stderr the caller has set.
+    fn spawn(mut command: Command) -> Self {
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
             .spawn()
             .unwrap();
         let stdout = child.stdout.take().unwrap();
@@ -609,6 +613,62 @@ fn native_install_uninstall_preserves_unknown_files_and_retries_retirement() {
     assert!(run(&target.join("uninstall.sh")).status.success());
     assert!(!target.exists());
     assert!(!state.exists());
+}
+
+/// Uninstall removes the Claude account state file with the other owned
+/// state and keeps an unknown file and the state directory holding it.
+#[test]
+fn uninstall_removes_claude_account_state_and_keeps_unknown_state() {
+    let f = Fixture::new();
+    let config_home = f.dir.join("config");
+    let target = config_home.join("omarchy/plugins/herdr.observatory");
+    fs::create_dir_all(&target).unwrap();
+    let script = fs::read(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("herdr.observatory/uninstall.sh"),
+    )
+    .unwrap();
+    write(&target.join("uninstall.sh"), script, 0o755);
+    // A retired marker: the runtime is already gone, as after an interrupted removal.
+    write(
+        &target.join(".herdr-observatory-install"),
+        b"herdr.observatory:retired\n",
+        0o600,
+    );
+    write(&f.dir.join("bin/omarchy-shell"),b"#!/bin/sh\ncase $2 in\n listPlugins) printf '%s\\n' '[]';;\n setPluginEnabled) echo ok;;\n *) :;;\nesac\n",0o755);
+    let state = f.dir.join("xdg-state/herdr.observatory");
+    fs::create_dir_all(&state).unwrap();
+    write(&state.join("claude-allowances.json"), b"{}", 0o600);
+    write(&state.join("allowances.json"), b"{}", 0o600);
+    write(&state.join("unrelated.json"), b"retain", 0o600);
+    let removed = Command::new("bash")
+        .arg(target.join("uninstall.sh"))
+        .env_clear()
+        .env("HOME", f.dir.join("home"))
+        .env("XDG_CONFIG_HOME", &config_home)
+        .env("XDG_STATE_HOME", f.dir.join("xdg-state"))
+        .env(
+            "PATH",
+            format!("{}:/usr/bin:/bin", f.dir.join("bin").display()),
+        )
+        .output()
+        .unwrap();
+    assert!(
+        removed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&removed.stderr)
+    );
+    assert!(!target.exists());
+    assert!(!state.join("claude-allowances.json").exists());
+    assert!(!state.join("allowances.json").exists());
+    assert_eq!(fs::read(state.join("unrelated.json")).unwrap(), b"retain");
+    let left: Vec<_> = fs::read_dir(&state)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(left, ["unrelated.json"]);
 }
 
 #[test]
@@ -2112,22 +2172,39 @@ impl Reporter {
                     .push((method.clone(), params.clone()));
                 let pane = params["pane_id"].as_str().unwrap_or("").to_owned();
                 let mut panes = server_panes.lock().unwrap();
+                // A pane marked `fixture_reject` fails its metadata write;
+                // `fixture_delay_ms` delays its reply, holding the reporter
+                // inside `hook.lock`.
+                let delay = match method.as_str() {
+                    "pane.report_metadata" => panes
+                        .get(&pane)
+                        .and_then(|entry| entry["fixture_delay_ms"].as_u64())
+                        .unwrap_or(0),
+                    _ => 0,
+                };
                 let result = match method.as_str() {
-                    "pane.get" => json!({"pane":panes.get(&pane).cloned().unwrap_or(json!({}))}),
-                    "pane.report_metadata" => {
-                        if let Some(entry) = panes.get_mut(&pane) {
-                            entry["tokens"] = params["tokens"].clone();
-                        }
-                        json!({})
+                    "pane.get" => {
+                        Some(json!({"pane":panes.get(&pane).cloned().unwrap_or(json!({}))}))
                     }
-                    _ => json!({}),
+                    "pane.report_metadata" => match panes.get_mut(&pane) {
+                        Some(entry) if entry["fixture_reject"] == true => None,
+                        Some(entry) => {
+                            entry["tokens"] = params["tokens"].clone();
+                            Some(json!({}))
+                        }
+                        None => Some(json!({})),
+                    },
+                    _ => Some(json!({})),
                 };
                 drop(panes);
-                let _ = writeln!(
-                    stream,
-                    "{}",
-                    json!({"jsonrpc":"2.0","id":request["id"],"result":result})
-                );
+                thread::sleep(Duration::from_millis(delay));
+                let reply = match result {
+                    Some(result) => json!({"jsonrpc":"2.0","id":request["id"],"result":result}),
+                    None => {
+                        json!({"jsonrpc":"2.0","id":request["id"],"error":{"code":-32000,"message":"fixture"}})
+                    }
+                };
+                let _ = writeln!(stream, "{reply}");
             }
         });
         let state = dir.join("state");
@@ -2262,7 +2339,9 @@ fn report_seq(ago: u64) -> String {
     ((common::now() as u64 - ago) * 1_000_000).to_string()
 }
 
-/// D3: invalid arguments exit 2 before any file or socket access.
+/// D3: invalid arguments, including every count other than 4, 7 or 10 and
+/// every malformed rate-limit tail, exit 2 before any file or socket access;
+/// valid seven- and ten-value runs then report the window (exit 0).
 #[test]
 fn claude_report_rejects_invalid_arguments_without_socket_access() {
     let f = Reporter::new();
@@ -2289,12 +2368,52 @@ fn claude_report_rejects_invalid_arguments_without_socket_access() {
     for window in ["0", "-1", "+5", "1e6", "100000001", "\u{0663}", "", " 5"] {
         cases.push(vec!["w1:p1", &seq, CLAUDE_ID, window]);
     }
-    for case in &cases {
+    // Rate-limit tails: counts 5, 6, 8, 9 and 11, unknown and repeated
+    // kinds, bad used values and resets in the past, at `seq`, beyond the
+    // bound or with 12 digits.
+    let whole = seq.parse::<u64>().unwrap() / 1_000_000;
+    let reset = (whole + 60).to_string();
+    let at = whole.to_string();
+    let past = (whole - 1).to_string();
+    let beyond_five = (whole + 21_601).to_string();
+    let beyond_seven = (whole + 608_401).to_string();
+    let twelve = format!("00{reset}");
+    let head = ["w1:p1", seq.as_str(), CLAUDE_ID, "200000"];
+    let five = ["five_hour", "12.5", reset.as_str()];
+    let seven = ["seven_day", "40", reset.as_str()];
+    let mut tails: Vec<Vec<&str>> = vec![
+        vec!["five_hour"],
+        vec!["five_hour", "12.5"],
+        [&five[..], &["seven_day"]].concat(),
+        [&five[..], &["seven_day", "40"]].concat(),
+        [&five[..], &seven, &["five_hour"]].concat(),
+        [&five[..], &five].concat(),
+        vec!["spend_limit", "12.5", &reset],
+        vec!["five_hour", "12.5", &past],
+        vec!["five_hour", "12.5", &at],
+        vec!["five_hour", "12.5", &beyond_five],
+        vec!["seven_day", "40", &beyond_seven],
+        vec!["five_hour", "12.5", &twelve],
+    ];
+    for used in ["-1", "100.1", "1.25", "01", "5.0", "1e1", "+5"] {
+        tails.push(vec!["five_hour", used, &reset]);
+    }
+    let tail_cases: Vec<Vec<&str>> = tails.iter().map(|t| [&head[..], t].concat()).collect();
+    for case in cases.iter().chain(&tail_cases) {
         assert_eq!(f.report(case), Some(2), "{case:?}");
     }
     assert!(f.methods().is_empty());
     assert!(!f.state.exists());
     assert_eq!(fs::read_dir(f.dir.join("cwd")).unwrap().count(), 0);
+    // The accepted neighbours: seven and ten valid values report the window.
+    assert_eq!(f.report(&[&head[..], &five].concat()), Some(0));
+    assert_eq!(f.methods(), ["pane.get", "pane.report_metadata"]);
+    assert_claude_wire(&f.writes()[0], &seq, 200_000);
+    let later = report_seq(5);
+    let head = ["w1:p1", later.as_str(), CLAUDE_ID, "300000"];
+    assert_eq!(f.report(&[&head[..], &seven, &five].concat()), Some(0));
+    assert_eq!(f.writes().len(), 2);
+    assert_claude_wire(&f.writes()[1], &later, 300_000);
 }
 
 /// D3: the four values after `claude` are taken verbatim, so an option-like
@@ -2632,6 +2751,656 @@ fn claude_report_refuses_unbound_panes_and_missing_ownership() {
     f.receipt(Some(f.mod_entry(true)));
     assert_eq!(f.report(&["w1:p1", &seq, CLAUDE_ID, "200000"]), Some(0));
     assert_eq!(f.methods(), ["pane.get", "pane.report_metadata"]);
+}
+
+/// Claude account fixtures (design D4 to D6): a synthetic `.claude.json`
+/// with `PRIVATE` markers in unlisted keys, and reports carrying a tail.
+const CLAUDE_UUID: &str = "00000000-0000-4000-8000-000000000001";
+const CLAUDE_EMAIL: &str = "fixture@example.invalid";
+fn claude_account_key(uuid: &str) -> String {
+    common::sha256(format!("observatory-claude-account-v1:{uuid}").as_bytes())
+}
+fn claude_session_key(id: &str) -> String {
+    common::sha256(format!("observatory-claude-session-v1:{id}").as_bytes())
+}
+/// A synthetic `.claude.json` naming `uuid`, with `extra` top-level keys.
+fn provider_body(uuid: &str, extra: &str) -> String {
+    format!(
+        r#"{{"projects":{{"/PRIVATE/path":{{"history":["PRIVATE"]}}}},"oauthAccount":{{"accountUuid":"{uuid}","emailAddress":"{CLAUDE_EMAIL}","organizationName":"PRIVATE"}},"cachedUsageUtilization":{{"accountUuid":"{uuid}","fetchedAtMs":1,"utilization":{{"spend":"PRIVATE"}}}}{extra}}}"#
+    )
+}
+/// A Claude report at `seq` with `windows` as (kind, used, seconds after
+/// the whole second of `seq`).
+fn tail_report(
+    pane: &str,
+    session: &str,
+    seq: u64,
+    window: u64,
+    windows: &[(&str, &str, u64)],
+) -> Vec<String> {
+    let whole = seq / 1_000_000;
+    let mut values = vec![
+        pane.to_owned(),
+        seq.to_string(),
+        session.to_owned(),
+        window.to_string(),
+    ];
+    for (kind, used, after) in windows {
+        values.extend([
+            kind.to_string(),
+            used.to_string(),
+            (whole + after).to_string(),
+        ]);
+    }
+    values
+}
+/// Environment pairs for `Reporter::account_report`.
+fn vars(pairs: &[(&str, &str)]) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    pairs
+        .iter()
+        .map(|(name, value)| (name.into(), value.into()))
+        .collect()
+}
+/// Asserts that no fixture secret appears in `bytes`.
+fn assert_no_secret(bytes: &[u8]) {
+    let text = String::from_utf8_lossy(bytes);
+    for secret in ["PRIVATE", CLAUDE_UUID, CLAUDE_EMAIL] {
+        assert!(!text.contains(secret), "{secret} in {text}");
+    }
+}
+impl Reporter {
+    fn provider(&self, body: &str) {
+        write(&self.home.join(".claude.json"), body, 0o600);
+    }
+    fn settings(&self, body: &str) {
+        fs::create_dir_all(self.home.join(".claude")).unwrap();
+        write(&self.home.join(".claude/settings.json"), body, 0o644);
+    }
+    fn account_path(&self) -> PathBuf {
+        self.state.join("claude-allowances.json")
+    }
+    fn account_state(&self) -> Option<Value> {
+        fs::read(self.account_path())
+            .ok()
+            .map(|bytes| serde_json::from_slice(&bytes).unwrap())
+    }
+    /// Runs one report with `env` added to the fixture environment. Exit 0
+    /// has no output; no output and no state file ever holds a fixture
+    /// secret.
+    fn account_report(
+        &self,
+        report: &[String],
+        env: &[(std::ffi::OsString, std::ffi::OsString)],
+    ) -> Option<i32> {
+        let report: Vec<&str> = report.iter().map(String::as_str).collect();
+        let mut command = self.command(&report);
+        command.envs(env.iter().map(|(name, value)| (name, value)));
+        let output = command.output().unwrap();
+        let code = output.status.code();
+        if code == Some(0) {
+            assert!(output.stdout.is_empty(), "{report:?}");
+            assert!(output.stderr.is_empty(), "{report:?}");
+        }
+        assert_no_secret(&output.stdout);
+        assert_no_secret(&output.stderr);
+        if let Ok(entries) = fs::read_dir(&self.state) {
+            for entry in entries {
+                let path = entry.unwrap().path();
+                if fs::symlink_metadata(&path).unwrap().is_file() {
+                    assert_no_secret(&fs::read(&path).unwrap());
+                }
+            }
+        }
+        code
+    }
+}
+
+/// D4 to D6: a ten-value report writes the bound window with the change 3
+/// wire and records both windows for the profile's account; a later tail
+/// with the same window still records, a window absent from it keeps its
+/// value and stamp, and a four-value run leaves the account state alone.
+#[test]
+fn claude_report_records_fresh_windows_for_the_profile_account() {
+    let f = Reporter::new();
+    f.provider(&provider_body(CLAUDE_UUID, ""));
+    let first = (common::now() as u64 - 100) * 1_000_000;
+    let report = tail_report(
+        "w1:p1",
+        CLAUDE_ID,
+        first,
+        200_000,
+        &[("five_hour", "12.5", 60), ("seven_day", "40", 3600)],
+    );
+    assert_eq!(f.account_report(&report, &[]), Some(0));
+    assert_eq!(f.methods(), ["pane.get", "pane.report_metadata"]);
+    assert_claude_wire(&f.writes()[0], &first.to_string(), 200_000);
+    let text = f.writes()[0].to_string();
+    for absent in ["account", "rate", "five_hour", "seven_day", "12.5"] {
+        assert!(!text.contains(absent), "{absent} in {text}");
+    }
+    let key = claude_account_key(CLAUDE_UUID);
+    let session = claude_session_key(CLAUDE_ID);
+    let whole = first / 1_000_000;
+    let at = first as f64 / 1e6;
+    assert_eq!(
+        f.account_state().unwrap(),
+        json!({"version":1,"accounts":[{"account_key":key,"windows":{
+            "five_hour":{"used_percent":12.5,"resets_at":whole + 60,"sampled_at":at},
+            "seven_day":{"used_percent":40,"resets_at":whole + 3600,"sampled_at":at}}}],
+            "sessions":[{"session":session,"account_key":key,"at":at}]})
+    );
+    let bytes = fs::read(f.account_path()).unwrap();
+    assert!(String::from_utf8_lossy(&bytes).contains(r#""used_percent":40,"#));
+    use std::os::unix::fs::MetadataExt;
+    assert_eq!(
+        fs::metadata(f.account_path()).unwrap().mode() & 0o777,
+        0o600
+    );
+    // The same window later: no metadata write, the account state still
+    // records; `five_hour`, absent from the tail, keeps its value and stamp.
+    let second = first + 10_000_000;
+    let report = tail_report(
+        "w1:p1",
+        CLAUDE_ID,
+        second,
+        200_000,
+        &[("seven_day", "41.5", 3600)],
+    );
+    assert_eq!(f.account_report(&report, &[]), Some(0));
+    assert_eq!(
+        f.methods(),
+        ["pane.get", "pane.report_metadata", "pane.get"]
+    );
+    let state = f.account_state().unwrap();
+    let later = second as f64 / 1e6;
+    assert_eq!(
+        state["accounts"][0]["windows"]["five_hour"],
+        json!({"used_percent":12.5,"resets_at":whole + 60,"sampled_at":at})
+    );
+    assert_eq!(
+        state["accounts"][0]["windows"]["seven_day"],
+        json!({"used_percent":41.5,"resets_at":second / 1_000_000 + 3600,"sampled_at":later})
+    );
+    assert_eq!(
+        state["sessions"],
+        json!([{"session":session,"account_key":key,"at":later}])
+    );
+    // Four values: the window report only; the account state is unchanged.
+    let before = fs::read(f.account_path()).unwrap();
+    let third = (second + 10_000_000).to_string();
+    assert_eq!(f.report(&["w1:p1", &third, CLAUDE_ID, "300000"]), Some(0));
+    assert_claude_wire(&f.writes()[1], &third, 300_000);
+    assert_eq!(fs::read(f.account_path()).unwrap(), before);
+}
+
+/// D4: every refusal keeps the window report and its exit status and
+/// writes no account state, deciding on names, never values; the accepted
+/// neighbours, each differing only in the refused property, write it.
+#[test]
+fn claude_report_refusals_keep_the_window_report_and_write_no_account_state() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+    let f = Reporter::new();
+    let good = provider_body(CLAUDE_UUID, "");
+    f.provider(&good);
+    let mut seq = (common::now() as u64 - 300) * 1_000_000;
+    let mut window = 200_000;
+    // One report with a tail; the window changes every second run, so the
+    // account step follows both a metadata write and the no-change return.
+    // True when account state was written.
+    let mut run = |env: &[(std::ffi::OsString, std::ffi::OsString)]| -> bool {
+        seq += 1_000_000;
+        if (seq / 1_000_000) % 2 == 0 {
+            window = if window == 200_000 { 300_000 } else { 200_000 };
+        }
+        let report = tail_report(
+            "w1:p1",
+            CLAUDE_ID,
+            seq,
+            window,
+            &[("five_hour", "12.5", 60), ("seven_day", "40", 3600)],
+        );
+        assert_eq!(f.account_report(&report, env), Some(0), "{env:?}");
+        assert_eq!(
+            f.panes.lock().unwrap()["w1:p1"]["tokens"]["obs_n1"],
+            format!(",{window},,")
+        );
+        let written = f.account_path().exists();
+        let _ = fs::remove_file(f.account_path());
+        written
+    };
+    let home_claude = f.home.join(".claude").to_string_lossy().into_owned();
+    let elsewhere = f.dir.join("PRIVATE-config").to_string_lossy().into_owned();
+    for env in [
+        vars(&[("ANTHROPIC_BASE_URL", "https://PRIVATE.example.invalid/v1")]),
+        vars(&[("ANTHROPIC_BASE_URL", "")]),
+        vars(&[("ANTHROPIC_API_KEY", "PRIVATE")]),
+        vars(&[("ANTHROPIC_AUTH_TOKEN", "PRIVATE")]),
+        vars(&[("ANTHROPIC_CUSTOM_HEADERS", "PRIVATE")]),
+        vars(&[
+            ("CLAUDE_CODE_MESSAGING_TOKEN", "PRIVATE"),
+            ("CLAUDE_CODE_SESSION_TOKEN", "PRIVATE"),
+        ]),
+        vars(&[("CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR", "3")]),
+        vars(&[("CLAUDE_CODE_HOST_PLATFORM", "PRIVATE")]),
+        vars(&[("CLAUDE_CODE_USE_BEDROCK", "1")]),
+        vars(&[("CCR_OAUTH_TOKEN_FILE", "PRIVATE")]),
+        vars(&[("CLAUDE_CODE_CUSTOM_OAUTH_URL", "PRIVATE")]),
+        vec![(OsString::from_vec(b"FIXTURE_\xff".to_vec()), "1".into())],
+        vars(&[("CLAUDE_CONFIG_DIR", "")]),
+        vars(&[("CLAUDE_CONFIG_DIR", home_claude.as_str())]),
+        vars(&[("CLAUDE_CONFIG_DIR", elsewhere.as_str())]),
+    ] {
+        assert!(!run(&env), "{env:?}");
+    }
+    for env in [
+        vars(&[]),
+        vars(&[("CLAUDE_CODE_MESSAGING_TOKEN", "PRIVATE")]),
+        vars(&[("ANTHROPIC_BASE_URL_X", "PRIVATE")]),
+        vars(&[("ANTHROPIC_MODEL", "PRIVATE")]),
+        vec![(
+            OsString::from("FIXTURE_NAME"),
+            OsString::from_vec(b"\xff".to_vec()),
+        )],
+    ] {
+        assert!(run(&env), "{env:?}");
+    }
+    // Legacy configuration as a file and as a dangling link.
+    fs::create_dir_all(f.home.join(".claude")).unwrap();
+    let legacy = f.home.join(".claude/.config.json");
+    write(&legacy, "{}", 0o600);
+    assert!(!run(&[]));
+    fs::remove_file(&legacy).unwrap();
+    std::os::unix::fs::symlink(f.dir.join("absent"), &legacy).unwrap();
+    assert!(!run(&[]));
+    fs::remove_file(&legacy).unwrap();
+    assert!(run(&[]));
+    // `apiKeyHelper` with any value, and unsafe or malformed settings.
+    for body in [
+        r#"{"apiKeyHelper":"/PRIVATE/helper"}"#,
+        r#"{"apiKeyHelper":null}"#,
+        r#"{"apiKeyHelper":{"PRIVATE":[1]}}"#,
+        "{PRIVATE",
+        "[]",
+    ] {
+        f.settings(body);
+        assert!(!run(&[]), "{body}");
+    }
+    f.settings(&format!(r#"{{"pad":"{}"}}"#, "x".repeat(1_048_576)));
+    assert!(!run(&[]));
+    let settings = f.home.join(".claude/settings.json");
+    fs::remove_file(&settings).unwrap();
+    write(&f.dir.join("real-settings.json"), "{}", 0o644);
+    std::os::unix::fs::symlink(f.dir.join("real-settings.json"), &settings).unwrap();
+    assert!(!run(&[]));
+    fs::remove_file(&settings).unwrap();
+    f.settings(r#"{"env":{"PRIVATE":"PRIVATE"},"model":"PRIVATE"}"#);
+    assert!(run(&[]));
+    fs::remove_file(&settings).unwrap();
+    // Provider state: `primaryApiKey` with any value, no valid account,
+    // mistyped account id, a loose mode, a link, over 4 MiB, missing.
+    for body in [
+        provider_body(CLAUDE_UUID, r#","primaryApiKey":"PRIVATE""#),
+        provider_body(CLAUDE_UUID, r#","primaryApiKey":null"#),
+        r#"{"oauthAccount":{"emailAddress":"PRIVATE"}}"#.to_owned(),
+        r#"{"oauthAccount":{"accountUuid":""}}"#.to_owned(),
+        r#"{"oauthAccount":{"accountUuid":["PRIVATE"]}}"#.to_owned(),
+        "PRIVATE".to_owned(),
+        provider_body(
+            CLAUDE_UUID,
+            &format!(r#","pad":"{}""#, "x".repeat(4 * 1_048_576)),
+        ),
+    ] {
+        f.provider(&body);
+        assert!(!run(&[]));
+    }
+    let provider = f.home.join(".claude.json");
+    write(&provider, &good, 0o644);
+    assert!(!run(&[]));
+    fs::remove_file(&provider).unwrap();
+    write(&f.dir.join("real-provider.json"), &good, 0o600);
+    std::os::unix::fs::symlink(f.dir.join("real-provider.json"), &provider).unwrap();
+    assert!(!run(&[]));
+    fs::remove_file(&provider).unwrap();
+    assert!(!run(&[]));
+    // A mistyped field outside the reporter's extraction is never read.
+    f.provider(&provider_body(
+        CLAUDE_UUID,
+        r#","oauthAccount2":1,"cachedUsageUtilization":{"accountUuid":7,"fetchedAtMs":"PRIVATE"}"#,
+    ));
+    assert!(run(&[]));
+    f.provider(&good);
+    assert!(run(&[]));
+}
+
+/// D6: newest stamp wins across two panes bound to two sessions on one
+/// account, also when the older report arrives second; a session that finds
+/// another account is refused for good, while other sessions attribute.
+#[test]
+fn claude_report_account_state_keeps_newest_stamps_and_refuses_switched_sessions() {
+    let f = Reporter::new();
+    f.provider(&provider_body(CLAUDE_UUID, ""));
+    let (id_b, id_c) = ("fixture-session-b", "fixture-session-c");
+    for (pane, id) in [("w1:p2", id_b), ("w1:p3", id_c)] {
+        let mut value = claude_pane(id);
+        value["pane_id"] = json!(pane);
+        f.pane(pane, value);
+    }
+    let key = claude_account_key(CLAUDE_UUID);
+    let (a, b) = (claude_session_key(CLAUDE_ID), claude_session_key(id_b));
+    let base = (common::now() as u64 - 100) * 1_000_000;
+    let (older, newer) = (base, base + 5_000_000);
+    let at = |seq: u64| seq as f64 / 1e6;
+    let window = |used: u64, seq: u64, after: u64| json!({"used_percent":used,"resets_at":seq / 1_000_000 + after,"sampled_at":at(seq)});
+    let report = tail_report("w1:p2", id_b, newer, 200_000, &[("five_hour", "20", 60)]);
+    assert_eq!(f.account_report(&report, &[]), Some(0));
+    let report = tail_report(
+        "w1:p1",
+        CLAUDE_ID,
+        older,
+        200_000,
+        &[("five_hour", "10", 60), ("seven_day", "5", 3600)],
+    );
+    assert_eq!(f.account_report(&report, &[]), Some(0));
+    let state = f.account_state().unwrap();
+    assert_eq!(
+        state["accounts"],
+        json!([{"account_key":key,"windows":{"five_hour":window(20, newer, 60),"seven_day":window(5, older, 3600)}}])
+    );
+    assert_eq!(
+        state["sessions"],
+        json!([{"session":b,"account_key":key,"at":at(newer)},{"session":a,"account_key":key,"at":at(older)}])
+    );
+    let accounts = state["accounts"].clone();
+    // The profile now names another account: session `a` is refused.
+    let other = "00000000-0000-4000-8000-000000000002";
+    f.provider(&provider_body(other, ""));
+    let switch = base + 10_000_000;
+    let report = tail_report(
+        "w1:p1",
+        CLAUDE_ID,
+        switch,
+        200_000,
+        &[("five_hour", "30", 60)],
+    );
+    assert_eq!(f.account_report(&report, &[]), Some(0));
+    let state = f.account_state().unwrap();
+    assert_eq!(state["accounts"], accounts);
+    assert_eq!(
+        state["sessions"][1],
+        json!({"session":a,"account_key":null,"at":at(switch)})
+    );
+    // Back on the first account, session `a` stays refused.
+    f.provider(&provider_body(CLAUDE_UUID, ""));
+    let back = base + 15_000_000;
+    let report = tail_report(
+        "w1:p1",
+        CLAUDE_ID,
+        back,
+        200_000,
+        &[("five_hour", "40", 60)],
+    );
+    assert_eq!(f.account_report(&report, &[]), Some(0));
+    let state = f.account_state().unwrap();
+    assert_eq!(state["accounts"], accounts);
+    assert_eq!(
+        state["sessions"][1],
+        json!({"session":a,"account_key":null,"at":at(back)})
+    );
+    // Session `b` still attributes to the first account.
+    let later = base + 20_000_000;
+    let report = tail_report("w1:p2", id_b, later, 200_000, &[("five_hour", "50", 60)]);
+    assert_eq!(f.account_report(&report, &[]), Some(0));
+    let state = f.account_state().unwrap();
+    assert_eq!(
+        state["accounts"][0]["windows"]["five_hour"],
+        window(50, later, 60)
+    );
+    // A new session under the other account attributes normally.
+    f.provider(&provider_body(other, ""));
+    let last = base + 25_000_000;
+    let report = tail_report("w1:p3", id_c, last, 200_000, &[("seven_day", "60", 3600)]);
+    assert_eq!(f.account_report(&report, &[]), Some(0));
+    let state = f.account_state().unwrap();
+    assert_eq!(
+        state["accounts"][1],
+        json!({"account_key":claude_account_key(other),"windows":{"seven_day":window(60, last, 3600)}})
+    );
+    assert_eq!(state["sessions"].as_array().unwrap().len(), 3);
+}
+
+/// D6: at most four accounts (the least recently stamped evicted) and 32
+/// sessions (expired ones dropped, then attributed ones oldest first,
+/// refused ones last); a malformed, oversized, other-version, unknown-key or
+/// array-shaped owned file is replaced; a link or a loose mode refuses the
+/// write.
+#[test]
+fn claude_report_account_state_bounds_and_replacement() {
+    let f = Reporter::new();
+    f.provider(&provider_body(CLAUDE_UUID, ""));
+    fs::create_dir_all(&f.state).unwrap();
+    fs::set_permissions(&f.state, fs::Permissions::from_mode(0o700)).unwrap();
+    let now = common::now() as u64;
+    let key = claude_account_key(CLAUDE_UUID);
+    let session = claude_session_key(CLAUDE_ID);
+    let mut seq = (now - 200) * 1_000_000;
+    let mut report = || {
+        seq += 1_000_000;
+        let report = tail_report(
+            "w1:p1",
+            CLAUDE_ID,
+            seq,
+            200_000,
+            &[("five_hour", "12.5", 60)],
+        );
+        assert_eq!(f.account_report(&report, &[]), Some(0));
+        seq
+    };
+    let stamp = |t: u64| json!({"used_percent":1,"resets_at":now + 600,"sampled_at":t as f64});
+    let accounts: Vec<Value> = (0..4u64)
+        .map(|i| json!({"account_key":hex(&format!("account-{i}")),"windows":{"seven_day":stamp(now - 400 + i * 10)}}))
+        .collect();
+    let refused: Vec<Value> = (0..4u64)
+        .map(|i| json!({"session":hex(&format!("refused-{i}")),"account_key":null,"at":(now - 3000 + i) as f64}))
+        .collect();
+    let attributed: Vec<Value> = (0..28u64)
+        .map(|i| json!({"session":hex(&format!("attributed-{i}")),"account_key":hex("account-1"),"at":(now - 2000 + i) as f64}))
+        .collect();
+    let sessions = [refused.clone(), attributed.clone()].concat();
+    let seeded = json!({"version":1,"accounts":accounts,"sessions":sessions});
+    write(&f.account_path(), seeded.to_string(), 0o600);
+    let first = report();
+    let state = f.account_state().unwrap();
+    let keys: Vec<_> = state["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["account_key"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        keys,
+        [
+            hex("account-1"),
+            hex("account-2"),
+            hex("account-3"),
+            key.clone()
+        ]
+    );
+    let mut expected = [refused.clone(), attributed[1..].to_vec()].concat();
+    expected.push(json!({"session":session,"account_key":key,"at":first as f64 / 1e6}));
+    assert_eq!(state["sessions"], json!(expected));
+    // A session older than 24 hours is dropped on the next report.
+    let expired =
+        json!({"session":hex("expired"),"account_key":hex("account-1"),"at":(now - 90_000) as f64});
+    let recent = json!({"session":hex("recent"),"account_key":null,"at":(now - 1000) as f64});
+    write(
+        &f.account_path(),
+        json!({"version":1,"accounts":[],"sessions":[expired, recent]}).to_string(),
+        0o600,
+    );
+    let second = report();
+    assert_eq!(
+        f.account_state().unwrap()["sessions"],
+        json!([recent, {"session":session,"account_key":key,"at":second as f64 / 1e6}])
+    );
+    // Owned private files that are malformed, oversized, of another
+    // version, with an unknown key or with an array where an object belongs
+    // are replaced.
+    for body in [
+        "PRIVATE{".to_owned(),
+        format!(r#"{{"pad":"{}"}}"#, "x".repeat(16_384)),
+        r#"{"version":2,"accounts":[],"sessions":[]}"#.to_owned(),
+        r#"{"version":1,"accounts":[],"sessions":[],"extra":"PRIVATE"}"#.to_owned(),
+        // Arrays where objects belong, at each depth.
+        json!({"version":1,"accounts":[[hex("account-9"),{}]],"sessions":[]}).to_string(),
+        json!({"version":1,"accounts":[{"account_key":hex("account-9"),"windows":[]}],"sessions":[]}).to_string(),
+        json!({"version":1,"accounts":[{"account_key":hex("account-9"),"windows":{"five_hour":[1,now + 600,1.0]}}],"sessions":[]}).to_string(),
+        json!({"version":1,"accounts":[],"sessions":[[hex("session-9"),null,(now - 10) as f64]]}).to_string(),
+        // A repeated account or session key, which the collector rejects.
+        json!({"version":1,"accounts":[
+            {"account_key":hex("account-9"),"windows":{"seven_day":stamp(now - 10)}},
+            {"account_key":hex("account-9"),"windows":{"seven_day":stamp(now - 20)}}],"sessions":[]}).to_string(),
+        json!({"version":1,"accounts":[],"sessions":[
+            {"session":hex("session-9"),"account_key":null,"at":(now - 10) as f64},
+            {"session":hex("session-9"),"account_key":null,"at":(now - 20) as f64}]}).to_string(),
+    ] {
+        write(&f.account_path(), &body, 0o600);
+        let seq = report();
+        let state = f.account_state().unwrap();
+        assert_eq!(state["accounts"][0]["account_key"], key);
+        assert_eq!(
+            state["sessions"],
+            json!([{"session":session,"account_key":key,"at":seq as f64 / 1e6}])
+        );
+    }
+    // A link or a loose mode refuses the write and is left as it was.
+    fs::remove_file(f.account_path()).unwrap();
+    write(&f.dir.join("state-target.json"), "{}", 0o600);
+    std::os::unix::fs::symlink(f.dir.join("state-target.json"), f.account_path()).unwrap();
+    report();
+    assert!(fs::symlink_metadata(f.account_path()).unwrap().is_symlink());
+    assert_eq!(fs::read(f.dir.join("state-target.json")).unwrap(), b"{}");
+    fs::remove_file(f.account_path()).unwrap();
+    let loose = json!({"version":1,"accounts":[],"sessions":[]}).to_string();
+    write(&f.account_path(), &loose, 0o644);
+    report();
+    assert_eq!(fs::read(f.account_path()).unwrap(), loose.as_bytes());
+}
+
+/// D4: when the metadata write fails the reporter exits 1 and writes no
+/// account state; the same report once the write succeeds records it.
+#[test]
+fn claude_report_failed_metadata_write_writes_no_account_state() {
+    let f = Reporter::new();
+    f.provider(&provider_body(CLAUDE_UUID, ""));
+    let mut pane = claude_pane(CLAUDE_ID);
+    pane["fixture_reject"] = json!(true);
+    f.pane("w1:p1", pane);
+    let seq = (common::now() as u64 - 10) * 1_000_000;
+    let report = tail_report(
+        "w1:p1",
+        CLAUDE_ID,
+        seq,
+        200_000,
+        &[("five_hour", "12.5", 60)],
+    );
+    assert_eq!(f.account_report(&report, &[]), Some(1));
+    assert_eq!(f.methods(), ["pane.get", "pane.report_metadata"]);
+    assert!(!f.account_path().exists());
+    f.pane("w1:p1", claude_pane(CLAUDE_ID));
+    assert_eq!(f.account_report(&report, &[]), Some(0));
+    assert_eq!(
+        f.account_state().unwrap()["accounts"][0]["account_key"],
+        claude_account_key(CLAUDE_UUID)
+    );
+}
+
+/// D4: a ten-value report reading a provider state file at its 4 MiB
+/// bound holds `hook.lock` briefly enough that a Pi report on the same
+/// state directory, started while the Claude run holds the lock (its
+/// metadata reply is delayed by 100 ms, then the account step runs),
+/// completes within its 400 ms lock wait.
+#[test]
+fn claude_report_with_large_provider_state_lets_a_pi_report_through() {
+    let f = Reporter::new();
+    let small = provider_body(CLAUDE_UUID, r#","pad":"""#);
+    let pad = "x".repeat(4 * 1_048_576 - small.len());
+    f.provider(&provider_body(CLAUDE_UUID, &format!(r#","pad":"{pad}""#)));
+    assert_eq!(
+        fs::metadata(f.home.join(".claude.json")).unwrap().len(),
+        4 * 1_048_576
+    );
+    let mut pane = claude_pane(CLAUDE_ID);
+    pane["fixture_delay_ms"] = json!(100);
+    f.pane("w1:p1", pane);
+    f.pane(
+        "w1:p2",
+        json!({"pane_id":"w1:p2","agent":"pi","agent_session":{"agent":"pi","source":"herdr:pi","kind":"path","value":"/synthetic/session"},"tokens":{}}),
+    );
+    for round in 0..3u64 {
+        let seq = (common::now() as u64 - 30 + round * 5) * 1_000_000;
+        let report = tail_report(
+            "w1:p1",
+            CLAUDE_ID,
+            seq,
+            200_000 + round,
+            &[("five_hour", "12.5", 60), ("seven_day", "40", 3600)],
+        );
+        let report: Vec<&str> = report.iter().map(String::as_str).collect();
+        f.calls.lock().unwrap().clear();
+        let mut claude = f.command(&report).spawn().unwrap();
+        // Wait until the Claude run is inside `hook.lock`: its metadata
+        // write has reached the socket and its reply is being delayed.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !f.methods().contains(&"pane.report_metadata".to_owned()) {
+            assert!(Instant::now() < deadline, "{round}");
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(claude.try_wait().unwrap().is_none(), "{round}");
+        let mut pi = Command::new(BIN)
+            .env_clear()
+            .env("HOME", &f.home)
+            .current_dir(f.dir.join("cwd"))
+            .args(["--report", "pi", "w1:p2", &seq.to_string()])
+            .args([
+                "--root",
+                f.root.to_str().unwrap(),
+                "--state",
+                f.state.to_str().unwrap(),
+            ])
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let event = json!({"session_path":"/synthetic/session","event":"turn","phase":"working"});
+        pi.stdin
+            .take()
+            .unwrap()
+            .write_all(event.to_string().as_bytes())
+            .unwrap();
+        assert!(claude.wait().unwrap().success(), "{round}");
+        assert!(pi.wait().unwrap().success(), "{round}");
+        // Pi read its pane only after the Claude run released the lock.
+        let calls = f.calls.lock().unwrap().clone();
+        let order: Vec<_> = calls
+            .iter()
+            .map(|(method, params)| (method.as_str(), params["pane_id"].as_str().unwrap_or("")))
+            .collect();
+        assert_eq!(
+            order,
+            [
+                ("pane.get", "w1:p1"),
+                ("pane.report_metadata", "w1:p1"),
+                ("pane.get", "w1:p2"),
+                ("pane.report_metadata", "w1:p2")
+            ],
+            "{round}"
+        );
+        let state = f.account_state().unwrap();
+        assert_eq!(
+            state["accounts"][0]["windows"]["five_hour"]["sampled_at"],
+            json!(seq as f64 / 1e6)
+        );
+    }
 }
 
 /// Regression guard: `--report pi` still parses options after its values
@@ -3026,4 +3795,1008 @@ fn hook_receipt_writers_refuse_as_busy_through_the_cli() {
     drop(lock);
     f.install_step("--uninstall-claude-mod");
     assert!(!f.mod_root().exists());
+}
+
+/// A Claude collector or command (design D11): a cleared environment with
+/// an absolute `HOME`, `PATH` and the ssh stub's variables, then `env`. The
+/// default `CLAUDE_CONFIG_DIR` of `Fixture::command` is not set.
+fn claude_command(f: &Fixture, env: &[(&str, &str)]) -> Command {
+    let mut command = Command::new(BIN);
+    command
+        .env_clear()
+        .args([
+            "--root",
+            f.root.to_str().unwrap(),
+            "--state",
+            f.state.to_str().unwrap(),
+        ])
+        .env("HOME", f.dir.join("home"))
+        .env(
+            "PATH",
+            format!("{}:/usr/bin:/bin", f.dir.join("bin").display()),
+        )
+        .env("ANTON_TEST_BINARY", BIN)
+        .env("ANTON_TEST_PEER", &f.peer)
+        .env("ANTON_TEST_PEER_STATE", f.dir.join("peer-state"))
+        .envs(env.iter().copied());
+    command
+}
+/// A collector from `claude_command`, its stderr kept in `collector.err`.
+fn claude_stream(f: &Fixture, env: &[(&str, &str)]) -> Stream {
+    let mut command = claude_command(f, env);
+    command.stderr(fs::File::create(f.dir.join("collector.err")).unwrap());
+    Stream::spawn(command)
+}
+/// The Codex key the fixture `codex` reports.
+fn codex_key() -> String {
+    anton_runtime::allowances::account_key("synthetic-account").unwrap()
+}
+/// A configuration with the local host, `accounts` and optional `sources`.
+fn claude_config(f: &Fixture, accounts: Value, sources: Option<Value>) {
+    let mut allowances = json!({ "accounts": accounts });
+    if let Some(sources) = sources {
+        allowances["sources"] = sources;
+    }
+    write(
+        &f.root.join(".config.json"),
+        json!({"hosts":[{"id":"local","socket_path":f.dir.join("herdr.sock")}],
+            "allowances":allowances})
+        .to_string(),
+        0o600,
+    );
+}
+/// One Codex mapping for the fixture `codex` and one Claude mapping for the
+/// fixture profile.
+fn mixed_accounts() -> Value {
+    json!({codex_key():{"id":"codex","label":"Codex","category":"Work"},
+        claude_account_key(CLAUDE_UUID):{"id":"claude","label":"Claude","category":"Personal","provider":"claude"}})
+}
+/// Replaces `path` atomically with `bytes` at `mode`, so a polling reader
+/// never sees a torn file.
+fn replace(path: &Path, bytes: impl AsRef<[u8]>, mode: u32) {
+    let temporary = path.with_extension("fixture-tmp");
+    write(&temporary, bytes, mode);
+    let _ = fs::remove_file(path);
+    fs::rename(temporary, path).unwrap();
+}
+/// A version 1 account state file: `windows` as (kind, used, reset, stamp)
+/// for the fixture profile's account, then `extra` accounts.
+fn account_state(windows: &[(&str, Value, u64, f64)], extra: &[Value]) -> Value {
+    let mut map = serde_json::Map::new();
+    for (kind, used, reset, at) in windows {
+        map.insert(
+            kind.to_string(),
+            json!({"used_percent":used,"resets_at":reset,"sampled_at":at}),
+        );
+    }
+    let mut accounts = vec![json!({"account_key":claude_account_key(CLAUDE_UUID),"windows":map})];
+    accounts.extend(extra.iter().cloned());
+    json!({"version":1,"accounts":accounts,"sessions":[
+        {"session":claude_session_key(CLAUDE_ID),"account_key":claude_account_key(CLAUDE_UUID),"at":common::now()}]})
+}
+/// The allowance row with `id`, if any.
+fn allowance<'a>(snapshot: &'a Value, id: &str) -> Option<&'a Value> {
+    snapshot["allowances"]
+        .as_array()?
+        .iter()
+        .find(|row| row["account_id"] == id)
+}
+fn available(snapshot: &Value, id: &str) -> bool {
+    allowance(snapshot, id).is_some_and(|row| row["status"] == "available")
+}
+/// A Claude window as the popover carries it.
+fn claude_window(kind: &str, used: Value, reset: Value) -> Value {
+    let (label, duration, pacing) = match kind {
+        "five_hour" => ("5-hour", 18000, false),
+        _ => ("7-day", 604800, true),
+    };
+    json!({"kind":kind,"label":label,"used_percent":used,"resets_at":reset,
+        "duration_s":duration,"pacing":pacing})
+}
+/// `epoch` as an ISO 8601 time at `offset` minutes with `fraction`.
+fn iso(epoch: i64, offset: i64, fraction: &str) -> String {
+    let local = epoch + offset * 60;
+    let (days, seconds) = (local.div_euclid(86400), local.rem_euclid(86400));
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    let zone = if offset == 0 {
+        "Z".to_owned()
+    } else {
+        let sign = if offset < 0 { '-' } else { '+' };
+        format!("{sign}{:02}:{:02}", offset.abs() / 60, offset.abs() % 60)
+    };
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}{fraction}{zone}",
+        seconds / 3600,
+        seconds / 60 % 60,
+        seconds % 60
+    )
+}
+/// A synthetic `.claude.json` for `profile` with a usage cache naming
+/// `cache` fetched at `fetched` (raw JSON) with windows `five` and `seven`.
+fn cache_body(profile: &str, cache: &str, fetched: &str, five: &str, seven: &str) -> String {
+    format!(
+        r#"{{"projects":{{"/PRIVATE/path":{{"history":["PRIVATE"]}}}},"oauthAccount":{{"accountUuid":"{profile}","emailAddress":"{CLAUDE_EMAIL}","organizationName":"PRIVATE"}},"cachedUsageUtilization":{{"accountUuid":"{cache}","fetchedAtMs":{fetched},"utilization":{{"five_hour":{five},"seven_day":{seven},"seven_day_opus":{{"utilization":"PRIVATE"}},"limits":[{{"kind":"PRIVATE"}}]}},"spend":"PRIVATE"}}}}"#
+    )
+}
+/// The legacy Codex source-row keys of the probe and `allowances.json`.
+fn codex_row_keys() -> Vec<String> {
+    legacy_allowances()["legacy_keys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_owned())
+        .collect()
+}
+
+/// D7: the collector builds the Claude row from its own state directory's
+/// account state file: unavailable while the state lives elsewhere, then
+/// both windows; unmapped accounts and a peer row carrying the Claude key
+/// add nothing while the peer's Codex row is present; each unsafe or
+/// invalid file is rejected beside the valid one; a `12.25` window is
+/// dropped; one stale window makes the row stale; a past reset keeps the
+/// row. `ANTHROPIC_BASE_URL` does not affect the collector (G1). Then
+/// `allowances.json` and `--allowances-probe` hold only Codex rows in
+/// their existing shape, and nothing private reaches any output.
+#[test]
+fn claude_collector_rows_follow_the_account_state_file() {
+    let f = Fixture::new();
+    f.codex();
+    let now = common::now();
+    let peer_key = "b".repeat(64);
+    let claude_key = claude_account_key(CLAUDE_UUID);
+    let peer_row = |key: &str, remaining: u64| {
+        json!({"account_key":key,"sampled_at":now,"plan":"pro","weekly_remaining":remaining,
+            "weekly_resets_at":now as u64 + 3600,"reset_count":1,"reset_expires_at":null})
+    };
+    write(
+        &f.dir.join("remote-allowances.json"),
+        json!([peer_row(&claude_key, 1), peer_row(&peer_key, 60)]).to_string(),
+        0o600,
+    );
+    write(&f.dir.join("bin/ssh"),b"#!/bin/sh\nfor arg do last=$arg; done\nbase=\"$ANTON_TEST_PEER/..\"\ncase $last in\n *--allowances-probe*) cat > /dev/null; cat \"$base/remote-allowances.json\";;\n *) exit 91;;\nesac\n",0o755);
+    let mut accounts = mixed_accounts();
+    accounts[&peer_key] = json!({"id":"peer","label":"Peer","category":"Work"});
+    claude_config(&f, accounts, Some(json!([{"target":"fixture"}])));
+    // A stale cache and private values in the provider state.
+    write(
+        &f.dir.join("home/.claude.json"),
+        provider_body(CLAUDE_UUID, ""),
+        0o600,
+    );
+    let reset = now as u64 + 7200;
+    let fresh = now - 30.0;
+    let good = account_state(
+        &[
+            ("five_hour", json!(12.5), reset, fresh),
+            ("seven_day", json!(40), reset + 86400, fresh - 0.5),
+        ],
+        &[json!({"account_key":"d".repeat(64),"windows":{"seven_day":
+            {"used_percent":77.7,"resets_at":reset,"sampled_at":fresh}}})],
+    );
+    // The reporter wrote to another state directory.
+    let other = f.dir.join("other-state");
+    fs::create_dir(&other).unwrap();
+    replace(
+        &other.join("claude-allowances.json"),
+        good.to_string(),
+        0o600,
+    );
+    let path = f.state.join("claude-allowances.json");
+    let mut stream = claude_stream(&f, &[("ANTHROPIC_BASE_URL", "https://PRIVATE.invalid")]);
+    let mut seen = vec![];
+    let snapshot = stream.until(|v| available(v, "codex") && available(v, "peer"));
+    assert_eq!(
+        allowance(&snapshot, "claude").unwrap()["status"],
+        "unavailable"
+    );
+    seen.push(snapshot);
+    // In the collector's own state directory: both windows.
+    replace(&path, good.to_string(), 0o600);
+    let snapshot = stream.until(|v| available(v, "claude"));
+    let row = allowance(&snapshot, "claude").unwrap();
+    assert_eq!(
+        *row,
+        json!({"provider":"claude","provider_label":"Claude","account_id":"claude",
+            "label":"Claude","status":"available","status_text":null,"plan":null,
+            "sampled_at":fresh - 0.5,"reset_count":null,"reset_expires_at":null,
+            "windows":[claude_window("five_hour",json!(12.5),json!(reset)),
+                claude_window("seven_day",json!(40.0),json!(reset + 86400))]})
+    );
+    let rows = snapshot["allowances"].as_array().unwrap();
+    assert_eq!(rows.len(), 3);
+    assert_eq!(
+        allowance(&snapshot, "peer").unwrap()["windows"][0]["used_percent"],
+        40.0
+    );
+    assert_eq!(
+        allowance(&snapshot, "codex").unwrap()["windows"][0]["used_percent"],
+        25.0
+    );
+    assert!(!snapshot.to_string().contains("77.7"));
+    assert!(!snapshot.to_string().contains(&claude_key));
+    seen.push(snapshot.clone());
+    // Each rejected file, then the valid one again.
+    let mut version = good.clone();
+    version["version"] = json!(2);
+    let mut unknown = good.clone();
+    unknown["accounts"][0]["windows"]["five_hour"]["theme"] = json!("PRIVATE");
+    let mut oversized = good.clone();
+    oversized["sessions"][0]["session"] = json!("x".repeat(16_384));
+    let rejected: Vec<(&str, Vec<u8>, u32)> = vec![
+        ("malformed", b"{\"version\":1,".to_vec(), 0o600),
+        ("oversized", oversized.to_string().into_bytes(), 0o600),
+        ("version", version.to_string().into_bytes(), 0o600),
+        ("unknown key", unknown.to_string().into_bytes(), 0o600),
+        ("mode 0644", good.to_string().into_bytes(), 0o644),
+        ("symlink", vec![], 0o600),
+    ];
+    for (name, bytes, mode) in rejected {
+        if name == "symlink" {
+            let real = f.dir.join("real-claude-allowances.json");
+            write(&real, good.to_string(), 0o600);
+            fs::remove_file(&path).unwrap();
+            std::os::unix::fs::symlink(&real, &path).unwrap();
+        } else {
+            replace(&path, bytes, mode);
+        }
+        let snapshot = stream.until(|v| !available(v, "claude"));
+        assert_eq!(
+            allowance(&snapshot, "claude").unwrap()["windows"],
+            json!([]),
+            "{name}"
+        );
+        assert!(available(&snapshot, "codex"), "{name}");
+        seen.push(snapshot);
+        replace(&path, good.to_string(), 0o600);
+        seen.push(stream.until(|v| available(v, "claude")));
+    }
+    // A `12.25` used value drops only that window.
+    let mut quarter = good.clone();
+    quarter["accounts"][0]["windows"]["five_hour"]["used_percent"] = json!(12.25);
+    replace(&path, quarter.to_string(), 0o600);
+    let snapshot = stream.until(|v| {
+        allowance(v, "claude")
+            .is_some_and(|row| row["windows"].as_array().is_some_and(|w| w.len() == 1))
+    });
+    assert_eq!(
+        allowance(&snapshot, "claude").unwrap()["windows"],
+        json!([claude_window(
+            "seven_day",
+            json!(40.0),
+            json!(reset + 86400)
+        )])
+    );
+    seen.push(snapshot);
+    // One stale window makes the row stale.
+    let stale = account_state(
+        &[
+            ("five_hour", json!(12.5), reset, fresh),
+            ("seven_day", json!(40), reset + 86400, now - 700.0),
+        ],
+        &[],
+    );
+    replace(&path, stale.to_string(), 0o600);
+    seen.push(stream.until(|v| !available(v, "claude")));
+    // A past reset keeps the row and its stamp, without values.
+    let past = account_state(
+        &[
+            ("five_hour", json!(12.5), now as u64 - 1, fresh),
+            ("seven_day", json!(40), reset + 86400, fresh),
+        ],
+        &[],
+    );
+    replace(&path, past.to_string(), 0o600);
+    let snapshot = stream.until(|v| available(v, "claude"));
+    let row = allowance(&snapshot, "claude").unwrap();
+    assert_eq!(row["sampled_at"], fresh);
+    assert_eq!(
+        row["windows"],
+        json!([
+            claude_window("five_hour", Value::Null, Value::Null),
+            claude_window("seven_day", json!(40.0), json!(reset + 86400))
+        ])
+    );
+    seen.push(snapshot);
+    stream.close();
+    // The Codex cache and probe keep their shape and hold no Claude data.
+    let cache: Value =
+        serde_json::from_slice(&fs::read(f.state.join("allowances.json")).unwrap()).unwrap();
+    let cache = cache.as_array().unwrap();
+    assert_eq!(cache.len(), 1);
+    assert_eq!(keys(&cache[0]), codex_row_keys());
+    assert_eq!(cache[0]["account_key"], codex_key());
+    let probe = claude_command(&f, &[])
+        .arg("--allowances-probe")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(probe.status.success());
+    let rows: Value = serde_json::from_slice(&probe.stdout).unwrap();
+    assert_eq!(rows.as_array().unwrap().len(), 1);
+    assert_eq!(keys(&rows[0]), codex_row_keys());
+    assert_eq!(rows[0]["account_key"], codex_key());
+    assert_eq!(rows[0]["weekly_remaining"], 75);
+    for bytes in [
+        probe.stdout.clone(),
+        probe.stderr.clone(),
+        fs::read(f.dir.join("collector.err")).unwrap(),
+        serde_json::to_vec(&seen).unwrap(),
+        fs::read(f.state.join("allowances.json")).unwrap(),
+    ] {
+        assert_no_secret(&bytes);
+        assert!(!String::from_utf8_lossy(&bytes).contains(&claude_key));
+    }
+}
+
+/// D7, D5: Claude Code's usage cache as the collector's fallback, one
+/// collector per case: a matched fresh cache with offset and fractional
+/// resets (0 and 1.5 read, 0.5 and 1 unknown), the newer stamp winning per
+/// window over the reporter state, `ANTHROPIC_BASE_URL` set; and no cache
+/// for another account, a stale or future fetch, `primaryApiKey`, a
+/// mistyped `fetchedAtMs`, `CLAUDE_CONFIG_DIR` or a legacy file, each with
+/// the Codex row still available.
+#[test]
+fn claude_collector_cache_fallback_and_refusals() {
+    let now = common::now();
+    let fetched = ((now - 30.0) * 1000.0).floor() as u64;
+    let at = fetched as f64 / 1000.0;
+    let reset = now as i64 + 7200;
+    let window = |used: &str, epoch: i64, offset: i64, fraction: &str| {
+        format!(
+            r#"{{"utilization":{used},"resets_at":"{}"}}"#,
+            iso(epoch, offset, fraction)
+        )
+    };
+    let body = |profile: &str, cache: &str, fetched: &str, five: &str, seven: &str| {
+        cache_body(profile, cache, fetched, five, seven)
+    };
+    let fetched_text = fetched.to_string();
+    let read = body(
+        CLAUDE_UUID,
+        CLAUDE_UUID,
+        &fetched_text,
+        &window("0", reset, 60, ".999"),
+        &window("1.5", reset + 3600, -150, ".5"),
+    );
+    let expected = json!([
+        claude_window("five_hour", json!(0.0), json!(reset)),
+        claude_window("seven_day", json!(1.5), json!(reset + 3600))
+    ]);
+    let other = "00000000-0000-4000-8000-0000000000ff";
+    struct Case {
+        name: &'static str,
+        body: String,
+        env: Vec<(&'static str, &'static str)>,
+        legacy: bool,
+        state: Option<Value>,
+        expected: Option<(f64, Value)>,
+    }
+    let case = |name, body: String, expected| Case {
+        name,
+        body,
+        env: vec![],
+        legacy: false,
+        state: None,
+        expected,
+    };
+    let mut cases = vec![
+        case("matched", read.clone(), Some((at, expected.clone()))),
+        case(
+            "ambiguous scale",
+            body(
+                CLAUDE_UUID,
+                CLAUDE_UUID,
+                &fetched_text,
+                &window("0.5", reset, 0, ""),
+                &window("1", reset, 0, ""),
+            ),
+            Some((
+                at,
+                json!([
+                    claude_window("five_hour", Value::Null, json!(reset)),
+                    claude_window("seven_day", Value::Null, json!(reset))
+                ]),
+            )),
+        ),
+        case(
+            "other account",
+            body(
+                CLAUDE_UUID,
+                other,
+                &fetched_text,
+                &window("5", reset, 0, ""),
+                "null",
+            ),
+            None,
+        ),
+        case(
+            "stale",
+            body(
+                CLAUDE_UUID,
+                CLAUDE_UUID,
+                &(fetched - 700_000).to_string(),
+                &window("5", reset, 0, ""),
+                "null",
+            ),
+            None,
+        ),
+        case(
+            "future",
+            body(
+                CLAUDE_UUID,
+                CLAUDE_UUID,
+                &(fetched + 60_000).to_string(),
+                &window("5", reset, 0, ""),
+                "null",
+            ),
+            None,
+        ),
+        case(
+            "primaryApiKey",
+            read.replacen('{', r#"{"primaryApiKey":"PRIVATE","#, 1),
+            None,
+        ),
+        case(
+            "mistyped fetchedAtMs",
+            body(
+                CLAUDE_UUID,
+                CLAUDE_UUID,
+                r#""PRIVATE""#,
+                &window("5", reset, 0, ""),
+                "null",
+            ),
+            None,
+        ),
+    ];
+    let mut base_url = case(
+        "ANTHROPIC_BASE_URL",
+        read.clone(),
+        Some((at, expected.clone())),
+    );
+    base_url.env = vec![("ANTHROPIC_BASE_URL", "https://PRIVATE.invalid")];
+    cases.push(base_url);
+    let mut config_dir = case("CLAUDE_CONFIG_DIR", read.clone(), None);
+    config_dir.env = vec![("CLAUDE_CONFIG_DIR", "")];
+    cases.push(config_dir);
+    let mut legacy = case("legacy file", read.clone(), None);
+    legacy.legacy = true;
+    cases.push(legacy);
+    // The reporter's `five_hour` is newer than the cache, its `seven_day`
+    // older.
+    let mut newer = case(
+        "newer stamp wins",
+        body(
+            CLAUDE_UUID,
+            CLAUDE_UUID,
+            &((now - 100.0) as u64 * 1000).to_string(),
+            &window("5", reset, 0, ""),
+            &window("6", reset, 0, ""),
+        ),
+        Some((
+            (now - 100.0) as u64 as f64,
+            json!([
+                claude_window("five_hour", json!(20.0), json!(reset + 1)),
+                claude_window("seven_day", json!(6.0), json!(reset))
+            ]),
+        )),
+    );
+    newer.state = Some(account_state(
+        &[
+            ("five_hour", json!(20), reset as u64 + 1, now - 10.0),
+            ("seven_day", json!(30), reset as u64 + 1, now - 200.0),
+        ],
+        &[],
+    ));
+    cases.push(newer);
+    let runs: Vec<_> = cases
+        .into_iter()
+        .map(|case| {
+            thread::spawn(move || {
+                let f = Fixture::new();
+                f.codex();
+                claude_config(&f, mixed_accounts(), None);
+                write(&f.dir.join("home/.claude.json"), &case.body, 0o600);
+                if case.legacy {
+                    fs::create_dir_all(f.dir.join("home/.claude")).unwrap();
+                    write(&f.dir.join("home/.claude/.config.json"), "{}", 0o600);
+                }
+                if let Some(state) = &case.state {
+                    replace(
+                        &f.state.join("claude-allowances.json"),
+                        state.to_string(),
+                        0o600,
+                    );
+                }
+                let mut stream = claude_stream(&f, &case.env);
+                let want = case.expected.is_some();
+                let snapshot =
+                    stream.until(|v| available(v, "codex") && (!want || available(v, "claude")));
+                stream.close();
+                let row = allowance(&snapshot, "claude").unwrap();
+                match &case.expected {
+                    Some((at, windows)) => {
+                        assert_eq!(row["status"], "available", "{}", case.name);
+                        assert_eq!(row["sampled_at"].as_f64(), Some(*at), "{}", case.name);
+                        assert_eq!(row["windows"], *windows, "{}", case.name);
+                    }
+                    None => {
+                        assert_eq!(row["status"], "unavailable", "{}", case.name);
+                        assert_eq!(row["windows"], json!([]), "{}", case.name);
+                    }
+                }
+                assert_no_secret(snapshot.to_string().as_bytes());
+                assert_no_secret(&fs::read(f.dir.join("collector.err")).unwrap());
+            })
+        })
+        .collect();
+    for run in runs {
+        run.join().unwrap();
+    }
+}
+
+/// D7 through the CLI: `--allowances-probe` accepts a Claude mapping beside
+/// Codex mappings with the Codex output unchanged; the four-account cap
+/// and unique ids are shared across providers, a Claude `window_seconds`
+/// must be absent or 604800, and an unknown provider is rejected, each
+/// beside its accepted neighbour.
+#[test]
+fn claude_mappings_share_the_account_cap_and_ids_through_the_cli() {
+    let f = Fixture::new();
+    f.codex();
+    let probe = |accounts: Value| {
+        claude_config(&f, accounts, None);
+        let output = claude_command(&f, &[])
+            .arg("--allowances-probe")
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert_no_secret(&output.stderr);
+        output
+    };
+    let codex = json!({"id":"codex","label":"Codex","category":"Work"});
+    let claude =
+        |id: &str| json!({"id":id,"label":"Claude","category":"Personal","provider":"claude"});
+    let strip = |output: &std::process::Output| {
+        let mut rows: Value = serde_json::from_slice(&output.stdout).unwrap();
+        rows[0]["sampled_at"] = Value::Null;
+        rows
+    };
+    let alone = probe(json!({codex_key():codex}));
+    assert!(alone.status.success());
+    let key = |n: u8| format!("{n}").repeat(64);
+    let four = json!({codex_key():codex,key(1):{"id":"codex-b","label":"B","category":"Work"},
+        key(2):claude("claude-a"),key(3):claude("claude-b")});
+    let accepted = probe(four.clone());
+    assert!(
+        accepted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&accepted.stderr)
+    );
+    assert_eq!(strip(&accepted), strip(&alone));
+    assert_eq!(keys(&strip(&accepted)[0]), codex_row_keys());
+    for fifth in [
+        claude("claude-c"),
+        json!({"id":"codex-c","label":"C","category":"Work"}),
+    ] {
+        let mut five = four.clone();
+        five[key(4)] = fifth;
+        assert!(!probe(five).status.success());
+    }
+    // Ids unique across providers.
+    assert!(
+        !probe(json!({codex_key():codex,key(2):claude("codex")}))
+            .status
+            .success()
+    );
+    assert!(
+        probe(json!({codex_key():codex,key(2):claude("other")}))
+            .status
+            .success()
+    );
+    // A Claude `window_seconds`.
+    for (window, ok) in [(json!(604800), true), (json!(18000), false)] {
+        let mut mapping = claude("claude");
+        mapping["window_seconds"] = window;
+        assert_eq!(
+            probe(json!({codex_key():codex,key(2):mapping}))
+                .status
+                .success(),
+            ok
+        );
+    }
+    // An unknown provider.
+    let mut unknown = claude("claude");
+    unknown["provider"] = json!("openai");
+    assert!(
+        !probe(json!({codex_key():codex,key(2):unknown}))
+            .status
+            .success()
+    );
+    // The Codex account mapped as Claude is no Codex row for the probe.
+    let output = probe(json!({codex_key():claude("claude")}));
+    assert!(output.status.success());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        json!([])
+    );
+}
+
+/// A fixture `codex` answering the identity requests for the synthetic
+/// Codex account with `codex@example.invalid`.
+fn identity_codex(f: &Fixture) {
+    let script = "#!/bin/sh\nwhile IFS= read -r line; do\n case $line in\n *'\"method\":\"initialize\"'*) printf '%s\\n' '{\"id\":1,\"result\":{}}';;\n *'account/rateLimits/read'*) printf '%s\\n' '{\"id\":2,\"result\":{\"accountId\":\"synthetic-account\",\"rateLimits\":{}}}';;\n *'account/read'*) printf '%s\\n' '{\"id\":3,\"result\":{\"account\":{\"type\":\"chatgpt\",\"email\":\"codex@example.invalid\"}}}';;\n esac\ndone\n";
+    write(&f.dir.join("bin/codex"), script, 0o755);
+}
+/// Runs a Claude command with `args` and `env`, stdin closed.
+fn claude_run(f: &Fixture, args: &[&str], env: &[(&str, &str)]) -> std::process::Output {
+    claude_command(f, env)
+        .args(args)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap()
+}
+
+/// D8: `--claude-account-key` prints only the 64-character key and a
+/// newline (65 bytes, exit 0), also with `ANTHROPIC_BASE_URL` set (G1), and
+/// nothing with exit 3 for `primaryApiKey`, a missing file, an invalid id,
+/// `CLAUDE_CONFIG_DIR`, a legacy file or a relative `HOME`, each beside the
+/// accepted run.
+#[test]
+fn claude_account_key_prints_only_the_key() {
+    let f = Fixture::new();
+    let provider = f.dir.join("home/.claude.json");
+    let key = claude_account_key(CLAUDE_UUID);
+    let accepted = |env: &[(&str, &str)]| {
+        write(&provider, provider_body(CLAUDE_UUID, ""), 0o600);
+        let output = claude_run(&f, &["--claude-account-key"], env);
+        assert_eq!(output.status.code(), Some(0));
+        assert_eq!(output.stdout, format!("{key}\n").into_bytes());
+        assert_eq!(output.stdout.len(), 65);
+        assert!(output.stderr.is_empty());
+    };
+    accepted(&[]);
+    accepted(&[("ANTHROPIC_BASE_URL", "https://PRIVATE.invalid")]);
+    let refused = |name: &str, env: &[(&str, &str)]| {
+        let output = claude_run(&f, &["--claude-account-key"], env);
+        assert_eq!(output.status.code(), Some(3), "{name}");
+        assert!(output.stdout.is_empty(), "{name}");
+        assert!(output.stderr.is_empty(), "{name}");
+    };
+    for (name, body) in [
+        (
+            "primaryApiKey",
+            provider_body(CLAUDE_UUID, r#","primaryApiKey":"PRIVATE""#),
+        ),
+        (
+            "primaryApiKey null",
+            provider_body(CLAUDE_UUID, r#","primaryApiKey":null"#),
+        ),
+        ("invalid id", provider_body("", "")),
+    ] {
+        write(&provider, body, 0o600);
+        refused(name, &[]);
+        accepted(&[]);
+    }
+    fs::remove_file(&provider).unwrap();
+    refused("missing", &[]);
+    accepted(&[]);
+    refused("CLAUDE_CONFIG_DIR", &[("CLAUDE_CONFIG_DIR", "")]);
+    refused("relative HOME", &[("HOME", "home")]);
+    accepted(&[]);
+    fs::create_dir_all(f.dir.join("home/.claude")).unwrap();
+    write(&f.dir.join("home/.claude/.config.json"), "{}", 0o600);
+    refused("legacy", &[]);
+}
+
+/// D8: `--claude-attribution-check` prints the first refusing step's name
+/// or `ok`, then the matching variable names sorted with exempt ones
+/// marked (`ANTHROPIC_BASE_URL` by name only), exiting 0 for `ok` and 3
+/// otherwise, and never a value, uuid, key or email.
+#[test]
+fn claude_attribution_check_names_only_the_first_refusing_step() {
+    let f = Fixture::new();
+    let home = f.dir.join("home");
+    fs::create_dir_all(home.join(".claude")).unwrap();
+    let key = claude_account_key(CLAUDE_UUID);
+    let check = |env: &[(&str, &str)], expected: &str| {
+        let output = claude_run(&f, &["--claude-attribution-check"], env);
+        assert_eq!(String::from_utf8_lossy(&output.stdout), expected, "{env:?}");
+        let code = if expected.starts_with("ok\n") { 0 } else { 3 };
+        assert_eq!(output.status.code(), Some(code), "{env:?}");
+        assert!(output.stderr.is_empty(), "{env:?}");
+        assert_no_secret(&output.stdout);
+        assert!(!String::from_utf8_lossy(&output.stdout).contains(&key));
+    };
+    write(
+        &home.join(".claude.json"),
+        provider_body(CLAUDE_UUID, ""),
+        0o600,
+    );
+    check(&[], "ok\n");
+    check(
+        &[("CLAUDE_CODE_MESSAGING_TOKEN", "PRIVATE")],
+        "ok\nCLAUDE_CODE_MESSAGING_TOKEN exempt\n",
+    );
+    check(
+        &[("ANTHROPIC_BASE_URL", "https://PRIVATE.invalid")],
+        "environment\nANTHROPIC_BASE_URL\n",
+    );
+    check(
+        &[("ANTHROPIC_BASE_URL", "")],
+        "environment\nANTHROPIC_BASE_URL\n",
+    );
+    check(&[("ANTHROPIC_BASE_URL_X", "PRIVATE")], "ok\n");
+    check(
+        &[
+            ("CLAUDE_CODE_MESSAGING_TOKEN", "PRIVATE"),
+            ("CLAUDE_CODE_OAUTH_TOKEN", "PRIVATE"),
+            ("ANTHROPIC_API_KEY", "PRIVATE"),
+        ],
+        "environment\nANTHROPIC_API_KEY\nCLAUDE_CODE_MESSAGING_TOKEN exempt\nCLAUDE_CODE_OAUTH_TOKEN\n",
+    );
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let output = claude_command(&f, &[])
+            .env(std::ffi::OsStr::from_bytes(b"PRIVATE\xff"), "PRIVATE")
+            .arg("--claude-attribution-check")
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert_eq!(output.stdout, b"environment\nnon-utf8-name\n");
+        assert_eq!(output.status.code(), Some(3));
+    }
+    check(&[("CLAUDE_CONFIG_DIR", "PRIVATE")], "config-dir\n");
+    check(&[], "ok\n");
+    write(
+        &home.join(".claude/settings.json"),
+        r#"{"apiKeyHelper":"PRIVATE"}"#,
+        0o644,
+    );
+    check(&[], "api-key-helper\n");
+    write(
+        &home.join(".claude/settings.json"),
+        r#"{"env":{"PRIVATE":"PRIVATE"}}"#,
+        0o644,
+    );
+    check(&[], "ok\n");
+    write(
+        &home.join(".claude.json"),
+        provider_body(CLAUDE_UUID, r#","primaryApiKey":"PRIVATE""#),
+        0o600,
+    );
+    check(&[], "provider-state\n");
+    fs::remove_file(home.join(".claude.json")).unwrap();
+    check(&[], "provider-state\n");
+    write(&home.join(".claude/.config.json"), "{}", 0o600);
+    check(&[], "legacy-config\n");
+    // `~/.claude` as a regular file holds no legacy file and no settings.
+    write(
+        &home.join(".claude.json"),
+        provider_body(CLAUDE_UUID, ""),
+        0o600,
+    );
+    fs::remove_dir_all(home.join(".claude")).unwrap();
+    write(&home.join(".claude"), "", 0o600);
+    check(&[], "ok\n");
+}
+
+/// D8: `--refresh-identities` adds the local Claude email for a mapped
+/// Claude key beside the Codex email, also with `ANTHROPIC_BASE_URL` set,
+/// and only the Codex email for an unmapped profile, `primaryApiKey`, an
+/// invalid email, a missing file, `CLAUDE_CONFIG_DIR`, a legacy file or a
+/// configuration without a Claude mapping.
+#[test]
+fn claude_identity_refresh_stores_the_local_email_for_a_mapped_key() {
+    let f = Fixture::new();
+    identity_codex(&f);
+    let home = f.dir.join("home");
+    fs::create_dir_all(home.join(".claude")).unwrap();
+    let both = json!({"codex":"codex@example.invalid","claude":CLAUDE_EMAIL});
+    let codex = json!({"codex":"codex@example.invalid"});
+    let refresh = |name: &str, env: &[(&str, &str)], expected: &Value| {
+        let _ = fs::remove_file(f.root.join(".accounts.json"));
+        let output = claude_run(&f, &["--refresh-identities"], env);
+        assert!(
+            output.status.success(),
+            "{name}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stored: Value =
+            serde_json::from_slice(&fs::read(f.root.join(".accounts.json")).unwrap()).unwrap();
+        assert_eq!(stored, *expected, "{name}");
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            format!(
+                "Saved {} verified account labels locally.\n",
+                expected.as_object().unwrap().len()
+            ),
+            "{name}"
+        );
+        assert_no_secret(&output.stderr);
+        let text = serde_json::to_string(&stored).unwrap();
+        assert!(
+            !text.contains("PRIVATE") && !text.contains(CLAUDE_UUID),
+            "{name}"
+        );
+    };
+    let provider = home.join(".claude.json");
+    let good = provider_body(CLAUDE_UUID, "");
+    claude_config(&f, mixed_accounts(), None);
+    for (name, body) in [
+        (
+            "unmapped",
+            provider_body("00000000-0000-4000-8000-0000000000ff", ""),
+        ),
+        (
+            "primaryApiKey",
+            provider_body(CLAUDE_UUID, r#","primaryApiKey":null"#),
+        ),
+        ("invalid email", good.replace(CLAUDE_EMAIL, "not-an-email")),
+    ] {
+        write(&provider, &good, 0o600);
+        refresh("mapped", &[], &both);
+        write(&provider, body, 0o600);
+        refresh(name, &[], &codex);
+    }
+    fs::remove_file(&provider).unwrap();
+    refresh("missing", &[], &codex);
+    write(&provider, &good, 0o600);
+    refresh(
+        "ANTHROPIC_BASE_URL",
+        &[("ANTHROPIC_BASE_URL", "https://PRIVATE.invalid")],
+        &both,
+    );
+    refresh("CLAUDE_CONFIG_DIR", &[("CLAUDE_CONFIG_DIR", "")], &codex);
+    write(&home.join(".claude/.config.json"), "{}", 0o600);
+    refresh("legacy", &[], &codex);
+    fs::remove_file(home.join(".claude/.config.json")).unwrap();
+    refresh("mapped", &[], &both);
+    claude_config(
+        &f,
+        json!({codex_key():{"id":"codex","label":"Codex","category":"Work"}}),
+        None,
+    );
+    refresh("no Claude mapping", &[], &codex);
+}
+
+/// D8: when no Codex source answers, a local Claude email alone keeps the
+/// earlier emails of current Codex mappings, drops unmapped ids, and counts
+/// only the fresh match; once the Codex RPC answers its email is fresh again.
+#[test]
+fn claude_identity_refresh_keeps_codex_emails_when_codex_does_not_answer() {
+    let f = Fixture::new();
+    write(&f.dir.join("bin/codex"), "#!/bin/sh\nexit 1\n", 0o755);
+    write(
+        &f.dir.join("home/.claude.json"),
+        provider_body(CLAUDE_UUID, ""),
+        0o600,
+    );
+    claude_config(&f, mixed_accounts(), None);
+    write(
+        &f.root.join(".accounts.json"),
+        json!({"codex":"earlier-codex@example.invalid","claude":"earlier-claude@example.invalid",
+            "gone":"gone@example.invalid"})
+        .to_string(),
+        0o600,
+    );
+    let stored = || -> Value {
+        serde_json::from_slice(&fs::read(f.root.join(".accounts.json")).unwrap()).unwrap()
+    };
+    let output = claude_run(&f, &["--refresh-identities"], &[]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "Saved 1 verified account labels locally.\n"
+    );
+    assert_eq!(
+        stored(),
+        json!({"codex":"earlier-codex@example.invalid","claude":CLAUDE_EMAIL})
+    );
+    identity_codex(&f);
+    let output = claude_run(&f, &["--refresh-identities"], &[]);
+    assert!(output.status.success());
+    assert_eq!(
+        stored(),
+        json!({"codex":"codex@example.invalid","claude":CLAUDE_EMAIL})
+    );
+}
+
+/// D8: identity rows from the Codex RPC and from peers match Codex mappings
+/// only: a peer row carrying the Claude key and the Codex RPC row whose key
+/// a Claude mapping names store nothing, while a peer's Codex email and the
+/// local Claude email are stored. `--identity-probe` with a Claude mapping
+/// beside the Codex one answers with the Codex identity only, and refuses
+/// when the Codex key is mapped as Claude.
+#[test]
+fn claude_identity_rows_from_codex_sources_never_fill_claude_mappings() {
+    let f = Fixture::new();
+    identity_codex(&f);
+    let claude_key = claude_account_key(CLAUDE_UUID);
+    let peer_key = "e".repeat(64);
+    write(
+        &f.dir.join("home/.claude.json"),
+        provider_body(CLAUDE_UUID, ""),
+        0o600,
+    );
+    write(
+        &f.dir.join("peer-1.json"),
+        json!({"account_key":peer_key,"email":"codex-peer@example.invalid"}).to_string(),
+        0o600,
+    );
+    write(
+        &f.dir.join("peer-2.json"),
+        json!({"account_key":claude_key,"email":"peer@example.invalid"}).to_string(),
+        0o600,
+    );
+    write(&f.dir.join("bin/ssh"), b"#!/bin/sh\nfor arg do case $arg in peer-[12]) target=$arg;; esac; done\ncat \"$ANTON_TEST_PEER/../$target.json\"\n", 0o755);
+    claude_config(
+        &f,
+        json!({peer_key.clone():{"id":"codex-peer","label":"Peer","category":"Work"},
+            claude_key.clone():{"id":"claude-a","label":"Claude A","category":"Personal","provider":"claude"},
+            codex_key():{"id":"claude-b","label":"Claude B","category":"Personal","provider":"claude"}}),
+        Some(json!([{"target":"peer-1"},{"target":"peer-2"}])),
+    );
+    let output = claude_run(&f, &["--refresh-identities"], &[]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stored: Value =
+        serde_json::from_slice(&fs::read(f.root.join(".accounts.json")).unwrap()).unwrap();
+    assert_eq!(
+        stored,
+        json!({"codex-peer":"codex-peer@example.invalid","claude-a":CLAUDE_EMAIL})
+    );
+    // Without the local profile, the peer row carrying the Claude key still
+    // stores nothing.
+    fs::remove_file(f.dir.join("home/.claude.json")).unwrap();
+    let output = claude_run(&f, &["--refresh-identities"], &[]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stored: Value =
+        serde_json::from_slice(&fs::read(f.root.join(".accounts.json")).unwrap()).unwrap();
+    assert_eq!(stored, json!({"codex-peer":"codex-peer@example.invalid"}));
+    write(
+        &f.dir.join("home/.claude.json"),
+        provider_body(CLAUDE_UUID, ""),
+        0o600,
+    );
+    // `--identity-probe` with a Claude mapping beside the Codex one.
+    claude_config(&f, mixed_accounts(), None);
+    let probe = claude_run(&f, &["--identity-probe"], &[]);
+    assert!(
+        probe.status.success(),
+        "{}",
+        String::from_utf8_lossy(&probe.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&probe.stdout).unwrap(),
+        json!({"account_key":codex_key(),"email":"codex@example.invalid"})
+    );
+    assert_no_secret(&probe.stdout);
+    assert!(!String::from_utf8_lossy(&probe.stdout).contains(&claude_key));
+    claude_config(
+        &f,
+        json!({codex_key():{"id":"claude-b","label":"Claude B","category":"Personal","provider":"claude"}}),
+        None,
+    );
+    let probe = claude_run(&f, &["--identity-probe"], &[]);
+    assert!(!probe.status.success());
+    assert!(probe.stdout.is_empty());
 }

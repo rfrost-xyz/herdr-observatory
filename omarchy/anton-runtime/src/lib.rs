@@ -12,6 +12,7 @@ pub mod navigation;
 pub mod reporter;
 
 pub mod claude;
+pub mod claude_account;
 pub mod collection;
 pub mod config;
 pub mod native;

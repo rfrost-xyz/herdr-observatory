@@ -107,8 +107,9 @@ pub enum AllowanceStatus {
 }
 
 /// One provider-neutral allowance window. `used_percent` is 0 to 100 and a
-/// past `resets_at` is already null. Exactly one window per available row
-/// has `pacing` set.
+/// past `resets_at` is already null. At most one window per available row
+/// has `pacing` set: every Codex row has one, and a Claude row has one only
+/// when it carries a `seven_day` window.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct AllowanceWindow {
     pub kind: String,

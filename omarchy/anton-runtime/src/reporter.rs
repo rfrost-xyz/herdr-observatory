@@ -1,6 +1,6 @@
 //! Bounded Pi presentation reporting and the Claude Code context window
 //! report. Codex metrics are collector-owned.
-use crate::{Result, common, hooks_install, telemetry};
+use crate::{Result, claude_account, common, hooks_install, telemetry};
 use serde_json::{Value, json};
 use std::ffi::OsStr;
 use std::fs::OpenOptions;
@@ -133,14 +133,85 @@ fn local_host(root: &Path) -> Result<Option<Value>> {
 pub const CLAUDE_INVALID: i32 = 2;
 /// Exit status of `--report claude` when the report does not apply.
 pub const CLAUDE_NOT_APPLICABLE: i32 = 3;
-/// The Claude Code mod's report: a pane, a sequence, a session id and the
-/// context window, parsed from four verbatim values.
+/// The Claude Code mod's report: a pane, a sequence, a session id, the
+/// context window and an optional rate-limit tail, parsed from 4, 7 or 10
+/// verbatim values (design D3).
 #[derive(Debug, PartialEq)]
 pub struct ClaudeReport {
     pane: String,
     seq: u64,
     session: String,
     window: u64,
+    windows: Vec<RateWindow>,
+}
+/// A subscription rate-limit window kind, selected by name (design D3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RateKind {
+    FiveHour,
+    SevenDay,
+}
+impl RateKind {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "five_hour" => Some(Self::FiveHour),
+            "seven_day" => Some(Self::SevenDay),
+            _ => None,
+        }
+    }
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::FiveHour => "five_hour",
+            Self::SevenDay => "seven_day",
+        }
+    }
+    /// The window's duration in seconds.
+    pub fn duration(self) -> u64 {
+        match self {
+            Self::FiveHour => 18_000,
+            Self::SevenDay => 604_800,
+        }
+    }
+}
+/// One rate-limit window of a report: its kind, used percentage in tenths
+/// (0 to 1000) and reset time in epoch seconds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RateWindow {
+    pub kind: RateKind,
+    pub tenths: u16,
+    pub resets: u64,
+}
+/// A used percentage under the D3 grammar
+/// `^(100|(0|[1-9][0-9]?)(\.[1-9])?)$`, in tenths.
+pub fn used_tenths(value: &str) -> Option<u16> {
+    if value == "100" {
+        return Some(1000);
+    }
+    let (whole, fraction) = match value.split_once('.') {
+        Some((whole, fraction)) => (whole, Some(fraction)),
+        None => (value, None),
+    };
+    let whole_ok = whole == "0"
+        || (!whole.is_empty()
+            && whole.len() <= 2
+            && whole.bytes().all(|c| c.is_ascii_digit())
+            && !whole.starts_with('0'));
+    if !whole_ok {
+        return None;
+    }
+    let tenth = match fraction {
+        None => 0,
+        Some(f) if f.len() == 1 && (b'1'..=b'9').contains(&f.as_bytes()[0]) => {
+            u16::from(f.as_bytes()[0] - b'0')
+        }
+        Some(_) => return None,
+    };
+    whole.parse::<u16>().ok().map(|w| w * 10 + tenth)
+}
+/// Whether reset `resets` lies after the whole second of `seq` and within
+/// the window's duration plus one hour of it (design D2, D3).
+pub fn reset_in_bounds(kind: RateKind, seq: u64, resets: u64) -> bool {
+    let whole = seq / 1_000_000;
+    whole < resets && resets <= whole + kind.duration() + 3600
 }
 /// A bounded unsigned decimal of ASCII digits only: no sign, space or
 /// exponent.
@@ -154,7 +225,11 @@ impl ClaudeReport {
     /// Validates the values after `--report claude` at `time` (epoch
     /// seconds), before any file or socket access.
     pub fn parse(values: &[String], time: f64) -> Option<Self> {
-        let [pane, seq, session, window] = values else {
+        if !matches!(values.len(), 4 | 7 | 10) {
+            return None;
+        }
+        let (head, tail) = values.split_at(4);
+        let [pane, seq, session, window] = head else {
             return None;
         };
         let seq = digits(seq, 16).filter(|v| *v <= 9_007_199_254_740_991)?;
@@ -162,11 +237,32 @@ impl ClaudeReport {
         if !valid_pane(pane) || !common::safe_id(session, 128) || seq as f64 / 1e6 > time {
             return None;
         }
+        let mut windows: Vec<RateWindow> = Vec::with_capacity(2);
+        for triple in tail.chunks(3) {
+            let [kind, used, resets] = triple else {
+                return None;
+            };
+            let kind = RateKind::parse(kind)?;
+            if windows.iter().any(|w| w.kind == kind) {
+                return None;
+            }
+            let tenths = used_tenths(used)?;
+            let resets = digits(resets, 11)?;
+            if !reset_in_bounds(kind, seq, resets) {
+                return None;
+            }
+            windows.push(RateWindow {
+                kind,
+                tenths,
+                resets,
+            });
+        }
         Some(Self {
             pane: pane.clone(),
             seq,
             session: session.clone(),
             window,
+            windows,
         })
     }
 }
@@ -224,7 +320,20 @@ pub fn claude_paths(
     };
     Some((home, state))
 }
-/// `--report claude <pane> <seq> <session-id> <window>` (design D3): exit
+/// The reporter's home (design D3): an absolute `HOME`, else the password
+/// database. `--claude-attribution-check` resolves its home the same way.
+pub fn claude_home() -> Option<PathBuf> {
+    claude_paths(
+        Some(Path::new("/")),
+        std::env::var_os("HOME").as_deref(),
+        None,
+        passwd_home,
+        "",
+    )
+    .map(|(home, _)| home)
+}
+/// `--report claude <pane> <seq> <session-id> <window> [<kind> <used>
+/// <resets-at> [<kind> <used> <resets-at>]]` (design D3): exit
 /// status 0 when the pane's metadata holds this bound window, 2 for invalid
 /// arguments, 3 when the report does not apply and 1 for any other error.
 /// Stdin is never read.
@@ -254,9 +363,9 @@ pub fn claude(root: &Path, state: Option<&Path>, values: &[String], leaf: &str) 
     }
 }
 
-/// The guarded report (design D3 guards 1 to 7). `Ok(false)` means the
-/// report does not apply; `Ok(true)` means the pane's metadata holds this
-/// bound window, written now or already there.
+/// The guarded report (design D3 guards 1 to 7), then the account step for
+/// a tail. `Ok(false)` means the report does not apply; `Ok(true)` means the
+/// pane's metadata holds this bound window, written now or already there.
 fn report_claude(root: &Path, state: &Path, home: &Path, report: &ClaudeReport) -> Result<bool> {
     let _owner = common::owner_guard(&root.join(".herdr-observatory-install"))?;
     if !hooks_install::claude_mod_recorded(root, home) {
@@ -314,6 +423,7 @@ fn report_claude(root: &Path, state: &Path, home: &Path, report: &ClaudeReport) 
             })
         })
     }) {
+        account_step(state, home, report);
         return Ok(true);
     }
     let raw = json!({"seq":report.seq,"event":"session","phase":"ready","window":report.window});
@@ -325,7 +435,31 @@ fn report_claude(root: &Path, state: &Path, home: &Path, report: &ClaudeReport) 
         Duration::from_millis(400),
         1_048_576,
     )?;
+    account_step(state, home, report);
     Ok(true)
+}
+
+/// The account step (design D4, D6), run only after the window report
+/// succeeded or was already in place, still under `hook.lock`, and only
+/// when a tail is present. Every outcome is silent and none changes the
+/// exit status.
+fn account_step(state: &Path, home: &Path, report: &ClaudeReport) {
+    if report.windows.is_empty() {
+        return;
+    }
+    let names = claude_account::environment_names();
+    let Ok(account) = claude_account::attribution(&names, home) else {
+        return;
+    };
+    let session = claude_account::session_key(&report.session);
+    let _ = claude_account::record(
+        state,
+        &account,
+        &session,
+        &report.windows,
+        report.seq,
+        common::now(),
+    );
 }
 
 /// Whether the pane's metadata already has an `obs_seq` at or after `seq`.
@@ -473,23 +607,77 @@ mod tests {
         assert_eq!(value.to_string(), CLAUDE_WIRE);
     }
     const CLAUDE_WIRE: &str = r#"{"agent":"claude","pane_id":"p:1","seq":1700000000000000,"source":"user:observatory","tokens":{"obs_bind":"binding","obs_children":null,"obs_completion":null,"obs_event":"session","obs_model":null,"obs_n0":",,,","obs_n1":",200000,,","obs_n2":",,,","obs_n3":",","obs_outcomes":null,"obs_phase":"ready","obs_result":null,"obs_seq":"1700000000000000","obs_tool":null,"obs_usage_source":null,"obs_v":"2"}}"#;
-    /// D3: the four values, in order, with no sign, exponent or extra value.
+    /// D3: four values keep their change 3 meaning beside the seven- and
+    /// ten-value tails; every other count and every malformed tail is
+    /// rejected.
     #[test]
     fn claude_arguments_are_bounded_digits_and_safe_ids() {
         let values = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         let now = 1_800_000_000.0;
-        let parsed =
-            ClaudeReport::parse(&values(&["p:1", "1700000000000000", "id-1", "200000"]), now);
+        let head = ["p:1", "1700000000000000", "id-1", "200000"];
+        let with = |tail: &[&str]| values(&[&head[..], tail].concat());
+        let parsed = ClaudeReport::parse(&values(&head), now);
         assert_eq!(
             parsed,
             Some(ClaudeReport {
                 pane: "p:1".into(),
                 seq: 1_700_000_000_000_000,
                 session: "id-1".into(),
-                window: 200_000
+                window: 200_000,
+                windows: Vec::new(),
             })
         );
         assert!(ClaudeReport::parse(&values(&["p:1", "1", "id-1", "100000000"]), now).is_some());
+        let five = |tenths, resets| RateWindow {
+            kind: RateKind::FiveHour,
+            tenths,
+            resets,
+        };
+        let seven = |tenths, resets| RateWindow {
+            kind: RateKind::SevenDay,
+            tenths,
+            resets,
+        };
+        // S = 1_700_000_000; five_hour keeps S + 1 ..= S + 21600.
+        let seven_values = ClaudeReport::parse(&with(&["five_hour", "23.5", "1700000001"]), now);
+        assert_eq!(seven_values.unwrap().windows, [five(235, 1_700_000_001)]);
+        let ten = ClaudeReport::parse(
+            &with(&[
+                "seven_day",
+                "100",
+                "1700608400",
+                "five_hour",
+                "0",
+                "1700021600",
+            ]),
+            now,
+        )
+        .unwrap();
+        assert_eq!(
+            (ten.pane.as_str(), ten.seq, ten.session.as_str(), ten.window),
+            ("p:1", 1_700_000_000_000_000, "id-1", 200_000)
+        );
+        assert_eq!(
+            ten.windows,
+            [seven(1000, 1_700_608_400), five(0, 1_700_021_600)]
+        );
+        for (used, tenths) in [("0", 0), ("7", 70), ("99.9", 999), ("0.7", 7), ("10", 100)] {
+            let report =
+                ClaudeReport::parse(&with(&["seven_day", used, "1700000060"]), now).unwrap();
+            assert_eq!(report.windows[0].tenths, tenths, "{used}");
+        }
+        // The bound comes from `seq`, not the clock: a sequence with a
+        // fraction of a second keeps the next whole second.
+        let fraction = values(&[
+            "p:1",
+            "1700000000999999",
+            "id-1",
+            "5",
+            "five_hour",
+            "1",
+            "1700000001",
+        ]);
+        assert!(ClaudeReport::parse(&fraction, now).is_some());
         for bad in [
             &["p:1", "1", "id-1"][..],
             &["p:1", "1", "id-1", "5", "6"],
@@ -499,11 +687,47 @@ mod tests {
             &["p:1", "+1", "id-1", "5"],
             &["p:1", "9007199254740992", "id-1", "5"],
             &["p:1", "1900000000000000", "id-1", "5"],
+            &["p:1", "1", "id-1", "5", "five_hour", "1", "0"],
             &["p:1", "1", "id.jsonl", "5"],
             &["p/1", "1", "id-1", "5"],
         ] {
             assert_eq!(ClaudeReport::parse(&values(bad), now), None, "{bad:?}");
         }
+        let five_ok = ["five_hour", "1", "1700000060"];
+        let seven_ok = ["seven_day", "1", "1700000060"];
+        let mut tails: Vec<Vec<&str>> = vec![
+            vec!["five_hour", "1"],
+            vec!["five_hour", "1", "1700000060", "seven_day"],
+            vec!["five_hour", "1", "1700000060", "seven_day", "1"],
+            [&five_ok[..], &seven_ok, &["five_hour"]].concat(),
+            [&five_ok[..], &seven_ok, &five_ok].concat(),
+            [&five_ok[..], &five_ok].concat(),
+            [&seven_ok[..], &seven_ok].concat(),
+            vec!["spend_limit", "1", "1700000060"],
+            vec!["FIVE_HOUR", "1", "1700000060"],
+            vec!["", "1", "1700000060"],
+            // Past, at `S`, the first second past the bound and 12 digits.
+            vec!["five_hour", "1", "1699999999"],
+            vec!["five_hour", "1", "1700000000"],
+            vec!["five_hour", "1", "1700021601"],
+            vec!["seven_day", "1", "1700608401"],
+            vec!["seven_day", "1", "017000000600"],
+            vec!["five_hour", "1", ""],
+            vec!["five_hour", "1", "+1700000060"],
+            vec!["five_hour", "1", "1.7e9"],
+        ];
+        for used in [
+            "-1", "100.1", "1.25", "01", "5.0", "1e1", "+5", "", " 5", "5.", ".5", "101", "100.0",
+            "\u{0663}",
+        ] {
+            tails.push(vec!["five_hour", used, "1700000060"]);
+        }
+        for tail in &tails {
+            assert_eq!(ClaudeReport::parse(&with(tail), now), None, "{tail:?}");
+        }
+        // The accepted neighbours: 11 digits, and both kinds once each.
+        assert!(ClaudeReport::parse(&with(&["seven_day", "1", "01700000060"]), now).is_some());
+        assert!(ClaudeReport::parse(&with(&[&five_ok[..], &seven_ok].concat()), now).is_some());
     }
     /// D3: home is an absolute `HOME`, else the password database; state is
     /// an absolute explicit `--state`, else an absolute `XDG_STATE_HOME`,

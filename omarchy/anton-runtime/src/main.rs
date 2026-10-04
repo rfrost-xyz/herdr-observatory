@@ -1,7 +1,7 @@
 //! Native plugin-owned coordinator and bounded command entry points. No listener,
 //! interpreter, web feed, independent service or background observer installation.
 use anton_runtime::{
-    Result, allowances, collection, common, config, fleet, hooks_install, identity,
+    Result, allowances, claude_account, collection, common, config, fleet, hooks_install, identity,
     model::{Agent, AllowanceRow, Telemetry},
     native, navigation, packaging, reporter, telemetry,
 };
@@ -833,13 +833,25 @@ fn stream(root: PathBuf, state_path: PathBuf) -> Result<()> {
             }
         }));
     }
+    // The collector's Claude provider-state reading (D7): hashed key and
+    // usage cache only, replaced whole on every read.
+    let claude_reading = Arc::new(Mutex::new(None));
     if allowances::configuration(&base).is_some() {
         let config = base.clone();
         let path = state_path.clone();
         let owner = owner.clone();
         let stop = cancel.clone();
+        let reading = claude_reading.clone();
+        let reads_claude = allowances::has_claude(&base);
         workers.push(thread::spawn(move || {
             while !stop.stopped() {
+                // Before the Codex refresh, so a Codex row written in this
+                // pass is never newer than the Claude reading beside it. A
+                // refusal or failure stores `None`, never keeping an older
+                // reading alive.
+                if reads_claude {
+                    *reading.lock().unwrap() = claude_account::collector_reading();
+                }
                 let _ = allowances::refresh(&config, &path, Some(&owner), Some(&stop.flag));
                 stop.wait(Duration::from_secs(60));
             }
@@ -884,7 +896,9 @@ fn stream(root: PathBuf, state_path: PathBuf) -> Result<()> {
         }
         if last_allowances.elapsed() >= Duration::from_secs(2) {
             let remote: Vec<_> = remote_rows.values().flatten().cloned().collect();
-            let rows = allowances::snapshot(&state.config, &state_path, &remote);
+            let claude = claude_reading.lock().unwrap().clone();
+            let rows =
+                allowances::snapshot_with(&state.config, &state_path, &remote, claude.as_ref());
             if rows != state.allowances {
                 state.allowances = rows;
                 state.revision += 1;
@@ -1083,6 +1097,38 @@ fn cli() -> Result<()> {
         // Before any stdin read; the status carries the outcome (D3).
         std::process::exit(reporter::claude(&root, state.as_deref(), &values, leaf));
     }
+    // D8: private local commands with no owner guard or configuration.
+    // Each prints only what it states and exits 3, printing nothing more,
+    // when it does not apply.
+    match commands.first().map(String::as_str) {
+        Some("--claude-account-key") if commands.len() == 1 => {
+            let key = claude_account::absolute_home()
+                .filter(|home| {
+                    claude_account::location_refusal(&claude_account::environment_names(), home)
+                        .is_none()
+                })
+                .and_then(|home| claude_account::account(&home).ok());
+            let Some(key) = key else {
+                std::process::exit(3);
+            };
+            println!("{key}");
+            return Ok(());
+        }
+        Some("--claude-attribution-check") if commands.len() == 1 => {
+            let (ok, text) = claude_account::attribution_check(
+                &claude_account::environment_names(),
+                reporter::claude_home().as_deref(),
+            );
+            let mut stdout = io::stdout();
+            let _ = std::io::Write::write_all(&mut stdout, text.as_bytes());
+            let _ = std::io::Write::flush(&mut stdout);
+            if !ok {
+                std::process::exit(3);
+            }
+            return Ok(());
+        }
+        _ => {}
+    }
     if !root.is_absolute() {
         return Err("Absolute plugin root required".into());
     }
@@ -1199,9 +1245,10 @@ fn cli() -> Result<()> {
             output(&json!(
                 allowances::probe(Some(&SIGNAL_STOP))
                     .ok()
-                    .filter(|row| row["account_key"]
-                        .as_str()
-                        .is_some_and(|key| config["allowances"]["accounts"].get(key).is_some()))
+                    .filter(|row| row["account_key"].as_str().is_some_and(|key| {
+                        allowances::mapped(&config["allowances"]["accounts"], key, "codex")
+                            .is_some()
+                    }))
                     .into_iter()
                     .collect::<Vec<_>>()
             ))
@@ -1210,10 +1257,9 @@ fn cli() -> Result<()> {
             let _owner = common::owner_guard(&owner)?;
             let config = load(&root)?;
             let value = identity::probe(Some(&SIGNAL_STOP))?;
-            if value["account_key"]
-                .as_str()
-                .is_none_or(|key| config["allowances"]["accounts"].get(key).is_none())
-            {
+            if value["account_key"].as_str().is_none_or(|key| {
+                allowances::mapped(&config["allowances"]["accounts"], key, "codex").is_none()
+            }) {
                 return Err("Account identity is not configured on this peer".into());
             }
             output(&value)
