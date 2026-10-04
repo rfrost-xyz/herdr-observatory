@@ -172,6 +172,23 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for Object<T> {
     }
 }
 
+/// Field adaptors so nested structs, too, accept only JSON objects: a
+/// derived struct alone would also accept an array at any depth.
+fn object<'de, D: Deserializer<'de>, T: Deserialize<'de>>(deserializer: D) -> Result<T, D::Error> {
+    Object::<T>::deserialize(deserializer).map(|object| object.0)
+}
+fn optional_object<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
+    deserializer: D,
+) -> Result<Option<T>, D::Error> {
+    Option::<Object<T>>::deserialize(deserializer).map(|object| object.map(|object| object.0))
+}
+fn objects<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
+    deserializer: D,
+) -> Result<Vec<T>, D::Error> {
+    Vec::<Object<T>>::deserialize(deserializer)
+        .map(|objects| objects.into_iter().map(|object| object.0).collect())
+}
+
 /// Settings: only whether `apiKeyHelper` is present.
 #[derive(Deserialize)]
 struct Settings {
@@ -200,7 +217,7 @@ pub fn api_key_helper_refuses(home: &Path) -> bool {
 /// and attribution check extraction.
 #[derive(Deserialize)]
 struct AccountFile {
-    #[serde(rename = "oauthAccount", default)]
+    #[serde(rename = "oauthAccount", default, deserialize_with = "optional_object")]
     oauth: Option<AccountId>,
     #[serde(rename = "primaryApiKey", default)]
     api_key: Present,
@@ -214,7 +231,7 @@ struct AccountId {
 /// `primaryApiKey` presence.
 #[derive(Deserialize)]
 struct IdentityFile {
-    #[serde(rename = "oauthAccount", default)]
+    #[serde(rename = "oauthAccount", default, deserialize_with = "optional_object")]
     oauth: Option<IdentityAccount>,
     #[serde(rename = "primaryApiKey", default)]
     api_key: Present,
@@ -231,11 +248,15 @@ struct IdentityAccount {
 /// skipped.
 #[derive(Deserialize)]
 struct CollectorFile {
-    #[serde(rename = "oauthAccount", default)]
+    #[serde(rename = "oauthAccount", default, deserialize_with = "optional_object")]
     oauth: Option<AccountId>,
     #[serde(rename = "primaryApiKey", default)]
     api_key: Present,
-    #[serde(rename = "cachedUsageUtilization", default)]
+    #[serde(
+        rename = "cachedUsageUtilization",
+        default,
+        deserialize_with = "optional_object"
+    )]
     cache: Option<CacheFile>,
 }
 #[derive(Deserialize)]
@@ -244,14 +265,14 @@ struct CacheFile {
     uuid: Option<String>,
     #[serde(rename = "fetchedAtMs", default)]
     fetched_at_ms: Option<f64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "optional_object")]
     utilization: Option<CacheWindows>,
 }
 #[derive(Deserialize)]
 struct CacheWindows {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "optional_object")]
     five_hour: Option<CacheWindowFile>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "optional_object")]
     seven_day: Option<CacheWindowFile>,
 }
 #[derive(Deserialize)]
@@ -412,21 +433,32 @@ impl<'de> Deserialize<'de> for Percent {
 #[serde(deny_unknown_fields)]
 struct StateFile {
     version: u64,
+    #[serde(deserialize_with = "objects")]
     accounts: Vec<StoredAccount>,
+    #[serde(deserialize_with = "objects")]
     sessions: Vec<StoredSession>,
 }
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct StoredAccount {
     account_key: String,
+    #[serde(deserialize_with = "object")]
     windows: StoredWindows,
 }
 #[derive(Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct StoredWindows {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "optional_object",
+        skip_serializing_if = "Option::is_none"
+    )]
     five_hour: Option<StoredWindow>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "optional_object",
+        skip_serializing_if = "Option::is_none"
+    )]
     seven_day: Option<StoredWindow>,
 }
 impl StoredWindows {
@@ -950,6 +982,11 @@ mod tests {
             (r#"{"oauthAccount":"PRIVATE"}"#.to_owned(), Err(MALFORMED)),
             ("PRIVATE".to_owned(), Err(MALFORMED)),
             ("[]".to_owned(), Err(MALFORMED)),
+            (format!(r#"{{"oauthAccount":["{UUID}"]}}"#), Err(MALFORMED)),
+            (
+                format!(r#"{{"oauthAccount":{{"accountUuid":"{UUID}"}}}}"#),
+                Ok(KEY.to_owned()),
+            ),
             (format!(r#"[{{"accountUuid":"{UUID}"}}]"#), Err(MALFORMED)),
             (
                 format!(r#"{{"oauthAccount":{{"accountUuid":"{exact}"}}}}"#),
@@ -1049,6 +1086,19 @@ mod tests {
             r#","cachedUsageUtilization":{"accountUuid":7,"fetchedAtMs":1}"#,
         ));
         assert_eq!(collector(&home.0), Err(MALFORMED));
+        // Arrays where objects belong are malformed, at any depth.
+        for shape in [
+            format!(r#","cachedUsageUtilization":["{UUID}",1]"#),
+            format!(
+                r#","cachedUsageUtilization":{{"accountUuid":"{UUID}","fetchedAtMs":1,"utilization":[{five}]}}"#
+            ),
+            format!(
+                r#","cachedUsageUtilization":{{"accountUuid":"{UUID}","fetchedAtMs":1,"utilization":{{"five_hour":[12.5,"2024-02-29T23:59:59Z"]}}}}"#
+            ),
+        ] {
+            home.provider(&provider_json(&shape));
+            assert_eq!(collector(&home.0), Err(MALFORMED), "{shape}");
+        }
         // `primaryApiKey` skips the whole file, cache included.
         home.provider(&provider_json(&format!(
             r#"{},"primaryApiKey":"PRIVATE""#,

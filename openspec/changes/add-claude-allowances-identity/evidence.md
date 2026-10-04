@@ -449,6 +449,30 @@ lower it. The fake Herdr socket in `native_process.rs` gained a
 - Not arranged: a `.claude.json` or settings file owned by another user (the
   tests run unprivileged); `read_owned` checks the owner.
 
+### Tasks 2.2 and 2.3 fix: objects only, at every depth
+
+A derived serde struct accepts a JSON array as well as an object, at any
+depth, so `{"oauthAccount":["<uuid>"]}` attributed, an array-shaped cache or
+cache window was read, and an array-shaped account, window or session entry
+in `claude-allowances.json` survived instead of being replaced (D6). Every
+nested allowlisted struct in the three extractions and in the state file now
+goes through the same object-only adaptor as the top level.
+
+- Tests: `claude_account::tests::provider_state_gives_only_the_key_or_a_fixed_error`
+  (an array `oauthAccount` refusing beside its object neighbour),
+  `claude_account::tests::collector_extraction_keeps_only_the_matched_cache_windows`
+  (an array cache, utilisation map and window, each malformed) and
+  `claude_report_account_state_bounds_and_replacement` (an array account,
+  windows map, window and session entry each replaced).
+- On the previous commit's source with these tests: the two unit tests fail
+  (`left: Ok(<key>)` and `left: Ok((<key>, Some(Cache {..})))` against
+  `right: Err("Provider state malformed")`) and the process fixture fails at
+  the array account case, the seeded account kept. On `7a9fefb` the process
+  fixture fails at its first tail run, as before; the seven existing
+  `claude_report_*` fixtures still pass there.
+- On the change: `cargo test --locked --offline` 283 + 22 + 6 + 54 passed,
+  0 failed; fmt and clippy (`-D warnings`) clean.
+
 ## After
 
 _Pending (task 5.1)._

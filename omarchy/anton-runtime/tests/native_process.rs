@@ -3111,8 +3111,9 @@ fn claude_report_account_state_keeps_newest_stamps_and_refuses_switched_sessions
 
 /// D6: at most four accounts (the least recently stamped evicted) and 32
 /// sessions (expired ones dropped, then attributed ones oldest first,
-/// refused ones last); a malformed, oversized, other-version or unknown-key
-/// owned file is replaced; a link or a loose mode refuses the write.
+/// refused ones last); a malformed, oversized, other-version, unknown-key or
+/// array-shaped owned file is replaced; a link or a loose mode refuses the
+/// write.
 #[test]
 fn claude_report_account_state_bounds_and_replacement() {
     let f = Reporter::new();
@@ -3183,12 +3184,18 @@ fn claude_report_account_state_bounds_and_replacement() {
         json!([recent, {"session":session,"account_key":key,"at":second as f64 / 1e6}])
     );
     // Owned private files that are malformed, oversized, of another
-    // version or with an unknown key are replaced.
+    // version, with an unknown key or with an array where an object belongs
+    // are replaced.
     for body in [
         "PRIVATE{".to_owned(),
         format!(r#"{{"pad":"{}"}}"#, "x".repeat(16_384)),
         r#"{"version":2,"accounts":[],"sessions":[]}"#.to_owned(),
         r#"{"version":1,"accounts":[],"sessions":[],"extra":"PRIVATE"}"#.to_owned(),
+        // Arrays where objects belong, at each depth.
+        json!({"version":1,"accounts":[[hex("account-9"),{}]],"sessions":[]}).to_string(),
+        json!({"version":1,"accounts":[{"account_key":hex("account-9"),"windows":[]}],"sessions":[]}).to_string(),
+        json!({"version":1,"accounts":[{"account_key":hex("account-9"),"windows":{"five_hour":[1,now + 600,1.0]}}],"sessions":[]}).to_string(),
+        json!({"version":1,"accounts":[],"sessions":[[hex("session-9"),null,(now - 10) as f64]]}).to_string(),
     ] {
         write(&f.account_path(), &body, 0o600);
         let seq = report();
