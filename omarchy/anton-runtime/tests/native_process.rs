@@ -615,6 +615,62 @@ fn native_install_uninstall_preserves_unknown_files_and_retries_retirement() {
     assert!(!state.exists());
 }
 
+/// Uninstall removes the Claude account state file with the other owned
+/// state and keeps an unknown file and the state directory holding it.
+#[test]
+fn uninstall_removes_claude_account_state_and_keeps_unknown_state() {
+    let f = Fixture::new();
+    let config_home = f.dir.join("config");
+    let target = config_home.join("omarchy/plugins/herdr.observatory");
+    fs::create_dir_all(&target).unwrap();
+    let script = fs::read(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("herdr.observatory/uninstall.sh"),
+    )
+    .unwrap();
+    write(&target.join("uninstall.sh"), script, 0o755);
+    // A retired marker: the runtime is already gone, as after an interrupted removal.
+    write(
+        &target.join(".herdr-observatory-install"),
+        b"herdr.observatory:retired\n",
+        0o600,
+    );
+    write(&f.dir.join("bin/omarchy-shell"),b"#!/bin/sh\ncase $2 in\n listPlugins) printf '%s\\n' '[]';;\n setPluginEnabled) echo ok;;\n *) :;;\nesac\n",0o755);
+    let state = f.dir.join("xdg-state/herdr.observatory");
+    fs::create_dir_all(&state).unwrap();
+    write(&state.join("claude-allowances.json"), b"{}", 0o600);
+    write(&state.join("allowances.json"), b"{}", 0o600);
+    write(&state.join("unrelated.json"), b"retain", 0o600);
+    let removed = Command::new("bash")
+        .arg(target.join("uninstall.sh"))
+        .env_clear()
+        .env("HOME", f.dir.join("home"))
+        .env("XDG_CONFIG_HOME", &config_home)
+        .env("XDG_STATE_HOME", f.dir.join("xdg-state"))
+        .env(
+            "PATH",
+            format!("{}:/usr/bin:/bin", f.dir.join("bin").display()),
+        )
+        .output()
+        .unwrap();
+    assert!(
+        removed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&removed.stderr)
+    );
+    assert!(!target.exists());
+    assert!(!state.join("claude-allowances.json").exists());
+    assert!(!state.join("allowances.json").exists());
+    assert_eq!(fs::read(state.join("unrelated.json")).unwrap(), b"retain");
+    let left: Vec<_> = fs::read_dir(&state)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(left, ["unrelated.json"]);
+}
+
 #[test]
 fn codex_child_completion_survives_restart_and_checkpoint_has_no_paths() {
     let f = Fixture::new();

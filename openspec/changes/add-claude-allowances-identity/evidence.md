@@ -808,6 +808,45 @@ still passes: no `Date`, `import`, timers or Node APIs in `register.js`.
   failed. `register.js` is unchanged by this task, so the crate result of
   3.1 stands.
 
+### Task 3.3: installer refresh and uninstall state
+
+- Installer: `hooks_install/` is unchanged since `7a9fefb`; the mod entry is
+  still written as `{"version":1,...}` (`claude_mod.rs:532`), and the
+  payload list (`plugin.json`, `hooks.json`, `register.js`) is unchanged,
+  so `tests/test_native_distribution.mjs` needs no edit (it passes, 5 of
+  5). With the new `register.js` (sha256
+  `4d437171ec50def56e91da772dc0078bb6226d18d81524e27b8ee6ae80a129eb`, was
+  `2226a688f9958101a69210267ff1fc203b03464759bae2ca64a44da4a3b5d346`)
+  embedded, all 30 `hooks_install::claude_mod_tests` pass, including the
+  refresh fixtures `a_payload_change_rewrites_only_the_changed_files`,
+  `fresh_install_records_the_mod_and_an_identical_reinstall_writes_nothing`,
+  `a_refresh_keeps_the_directories_and_uninstall_leaves_no_mod_tree`,
+  `an_interrupted_refresh_completes_on_retry` and
+  `a_refresh_interrupted_from_a_to_b_completes_with_build_c`, and the
+  process fixture `claude_mod_installed_by_the_cli_is_accepted_by_the_reporter`.
+  A changed `register.js` is therefore an ordinary refresh.
+- `uninstall.sh`: `claude-allowances.json` joins the owned state names in
+  the state-directory `case` (not the plugin-file allowlist that the
+  distribution test pins).
+- New process fixture
+  `uninstall_removes_claude_account_state_and_keeps_unknown_state`
+  (`native_process.rs`, cleared environment, retired-marker path with a
+  fake `omarchy-shell`): `claude-allowances.json` and `allowances.json`
+  are removed, an unknown `unrelated.json` is kept byte for byte and the
+  state directory holding it stays. A process fixture is used, as for the
+  existing uninstall checks, in place of the QML shell harness, which
+  does not run `uninstall.sh`.
+- On `7a9fefb`'s `uninstall.sh` (unchanged up to `b41a9ae`, swapped in for
+  one run and restored): the fixture fails at
+  `assertion failed: !state.join("claude-allowances.json").exists()`.
+- On the change: `cargo test --locked --offline` 292 + 22 + 6 + 62 passed,
+  0 failed; fmt and clippy (`-D warnings`) clean; `bash -n uninstall.sh`
+  clean; `node --test tests/test_native_distribution.mjs
+  tests/test_claude_mod.mjs` 43 passed.
+
+Lane B commits: `d587c3b` (3.1), `b41a9ae` (3.2) and the commit that
+records this entry (3.3).
+
 ## After
 
 _Pending (task 5.1)._

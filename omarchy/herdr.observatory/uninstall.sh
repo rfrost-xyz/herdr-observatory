@@ -58,7 +58,7 @@ if [[ -e $state_dir ]]; then
     [[ -e $entry || -L $entry ]] || continue
     name=${entry##*/}
     case $name in
-      privacy.ini|allowances.json|allowances.json.lock|allowances-refresh.lock|hook.lock|sessions.json|replay-checkpoints.json|replay-checkpoints.lock) ;;
+      privacy.ini|allowances.json|allowances.json.lock|allowances-refresh.lock|claude-allowances.json|hook.lock|sessions.json|replay-checkpoints.json|replay-checkpoints.lock) ;;
       .replay-checkpoints-*) [[ $name =~ ^\.replay-checkpoints-[0-9a-f]{16}$ ]] || continue ;;
       *) continue ;;
     esac
