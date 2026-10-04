@@ -945,7 +945,77 @@ records this entry (3.3).
 
 ## After
 
-_Pending (task 5.1)._
+### Task 5.1: gates and after measurements (2026-10-04)
+
+Run at `74bb5e1` with a private 0700 `TMPDIR` from `mktemp -d
+/tmp/c4x-XXXX` (deleted afterwards), rustc and cargo 1.96.0. No step
+failed and no fix was needed, so this task adds no code commit.
+
+- `cargo fmt --check` clean; `cargo clippy --locked --offline
+  --all-targets -- -D warnings` clean (local 1.96). A scan of the added
+  lines of `git diff 7a9fefb HEAD -- omarchy/anton-runtime` finds no
+  `Some(..).filter(|_| ..)` and no argument-free `format!`, the two
+  patterns CI clippy 1.98 rejects.
+- `cargo test --locked --offline`: 292 library, 22 binary, 6 navigation
+  and 62 process tests passed, 0 failed (baseline 271, 22, 6, 48).
+- `node --test` of the State, Pi hooks, Claude mod and distribution suites:
+  129 passed, 0 failed (78, 8, 38 and 5; baseline 115 in all).
+- `tests/run-qml.sh` 95 passed, 0 failed; `tests/run-qmllint.sh` exit 0
+  ("no warnings outside Panel.qml"); `tests/run-shell-harness.sh` exit 0
+  ("failures 0", 6 runtime invocations, 0 `--open-thread`).
+- `omarchy-plugin-validate omarchy/herdr.observatory` exit 0, no output.
+- `OPENSPEC_TELEMETRY=0 openspec validate --all --strict`: 4 passed, 0
+  failed (informational notes on long requirement text only).
+
+Measurements: `cargo build --release --locked --offline` (binary sha256
+`58a9bd3ce89fd35bde9eb3715e3151d718b3a29d8091dba5b37558a2c303e1ba`), then
+`node tests/measure_anton_popover.mjs --source-root <worktree> --binary
+<build> --repeat 3`. The first after run showed runtime CPU and peak RSS
+above the recorded baseline, so the `7a9fefb` binary was rebuilt from
+`git archive` (sha256 identical to the recorded baseline) and measured with
+the same script directly before a second after run, for a like-for-like
+pair on the same machine state. Medians (windows in brackets):
+
+| Metric | Baseline (recorded) | Baseline (rerun) | After 1 | After 2 |
+| --- | --- | --- | --- | --- |
+| Runtime CPU s | 0.075 | 0.094 (0.094, 0.093, 0.094) | 0.090 (0.096, 0.078, 0.090) | 0.096 (0.096, 0.097, 0.094) |
+| Peak RSS KiB | 4,348 | 7,876 (7,876, 7,908, 4,728) | 8,052 (4,668, 8,052, 8,056) | 4,632 (4,632, 7,800, 4,524) |
+| Mean snapshot bytes | 27,677.8 | 27,141.8 | 27,152.1 | 27,678.1 |
+| Snapshots | 10, 9, 10 | 10, 9, 9 | 10, 9, 9 | 10, 9, 10 |
+| Claude probe CPU s (standard, large, window) | 0.117, 0.72, 0.125 | 0.138, 0.893, 0.149 | 0.151, 0.902, 0.149 | 0.146, 0.935, 0.153 |
+| Allowance wire | 2 rows, 337 B, 11 keys | same | same | same |
+
+- The runtime CPU and RSS spread between runs of the same binary (the
+  rerun baseline's RSS is bimodal between about 4.6 and 7.9 MiB) covers the
+  difference, so no regression is attributed to the change. Claude probes
+  are single 30 s runs; their after figures sit within about 5% of the
+  rerun baseline. Native agents 4/4 of 4/4 and the window variant 2/0 with
+  window and context_percent in every run, as at baseline.
+- Non-timing sections (`static`, `allowance_contract`,
+  `provider_coupling`, `architecture`, `allowance_readings`,
+  `allowance_wire`, `replacements`) are identical between the rerun
+  baseline and after 2, and the top-level keys match; `claude_allowance` is
+  the only additive section, as at task 1.1.
+- `claude_allowance`, after 1 then after 2: install and hooks exit 0 with
+  the receipt. Every reporter run exits 0 (15 of 15 per variant).
+  - Four-value, 165 KB: wall median 3 / 4 ms, lock hold max 2.9 / 2.5 ms
+    (baseline rerun 2.7). 4 MiB: lock hold max 12.1 / 2.9 ms (baseline
+    rerun 10.0, recorded 1.8; the maximum is the first run in each case).
+  - Ten-value per-turn path, 165 KB: wall median 4 / 5 ms, CPU median 4 /
+    4 ms, lock hold median 2.4 / 2.9, max 4.5 / 3.3 ms, state file written.
+  - Ten-value per-turn path, 4 MiB: wall median 17 / 19 ms, CPU median 17
+    / 18 ms, lock hold median 15.6 / 16.9, max 16.8 / 18.1 ms, state file
+    written, `within_budget` true in both. The absolute hold is at most
+    18.1 ms against the D4 budget of 100 ms, so the plan does not return to
+    the gate.
+  - On `7a9fefb` the ten-value variants stay null ("run 1 exited 2") and
+    the collector exits 1 ("Invalid allowance account mapping"), as at
+    task 1.2.
+  - Collector (10 s): exit 0, 5 snapshots, 3 rows, 1 Claude row available,
+    1 Codex row available, allowances 1,037 / 1,036 bytes, Claude row 466
+    bytes, time to an available Claude row 5 / 6 ms, CPU per snapshot 2.8 /
+    3.2 ms.
+- No test is added by task 5.1, so no fail-on-old proof applies.
 
 ## Review rounds
 
