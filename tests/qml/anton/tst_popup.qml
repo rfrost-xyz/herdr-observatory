@@ -570,6 +570,20 @@ Rectangle {
                 // No email is mapped under this id, so the label shows.
                 compare(cards[2].email, '');
                 compare(findChild(cards[2], 'allowance-identity').children[0].text, 'Claude Five');
+                // Claude used values carry one decimal: a balance just
+                // under 100% or just above 0% must not round to either.
+                [[0.3, '>99%'], [99.6, '<1%'], [0, '100%'], [12.5, '88%']].forEach(function (pair) {
+                    var window = Object.assign({}, sevenDay, {
+                        used_percent: pair[0]
+                    });
+                    scene.raw = {
+                        hosts: [host('laptop', [agent('a', 'working', false)], 'connected')],
+                        allowances: [account('one', 73, 74), claude('claude-both', 'Claude Both', [fiveHour, window]), claude('claude-five', 'Claude Five', [fiveHour]), off]
+                    };
+                    wait(40);
+                    cards = allowanceCards(popup);
+                    compare(findChild(cards[1], 'allowance-balance').text, pair[1], String(pair[0]));
+                });
             } finally {
                 settings.namesHidden = true;
                 popup.accountEmails = ({});

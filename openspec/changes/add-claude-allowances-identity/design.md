@@ -599,9 +599,14 @@ settings remain residual risks (Risks).
 
 ### D9. Presentation
 
-- No QML or `State.js` change is planned. Claude rows go through
-  `allowanceView`, which knows no provider, so `providerCoupling()` in the
-  measurement harness stays unchanged.
+- No `State.js` change is planned. Claude rows go through `allowanceView`,
+  which knows no provider, so `providerCoupling()` in the measurement harness
+  stays unchanged. The one QML change (review round 1) is provider-neutral:
+  `AllowanceCard.qml` renders the balance with the existing
+  `State.percentReading` instead of `Math.round`, because Claude used values
+  carry one decimal, so a remaining 99.7% shows ">99%" and 0.4% shows "<1%"
+  rather than "100%" and "0%". Codex values are whole numbers and render as
+  before.
 - Provider group "Claude" appears only when a Claude mapping exists. The card's
   balance and pace come from the single pacing window, `seven_day`; a
   `five_hour`-only row shows no balance or pace. The non-pacing `five_hour`

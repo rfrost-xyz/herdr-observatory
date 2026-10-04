@@ -114,7 +114,7 @@ AntonSurface {
             color: allowanceCard.known ? allowanceCard.theme.ink : allowanceCard.theme.muted
             font.bold: allowanceCard.known
             objectName: "allowance-balance"
-            text: allowanceCard.known ? Math.round(allowanceCard.entry.remaining) + "%" : "—"
+            text: allowanceCard.known ? State.percentReading(allowanceCard.entry.remaining) : "—"
             theme: allowanceCard.theme
         }
     }
