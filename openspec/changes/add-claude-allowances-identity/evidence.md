@@ -637,6 +637,50 @@ text, exit 0 for `ok` and 3 otherwise.
 - On the change: `cargo test --locked --offline` 292 + 22 + 6 + 61 passed,
   0 failed; fmt and clippy (`-D warnings`) clean.
 
+### Task 2.6: lane A gates
+
+At `7a32739`, `cargo fmt --check` and `cargo clippy --locked --offline
+--all-targets -- -D warnings` (local Rust 1.96.0) are clean, and
+`cargo test --locked --offline` passes 292 library, 22 binary, 6
+navigation and 61 process tests, 0 failed (a private 0700 `TMPDIR`). The
+lane A source adds no `Some(x).filter(|_| ..)` and no argument-free
+`format!` (a scan of the diff from `7a9fefb`), the two patterns the CI
+clippy (1.98) rejects, and no standard API newer than the crate's
+`rust-version` 1.85.
+
+Lane A commits:
+
+- `33fdc66` feat(reporter): accept claude rate-limit tails of seven or ten values (2.1)
+- `39e2aa3` feat(runtime): add claude attribution rules and provider-state reads (2.2)
+- `4e2d579` feat(reporter): record attributed claude rate limits in account state (2.3)
+- `eb9efa9` fix(runtime): accept only objects in nested claude provider and account state (2.2, 2.3)
+- `1322193` feat(allowances): build local claude rows from account state and cache (2.4)
+- `4edc041` docs(openspec): define the claude attribution check output format (2.5 planning fix)
+- `7a32739` feat(identity): add the local claude email and claude account commands (2.5)
+
+New-behaviour tests shown failing on `7a9fefb` (details under each task):
+
+- Process fixtures that run and fail there: 2.1
+  `claude_report_rejects_invalid_arguments_without_socket_access`; 2.3 the
+  six `claude_report_*` account-state fixtures; 2.4
+  `claude_collector_rows_follow_the_account_state_file`,
+  `claude_collector_cache_fallback_and_refusals`,
+  `claude_mappings_share_the_account_cap_and_ids_through_the_cli`; 2.5
+  `claude_account_key_prints_only_the_key`,
+  `claude_attribution_check_names_only_the_first_refusing_step`,
+  `claude_identity_refresh_stores_the_local_email_for_a_mapped_key`,
+  `claude_identity_rows_from_codex_sources_never_fill_claude_mappings`.
+- Unit tests that cannot compile there: 2.1
+  `reporter::tests::claude_arguments_are_bounded_digits_and_safe_ids`;
+  the thirteen `claude_account::tests::` tests of 2.2, 2.3 and 2.5; the six
+  new `allowances::tests::` tests of 2.4; the two new `identity::tests::`
+  tests of 2.5.
+- Regression guards (existing tests, unchanged by lane A except the two
+  intentional D3 contract changes in 2.1) pass on both: the seven change 3
+  `claude_report_*` fixtures, the Codex allowance contract, legacy cache
+  and peer fixtures, and the identity and snapshot tests in `main.rs` and
+  `identity.rs`.
+
 ## After
 
 _Pending (task 5.1)._
