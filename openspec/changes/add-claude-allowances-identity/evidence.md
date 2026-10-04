@@ -324,6 +324,48 @@ aligned to it.
   --all-targets -- -D warnings` clean. Tests ran with a private 0700 `TMPDIR`
   short enough for Unix socket paths.
 
+### Task 2.2: attribution rules and provider-state reads
+
+New `src/claude_account.rs` (public, so later tasks can call it). Every
+reader takes the home directory as a parameter; the environment rule takes
+the name list as a parameter, and `environment_names()` reads names from
+`environ` without copying any value. Globs are matched byte by byte, so
+`CLAUDE_CODE_FILE_DESCRIPTOR` does not match `CLAUDE_CODE_*_FILE_DESCRIPTOR`.
+The legacy file and settings checks use `symlink_metadata` first, so a
+dangling link refuses and only a missing file passes. Top-level files are
+parsed through an object-only wrapper, because a derived serde struct also
+accepts a JSON array (found by the `[]` settings case). Errors are four fixed
+strings.
+
+- Unit tests (`claude_account::tests::`):
+  `hashes_use_their_own_prefixes`,
+  `environment_names_refuse_by_pattern_with_one_exemption`,
+  `environment_names_are_the_process_names`,
+  `configuration_location_refuses_config_dir_and_legacy_file`,
+  `api_key_helper_presence_refuses`,
+  `provider_state_gives_only_the_key_or_a_fixed_error`,
+  `identity_extraction_adds_only_the_email`,
+  `collector_extraction_keeps_only_the_matched_cache_windows`,
+  `attribution_names_the_first_refusing_step`,
+  `iso_times_follow_the_grammar`. They cover each D4 pattern, the exemption
+  alone and beside `CLAUDE_CODE_SESSION_TOKEN`, a non-UTF-8 name,
+  `ANTHROPIC_BASE_URL` refusing and `ANTHROPIC_BASE_URL_X` not matching,
+  `CLAUDE_CONFIG_DIR`, the legacy file as a file, a dangling link and a
+  directory, `apiKeyHelper` as a string, `null`, an object and a number,
+  settings absent, linked, over 1 MiB and malformed, `primaryApiKey` as a
+  string, `null` and an object, missing and invalid ids, a link, mode 0644,
+  over 4 MiB and just under it, mistyped allowlisted fields, the `PRIVATE`
+  marker and the fixture uuid and email absent from every error and from the
+  cache reading's debug text, and the ISO grammar's accepted and rejected
+  shapes.
+- On `7a9fefb`: `src/claude_account.rs` does not exist, so all ten unit tests
+  fail there (nothing to compile against), recorded by name above.
+- Planning fix: no command reaches this module until the reporter calls it in
+  task 2.3, so the process fixtures task 2.2 asks for land with task 2.3, and
+  2.2 is ticked in that commit.
+- On the change: `cargo test --locked --offline` 281 + 22 + 6 + 48 passed,
+  0 failed; fmt and clippy (`-D warnings`) clean.
+
 ## After
 
 _Pending (task 5.1)._
