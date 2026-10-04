@@ -293,6 +293,37 @@ sentence no longer occurs and the new sentence occurs verbatim. The sentences
 after each amendment are unchanged. AGENTS.md contains no em dash (U+2014).
 No test is added, so no fail-on-old proof applies.
 
+### Task 2.1: reporter argv grammar
+
+`ClaudeReport::parse` takes 4, 7 or 10 values; the tail is parsed into
+`RateWindow {kind, tenths, resets}` with the D3 grammar and the exact
+`S < r <= S + D + 3600` bound from `seq`, and any failure exits 2 before any
+file or socket access. `main.rs` needed no change: `--report claude` already
+passes every later value through verbatim. The working tree first held two
+interleaved partial copies (the parser used `windows` and `RateKind`, the unit
+test `tail` and string kinds); the parser's copy was kept and the unit test
+aligned to it.
+
+- Tests: `reporter::tests::claude_arguments_are_bounded_digits_and_safe_ids`
+  (four values asserted unchanged beside the seven- and ten-value results;
+  counts 5, 6, 8, 9 and 11, unknown and repeated kinds, used values `-1`,
+  `100.1`, `1.25`, `01`, `5.0`, `1e1`, `+5` and others, resets in the past, at
+  `S`, past the bound and with 12 digits, each beside an accepted neighbour)
+  and `claude_report_rejects_invalid_arguments_without_socket_access` in
+  `native_process.rs` (the same rejections through the CLI with no socket or
+  state access, then seven- and ten-value runs exiting 0 with the change 3
+  wire). Both were changed intentionally as D3 says: five and six values still
+  exit 2.
+- On `7a9fefb` (tree extracted with `git archive` into a private temporary
+  directory, new test files copied in): the process test fails at
+  `tests/native_process.rs:2332`, the seven-value neighbour, with `left:
+  Some(2)`, `right: Some(0)`; the unit test does not compile (E0422 and E0433
+  for `RateWindow` and `RateKind`, E0560 and E0609 for `windows`).
+- On the change: `cargo test --locked --offline` 271 + 22 + 6 + 48 passed,
+  0 failed; `cargo fmt --check` and `cargo clippy --locked --offline
+  --all-targets -- -D warnings` clean. Tests ran with a private 0700 `TMPDIR`
+  short enough for Unix socket paths.
+
 ## After
 
 _Pending (task 5.1)._

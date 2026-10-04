@@ -2262,7 +2262,9 @@ fn report_seq(ago: u64) -> String {
     ((common::now() as u64 - ago) * 1_000_000).to_string()
 }
 
-/// D3: invalid arguments exit 2 before any file or socket access.
+/// D3: invalid arguments, including every count other than 4, 7 or 10 and
+/// every malformed rate-limit tail, exit 2 before any file or socket access;
+/// valid seven- and ten-value runs then report the window (exit 0).
 #[test]
 fn claude_report_rejects_invalid_arguments_without_socket_access() {
     let f = Reporter::new();
@@ -2289,12 +2291,52 @@ fn claude_report_rejects_invalid_arguments_without_socket_access() {
     for window in ["0", "-1", "+5", "1e6", "100000001", "\u{0663}", "", " 5"] {
         cases.push(vec!["w1:p1", &seq, CLAUDE_ID, window]);
     }
-    for case in &cases {
+    // Rate-limit tails: counts 5, 6, 8, 9 and 11, unknown and repeated
+    // kinds, bad used values and resets in the past, at `seq`, beyond the
+    // bound or with 12 digits.
+    let whole = seq.parse::<u64>().unwrap() / 1_000_000;
+    let reset = (whole + 60).to_string();
+    let at = whole.to_string();
+    let past = (whole - 1).to_string();
+    let beyond_five = (whole + 21_601).to_string();
+    let beyond_seven = (whole + 608_401).to_string();
+    let twelve = format!("00{reset}");
+    let head = ["w1:p1", seq.as_str(), CLAUDE_ID, "200000"];
+    let five = ["five_hour", "12.5", reset.as_str()];
+    let seven = ["seven_day", "40", reset.as_str()];
+    let mut tails: Vec<Vec<&str>> = vec![
+        vec!["five_hour"],
+        vec!["five_hour", "12.5"],
+        [&five[..], &["seven_day"]].concat(),
+        [&five[..], &["seven_day", "40"]].concat(),
+        [&five[..], &seven, &["five_hour"]].concat(),
+        [&five[..], &five].concat(),
+        vec!["spend_limit", "12.5", &reset],
+        vec!["five_hour", "12.5", &past],
+        vec!["five_hour", "12.5", &at],
+        vec!["five_hour", "12.5", &beyond_five],
+        vec!["seven_day", "40", &beyond_seven],
+        vec!["five_hour", "12.5", &twelve],
+    ];
+    for used in ["-1", "100.1", "1.25", "01", "5.0", "1e1", "+5"] {
+        tails.push(vec!["five_hour", used, &reset]);
+    }
+    let tail_cases: Vec<Vec<&str>> = tails.iter().map(|t| [&head[..], t].concat()).collect();
+    for case in cases.iter().chain(&tail_cases) {
         assert_eq!(f.report(case), Some(2), "{case:?}");
     }
     assert!(f.methods().is_empty());
     assert!(!f.state.exists());
     assert_eq!(fs::read_dir(f.dir.join("cwd")).unwrap().count(), 0);
+    // The accepted neighbours: seven and ten valid values report the window.
+    assert_eq!(f.report(&[&head[..], &five].concat()), Some(0));
+    assert_eq!(f.methods(), ["pane.get", "pane.report_metadata"]);
+    assert_claude_wire(&f.writes()[0], &seq, 200_000);
+    let later = report_seq(5);
+    let head = ["w1:p1", later.as_str(), CLAUDE_ID, "300000"];
+    assert_eq!(f.report(&[&head[..], &seven, &five].concat()), Some(0));
+    assert_eq!(f.writes().len(), 2);
+    assert_claude_wire(&f.writes()[1], &later, 300_000);
 }
 
 /// D3: the four values after `claude` are taken verbatim, so an option-like
