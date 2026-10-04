@@ -660,15 +660,20 @@ impl StateFile {
         }
         while self.sessions.len() > STATE_SESSIONS {
             // Attributed entries go first, oldest `at` first; refused
-            // entries only once no attributed entry is left.
-            let oldest = (0..self.sessions.len())
+            // entries only once no attributed entry is left. The entry of
+            // the session just applied is never evicted, so 32 refused
+            // entries cannot leave a new session without memory.
+            let Some(oldest) = (0..self.sessions.len())
+                .filter(|&index| self.sessions[index].session != session)
                 .min_by(|&a, &b| {
                     let (a, b) = (&self.sessions[a], &self.sessions[b]);
                     (a.account_key.is_none(), a.at)
                         .partial_cmp(&(b.account_key.is_none(), b.at))
                         .unwrap_or(std::cmp::Ordering::Equal)
                 })
-                .unwrap_or(0);
+            else {
+                break;
+            };
             self.sessions.remove(oldest);
         }
     }
@@ -1472,6 +1477,48 @@ mod tests {
         for bad in ["-1", "100.1", "12.25", "\"5\"", "null"] {
             assert!(serde_json::from_str::<Percent>(bad).is_err(), "{bad}");
         }
+    }
+
+    /// D6: with 32 refused entries, a new session's entry survives its own
+    /// report and the oldest refused entry is evicted instead.
+    #[test]
+    fn a_new_session_keeps_its_memory_beside_32_refused_entries() {
+        let windows = [RateWindow {
+            kind: RateKind::FiveHour,
+            tenths: 125,
+            resets: 1_800_018_000,
+        }];
+        let now = 1_800_000_000.0;
+        let mut file = StateFile::empty();
+        for index in 0..32u32 {
+            file.sessions.push(StoredSession {
+                session: session_key(&format!("refused-{index}")),
+                account_key: None,
+                at: now - 100.0 + f64::from(index),
+            });
+        }
+        let account = account_key("account");
+        let session = session_key("new");
+        file.apply(&account, &session, &windows, now - 1.0, now);
+        assert_eq!(file.sessions.len(), 32);
+        assert!(
+            file.sessions
+                .iter()
+                .any(|s| s.session == session && s.account_key.as_deref() == Some(&account))
+        );
+        assert!(
+            !file
+                .sessions
+                .iter()
+                .any(|s| s.session == session_key("refused-0"))
+        );
+        // A later report under another account is then detected.
+        file.apply(&account_key("other"), &session, &windows, now, now);
+        assert!(
+            file.sessions
+                .iter()
+                .any(|s| s.session == session && s.account_key.is_none())
+        );
     }
 
     /// D6: a write that would exceed the byte bound is refused, and the

@@ -451,7 +451,8 @@ settings remain residual risks (Risks).
 - **Bounds:** at most 4 accounts (the least recently stamped is evicted), at
   most 32 session entries (entries whose `at` is older than 24 hours dropped;
   then attributed entries evicted oldest `at` first, refused entries only
-  after every attributed one), at most 16,384 bytes serialised. A write that
+  after every attributed one, never the entry of the session being applied,
+  so 32 refused entries cannot leave a new session without memory), at most 16,384 bytes serialised. A write that
   would exceed the byte bound is refused.
 - **Merge, newest stamp wins:** for each window in the tail, the stored window
   for that account and kind is replaced only when the new `sampled_at` is
