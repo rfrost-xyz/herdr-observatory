@@ -7,18 +7,88 @@ equality results only.
 
 ## Baseline
 
-To be recorded by task 1.2 before any runtime change, from the unchanged
-`7a9fefb` binary:
+### Task 1.1: measurement section
 
-- release binary sha256: _pending_;
-- `tests/measure_anton_popover.mjs --repeat 3`: runtime CPU, peak RSS and mean
-  snapshot size: _pending_;
-- `claude_allowance` section (task 1.1): reporter wall time and CPU for four-
-  and ten-value runs, collector snapshot time with a Claude mapping, Claude row
-  and available counts, snapshot bytes: _pending_. Expected on the old binary:
-  ten-value runs exit 2, the Claude mapping makes the configuration invalid, so
-  the Claude metrics are null;
-- suites green: _pending_.
+Commit `90647cd` (`test(bench): measure claude allowance reporter and
+collector costs`) adds the `claude_allowance` section to
+`tests/measure_anton_popover.mjs`, with the `--no-claude-allowance-probe`
+flag, and changes nothing else:
+
+- `git diff -U0` of the commit has 181 added lines and no removed line; the
+  only edits outside the new block are one help line, one
+  `report.claude_allowance = null;` line, one call line and appended print rows.
+- `--skip-runtime --json` before and after the edit: `provider_coupling` is
+  identical (all counts 0, no files), the only new top-level key is
+  `claude_allowance` and no other non-timing key differs.
+- Fixture: the owner marker, `--install-hooks` then `--install-claude-mod` in
+  a temporary home (cleared environment with `HOME`, an empty `PATH` directory
+  and `MISE_SYSTEM_CONFIG_DIR`, as the Rust installer fixtures), a fake Herdr
+  socket answering `pane.get` with a bound `herdr:claude` session, applying
+  `pane.report_metadata` and serving the collector's snapshot, and a
+  synthetic `.claude.json` (the D11 fixture uuid and email, a stale cache)
+  of exactly 165,000 and 4,194,304 bytes, mode 0600. Reporter runs get only
+  an absolute `HOME` and the fixture bin directory as `PATH`, so no inherited
+  `ANTHROPIC_*`, `CLAUDE_CODE_*` or `CLAUDE_CONFIG_DIR` name reaches them.
+- Per `.claude.json` size, 15 sequential four-value runs and 15 ten-value runs
+  (labelled `ten_value_per_turn_path`, the G4 cost path). Each reports wall
+  and CPU (bash `time`) and the `hook.lock` hold as an upper bound: from the
+  reporter's first connection to the fake socket (`pane.get`, made right
+  after it takes the lock) to its exit, so process teardown is included. A
+  run that exits non-zero, or a ten-value run that leaves
+  `claude-allowances.json` unchanged, nulls the variant with a reason;
+  `within_budget` is the maximum ten-value hold against the D4 budget of
+  100 ms. The collector then runs for 10 s with the same `--state`, two Codex
+  mappings (one served by a fake `codex`) and one Claude mapping, reporting
+  rows, Claude rows, available counts, allowances and snapshot bytes, time to
+  an available Claude row and CPU per snapshot.
+- Check of the collector fixture on the old binary with the `provider` key
+  removed from the Claude mapping (a scratch copy of the script, not
+  committed): exit 0, 5 snapshots, 3 rows, 1 Codex row available, 0 Claude
+  rows. So the null collector result below comes from the Claude mapping
+  alone.
+- No test is added by tasks 1.1 or 1.2, so no fail-on-old proof applies. The
+  old-binary nulls below are the expected absence.
+
+### Task 1.2: `7a9fefb` baseline (2026-10-04)
+
+`git diff --stat 7a9fefb HEAD` before task 1.1 touched only
+`openspec/changes/add-claude-allowances-identity/`. Built from
+`git archive 7a9fefb` extracted in a private `mktemp -d /tmp/c4x-XXXX`
+directory (deleted afterwards), with `CARGO_TARGET_DIR` inside it:
+`cargo build --release --locked --offline`, rustc 1.96.0, cargo 1.96.0.
+
+- Release binary sha256:
+  `0762dcce1554969cf826d1beb7a627748629dade3de95da60d3a1d4ebe376473`.
+- `node tests/measure_anton_popover.mjs --source-root <archive> --binary
+  <archive build> --repeat 3` (script at `90647cd`, `TMPDIR` private), 30 s
+  windows, 2 hosts, 32 agents per host. Medians: runtime CPU 0.075 s
+  (windows 0.074, 0.075, 0.079), peak RSS 4,348 KiB (4,212, 4,604, 4,348),
+  mean snapshot 27,677.8 bytes (27,678.9, 27,145.9, 27,677.8), 10 snapshots
+  (10, 9, 10). Allowance wire: 2 rows, 337 bytes per row, 11 keys. Claude
+  probes: standard 0.117 s CPU, large 0.72 s, window 0.125 s, native agents
+  4/4 of 4/4 in each, window variant 2/0 agents with window and
+  context_percent.
+- `claude_allowance` section: install exit 0 with the receipt written;
+  `.claude.json` 165,000 and 4,194,304 bytes.
+  - Four-value runs, 165 KB: 15 of 15 exit 0 (first run `pane.get` and
+    `pane.report_metadata`, later runs `pane.get` only); wall median 3 ms,
+    max 4; CPU median 2 ms, max 3; lock hold first 2.1 ms, median 1.4, max
+    2.1.
+  - Four-value runs, 4 MiB: 15 of 15 exit 0 (`pane.get` only); wall median 3
+    ms, max 3; CPU median 2 ms, max 3; lock hold first 1.5 ms, median 1.4,
+    max 1.8.
+  - Ten-value runs (per-turn path), both sizes: the first run exits 2, so the
+    metrics are null ("run 1 exited 2"), as expected.
+  - Collector: exit 1, "Invalid allowance account mapping", all metrics
+    null, as expected.
+- Suites on the archive (private `TMPDIR`): `cargo test --locked --offline`
+  347 passed (271 lib, 22 main, 6 navigation, 48 process), 0 failed;
+  `cargo fmt --check` clean; `cargo clippy --locked --offline --all-targets
+  -- -D warnings` clean (local 1.96); `node --test` of the Pi hooks, Claude
+  mod, State and distribution suites 115 passed, 0 failed;
+  `tests/run-qml.sh` 95 passed, 0 failed; `tests/run-qmllint.sh` exit 0
+  ("no warnings outside Panel.qml"); `tests/run-shell-harness.sh` exit 0
+  ("failures 0", 6 runtime invocations, 0 `--open-thread`).
 
 ## Claude Code types (Claude Code 2.1.287) [types]
 
