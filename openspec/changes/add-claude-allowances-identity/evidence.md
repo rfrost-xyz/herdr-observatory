@@ -46,6 +46,13 @@ flag, and changes nothing else:
   committed): exit 0, 5 snapshots, 3 rows, 1 Codex row available, 0 Claude
   rows. So the null collector result below comes from the Claude mapping
   alone.
+- Not yet exercised: on `7a9fefb` the ten-value metrics, the state-file-changed
+  check, `within_budget` and the collector's available Claude row detection
+  cannot run; they first run after tasks 2.3 and 2.4 and are judged at task
+  5.1. Each ten-value run follows four-value runs that already wrote the same
+  window, so it measures the no-change return plus the account step (the
+  usual per-turn shape), never a metadata write and an account write in one
+  run.
 - No test is added by tasks 1.1 or 1.2, so no fail-on-old proof applies. The
   old-binary nulls below are the expected absence.
 
