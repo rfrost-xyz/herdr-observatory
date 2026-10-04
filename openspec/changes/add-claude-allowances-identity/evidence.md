@@ -894,6 +894,51 @@ records this entry (3.3).
   `node --test tests/test_native_distribution.mjs` 5 passed (README.md is
   still in the installed file list).
 
+### Task 4.2: State and QML regression guards
+
+- No new test function. Further assertions in existing provider-neutral
+  tests, as D11 directs:
+  - `tests/test_omarchy_state.cjs`, `mapped weekly allowance preserves zero
+    and rejects expired reset`: five Claude-shaped rows. Both windows with
+    `five_hour` listed first at 80 used and `seven_day` at 40 give
+    remaining 60, time remaining 50, pace +10 and `3d 12h` (balance from
+    the pacing window, not list order) and a null reset count; a
+    `five_hour`-only row and an unavailable row give null remaining, time
+    remaining, pace and reset and "source unavailable"; 100 used on
+    `seven_day` keeps remaining 0; a past `seven_day` reset nulls the
+    balance and reset.
+  - Same file, `providers group any configured accounts in configured
+    order`: the Claude account's key is `claude:team`; a saved alias wins,
+    then the legacy `claude:<label>` entry, then the pool;
+    `assignAliases` gives the Claude account its own alias beside the three
+    Codex accounts.
+  - `tests/qml/anton/tst_popup.qml`, `test_12_provider_neutral_rows_render_generically`,
+    after its existing assertions: a Codex row and three Claude rows render
+    in groups `Codex`, `Claude` (`provider-claude` present); the two-window
+    row shows `60%`, `↻ 3d 12h`, pace +10 and a visible fill; the
+    `five_hour`-only row shows the unknown balance placeholder with no fill or pace reading; the
+    unavailable row shows the placeholder and "Allowance unavailable". With
+    `accountEmails` keyed only by mapping id (label differs from id), the
+    concealed card shows its alias and no email in the text or accessible
+    name; unconcealed it shows the fixture email; a row with no email under
+    its id shows its label. `accountEmails` and `namesHidden` are restored
+    in a `finally`.
+- These are regression guards by design (D9 plans no presentation change),
+  so they must pass on `7a9fefb` and the change; the programme's
+  fail-on-old rule does not apply to them (D11, task 4.2).
+  `git diff 7a9fefb -- omarchy/herdr.observatory/State.js
+  omarchy/herdr.observatory/*.qml` is empty, so `providerCoupling()`, which
+  scans only those files, is unchanged. With `7a9fefb`'s
+  `omarchy/herdr.observatory` and `tests` extracted by `git archive` into a
+  private temporary directory and the two extended test files copied in:
+  `node --test tests/test_omarchy_state.cjs` 78 passed, 0 failed;
+  `bash tests/run-qml.sh` 95 passed, 0 failed.
+- The guards bite: with `pacingWindow` in `State.js` mutated to take the
+  first listed window (restored afterwards), `test_12` fails at a compare
+  and the extended State test fails, beside two existing State tests.
+- On the change: `node --test tests/test_omarchy_state.cjs` 78 passed, 0
+  failed; `bash tests/run-qml.sh` (private `TMPDIR`) 95 passed, 0 failed.
+
 ## After
 
 _Pending (task 5.1)._

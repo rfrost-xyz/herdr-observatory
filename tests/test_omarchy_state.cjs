@@ -66,6 +66,40 @@ test('mapped weekly allowance preserves zero and rejects expired reset', () => {
   ] }, now);
   assert.equal(view.allowances[0].remaining, 0);
   assert.equal(view.allowances[1].remaining, null);
+  // Claude-shaped rows (design D9): the same provider-neutral rules. The
+  // balance comes from the single pacing window, `seven_day`, never from
+  // the `five_hour` window listed first; zero is preserved there too.
+  const claude = (id, windows, overrides = {}) => allowanceRow({ provider: 'claude', provider_label: 'Claude',
+    account_id: id, label: id, windows, ...overrides });
+  const fiveHour = (used, reset = now / 1000 + 3600) => ({ kind: 'five_hour', label: '5-hour', used_percent: used,
+    resets_at: reset, duration_s: 18000, pacing: false });
+  const sevenDay = (used, reset = now / 1000 + 302400) => ({ kind: 'seven_day', label: '7-day', used_percent: used,
+    resets_at: reset, duration_s: 604800, pacing: true });
+  const rows = presented({ interval: 5, hosts: [host()], allowances: [
+    claude('claude-both', [fiveHour(80), sevenDay(40)]),
+    claude('claude-five', [fiveHour(12.5)]),
+    claude('claude-off', [], { status: 'unavailable', sampled_at: null }),
+    claude('claude-zero', [fiveHour(100), sevenDay(100)]),
+    claude('claude-past', [fiveHour(10), sevenDay(40, now / 1000 - 1)])
+  ] }).allowances;
+  assert.deepEqual(Array.from(rows, row => [row.provider, row.providerLabel, row.id]), [
+    ['claude', 'Claude', 'claude-both'], ['claude', 'Claude', 'claude-five'], ['claude', 'Claude', 'claude-off'],
+    ['claude', 'Claude', 'claude-zero'], ['claude', 'Claude', 'claude-past']]);
+  assert.equal(rows[0].remaining, 60);
+  assert.equal(rows[0].timeRemaining, 50);
+  assert.equal(rows[0].paceDifference, 10);
+  assert.equal(rows[0].reset, '3d 12h');
+  assert.equal(rows[0].resetCount, null);
+  for (const row of rows.slice(1, 3)) {
+    assert.equal(row.remaining, null, row.id);
+    assert.equal(row.timeRemaining, null, row.id);
+    assert.equal(row.paceDifference, null, row.id);
+    assert.equal(row.reset, null, row.id);
+    assert.equal(row.age, 'source unavailable', row.id);
+  }
+  assert.equal(rows[3].remaining, 0);
+  assert.equal(rows[4].remaining, null);
+  assert.equal(rows[4].reset, null);
 });
 
 test('host map identity stays correct when display labels match', () => {
@@ -274,6 +308,17 @@ test('providers group any configured accounts in configured order', () => {
   assert.equal(groups[1].label,'Claude');
   assert.equal(groups[0].accounts[0].id,'Personal');
   assert.equal(groups[0].accounts[2].id,'third');
+  // A Claude account is grouped, keyed and concealed like any other.
+  const claude=groups[1].accounts[0];
+  assert.equal(claude.id,'team'); assert.equal(claude.provider,'claude');
+  const {accountAlias,accountKey,assignAliases}=sandbox.module.exports;
+  assert.equal(accountKey(claude),'claude:team');
+  assert.equal(accountAlias(claude,{'claude:team':'Saved'},{},['Pool']),'Saved');
+  assert.equal(accountAlias(claude,{'codex:team':'Other'},{'claude:Team':'Legacy'},['Pool']),'Legacy');
+  assert.equal(accountAlias(claude,{},{},['Pool']),'Pool');
+  const assigned=assignAliases(view.allowances,['A','B','C','D'],()=>0);
+  assert.deepEqual(Object.keys(assigned).sort(),['claude:team','codex:Personal','codex:Work','codex:third']);
+  assert.equal(new Set(Object.values(assigned)).size,4);
 });
 
 test('subagent outcomes must form a complete partition, legacy remainder is unresolved', () => {

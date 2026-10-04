@@ -50,7 +50,7 @@ in the design, specs and these tasks. Implementation may start.
 ## 4. Contracts and docs (coordinator)
 
 - [x] 4.1 README.md and the plugin README (the AGENTS.md amendments are task 1.3): the Claude allowance row, `--claude-account-key`, the `"provider":"claude"` mapping, the active-session requirement, the refusal list, rerunning `--install-claude-mod` after updating and removing Claude mappings before a downgrade. Verify the README commands against a temporary-home run of the built runtime.
-- [ ] 4.2 `tests/test_omarchy_state.cjs` and `tests/qml/anton/tst_popup.qml`, as further assertions inside the existing provider-neutral tests, with no new test function (design D11: D9 makes no presentation change, so these are regression guards that pass on `7a9fefb` and the change): a Claude row with `five_hour` and `seven_day` (balance from `seven_day`), a `five_hour`-only Claude row (no balance or pace), an unavailable Claude row, the email looked up by mapping id and concealment covering it, with no new provider branch (`providerCoupling()` unchanged). Verify with `node --test` and `bash tests/run-qml.sh`.
+- [x] 4.2 `tests/test_omarchy_state.cjs` and `tests/qml/anton/tst_popup.qml`, as further assertions inside the existing provider-neutral tests, with no new test function (design D11: D9 makes no presentation change, so these are regression guards that pass on `7a9fefb` and the change): a Claude row with `five_hour` and `seven_day` (balance from `seven_day`), a `five_hour`-only Claude row (no balance or pace), an unavailable Claude row, the email looked up by mapping id and concealment covering it, with no new provider branch (`providerCoupling()` unchanged). Verify with `node --test` and `bash tests/run-qml.sh`.
 
 ## 5. Verify, review, publish
 

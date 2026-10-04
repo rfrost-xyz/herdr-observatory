@@ -496,6 +496,84 @@ Rectangle {
             verify(!findChild(cards[2], 'allowance-fill').visible);
             verify(!findChild(cards[2], 'allowance-pace-reading').visible);
             compare(cards[2].hint, 'Sign in required');
+
+            // Claude-shaped rows (design D9) go through the same cards: the
+            // balance comes from the pacing `seven_day` window, a
+            // `five_hour`-only row and an unavailable row show none, the
+            // email is looked up by mapping id and concealment covers it.
+            function claude(id, label, windows) {
+                var row = account(id, 0, 0);
+                row.provider = 'claude';
+                row.provider_label = 'Claude';
+                row.label = label;
+                row.reset_count = null;
+                row.windows = windows;
+                return row;
+            }
+            var fiveHour = {
+                kind: 'five_hour',
+                label: '5-hour',
+                used_percent: 80,
+                resets_at: scene.now / 1000 + 3600,
+                duration_s: 18000,
+                pacing: false
+            };
+            var sevenDay = {
+                kind: 'seven_day',
+                label: '7-day',
+                used_percent: 40,
+                resets_at: scene.now / 1000 + 302400,
+                duration_s: 604800,
+                pacing: true
+            };
+            var off = claude('claude-off', 'Claude Off', []);
+            off.status = 'unavailable';
+            off.sampled_at = null;
+            var settings = fixturePreferences.settings;
+            try {
+                popup.accountEmails = {
+                    'claude-both': 'fixture@example.invalid'
+                };
+                scene.raw = {
+                    hosts: [host('laptop', [agent('a', 'working', false)], 'connected')],
+                    allowances: [account('one', 73, 74), claude('claude-both', 'Claude Both', [fiveHour, sevenDay]), claude('claude-five', 'Claude Five', [fiveHour]), off]
+                };
+                wait(40);
+                compare(fixtureController.providers.map(function (group) {
+                    return group.label;
+                }), ['Codex', 'Claude']);
+                verify(findChild(popup, 'provider-claude') !== null);
+                cards = allowanceCards(popup);
+                compare(cards.length, 4);
+                compare(cards[1].entry.id, 'claude-both');
+                compare(findChild(cards[1], 'allowance-balance').text, '60%');
+                compare(caption(cards[1]), '↻ 3d 12h');
+                compare(cards[1].reading.paceDifference, 10);
+                verify(findChild(cards[1], 'allowance-fill').visible);
+                compare(cards[2].entry.id, 'claude-five');
+                compare(findChild(cards[2], 'allowance-balance').text, '—');
+                verify(!findChild(cards[2], 'allowance-fill').visible);
+                verify(!findChild(cards[2], 'allowance-pace-reading').visible);
+                compare(cards[3].entry.id, 'claude-off');
+                compare(findChild(cards[3], 'allowance-balance').text, '—');
+                compare(cards[3].hint, 'Allowance unavailable');
+                // Concealed: the alias, never the email, in the text and
+                // the accessible name.
+                compare(cards[1].email, 'fixture@example.invalid');
+                verify(cards[1].aliasName !== '');
+                compare(findChild(cards[1], 'allowance-identity').children[0].text, cards[1].aliasName);
+                verify(cards[1].Accessible.name.indexOf('fixture@example.invalid') < 0);
+                settings.namesHidden = false;
+                wait(40);
+                compare(findChild(cards[1], 'allowance-identity').children[0].text, 'fixture@example.invalid');
+                verify(cards[1].Accessible.name.indexOf('fixture@example.invalid') === 0);
+                // No email is mapped under this id, so the label shows.
+                compare(cards[2].email, '');
+                compare(findChild(cards[2], 'allowance-identity').children[0].text, 'Claude Five');
+            } finally {
+                settings.namesHidden = true;
+                popup.accountEmails = ({});
+            }
         }
 
         // Keyed delegates (D9). Motion is enabled for these scenarios only.
