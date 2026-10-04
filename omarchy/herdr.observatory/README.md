@@ -1,7 +1,7 @@
 # Anton for Omarchy
 
 Anton is a menubar icon and compact themed popover for Herdr threads and Codex
-allowances. It has no companion window or web application.
+and Claude allowances. It has no companion window or web application.
 
 ## Runtime
 
@@ -47,14 +47,18 @@ needs Claude Code 2.1.287 or later, which loads it as
 `anton-observatory@skills-dir` with no `settings.json` or `enabledPlugins` edit.
 After each turn and at session start it runs the installed `anton-runtime` with
 the Herdr pane, a sequence, the session id and the context window as arguments.
-It sends no model, prompt, message, cost, rate limit or account data, never
-blocks or changes the event, and runs only inside a Herdr pane. The reporter
-writes the window to that pane's metadata only when Herdr binds the pane to the
-same Claude Code session; the collector then shows the replay context as a
-percentage of that window. The reporter reaches Herdr through the local host's
-`socket_path`, so the dial needs the local host configured with `socket_path`;
-with a `session` host, or neither key, the reporter does nothing and the window
-stays unknown. Peers never install the mod and ignore any report on
+When a measurement carries fresh evidence (a rate-limit window that moved a
+whole point or appeared, or a grown session cost total), it also passes at most
+two rate-limit windows, `five_hour` and `seven_day`, each as its used percentage
+and reset time (see [Claude allowances](#claude-allowances)). It never sends the
+cost itself, nor any model, prompt, message or account data, never blocks or
+changes the event, and runs only inside a Herdr pane. The reporter writes the
+window to that pane's metadata only when Herdr binds the pane to the same Claude
+Code session; the collector then shows the replay context as a percentage of
+that window. Rate limits never enter pane metadata. The reporter reaches Herdr
+through the local host's `socket_path`, so the dial needs the local host
+configured with `socket_path`; with a `session` host, or neither key, the
+reporter does nothing and the window stays unknown. Peers never install the mod and ignore any report on
 their panes, so remote Claude Code threads show no window or percentage.
 
 The mod loads only at the next session start or after `/reload-plugins`. A
@@ -95,6 +99,115 @@ the mod.
 If mods are withdrawn or cannot load, the documented fallback is a Claude Code
 `statusLine` wrapper that passes the session id and context window size to the
 same reporter. It is not built, because it needs an edit to `settings.json`.
+
+## Claude allowances
+
+A mapped local Claude account shows an allowance row in a "Claude" provider
+group, with a 5-hour window and a 7-day window. The card's balance and pace
+come from the 7-day window; a row with only the 5-hour window shows no balance
+or pace. Claude has no reset passes, so the card shows the unknown placeholder
+before "resets". Claude allowances are local-only: peers never report them and
+a peer's rows can never fill a Claude row.
+
+Rate limits carry no account, so the reporter attributes each fresh sample to
+the account that `~/.claude.json` names at report time and records it in the
+private `claude-allowances.json` in the plugin's state directory. From
+`~/.claude.json`, which is Claude Code's provider-owned state, not an
+authentication file, Anton reads only `oauthAccount.accountUuid`,
+`oauthAccount.emailAddress` and `cachedUsageUtilization`, and keeps the account
+id only long enough to hash it. The Claude credential file, the OAuth usage
+endpoint and `claude auth status` are never used. `claude-allowances.json`,
+`allowances.json` and the `--allowances-probe` output never carry an email, and
+the last two stay Codex-only.
+
+A row is available only while it is fresh. It needs an active Claude Code
+session in a Herdr pane with the mod loaded (see above), the local host
+configured with `socket_path`, and a completed turn or a whole-point window
+movement within the last ten minutes. Otherwise the collector falls back to
+Claude Code's own usage cache in `~/.claude.json` when that cache names the same
+account and is at most ten minutes old; a cache value above 0 and at most 1 is
+ambiguous in scale and stays unknown. With neither, the row is unavailable,
+never zero. One stale window makes the whole row unavailable.
+
+To add a Claude account, get its key with:
+
+```sh
+~/.config/omarchy/plugins/herdr.observatory/anton-runtime --claude-account-key
+```
+
+It prints only the 64-character account key and exits 0, or prints nothing and
+exits 3 when the key cannot be read for one of the reasons below. Add the key
+under `allowances.accounts` in the private configuration with
+`"provider":"claude"` (the key and labels here are synthetic):
+
+```json
+{
+  "allowances": {
+    "accounts": {
+      "<64-character key from --claude-account-key>": {"id": "claude-personal", "label": "Claude Personal", "category": "Personal", "provider": "claude"}
+    }
+  }
+}
+```
+
+A mapping without `provider`, or with `"provider":"codex"`, is a Codex mapping,
+so existing configurations are unchanged. Codex and Claude mappings share the
+limit of four accounts, ids must be unique across both, and a Claude mapping's
+`window_seconds` must be absent or 604800. Then run `--refresh-identities` to
+store the account's verified email.
+
+Attribution is refused, and the row stays unavailable unless the cache supplies
+it, when any of these holds:
+
+- the session's environment sets a variable that could select another
+  credential or API endpoint: `ANTHROPIC_*KEY*`, `ANTHROPIC_*TOKEN*`,
+  `ANTHROPIC_CUSTOM_HEADERS`, `ANTHROPIC_BASE_URL` (with any value, even
+  empty), `CLAUDE_CODE_*TOKEN*` other than `CLAUDE_CODE_MESSAGING_TOKEN`,
+  `CLAUDE_CODE_*_FILE_DESCRIPTOR`, `CLAUDE_CODE_HOST_*`,
+  `CCR_OAUTH_TOKEN_FILE`, `CLAUDE_CODE_CUSTOM_OAUTH_URL` or
+  `CLAUDE_CODE_USE_*`, or has a variable name that is not valid UTF-8 (only
+  names are read, never values);
+- `CLAUDE_CONFIG_DIR` is set to any value, even empty or `~/.claude`, which the
+  mod installer accepts;
+- a legacy `~/.claude/.config.json` exists;
+- `~/.claude/settings.json` sets `apiKeyHelper` (with any value), or cannot be
+  read safely: a symlink, owned by another user, over 1 MiB or malformed;
+- `~/.claude.json` has `primaryApiKey`, has no valid account id, or is not a
+  regular file owned by you, private to you and at most 4 MiB;
+- the session was earlier attributed to another account, for example after a
+  `/login` elsewhere; it stays refused for the rest of the session;
+- the session reported a `spend_limit` window; no rate limits are sent until the
+  session ends.
+
+The collector, `--refresh-identities` and `--claude-account-key` read nothing
+from `~/.claude.json` when `CLAUDE_CONFIG_DIR` is set or a legacy
+`.config.json` exists in their own environment and home, and skip it when it
+has `primaryApiKey`; `ANTHROPIC_BASE_URL` does not stop them. A Claude Code
+session whose `HOME` or `XDG_STATE_HOME` differs from the plugin's records its
+samples where the collector does not read them, so the row stays unavailable.
+
+Refusals are silent and never stop the context window report. To see why
+attribution is refused, run this from a Bash tool call inside the Claude Code
+session, so it inherits the session's environment:
+
+```sh
+~/.config/omarchy/plugins/herdr.observatory/anton-runtime --claude-attribution-check
+```
+
+It prints `ok` (exit 0) or the first refusing step (exit 3): `environment`,
+`config-dir`, `legacy-config`, `api-key-helper` or `provider-state`. After the
+first line it lists the matching environment variable names, sorted, with an
+exempt one marked `exempt`. It never prints a value, id, key or email, and
+writes nothing.
+
+After updating the plugin, rerun `--install-claude-mod` so the mod sends rate
+limits; a session picks up the refreshed mod after `/reload-plugins` or at its
+next start. Before installing an older runtime, remove every Claude mapping
+from the configuration, because older runtimes reject the `provider` field and
+the whole allowances configuration with it; then rerun the older runtime's
+`--install-claude-mod`. An older `uninstall.sh` does not know
+`claude-allowances.json`, so remove that file by hand or uninstall with the
+newer script first.
 
 ## Popover structure
 
@@ -146,6 +259,7 @@ Installation refuses an existing plugin. Updates must preserve `.config.json`,
 After updating the installed runtime, run
 `~/.config/omarchy/plugins/herdr.observatory/anton-runtime --install-claude-mod`
 to install or refresh the Claude Code mod; an unchanged mod is left as it is.
+Claude allowance rows need the refreshed mod.
 The example below uses synthetic paths. Set host IDs to the actual configured
 Herdr machine IDs so navigation resolves the same exact machine. Enable automatic
 fleet discovery to follow saved enabled profiles without restarting the plugin.
@@ -163,11 +277,13 @@ fleet discovery to follow saved enabled profiles without restarting the plugin.
 
 Account mappings are private, keyed by the existing versioned account hash. Each
 mapping may retain its legacy Personal/Work label or an explicit stable ID/label/
-category. Explicit remote `allowances.sources` contain an SSH `target` and may
-bind to a saved machine through `profile_id`. The native reader
-refreshes mapped accounts independently of whether any thread is active. It uses
-read-only Codex app-server RPCs and never parses auth files, redeems resets or
-changes login. Unsupported information remains unavailable.
+category, and may name its `provider` (`codex`, the default, or `claude`; see
+[Claude allowances](#claude-allowances)). Explicit remote `allowances.sources`
+contain an SSH `target` and may bind to a saved machine through `profile_id`.
+The native reader refreshes mapped Codex accounts independently of whether any
+thread is active. It uses read-only Codex app-server RPCs and never parses auth
+files, redeems resets or changes login. Unsupported information remains
+unavailable.
 
 ## Automatic fleet discovery
 
@@ -199,8 +315,9 @@ appears once. Unbound static hosts and sources remain explicitly configured.
 Omitting or disabling `fleet_discovery` keeps the fixed configuration behaviour.
 
 Use the installed executable's `--refresh-identities` command to refresh verified
-emails into `.accounts.json`. Clicking any allowance conceals every email using
-locally persisted aliases. Concealed identities stay out of tooltips and
+emails into `.accounts.json`. A mapped Claude account's email comes only from the
+local `~/.claude.json`, never from a peer or a Codex account read. Clicking any allowance conceals every email, Codex and Claude
+alike, using locally persisted aliases. Concealed identities stay out of tooltips and
 accessibility text. `--refresh-allowances` requests a bounded local account
 refresh without starting an agent; periodic remote account reads run independently.
 
@@ -221,18 +338,24 @@ with `null` where unknown:
 - `status` is `available`, `unavailable` or `auth_needed`. A row that is not
   available has `windows: []` and null `sampled_at`, `plan`, `reset_count` and
   `reset_expires_at`. `status_text` is null or 1 to 80 characters supplied by
-  the source; Codex always sends null.
+  the source; Codex and Claude always send null.
 - `sampled_at` is the original source time. An observation older than 600 s,
   or more than 1 s in the future, makes the account unavailable.
 - `windows` holds at most eight windows. `used_percent` is 0 to 100,
   `resets_at` is Unix seconds and `duration_s` is the source's window length.
-  Exactly one window has `pacing: true`; the popover projects balance and pace
-  from that window only and never from list order. A past reset nulls
+  At most one window has `pacing: true`; the popover projects balance and pace
+  from that window only and never from list order, and shows neither without
+  one. A past reset nulls
   `used_percent` and `resets_at`; pass expiry nulls only `reset_count` and
   `reset_expires_at`.
 - Codex rows always carry one `weekly` window of 604800 s. The runtime selects
   it by its 10080-minute duration, never by field order, and reports
   `reset_count` from the native `availableCount`.
+- Claude rows carry `five_hour` (label `5-hour`, 18000 s, not pacing) and
+  `seven_day` (label `7-day`, 604800 s, pacing) when known, selected by window
+  name, with used percentages to one decimal. `plan`, `reset_count` and
+  `reset_expires_at` are null, and `sampled_at` is the oldest of the windows'
+  sample times.
 - Account token activity (`lifetime_tokens`, `peak_daily_tokens`,
   `daily_usage`) is still collected and cached but is not part of the popover
   row.
@@ -242,7 +365,8 @@ their earlier Codex source shape (`weekly_remaining`, `weekly_resets_at` and the
 token activity fields). An updated plugin therefore reads caches written by
 earlier builds and rows from peers that have not been updated, and an earlier
 plugin still reads what an updated one writes. Extra peer fields such as `theme`
-or `email` are dropped. The runtime converts source rows to the row above in one
+or `email` are dropped. Claude rows never appear in the cache, the probe or a
+peer's rows. The runtime converts source rows to the row above in one
 place, `allowances::snapshot`.
 
 Omarchy's own agents plugin records a provider as `limits: [{label, percent,

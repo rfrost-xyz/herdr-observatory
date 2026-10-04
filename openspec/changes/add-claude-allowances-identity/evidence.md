@@ -847,6 +847,53 @@ still passes: no `Date`, `import`, timers or Node APIs in `register.js`.
 Lane B commits: `d587c3b` (3.1), `b41a9ae` (3.2) and the commit that
 records this entry (3.3).
 
+### Task 4.1: README wording
+
+- AGENTS.md re-checked against D12 (task 1.3, `fa63849`): with whitespace
+  runs collapsed, each of the three old sentences is absent and each new
+  sentence occurs verbatim; no em dash.
+- `README.md`: the summary names Codex and Claude allowances, and the
+  architecture paragraph no longer says the mod reports only the context
+  window (it now also passes fresh rate-limit windows, attributed locally,
+  with Claude rows local-only and needing an active session).
+- Plugin README: the opening line; the mod paragraph (the fresh-evidence
+  tail of at most two `five_hour`/`seven_day` windows, never the cost, and
+  no rate limits in pane metadata), replacing "sends no ... rate limit";
+  a new "Claude allowances" section (the row and its 7-day balance, the
+  three `~/.claude.json` paths, the active-session and cache-fallback
+  freshness, `--claude-account-key`, a synthetic `"provider":"claude"`
+  mapping under `allowances.accounts`, the shared four-account cap and
+  unique ids, the refusal conditions in one list, the collector's own
+  `CLAUDE_CONFIG_DIR`/legacy checks, a mismatched `HOME` or
+  `XDG_STATE_HOME`, `--claude-attribution-check`, rerunning
+  `--install-claude-mod` after updating and removing Claude mappings before
+  a downgrade, with the older `uninstall.sh` leaving
+  `claude-allowances.json`); the mapping, identity and concealment
+  paragraphs; and the allowance-row list ("at most one" pacing window,
+  Claude window shapes, null fields, Claude rows never in the cache, the
+  probe or peer rows).
+- Commands checked against the release build of this branch in a private
+  temporary directory (`mktemp -d /tmp/c4x-XXXX`, mode 0700, deleted
+  afterwards), each run with `env -i` and a synthetic `HOME` holding a
+  0600 `.claude.json` with the fixture uuid and email and a `PRIVATE`
+  marker: `--claude-account-key` exit 0, 65 bytes;
+  `--claude-attribution-check` prints `ok`, exit 0, and with
+  `ANTHROPIC_BASE_URL` set empty prints `environment` and the name, exit 3;
+  `--claude-account-key` with `CLAUDE_CONFIG_DIR` set exits 3; the
+  README's mapping JSON, pasted with the printed key into `.config.json`,
+  is accepted by `--refresh-identities` (exit 0) and `.accounts.json`
+  equals `{"claude-personal": <fixture email>}`; a 4 s collector run with
+  it emits one `claude` row, `unavailable` with no windows (no session);
+  `--install-hooks` then `--install-claude-mod` (empty `PATH` directory and
+  `MISE_SYSTEM_CONFIG_DIR`) exit 0, the installed `register.js` differs
+  from the source only in the substituted runtime path, and a second
+  `--install-claude-mod` exits 0 with the receipt bytes and the file inode
+  unchanged. No uuid, email or `PRIVATE` marker appears in any output,
+  snapshot, stderr or file under the plugin root or state directory.
+- Documentation only: no test is added, so no fail-on-old proof applies.
+  `node --test tests/test_native_distribution.mjs` 5 passed (README.md is
+  still in the installed file list).
+
 ## After
 
 _Pending (task 5.1)._
