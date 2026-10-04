@@ -78,6 +78,9 @@ const measure = (window, fields = {}) => ({
   changed: ['context'],
   ...fields,
 });
+const absent = Symbol('absent');
+const both = ['context', 'cost'];
+const all = ['context', 'rateLimits', 'cost'];
 // The whole second of `start` and ISO text for an epoch second.
 const S = start / 1000;
 const iso = (seconds) => new Date(seconds * 1000).toISOString();
@@ -109,7 +112,10 @@ async function exit(run, exitCode) {
 // started.
 async function step(hooks, $, state, fields = {}, window = 200000) {
   const before = state.runs.length;
-  await fire(hooks, 'session.measure', $, measure(window, fields));
+  const e = measure(window, fields);
+  // A field given as `absent` is left out of the event entirely.
+  for (const key of Object.keys(e)) if (e[key] === absent) delete e[key];
+  await fire(hooks, 'session.measure', $, e);
   if (state.runs.length === before) return null;
   assert.equal(state.runs.length, before + 1);
   const run = state.runs.at(-1);
@@ -220,6 +226,266 @@ test('a strictly grown cost total sends the unchanged windows (path B)', async (
   assert.deepEqual(grown, ['five_hour', '23.5', String(S + 3600), 'seven_day', '7', String(S + 86400)]);
   // The same total named as changed is not fresh.
   assert.deepEqual(await step(hooks, $, state, { rateLimits, cost: { usd: 1.75 }, changed: ['context', 'cost'] }), []);
+});
+
+test('rewinds, compactions and a total named without growth are not fresh; growth is', async () => {
+  const { hooks } = await load();
+  const { $, state } = host();
+  const rateLimits = [five(30), seven(60)];
+  const tail = ['five_hour', '30', String(S + 3600), 'seven_day', '60', String(S + 86400)];
+  const drop = { tokens: 4, window: 200000, percent: 0 };
+  assert.deepEqual(await step(hooks, $, state, { rateLimits, cost: { usd: 2 }, changed: all }), []);
+  // Rewind: only the context changed, same total and windows.
+  assert.deepEqual(await step(hooks, $, state, { rateLimits, context: drop, cost: { usd: 2 } }), []);
+  // Compaction without cost growth, also with the cost named at an equal or lower total.
+  assert.deepEqual(await step(hooks, $, state, { rateLimits, context: drop, cost: { usd: 2 }, changed: both }), []);
+  assert.deepEqual(await step(hooks, $, state, { rateLimits, context: drop, cost: { usd: 1.5 }, changed: both }), []);
+  // A larger total without the cost named is not fresh, and it still moves the baseline.
+  assert.deepEqual(await step(hooks, $, state, { rateLimits, cost: { usd: 4 } }), []);
+  assert.deepEqual(await step(hooks, $, state, { rateLimits, cost: { usd: 3 }, changed: both }), []);
+  assert.deepEqual(await step(hooks, $, state, { rateLimits, cost: { usd: 4.5 }, changed: both }), tail);
+  // A rewind-shaped measurement whose total grew (a priced call folded in) is fresh.
+  assert.deepEqual(await step(hooks, $, state, { rateLimits, context: drop, cost: { usd: 4.75 }, changed: both }), tail);
+  assert.equal(state.runs.length, 8, 'every measurement still reports its window');
+  assert.ok(state.runs.every((run) => run.argv[6] === '200000'));
+});
+
+test('the first measurement after load, session.end or for another session id is not fresh', async () => {
+  const { hooks } = await load();
+  const { $, state } = host();
+  const tail = (used) => ['five_hour', used, String(S + 3600), 'seven_day', '60', String(S + 86400)];
+  const at = (used, usd, changed = all) => ({ rateLimits: [five(used), seven(60)], cost: { usd }, changed });
+  assert.deepEqual(await step(hooks, $, state, at(31, 5)), []);
+  assert.deepEqual(await step(hooks, $, state, at(32, 6)), tail('32'));
+  await fire(hooks, 'session.end', $, { reason: 'clear' });
+  assert.deepEqual(await step(hooks, $, state, at(33, 7)), []);
+  assert.deepEqual(await step(hooks, $, state, at(33, 8, both)), tail('33'));
+  // Cost growth for another session id is that session's first measurement.
+  state.id = 'session-b';
+  assert.deepEqual(await step(hooks, $, state, at(34, 9)), []);
+  assert.equal(state.runs.at(-1).argv[5], 'session-b');
+  assert.deepEqual(await step(hooks, $, state, at(34, 10, both)), tail('34'));
+  state.id = 'session-a';
+  assert.deepEqual(await step(hooks, $, state, at(35, 11)), []);
+  assert.deepEqual(await step(hooks, $, state, at(35, 12, both)), tail('35'));
+});
+
+test('an absent or invalid cost on either side is not fresh by the cost path', async () => {
+  const tail = ['five_hour', '5', String(S + 3600), 'seven_day', '6', String(S + 86400)];
+  const rateLimits = [five(5), seven(6)];
+  for (const bad of [absent, undefined, null, 5, 'x', {}, { usd: '5' }, { usd: null }, { usd: Number.NaN },
+    { usd: Infinity }, { usd: -1 }, { usd: -Infinity }]) {
+    const label = typeof bad === 'symbol' ? 'absent' : JSON.stringify(bad) ?? String(bad);
+    const { hooks } = await load();
+    const { $, state } = host();
+    assert.deepEqual(await step(hooks, $, state, { rateLimits, cost: { usd: 1 } }), [], label);
+    // Invalid now, over a valid baseline.
+    assert.deepEqual(await step(hooks, $, state, { rateLimits, cost: bad, changed: both }), [], label);
+    // Valid now, over the invalid baseline.
+    assert.deepEqual(await step(hooks, $, state, { rateLimits, cost: { usd: 2 }, changed: both }), [], label);
+    // Valid growth over a valid baseline.
+    assert.deepEqual(await step(hooks, $, state, { rateLimits, cost: { usd: 2.5 }, changed: both }), tail, label);
+  }
+});
+
+test('a spend_limit window blocks every tail until session.end, cost growth or not', async () => {
+  const { hooks } = await load();
+  const { $, state } = host();
+  const tail = (used) => ['five_hour', used, String(S + 3600), 'seven_day', '20', String(S + 86400)];
+  const spend = { kind: 'spend_limit', percentUsed: 104.5 };
+  assert.deepEqual(await step(hooks, $, state, { rateLimits: [five(10), seven(20)], cost: { usd: 1 } }), []);
+  assert.deepEqual(await step(hooks, $, state, { rateLimits: [five(11), seven(20)], cost: { usd: 2 }, changed: all }), tail('11'));
+  // The window run still goes ahead, with four values.
+  assert.deepEqual(await step(hooks, $, state, { rateLimits: [five(12), seven(20), spend], cost: { usd: 3 }, changed: all }), []);
+  // Later measurements without spend_limit still send no tail.
+  assert.deepEqual(await step(hooks, $, state, { rateLimits: [five(13), seven(20)], cost: { usd: 4 }, changed: all }), []);
+  assert.deepEqual(await step(hooks, $, state, { rateLimits: [five(13), seven(20)], cost: { usd: 5 }, changed: both }), []);
+  await fire(hooks, 'session.end', $, { reason: 'logout' });
+  state.id = 'session-b';
+  assert.deepEqual(await step(hooks, $, state, { rateLimits: [five(14), seven(20)], cost: { usd: 1 }, changed: all }), []);
+  assert.deepEqual(await step(hooks, $, state, { rateLimits: [five(14), seven(20)], cost: { usd: 2 }, changed: both }), tail('14'));
+  assert.equal(state.runs.length, 7);
+});
+
+test('a fresh measurement without a five_hour or seven_day window sends the four-value run; the cost never leaves', async () => {
+  const { hooks } = await load();
+  const { $, state } = host();
+  const costs = [12.345, 13.345, 14.345, 15.345];
+  const other = { kind: 'opus_weekly', percentUsed: 5, resetsAt: iso(S + 3600) };
+  assert.deepEqual(await step(hooks, $, state, { cost: { usd: costs[0] } }), []);
+  assert.deepEqual(await step(hooks, $, state, { cost: { usd: costs[1] }, changed: both }), []);
+  assert.deepEqual(await step(hooks, $, state, { rateLimits: [other], cost: { usd: costs[2] }, changed: all }), []);
+  assert.deepEqual(await step(hooks, $, state, { rateLimits: [other, seven(5)], cost: { usd: costs[3] }, changed: both }), [
+    'seven_day', '5', String(S + 86400),
+  ]);
+  assert.deepEqual(state.runs.map((run) => run.argv.length), [7, 7, 7, 10]);
+  for (const { argv } of state.runs) {
+    for (const value of argv) {
+      assert.ok(!value.includes('345'), value);
+      assert.ok(!costs.some((usd) => value === String(usd)), value);
+    }
+  }
+});
+
+test('changed units without rateLimits or cost, a window leaving, status-only and reset-only changes are not fresh', async () => {
+  const { hooks } = await load();
+  const { $, state } = host();
+  const flagged = ['rateLimits'];
+  assert.deepEqual(await step(hooks, $, state, { rateLimits: [five(40), seven(50)] }), []);
+  // A moved window with only the context named.
+  assert.deepEqual(await step(hooks, $, state, { rateLimits: [five(41), seven(50)] }), []);
+  // seven_day left.
+  assert.deepEqual(await step(hooks, $, state, { rateLimits: [five(41)], changed: flagged }), []);
+  // A limit status change with the same used values.
+  assert.deepEqual(await step(hooks, $, state, { rateLimits: [five(41)], changed: flagged }), []);
+  // A reset time that moved alone.
+  assert.deepEqual(await step(hooks, $, state, { rateLimits: [five(41, S + 7200)], changed: flagged }), []);
+  // seven_day appearing again is fresh, and carries the moved reset time.
+  assert.deepEqual(await step(hooks, $, state, { rateLimits: [five(41, S + 7200), seven(50)], changed: flagged }), [
+    'five_hour', '41', String(S + 7200), 'seven_day', '50', String(S + 86400),
+  ]);
+});
+
+test('start and classic events never send rate limits or touch the baseline', async () => {
+  const { hooks } = await load();
+  const { $, state } = host();
+  assert.deepEqual(await step(hooks, $, state, { rateLimits: [five(10), seven(20)], cost: { usd: 1 } }), []);
+  const loaded = { session_id: 'session-a', rateLimits: [five(99), seven(99)], cost: { usd: 50 }, changed: all };
+  // New windows, so neither event is deduplicated on the confirmed key.
+  state.window = 100000;
+  await fire(hooks, 'session.start', $, loaded);
+  await exit(state.runs.at(-1), 0);
+  state.window = 150000;
+  await fire(hooks, 'classic.SessionStart', $, loaded);
+  await exit(state.runs.at(-1), 0);
+  assert.deepEqual(state.runs.map((run) => run.argv.length), [7, 7, 7]);
+  // Neither cleared nor replaced the baseline: growth over 1 with the old values is fresh.
+  assert.deepEqual(await step(hooks, $, state, { rateLimits: [five(10), seven(20)], cost: { usd: 1.5 }, changed: both }), [
+    'five_hour', '10', String(S + 3600), 'seven_day', '20', String(S + 86400),
+  ]);
+});
+
+test('a measurement skipped while a run is in flight moves the baseline and is not replayed', async () => {
+  const { hooks } = await load();
+  const { $, state } = host();
+  await fire(hooks, 'session.measure', $, measure(200000, { rateLimits: [five(20), seven(30)], cost: { usd: 1 } }));
+  state.now = start + 1000;
+  const skipped = { rateLimits: [five(21), seven(30)], cost: { usd: 2 }, changed: all };
+  await fire(hooks, 'session.measure', $, measure(200000, skipped));
+  assert.equal(state.runs.length, 1, 'skipped while the first run is in flight');
+  await exit(state.runs[0], 0);
+  await turn();
+  assert.equal(state.runs.length, 1, 'not replayed when the run settles');
+  // The same values and total again: the skipped measurement is the baseline.
+  assert.deepEqual(await step(hooks, $, state, skipped), []);
+  const S1 = S + 1;
+  assert.deepEqual(await step(hooks, $, state, { ...skipped, cost: { usd: 2.5 }, changed: both }), [
+    'five_hour', '21', String(S + 3600), 'seven_day', '30', String(S + 86400),
+  ]);
+  assert.equal(Number(state.runs.at(-1).argv[4]) - (Number(state.runs.at(-1).argv[4]) % 1000000), S1 * 1000000);
+});
+
+test('percent text is built from integer tenths and other values drop the window', async () => {
+  const { hooks } = await load();
+  const { $, state } = host();
+  let usd = 1;
+  assert.deepEqual(await step(hooks, $, state, { cost: { usd } }), []);
+  const control = ['seven_day', '1', String(S + 86400)];
+  for (const [p, text] of [[0, '0'], [7, '7'], [23.5, '23.5'], [99.9, '99.9'], [100, '100'], [0.7, '0.7'],
+    [0.1 + 0.2, '0.3'], [23.500000001, '23.5'], [99.90000000001, '99.9'], [-0, '0'], [57, '57'], [1.1 * 3, '3.3']]) {
+    usd += 1;
+    assert.deepEqual(await step(hooks, $, state, { rateLimits: [five(p), seven(1)], cost: { usd }, changed: both }),
+      ['five_hour', text, String(S + 3600), ...control], String(p));
+  }
+  for (const p of [1.25, 0.05, 99.94999999999, 100.1, 100.05, -1, -0.1, 101, Number.NaN, Infinity, '5', null, undefined, 1e-3]) {
+    usd += 1;
+    assert.deepEqual(await step(hooks, $, state, { rateLimits: [five(p), seven(1)], cost: { usd }, changed: both }),
+      control, String(p));
+  }
+});
+
+// Loads a fresh module with the clock at `now`, sets the baseline, and
+// returns a function that sends one seven_day window with `resetsAt` as a
+// fresh measurement and gives the tail.
+async function resets(now) {
+  const { hooks } = await load();
+  const { $, state } = host();
+  state.now = now;
+  let usd = 1;
+  assert.deepEqual(await step(hooks, $, state, { cost: { usd } }), []);
+  return async (resetsAt) => {
+    usd += 1;
+    return step(hooks, $, state, { rateLimits: [{ kind: 'seven_day', percentUsed: 1, resetsAt }], cost: { usd }, changed: both });
+  };
+}
+
+test('ISO reset times match a Date.parse oracle, and invalid ones drop the window', async () => {
+  const oracle = (text) => ['seven_day', '1', String(Math.floor(Date.parse(text) / 1000))];
+  const blocks = [
+    [start, [
+      '2023-11-15T00:00:00Z', '2023-11-15T00:00:00.5Z', '2023-11-15T00:00:00.999999999Z', '2023-11-15T00:00:00.1Z',
+      '2023-11-15T02:30:00+02:30', '2023-11-14T20:00:00-05:00', '2023-11-15T00:00:00+00:00',
+      '2023-11-15T00:00:00-00:00', '2023-11-20T23:59:59+23:59', '2023-11-15T00:00:00-23:59', '2023-11-21T00:00:00Z',
+    ], [
+      '2023-11-15T24:00:00Z', '2023-11-15T23:60:00Z', '2023-11-15T23:59:60Z', '2023-11-16T00:00:00+24:00',
+      '2023-11-16T00:00:00-24:00', '2023-11-16T00:00:00+02:60', '2023-11-15 00:00:00Z', '2023-11-15T00:00:00', '2023-11-15T00:00Z',
+      '2023-11-15T00:00:00.Z', '2023-11-15T00:00:00.1234567890Z', '2023-11-15T00:00:00z', '2023-11-15T00:00:00+02:00Z',
+      '+02023-11-15T00:00:00Z', ' 2023-11-15T00:00:00Z', '2023-11-15T00:00:00Z\n', '2023-11-15T00:00:00+0200',
+      '2023-11-15T00:00:00+02', '2023-11-15', '20231115T000000Z', 1700050000, null, undefined, {},
+    ]],
+    [Date.parse('2023-02-27T00:00:00Z'), ['2023-02-28T23:59:59Z', '2023-03-01T00:00:00Z'], ['2023-02-29T00:00:00Z']],
+    [Date.parse('2023-11-29T00:00:00Z'), ['2023-11-30T12:00:00Z', '2023-12-01T00:00:00Z'], ['2023-11-31T00:00:00Z', '2023-12-00T00:00:00Z']],
+    [Date.parse('2023-12-31T12:00:00Z'), ['2024-01-01T01:00:00+01:00', '2024-01-02T00:00:00Z'], ['2023-12-32T00:00:00Z']],
+    [Date.parse('2024-02-28T12:00:00Z'), ['2024-02-29T10:00:00Z', '2024-03-01T00:00:00Z'], ['2024-02-30T00:00:00Z']],
+    [Date.parse('2100-02-27T00:00:00Z'), ['2100-02-28T12:00:00Z', '2100-03-01T00:00:00Z'], ['2100-02-29T00:00:00Z']],
+  ];
+  for (const [now, valid, invalid] of blocks) {
+    const send = await resets(now);
+    for (const text of valid) assert.deepEqual(await send(text), oracle(text), text);
+    for (const text of invalid) assert.deepEqual(await send(text), [], String(text));
+  }
+});
+
+test('reset bounds come from the sent seq, at both edges', async () => {
+  const { hooks } = await load();
+  const { $, state } = host();
+  state.now = start + 500;
+  let usd = 1;
+  assert.deepEqual(await step(hooks, $, state, { cost: { usd } }), []);
+  const send = async (kind, seconds) => {
+    usd += 1;
+    return step(hooks, $, state, { rateLimits: [limit(kind, 1, seconds)], cost: { usd }, changed: both });
+  };
+  const kept = (kind, seconds) => [kind, '1', String(seconds)];
+  // The first whole second after seq / 1e6 is kept, any earlier one dropped.
+  assert.deepEqual(await send('five_hour', S + 1), kept('five_hour', S + 1));
+  assert.deepEqual(await send('five_hour', S), []);
+  assert.deepEqual(await send('seven_day', S - 1), []);
+  // The last second inside S + D + 3600 is kept, the next dropped.
+  assert.deepEqual(await send('five_hour', S + 21600), kept('five_hour', S + 21600));
+  assert.deepEqual(await send('five_hour', S + 21601), []);
+  assert.deepEqual(await send('seven_day', S + 608400), kept('seven_day', S + 608400));
+  assert.deepEqual(await send('seven_day', S + 608401), []);
+  // The clock steps back an hour, so lastSeq + 1 sets seq and its second.
+  state.now = start - 3_600_000;
+  const previous = Number(state.runs.at(-1).argv[4]);
+  assert.deepEqual(await send('five_hour', S + 21600), kept('five_hour', S + 21600));
+  assert.equal(state.runs.at(-1).argv[4], String(previous + 1));
+  assert.deepEqual(await send('five_hour', S - 1800), []);
+  assert.deepEqual(await send('five_hour', S + 1), kept('five_hour', S + 1));
+});
+
+test('a repeated kind drops the tail; five_hour comes first and other entries are ignored', async () => {
+  const { hooks } = await load();
+  const { $, state } = host();
+  assert.deepEqual(await step(hooks, $, state, { rateLimits: [five(1), seven(3)], cost: { usd: 1 } }), []);
+  assert.deepEqual(await step(hooks, $, state, { rateLimits: [five(1), five(2), seven(3)], cost: { usd: 2 }, changed: all }), []);
+  assert.deepEqual(await step(hooks, $, state, { rateLimits: [seven(3), seven(4), five(2)], cost: { usd: 3 }, changed: all }), []);
+  assert.deepEqual(
+    await step(hooks, $, state, { rateLimits: [null, 5, 'five_hour', { kind: 'opus' }, seven(3), five(2)], cost: { usd: 4 }, changed: both }),
+    ['five_hour', '2', String(S + 3600), 'seven_day', '3', String(S + 86400)],
+  );
+  assert.deepEqual(state.runs.map((run) => run.argv.length), [7, 7, 7, 13]);
 });
 
 test('start and classic skip a confirmed key while measure still reports', async () => {

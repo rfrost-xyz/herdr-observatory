@@ -728,6 +728,86 @@ the rule. No seq, in-flight or confirmed-key logic changed.
   `cargo test --locked --offline` 292 + 22 + 6 + 61 passed, 0 failed; fmt
   and clippy (`-D warnings`) clean.
 
+### Task 3.2: mod cases
+
+Twelve new tests in `tests/test_claude_mod.mjs`, each asserting at least one
+exact non-empty tail in the same test and session, so each fails on
+`7a9fefb`; `step` gained an `absent` marker that leaves a field out of the
+event:
+
+- `rewinds, compactions and a total named without growth are not fresh;
+  growth is` (rewind with `changed: ['context']`; compaction with the total
+  unchanged, and with `'cost'` named at an equal and a lower total; a larger
+  total without `'cost'` named, which still moves the baseline so a later
+  total above the older baseline but below it is not fresh; then growth,
+  and a rewind-shaped measurement with grown total, each sending the tail);
+- `the first measurement after load, session.end or for another session id
+  is not fresh` (each with `changed: ['context','rateLimits','cost']`, a
+  non-zero total and a moved window, then a second measurement with cost
+  growth sending the tail);
+- `an absent or invalid cost on either side is not fresh by the cost path`
+  (absent, `undefined`, `null`, a number, a string, `{}`, `usd` a string,
+  `null`, `NaN`, `Infinity`, `-1`, `-Infinity`, first as the current then
+  as the baseline total, then valid growth sending the tail);
+- `a spend_limit window blocks every tail until session.end, cost growth or
+  not` (the window run still made with four values, later measurements
+  without `spend_limit` sending none, a new session's second measurement
+  sending one);
+- `a fresh measurement without a five_hour or seven_day window sends the
+  four-value run; the cost never leaves` (also an unknown kind ignored, the
+  argv counts 7, 7, 7, 10, and no argv value containing or equal to any
+  cost total);
+- `changed units without rateLimits or cost, a window leaving, status-only
+  and reset-only changes are not fresh` (then a window that appears again
+  sends the tail with the moved reset);
+- `start and classic events never send rate limits or touch the baseline`;
+- `a measurement skipped while a run is in flight moves the baseline and is
+  not replayed` (used values and total);
+- `percent text is built from integer tenths and other values drop the
+  window` (0, 7, 23.5, 99.9, 100, 0.7, `0.1 + 0.2`, `23.500000001`,
+  `99.90000000001`, `-0`, 57, `1.1 * 3` kept; 1.25, 0.05, `99.94999999999`,
+  100.1, 100.05, -1, -0.1, 101, `NaN`, `Infinity`, `'5'`, `null`,
+  `undefined`, 0.001 dropped, a valid `seven_day` beside each);
+- `ISO reset times match a Date.parse oracle, and invalid ones drop the
+  window` (`Z`, offsets including `+23:59`, `-23:59`, `+00:00` and
+  `-00:00`, fractions of one to nine digits, month and year ends, leap days
+  in 2024 kept and in 2023 and 2100 dropped; hour 24, minute and second 60,
+  offsets `+24:00`, `-24:00` and `+02:60`, day 0, 31 November, 32 December,
+  30 February, and shapes without a zone, with a space, lower-case `z`,
+  ten fraction digits, a signed year, padding, a trailing newline, a
+  compact offset or basic format, and non-strings, each placed inside the
+  reset bound so only the date check drops it). Years 2000 and 2400 cannot
+  be reached: 2000 fails the epoch-millisecond clock check and 2400 the
+  safe-integer `seq`, so the 400-year leap rule is covered by the code
+  path only;
+- `reset bounds come from the sent seq, at both edges` (with a clock at
+  `start + 500` ms: `S + 1` kept, `S` and `S - 1` dropped, `S + 21600` and
+  `S + 608400` kept, the next second dropped; after the clock steps back an
+  hour, `lastSeq + 1` sets the bound: `S + 21600` kept, `S - 1800` dropped);
+- `a repeated kind drops the tail; five_hour comes first and other entries
+  are ignored`.
+
+The path B case with unchanged percentages is the 3.1 test. The source scan
+(`the source uses only the mods API, with literal names`) is unchanged and
+still passes: no `Date`, `import`, timers or Node APIs in `register.js`.
+
+- On `7a9fefb` (its `register.js` loaded by a copy of the test file): 24
+  passed, 14 failed, the failures being exactly the two 3.1 tests and the
+  twelve above; every existing test passes there.
+- Mutations of the new `register.js`, each caught and reverted: `>=` for the
+  strict growth (3 tests fail), a non-sticky `spend_limit` flag (1),
+  freshness always false (14), no session-id check (1), no `'cost'` in
+  `changed` check (1), a repeated kind skipped instead of dropping the tail
+  (1), the bound taken from an older second (1), no offset range check (1),
+  no day-of-month check (1), no day-0 check (1), hour 24 accepted (1), the
+  offset sign ignored (1), `session.end` not clearing the baseline and flag
+  (2), no one-decimal check (1). The first offset mutation survived the
+  initial case list, whose invalid offsets fell outside the reset bound;
+  the cases were moved inside it.
+- On the change: `node --test tests/test_claude_mod.mjs` 38 passed, 0
+  failed. `register.js` is unchanged by this task, so the crate result of
+  3.1 stands.
+
 ## After
 
 _Pending (task 5.1)._
