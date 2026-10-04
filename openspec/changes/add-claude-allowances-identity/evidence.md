@@ -362,9 +362,92 @@ strings.
   fail there (nothing to compile against), recorded by name above.
 - Planning fix: no command reaches this module until the reporter calls it in
   task 2.3, so the process fixtures task 2.2 asks for land with task 2.3, and
-  2.2 is ticked in that commit.
+  2.2 is ticked in that commit. The reporter reaches only D4 steps 1 to 5 and
+  the reporter extraction, so those cases get process fixtures there. The
+  collector extraction (cache matching, another account's cache, mistyped
+  `fetchedAtMs` in the collector), the identity extraction (email) and the
+  ISO parser have no command until tasks 2.4 and 2.5, which carry their
+  process fixtures; until then they are covered by the unit tests above.
 - On the change: `cargo test --locked --offline` 281 + 22 + 6 + 48 passed,
   0 failed; fmt and clippy (`-D warnings`) clean.
+
+### Task 2.3: account state file and the reporter's account step
+
+`claude_account::record` implements D6 (version 1, at most 4 accounts, 32
+sessions and 16,384 bytes, newest stamp wins per window, hashed session
+memory with permanent refusal after a switch, a missing, malformed,
+oversized, other-version or unknown-key owned file replaced, a link, another
+type or owner, or a loose mode refusing, `atomic_owned_write`). `used_percent`
+is written as an integer when whole (`40`, as in the D6 example).
+`report_claude` calls the account step on both success paths (after the
+metadata write and on the no-change return), still under `hook.lock`, only
+for a tail, never after a failed write; every outcome is silent and the exit
+status is unchanged. Two readings of the plan, recorded here: steps 1 to 5
+refusing write nothing (no `at` renewal), while a report reaching session
+memory always renews `at`, including for a refused session, so a refused
+session that keeps reporting does not expire and attribute again; `at` keeps
+the later of the stored and reported times, so a late older report does not
+lower it. The fake Herdr socket in `native_process.rs` gained a
+`fixture_reject` pane flag that fails the metadata write.
+
+- Process fixtures (`native_process.rs`):
+  `claude_report_records_fresh_windows_for_the_profile_account` (success, the
+  change 3 wire byte-identical with a tail and no "account", "rate" or window
+  text in it, the exact state file at mode 0600, an unchanged window still
+  recording, a window absent from the tail kept, a four-value run leaving the
+  state bytes unchanged);
+  `claude_report_refusals_keep_the_window_report_and_write_no_account_state`
+  (every D4 refusal through the CLI, exit 0 with the window bound and no state
+  file: each environment pattern, `ANTHROPIC_BASE_URL` set to a URL carrying
+  `PRIVATE` and set empty, the exempt name beside `CLAUDE_CODE_SESSION_TOKEN`,
+  a non-UTF-8 name, `CLAUDE_CONFIG_DIR` empty, at `~/.claude` and elsewhere,
+  the legacy file and a dangling link, `apiKeyHelper` as a string, `null` and
+  a mistyped object, settings malformed, an array, over 1 MiB and linked,
+  `primaryApiKey` as a string and `null`, no account, an empty id, a mistyped
+  id, a non-object file, over 4 MiB, mode 0644, a link and missing; accepted
+  neighbours writing state: no variable, the exempt name alone,
+  `ANTHROPIC_BASE_URL_X`, `ANTHROPIC_MODEL`, a non-UTF-8 value, settings
+  without `apiKeyHelper`, a mistyped field outside the extraction; the marker,
+  uuid and email absent from stdout, stderr and the state directory after
+  every run);
+  `claude_report_account_state_keeps_newest_stamps_and_refuses_switched_sessions`
+  (two panes on two sessions of one account with the older `seq` second, the
+  account switch refusing the session for good, other sessions attributing);
+  `claude_report_account_state_bounds_and_replacement` (account and session
+  eviction with refused entries last, 24-hour expiry, replacement and
+  refusal of unsafe files);
+  `claude_report_failed_metadata_write_writes_no_account_state` (exit 1, no
+  state; the same report then exit 0 with state);
+  `claude_report_with_large_provider_state_lets_a_pi_report_through` (three
+  rounds of a ten-value run on a 4 MiB `.claude.json` beside a Pi report,
+  both succeeding on one state directory; the fake socket delays the Claude
+  metadata reply by 100 ms, the Pi run starts only once that write has
+  arrived and the Claude process is still running, and the call order shows
+  Pi's `pane.get` after the Claude write). The refusal fixture is the process
+  coverage for task 2.2's D4 steps 1 to 5 and reporter extraction cases; the
+  collector, identity and ISO cases pass to tasks 2.4 and 2.5 (see task 2.2).
+  A debug build takes about 48 ms for the attribution steps on the 4 MiB
+  file and a release build 3 to 7 ms (three runs each, a throwaway example
+  binary, not committed), well inside the 400 ms lock wait.
+- Unit tests (`claude_account::tests::`):
+  `state_percentages_round_trip_in_tenths` and
+  `state_write_over_the_byte_bound_is_refused` (the byte bound cannot be
+  reached through valid reports, so it is tested on the encoder).
+- On `7a9fefb` (fresh `git archive` extract, new `native_process.rs` copied
+  in): all six new process fixtures fail, each at its first tail run with
+  `left: Some(2)`, `right: Some(0)` (`Some(1)` for the failed-write case),
+  beside the 2.1 fixture failing as recorded above; the seven existing
+  `claude_report_*` fixtures, including the no "account"/"rate" guard in
+  `claude_report_writes_the_bound_window_once_and_repeats_read_only`, pass
+  there and on the change. The two unit tests have no module to compile
+  against there.
+- Mutation checks on the change: renaming the `ANTHROPIC_BASE_URL` rule fails
+  the refusal fixture at its first case, and running the account step after a
+  failed write fails the failed-write fixture; both reverted.
+- On the change: `cargo test --locked --offline` 283 + 22 + 6 + 54 passed,
+  0 failed; fmt and clippy (`-D warnings`) clean.
+- Not arranged: a `.claude.json` or settings file owned by another user (the
+  tests run unprivileged); `read_owned` checks the owner.
 
 ## After
 

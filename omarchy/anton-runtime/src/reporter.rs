@@ -1,6 +1,6 @@
 //! Bounded Pi presentation reporting and the Claude Code context window
 //! report. Codex metrics are collector-owned.
-use crate::{Result, common, hooks_install, telemetry};
+use crate::{Result, claude_account, common, hooks_install, telemetry};
 use serde_json::{Value, json};
 use std::ffi::OsStr;
 use std::fs::OpenOptions;
@@ -351,9 +351,9 @@ pub fn claude(root: &Path, state: Option<&Path>, values: &[String], leaf: &str) 
     }
 }
 
-/// The guarded report (design D3 guards 1 to 7). `Ok(false)` means the
-/// report does not apply; `Ok(true)` means the pane's metadata holds this
-/// bound window, written now or already there.
+/// The guarded report (design D3 guards 1 to 7), then the account step for
+/// a tail. `Ok(false)` means the report does not apply; `Ok(true)` means the
+/// pane's metadata holds this bound window, written now or already there.
 fn report_claude(root: &Path, state: &Path, home: &Path, report: &ClaudeReport) -> Result<bool> {
     let _owner = common::owner_guard(&root.join(".herdr-observatory-install"))?;
     if !hooks_install::claude_mod_recorded(root, home) {
@@ -411,6 +411,7 @@ fn report_claude(root: &Path, state: &Path, home: &Path, report: &ClaudeReport) 
             })
         })
     }) {
+        account_step(state, home, report);
         return Ok(true);
     }
     let raw = json!({"seq":report.seq,"event":"session","phase":"ready","window":report.window});
@@ -422,7 +423,31 @@ fn report_claude(root: &Path, state: &Path, home: &Path, report: &ClaudeReport) 
         Duration::from_millis(400),
         1_048_576,
     )?;
+    account_step(state, home, report);
     Ok(true)
+}
+
+/// The account step (design D4, D6), run only after the window report
+/// succeeded or was already in place, still under `hook.lock`, and only
+/// when a tail is present. Every outcome is silent and none changes the
+/// exit status.
+fn account_step(state: &Path, home: &Path, report: &ClaudeReport) {
+    if report.windows.is_empty() {
+        return;
+    }
+    let names = claude_account::environment_names();
+    let Ok(account) = claude_account::attribution(&names, home) else {
+        return;
+    };
+    let session = claude_account::session_key(&report.session);
+    let _ = claude_account::record(
+        state,
+        &account,
+        &session,
+        &report.windows,
+        report.seq,
+        common::now(),
+    );
 }
 
 /// Whether the pane's metadata already has an `obs_seq` at or after `seq`.

@@ -1,12 +1,14 @@
-//! Claude Code account attribution (design D4, D5): the environment name
-//! rule, the configuration location checks, the `apiKeyHelper` presence
-//! read, the three typed `~/.claude.json` extractions, the account and
-//! session hashes and the ISO 8601 parser. Every reader takes the home
-//! directory as a parameter, and every parse or validation error is a fixed
-//! message, so no value read from a file can reach an error or output.
+//! Claude Code account attribution (design D4, D5, D6): the environment
+//! name rule, the configuration location checks, the `apiKeyHelper`
+//! presence read, the three typed `~/.claude.json` extractions, the account
+//! and session hashes, the ISO 8601 parser and the account state file. Every
+//! reader takes the home directory as a parameter, and every parse or
+//! validation error is a fixed message, so no value read from a file can
+//! reach an error or output.
 use crate::common;
-use serde::Deserialize;
+use crate::reporter::{RateKind, RateWindow};
 use serde::de::{Deserializer, IgnoredAny};
+use serde::{Deserialize, Serialize};
 use std::ffi::{OsStr, OsString};
 use std::path::Path;
 
@@ -371,6 +373,246 @@ pub fn attribution<S: AsRef<OsStr>>(names: &[S], home: &Path) -> Result<String, 
         return Err(Refusal::ApiKeyHelper);
     }
     account(home).map_err(|_| Refusal::ProviderState)
+}
+
+/// The private per-account state file in the reporter's state directory
+/// (design D6).
+pub const STATE_FILE: &str = "claude-allowances.json";
+const STATE_LIMIT: usize = 16_384;
+const STATE_ACCOUNTS: usize = 4;
+const STATE_SESSIONS: usize = 32;
+const SESSION_LIFETIME: f64 = 86_400.0;
+const STATE_UNSAFE: &str = "Account state unsafe";
+const STATE_TOO_LARGE: &str = "Account state exceeds its bound";
+
+/// A used percentage in tenths, written as an integer when whole (`40`,
+/// not `40.0`) and otherwise with its one decimal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Percent(u16);
+impl Serialize for Percent {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if self.0 % 10 == 0 {
+            serializer.serialize_u64(u64::from(self.0 / 10))
+        } else {
+            serializer.serialize_f64(f64::from(self.0) / 10.0)
+        }
+    }
+}
+impl<'de> Deserialize<'de> for Percent {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = f64::deserialize(deserializer)?;
+        let tenths = (value * 10.0).round();
+        if !(0.0..=1000.0).contains(&tenths) || (value * 10.0 - tenths).abs() > 1e-6 {
+            return Err(serde::de::Error::custom("used percentage"));
+        }
+        Ok(Self(tenths as u16))
+    }
+}
+#[derive(Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct StateFile {
+    version: u64,
+    accounts: Vec<StoredAccount>,
+    sessions: Vec<StoredSession>,
+}
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct StoredAccount {
+    account_key: String,
+    windows: StoredWindows,
+}
+#[derive(Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct StoredWindows {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    five_hour: Option<StoredWindow>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    seven_day: Option<StoredWindow>,
+}
+impl StoredWindows {
+    fn slot(&mut self, kind: RateKind) -> &mut Option<StoredWindow> {
+        match kind {
+            RateKind::FiveHour => &mut self.five_hour,
+            RateKind::SevenDay => &mut self.seven_day,
+        }
+    }
+    /// The account's latest stamp, for eviction.
+    fn latest(&self) -> f64 {
+        [self.five_hour, self.seven_day]
+            .iter()
+            .flatten()
+            .map(|w| w.sampled_at)
+            .fold(0.0, f64::max)
+    }
+}
+#[derive(Clone, Copy, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct StoredWindow {
+    used_percent: Percent,
+    resets_at: u64,
+    sampled_at: f64,
+}
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct StoredSession {
+    session: String,
+    account_key: Option<String>,
+    at: f64,
+}
+impl StateFile {
+    fn empty() -> Self {
+        Self {
+            version: 1,
+            ..Self::default()
+        }
+    }
+    /// Version 1 within its bounds, with hashed keys and finite times.
+    fn valid(&self) -> bool {
+        let time = |t: f64| t.is_finite() && t > 0.0;
+        let windows_ok = |w: &StoredWindows| {
+            [w.five_hour, w.seven_day]
+                .iter()
+                .flatten()
+                .all(|w| time(w.sampled_at) && w.resets_at <= 99_999_999_999)
+        };
+        self.version == 1
+            && self.accounts.len() <= STATE_ACCOUNTS
+            && self.sessions.len() <= STATE_SESSIONS
+            && self
+                .accounts
+                .iter()
+                .all(|a| common::hex_id(&a.account_key, 64) && windows_ok(&a.windows))
+            && self.sessions.iter().all(|s| {
+                common::hex_id(&s.session, 64)
+                    && s.account_key
+                        .as_deref()
+                        .is_none_or(|k| common::hex_id(k, 64))
+                    && time(s.at)
+            })
+    }
+    /// The existing file: missing, malformed, oversized or of another
+    /// version starts empty; a link, another type or owner, or a loose mode
+    /// refuses.
+    fn load(path: &Path) -> Result<Self, &'static str> {
+        use std::os::unix::fs::MetadataExt;
+        match std::fs::symlink_metadata(path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Self::empty());
+            }
+            Err(_) => return Err(STATE_UNSAFE),
+            Ok(info) => {
+                if !info.file_type().is_file()
+                    || info.uid() != unsafe { libc::getuid() }
+                    || info.mode() & 0o077 != 0
+                {
+                    return Err(STATE_UNSAFE);
+                }
+            }
+        }
+        let Ok(bytes) = common::read_owned(path, STATE_LIMIT, true) else {
+            return Ok(Self::empty());
+        };
+        Ok(serde_json::from_slice::<Self>(&bytes)
+            .ok()
+            .filter(Self::valid)
+            .unwrap_or_else(Self::empty))
+    }
+    /// Applies one attributed report at `at` (D6): session memory first,
+    /// then newest-stamp-wins per window, then the bounds at `now`.
+    fn apply(&mut self, account: &str, session: &str, windows: &[RateWindow], at: f64, now: f64) {
+        self.sessions.retain(|s| s.at >= now - SESSION_LIFETIME);
+        let attributed = match self.sessions.iter_mut().find(|s| s.session == session) {
+            Some(entry) => {
+                entry.at = entry.at.max(at);
+                match entry.account_key.as_deref() {
+                    Some(key) if key == account => true,
+                    Some(_) => {
+                        // Another account for this session: refused for good.
+                        entry.account_key = None;
+                        false
+                    }
+                    None => false,
+                }
+            }
+            None => {
+                self.sessions.push(StoredSession {
+                    session: session.to_owned(),
+                    account_key: Some(account.to_owned()),
+                    at,
+                });
+                true
+            }
+        };
+        if attributed {
+            let index = match self.accounts.iter().position(|a| a.account_key == account) {
+                Some(index) => index,
+                None => {
+                    self.accounts.push(StoredAccount {
+                        account_key: account.to_owned(),
+                        windows: StoredWindows::default(),
+                    });
+                    self.accounts.len() - 1
+                }
+            };
+            let stored = &mut self.accounts[index].windows;
+            for window in windows {
+                let slot = stored.slot(window.kind);
+                if slot.is_none_or(|old| at > old.sampled_at) {
+                    *slot = Some(StoredWindow {
+                        used_percent: Percent(window.tenths),
+                        resets_at: window.resets,
+                        sampled_at: at,
+                    });
+                }
+            }
+        }
+        while self.accounts.len() > STATE_ACCOUNTS {
+            let oldest = (0..self.accounts.len())
+                .min_by(|&a, &b| {
+                    let (a, b) = (&self.accounts[a].windows, &self.accounts[b].windows);
+                    a.latest().total_cmp(&b.latest())
+                })
+                .unwrap_or(0);
+            self.accounts.remove(oldest);
+        }
+        while self.sessions.len() > STATE_SESSIONS {
+            // Attributed entries go first, oldest `at` first; refused
+            // entries only once no attributed entry is left.
+            let oldest = (0..self.sessions.len())
+                .min_by(|&a, &b| {
+                    let (a, b) = (&self.sessions[a], &self.sessions[b]);
+                    (a.account_key.is_none(), a.at)
+                        .partial_cmp(&(b.account_key.is_none(), b.at))
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .unwrap_or(0);
+            self.sessions.remove(oldest);
+        }
+    }
+    fn encode(&self, limit: usize) -> Result<Vec<u8>, &'static str> {
+        let bytes = serde_json::to_vec(self).map_err(|_| STATE_TOO_LARGE)?;
+        if bytes.len() > limit {
+            return Err(STATE_TOO_LARGE);
+        }
+        Ok(bytes)
+    }
+}
+/// Records one attributed report in `<state>/claude-allowances.json` (D6),
+/// under the `hook.lock` the caller holds. `account` and `session` are the
+/// hashed keys; `seq` is the report's sequence and `now` the current time.
+pub fn record(
+    state: &Path,
+    account: &str,
+    session: &str,
+    windows: &[RateWindow],
+    seq: u64,
+    now: f64,
+) -> Result<(), &'static str> {
+    let path = state.join(STATE_FILE);
+    let mut file = StateFile::load(&path)?;
+    file.apply(account, session, windows, seq as f64 / 1e6, now);
+    let bytes = file.encode(STATE_LIMIT)?;
+    common::atomic_owned_write(&path, &bytes).map_err(|_| STATE_UNSAFE)
 }
 
 /// Days since 1970-01-01 of a proleptic Gregorian date.
@@ -863,6 +1105,65 @@ mod tests {
                 "provider-state"
             ]
         );
+    }
+
+    /// D6: whole percentages are written as integers, others with one
+    /// decimal, and reading back rejects anything outside the D3 grammar.
+    #[test]
+    fn state_percentages_round_trip_in_tenths() {
+        for (tenths, text) in [
+            (0, "0"),
+            (7, "0.7"),
+            (125, "12.5"),
+            (400, "40"),
+            (999, "99.9"),
+            (1000, "100"),
+        ] {
+            assert_eq!(serde_json::to_string(&Percent(tenths)).unwrap(), text);
+            assert_eq!(
+                serde_json::from_str::<Percent>(text).unwrap(),
+                Percent(tenths)
+            );
+        }
+        for bad in ["-1", "100.1", "12.25", "\"5\"", "null"] {
+            assert!(serde_json::from_str::<Percent>(bad).is_err(), "{bad}");
+        }
+    }
+
+    /// D6: a write that would exceed the byte bound is refused, and the
+    /// real bound holds a full file of four accounts and 32 sessions.
+    #[test]
+    fn state_write_over_the_byte_bound_is_refused() {
+        let windows = [
+            RateWindow {
+                kind: RateKind::FiveHour,
+                tenths: 999,
+                resets: 1_800_018_000,
+            },
+            RateWindow {
+                kind: RateKind::SevenDay,
+                tenths: 999,
+                resets: 1_800_600_000,
+            },
+        ];
+        let mut file = StateFile::empty();
+        let now = 1_800_000_000.0;
+        for index in 0..40u32 {
+            let account = account_key(&format!("account-{}", index % 4));
+            let session = session_key(&format!("session-{index}"));
+            file.apply(
+                &account,
+                &session,
+                &windows,
+                now - 1.0 + f64::from(index) / 1e6,
+                now,
+            );
+        }
+        assert_eq!((file.accounts.len(), file.sessions.len()), (4, 32));
+        let bytes = file.encode(STATE_LIMIT).unwrap();
+        assert!(bytes.len() < STATE_LIMIT, "{}", bytes.len());
+        assert_eq!(file.encode(bytes.len()), Ok(bytes.clone()));
+        assert_eq!(file.encode(bytes.len() - 1), Err(STATE_TOO_LARGE));
     }
 
     /// D2, D7: the ISO 8601 grammar with checked ranges, truncated

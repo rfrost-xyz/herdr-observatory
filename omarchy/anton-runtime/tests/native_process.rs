@@ -2112,22 +2112,39 @@ impl Reporter {
                     .push((method.clone(), params.clone()));
                 let pane = params["pane_id"].as_str().unwrap_or("").to_owned();
                 let mut panes = server_panes.lock().unwrap();
+                // A pane marked `fixture_reject` fails its metadata write;
+                // `fixture_delay_ms` delays its reply, holding the reporter
+                // inside `hook.lock`.
+                let delay = match method.as_str() {
+                    "pane.report_metadata" => panes
+                        .get(&pane)
+                        .and_then(|entry| entry["fixture_delay_ms"].as_u64())
+                        .unwrap_or(0),
+                    _ => 0,
+                };
                 let result = match method.as_str() {
-                    "pane.get" => json!({"pane":panes.get(&pane).cloned().unwrap_or(json!({}))}),
-                    "pane.report_metadata" => {
-                        if let Some(entry) = panes.get_mut(&pane) {
-                            entry["tokens"] = params["tokens"].clone();
-                        }
-                        json!({})
+                    "pane.get" => {
+                        Some(json!({"pane":panes.get(&pane).cloned().unwrap_or(json!({}))}))
                     }
-                    _ => json!({}),
+                    "pane.report_metadata" => match panes.get_mut(&pane) {
+                        Some(entry) if entry["fixture_reject"] == true => None,
+                        Some(entry) => {
+                            entry["tokens"] = params["tokens"].clone();
+                            Some(json!({}))
+                        }
+                        None => Some(json!({})),
+                    },
+                    _ => Some(json!({})),
                 };
                 drop(panes);
-                let _ = writeln!(
-                    stream,
-                    "{}",
-                    json!({"jsonrpc":"2.0","id":request["id"],"result":result})
-                );
+                thread::sleep(Duration::from_millis(delay));
+                let reply = match result {
+                    Some(result) => json!({"jsonrpc":"2.0","id":request["id"],"result":result}),
+                    None => {
+                        json!({"jsonrpc":"2.0","id":request["id"],"error":{"code":-32000,"message":"fixture"}})
+                    }
+                };
+                let _ = writeln!(stream, "{reply}");
             }
         });
         let state = dir.join("state");
@@ -2674,6 +2691,642 @@ fn claude_report_refuses_unbound_panes_and_missing_ownership() {
     f.receipt(Some(f.mod_entry(true)));
     assert_eq!(f.report(&["w1:p1", &seq, CLAUDE_ID, "200000"]), Some(0));
     assert_eq!(f.methods(), ["pane.get", "pane.report_metadata"]);
+}
+
+/// Claude account fixtures (design D4 to D6): a synthetic `.claude.json`
+/// with `PRIVATE` markers in unlisted keys, and reports carrying a tail.
+const CLAUDE_UUID: &str = "00000000-0000-4000-8000-000000000001";
+const CLAUDE_EMAIL: &str = "fixture@example.invalid";
+fn claude_account_key(uuid: &str) -> String {
+    common::sha256(format!("observatory-claude-account-v1:{uuid}").as_bytes())
+}
+fn claude_session_key(id: &str) -> String {
+    common::sha256(format!("observatory-claude-session-v1:{id}").as_bytes())
+}
+/// A synthetic `.claude.json` naming `uuid`, with `extra` top-level keys.
+fn provider_body(uuid: &str, extra: &str) -> String {
+    format!(
+        r#"{{"projects":{{"/PRIVATE/path":{{"history":["PRIVATE"]}}}},"oauthAccount":{{"accountUuid":"{uuid}","emailAddress":"{CLAUDE_EMAIL}","organizationName":"PRIVATE"}},"cachedUsageUtilization":{{"accountUuid":"{uuid}","fetchedAtMs":1,"utilization":{{"spend":"PRIVATE"}}}}{extra}}}"#
+    )
+}
+/// A Claude report at `seq` with `windows` as (kind, used, seconds after
+/// the whole second of `seq`).
+fn tail_report(
+    pane: &str,
+    session: &str,
+    seq: u64,
+    window: u64,
+    windows: &[(&str, &str, u64)],
+) -> Vec<String> {
+    let whole = seq / 1_000_000;
+    let mut values = vec![
+        pane.to_owned(),
+        seq.to_string(),
+        session.to_owned(),
+        window.to_string(),
+    ];
+    for (kind, used, after) in windows {
+        values.extend([
+            kind.to_string(),
+            used.to_string(),
+            (whole + after).to_string(),
+        ]);
+    }
+    values
+}
+/// Environment pairs for `Reporter::account_report`.
+fn vars(pairs: &[(&str, &str)]) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    pairs
+        .iter()
+        .map(|(name, value)| (name.into(), value.into()))
+        .collect()
+}
+/// Asserts that no fixture secret appears in `bytes`.
+fn assert_no_secret(bytes: &[u8]) {
+    let text = String::from_utf8_lossy(bytes);
+    for secret in ["PRIVATE", CLAUDE_UUID, CLAUDE_EMAIL] {
+        assert!(!text.contains(secret), "{secret} in {text}");
+    }
+}
+impl Reporter {
+    fn provider(&self, body: &str) {
+        write(&self.home.join(".claude.json"), body, 0o600);
+    }
+    fn settings(&self, body: &str) {
+        fs::create_dir_all(self.home.join(".claude")).unwrap();
+        write(&self.home.join(".claude/settings.json"), body, 0o644);
+    }
+    fn account_path(&self) -> PathBuf {
+        self.state.join("claude-allowances.json")
+    }
+    fn account_state(&self) -> Option<Value> {
+        fs::read(self.account_path())
+            .ok()
+            .map(|bytes| serde_json::from_slice(&bytes).unwrap())
+    }
+    /// Runs one report with `env` added to the fixture environment. Exit 0
+    /// has no output; no output and no state file ever holds a fixture
+    /// secret.
+    fn account_report(
+        &self,
+        report: &[String],
+        env: &[(std::ffi::OsString, std::ffi::OsString)],
+    ) -> Option<i32> {
+        let report: Vec<&str> = report.iter().map(String::as_str).collect();
+        let mut command = self.command(&report);
+        command.envs(env.iter().map(|(name, value)| (name, value)));
+        let output = command.output().unwrap();
+        let code = output.status.code();
+        if code == Some(0) {
+            assert!(output.stdout.is_empty(), "{report:?}");
+            assert!(output.stderr.is_empty(), "{report:?}");
+        }
+        assert_no_secret(&output.stdout);
+        assert_no_secret(&output.stderr);
+        if let Ok(entries) = fs::read_dir(&self.state) {
+            for entry in entries {
+                let path = entry.unwrap().path();
+                if fs::symlink_metadata(&path).unwrap().is_file() {
+                    assert_no_secret(&fs::read(&path).unwrap());
+                }
+            }
+        }
+        code
+    }
+}
+
+/// D4 to D6: a ten-value report writes the bound window with the change 3
+/// wire and records both windows for the profile's account; a later tail
+/// with the same window still records, a window absent from it keeps its
+/// value and stamp, and a four-value run leaves the account state alone.
+#[test]
+fn claude_report_records_fresh_windows_for_the_profile_account() {
+    let f = Reporter::new();
+    f.provider(&provider_body(CLAUDE_UUID, ""));
+    let first = (common::now() as u64 - 100) * 1_000_000;
+    let report = tail_report(
+        "w1:p1",
+        CLAUDE_ID,
+        first,
+        200_000,
+        &[("five_hour", "12.5", 60), ("seven_day", "40", 3600)],
+    );
+    assert_eq!(f.account_report(&report, &[]), Some(0));
+    assert_eq!(f.methods(), ["pane.get", "pane.report_metadata"]);
+    assert_claude_wire(&f.writes()[0], &first.to_string(), 200_000);
+    let text = f.writes()[0].to_string();
+    for absent in ["account", "rate", "five_hour", "seven_day", "12.5"] {
+        assert!(!text.contains(absent), "{absent} in {text}");
+    }
+    let key = claude_account_key(CLAUDE_UUID);
+    let session = claude_session_key(CLAUDE_ID);
+    let whole = first / 1_000_000;
+    let at = first as f64 / 1e6;
+    assert_eq!(
+        f.account_state().unwrap(),
+        json!({"version":1,"accounts":[{"account_key":key,"windows":{
+            "five_hour":{"used_percent":12.5,"resets_at":whole + 60,"sampled_at":at},
+            "seven_day":{"used_percent":40,"resets_at":whole + 3600,"sampled_at":at}}}],
+            "sessions":[{"session":session,"account_key":key,"at":at}]})
+    );
+    let bytes = fs::read(f.account_path()).unwrap();
+    assert!(String::from_utf8_lossy(&bytes).contains(r#""used_percent":40,"#));
+    use std::os::unix::fs::MetadataExt;
+    assert_eq!(
+        fs::metadata(f.account_path()).unwrap().mode() & 0o777,
+        0o600
+    );
+    // The same window later: no metadata write, the account state still
+    // records; `five_hour`, absent from the tail, keeps its value and stamp.
+    let second = first + 10_000_000;
+    let report = tail_report(
+        "w1:p1",
+        CLAUDE_ID,
+        second,
+        200_000,
+        &[("seven_day", "41.5", 3600)],
+    );
+    assert_eq!(f.account_report(&report, &[]), Some(0));
+    assert_eq!(
+        f.methods(),
+        ["pane.get", "pane.report_metadata", "pane.get"]
+    );
+    let state = f.account_state().unwrap();
+    let later = second as f64 / 1e6;
+    assert_eq!(
+        state["accounts"][0]["windows"]["five_hour"],
+        json!({"used_percent":12.5,"resets_at":whole + 60,"sampled_at":at})
+    );
+    assert_eq!(
+        state["accounts"][0]["windows"]["seven_day"],
+        json!({"used_percent":41.5,"resets_at":second / 1_000_000 + 3600,"sampled_at":later})
+    );
+    assert_eq!(
+        state["sessions"],
+        json!([{"session":session,"account_key":key,"at":later}])
+    );
+    // Four values: the window report only; the account state is unchanged.
+    let before = fs::read(f.account_path()).unwrap();
+    let third = (second + 10_000_000).to_string();
+    assert_eq!(f.report(&["w1:p1", &third, CLAUDE_ID, "300000"]), Some(0));
+    assert_claude_wire(&f.writes()[1], &third, 300_000);
+    assert_eq!(fs::read(f.account_path()).unwrap(), before);
+}
+
+/// D4: every refusal keeps the window report and its exit status and
+/// writes no account state, deciding on names, never values; the accepted
+/// neighbours, each differing only in the refused property, write it.
+#[test]
+fn claude_report_refusals_keep_the_window_report_and_write_no_account_state() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+    let f = Reporter::new();
+    let good = provider_body(CLAUDE_UUID, "");
+    f.provider(&good);
+    let mut seq = (common::now() as u64 - 300) * 1_000_000;
+    let mut window = 200_000;
+    // One report with a tail; the window changes every second run, so the
+    // account step follows both a metadata write and the no-change return.
+    // True when account state was written.
+    let mut run = |env: &[(std::ffi::OsString, std::ffi::OsString)]| -> bool {
+        seq += 1_000_000;
+        if (seq / 1_000_000) % 2 == 0 {
+            window = if window == 200_000 { 300_000 } else { 200_000 };
+        }
+        let report = tail_report(
+            "w1:p1",
+            CLAUDE_ID,
+            seq,
+            window,
+            &[("five_hour", "12.5", 60), ("seven_day", "40", 3600)],
+        );
+        assert_eq!(f.account_report(&report, env), Some(0), "{env:?}");
+        assert_eq!(
+            f.panes.lock().unwrap()["w1:p1"]["tokens"]["obs_n1"],
+            format!(",{window},,")
+        );
+        let written = f.account_path().exists();
+        let _ = fs::remove_file(f.account_path());
+        written
+    };
+    let home_claude = f.home.join(".claude").to_string_lossy().into_owned();
+    let elsewhere = f.dir.join("PRIVATE-config").to_string_lossy().into_owned();
+    for env in [
+        vars(&[("ANTHROPIC_BASE_URL", "https://PRIVATE.example.invalid/v1")]),
+        vars(&[("ANTHROPIC_BASE_URL", "")]),
+        vars(&[("ANTHROPIC_API_KEY", "PRIVATE")]),
+        vars(&[("ANTHROPIC_AUTH_TOKEN", "PRIVATE")]),
+        vars(&[("ANTHROPIC_CUSTOM_HEADERS", "PRIVATE")]),
+        vars(&[
+            ("CLAUDE_CODE_MESSAGING_TOKEN", "PRIVATE"),
+            ("CLAUDE_CODE_SESSION_TOKEN", "PRIVATE"),
+        ]),
+        vars(&[("CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR", "3")]),
+        vars(&[("CLAUDE_CODE_HOST_PLATFORM", "PRIVATE")]),
+        vars(&[("CLAUDE_CODE_USE_BEDROCK", "1")]),
+        vars(&[("CCR_OAUTH_TOKEN_FILE", "PRIVATE")]),
+        vars(&[("CLAUDE_CODE_CUSTOM_OAUTH_URL", "PRIVATE")]),
+        vec![(OsString::from_vec(b"FIXTURE_\xff".to_vec()), "1".into())],
+        vars(&[("CLAUDE_CONFIG_DIR", "")]),
+        vars(&[("CLAUDE_CONFIG_DIR", home_claude.as_str())]),
+        vars(&[("CLAUDE_CONFIG_DIR", elsewhere.as_str())]),
+    ] {
+        assert!(!run(&env), "{env:?}");
+    }
+    for env in [
+        vars(&[]),
+        vars(&[("CLAUDE_CODE_MESSAGING_TOKEN", "PRIVATE")]),
+        vars(&[("ANTHROPIC_BASE_URL_X", "PRIVATE")]),
+        vars(&[("ANTHROPIC_MODEL", "PRIVATE")]),
+        vec![(
+            OsString::from("FIXTURE_NAME"),
+            OsString::from_vec(b"\xff".to_vec()),
+        )],
+    ] {
+        assert!(run(&env), "{env:?}");
+    }
+    // Legacy configuration as a file and as a dangling link.
+    fs::create_dir_all(f.home.join(".claude")).unwrap();
+    let legacy = f.home.join(".claude/.config.json");
+    write(&legacy, "{}", 0o600);
+    assert!(!run(&[]));
+    fs::remove_file(&legacy).unwrap();
+    std::os::unix::fs::symlink(f.dir.join("absent"), &legacy).unwrap();
+    assert!(!run(&[]));
+    fs::remove_file(&legacy).unwrap();
+    assert!(run(&[]));
+    // `apiKeyHelper` with any value, and unsafe or malformed settings.
+    for body in [
+        r#"{"apiKeyHelper":"/PRIVATE/helper"}"#,
+        r#"{"apiKeyHelper":null}"#,
+        r#"{"apiKeyHelper":{"PRIVATE":[1]}}"#,
+        "{PRIVATE",
+        "[]",
+    ] {
+        f.settings(body);
+        assert!(!run(&[]), "{body}");
+    }
+    f.settings(&format!(r#"{{"pad":"{}"}}"#, "x".repeat(1_048_576)));
+    assert!(!run(&[]));
+    let settings = f.home.join(".claude/settings.json");
+    fs::remove_file(&settings).unwrap();
+    write(&f.dir.join("real-settings.json"), "{}", 0o644);
+    std::os::unix::fs::symlink(f.dir.join("real-settings.json"), &settings).unwrap();
+    assert!(!run(&[]));
+    fs::remove_file(&settings).unwrap();
+    f.settings(r#"{"env":{"PRIVATE":"PRIVATE"},"model":"PRIVATE"}"#);
+    assert!(run(&[]));
+    fs::remove_file(&settings).unwrap();
+    // Provider state: `primaryApiKey` with any value, no valid account,
+    // mistyped account id, a loose mode, a link, over 4 MiB, missing.
+    for body in [
+        provider_body(CLAUDE_UUID, r#","primaryApiKey":"PRIVATE""#),
+        provider_body(CLAUDE_UUID, r#","primaryApiKey":null"#),
+        r#"{"oauthAccount":{"emailAddress":"PRIVATE"}}"#.to_owned(),
+        r#"{"oauthAccount":{"accountUuid":""}}"#.to_owned(),
+        r#"{"oauthAccount":{"accountUuid":["PRIVATE"]}}"#.to_owned(),
+        "PRIVATE".to_owned(),
+        provider_body(
+            CLAUDE_UUID,
+            &format!(r#","pad":"{}""#, "x".repeat(4 * 1_048_576)),
+        ),
+    ] {
+        f.provider(&body);
+        assert!(!run(&[]));
+    }
+    let provider = f.home.join(".claude.json");
+    write(&provider, &good, 0o644);
+    assert!(!run(&[]));
+    fs::remove_file(&provider).unwrap();
+    write(&f.dir.join("real-provider.json"), &good, 0o600);
+    std::os::unix::fs::symlink(f.dir.join("real-provider.json"), &provider).unwrap();
+    assert!(!run(&[]));
+    fs::remove_file(&provider).unwrap();
+    assert!(!run(&[]));
+    // A mistyped field outside the reporter's extraction is never read.
+    f.provider(&provider_body(
+        CLAUDE_UUID,
+        r#","oauthAccount2":1,"cachedUsageUtilization":{"accountUuid":7,"fetchedAtMs":"PRIVATE"}"#,
+    ));
+    assert!(run(&[]));
+    f.provider(&good);
+    assert!(run(&[]));
+}
+
+/// D6: newest stamp wins across two panes bound to two sessions on one
+/// account, also when the older report arrives second; a session that finds
+/// another account is refused for good, while other sessions attribute.
+#[test]
+fn claude_report_account_state_keeps_newest_stamps_and_refuses_switched_sessions() {
+    let f = Reporter::new();
+    f.provider(&provider_body(CLAUDE_UUID, ""));
+    let (id_b, id_c) = ("fixture-session-b", "fixture-session-c");
+    for (pane, id) in [("w1:p2", id_b), ("w1:p3", id_c)] {
+        let mut value = claude_pane(id);
+        value["pane_id"] = json!(pane);
+        f.pane(pane, value);
+    }
+    let key = claude_account_key(CLAUDE_UUID);
+    let (a, b) = (claude_session_key(CLAUDE_ID), claude_session_key(id_b));
+    let base = (common::now() as u64 - 100) * 1_000_000;
+    let (older, newer) = (base, base + 5_000_000);
+    let at = |seq: u64| seq as f64 / 1e6;
+    let window = |used: u64, seq: u64, after: u64| json!({"used_percent":used,"resets_at":seq / 1_000_000 + after,"sampled_at":at(seq)});
+    let report = tail_report("w1:p2", id_b, newer, 200_000, &[("five_hour", "20", 60)]);
+    assert_eq!(f.account_report(&report, &[]), Some(0));
+    let report = tail_report(
+        "w1:p1",
+        CLAUDE_ID,
+        older,
+        200_000,
+        &[("five_hour", "10", 60), ("seven_day", "5", 3600)],
+    );
+    assert_eq!(f.account_report(&report, &[]), Some(0));
+    let state = f.account_state().unwrap();
+    assert_eq!(
+        state["accounts"],
+        json!([{"account_key":key,"windows":{"five_hour":window(20, newer, 60),"seven_day":window(5, older, 3600)}}])
+    );
+    assert_eq!(
+        state["sessions"],
+        json!([{"session":b,"account_key":key,"at":at(newer)},{"session":a,"account_key":key,"at":at(older)}])
+    );
+    let accounts = state["accounts"].clone();
+    // The profile now names another account: session `a` is refused.
+    let other = "00000000-0000-4000-8000-000000000002";
+    f.provider(&provider_body(other, ""));
+    let switch = base + 10_000_000;
+    let report = tail_report(
+        "w1:p1",
+        CLAUDE_ID,
+        switch,
+        200_000,
+        &[("five_hour", "30", 60)],
+    );
+    assert_eq!(f.account_report(&report, &[]), Some(0));
+    let state = f.account_state().unwrap();
+    assert_eq!(state["accounts"], accounts);
+    assert_eq!(
+        state["sessions"][1],
+        json!({"session":a,"account_key":null,"at":at(switch)})
+    );
+    // Back on the first account, session `a` stays refused.
+    f.provider(&provider_body(CLAUDE_UUID, ""));
+    let back = base + 15_000_000;
+    let report = tail_report(
+        "w1:p1",
+        CLAUDE_ID,
+        back,
+        200_000,
+        &[("five_hour", "40", 60)],
+    );
+    assert_eq!(f.account_report(&report, &[]), Some(0));
+    let state = f.account_state().unwrap();
+    assert_eq!(state["accounts"], accounts);
+    assert_eq!(
+        state["sessions"][1],
+        json!({"session":a,"account_key":null,"at":at(back)})
+    );
+    // Session `b` still attributes to the first account.
+    let later = base + 20_000_000;
+    let report = tail_report("w1:p2", id_b, later, 200_000, &[("five_hour", "50", 60)]);
+    assert_eq!(f.account_report(&report, &[]), Some(0));
+    let state = f.account_state().unwrap();
+    assert_eq!(
+        state["accounts"][0]["windows"]["five_hour"],
+        window(50, later, 60)
+    );
+    // A new session under the other account attributes normally.
+    f.provider(&provider_body(other, ""));
+    let last = base + 25_000_000;
+    let report = tail_report("w1:p3", id_c, last, 200_000, &[("seven_day", "60", 3600)]);
+    assert_eq!(f.account_report(&report, &[]), Some(0));
+    let state = f.account_state().unwrap();
+    assert_eq!(
+        state["accounts"][1],
+        json!({"account_key":claude_account_key(other),"windows":{"seven_day":window(60, last, 3600)}})
+    );
+    assert_eq!(state["sessions"].as_array().unwrap().len(), 3);
+}
+
+/// D6: at most four accounts (the least recently stamped evicted) and 32
+/// sessions (expired ones dropped, then attributed ones oldest first,
+/// refused ones last); a malformed, oversized, other-version or unknown-key
+/// owned file is replaced; a link or a loose mode refuses the write.
+#[test]
+fn claude_report_account_state_bounds_and_replacement() {
+    let f = Reporter::new();
+    f.provider(&provider_body(CLAUDE_UUID, ""));
+    fs::create_dir_all(&f.state).unwrap();
+    fs::set_permissions(&f.state, fs::Permissions::from_mode(0o700)).unwrap();
+    let now = common::now() as u64;
+    let key = claude_account_key(CLAUDE_UUID);
+    let session = claude_session_key(CLAUDE_ID);
+    let mut seq = (now - 200) * 1_000_000;
+    let mut report = || {
+        seq += 1_000_000;
+        let report = tail_report(
+            "w1:p1",
+            CLAUDE_ID,
+            seq,
+            200_000,
+            &[("five_hour", "12.5", 60)],
+        );
+        assert_eq!(f.account_report(&report, &[]), Some(0));
+        seq
+    };
+    let stamp = |t: u64| json!({"used_percent":1,"resets_at":now + 600,"sampled_at":t as f64});
+    let accounts: Vec<Value> = (0..4u64)
+        .map(|i| json!({"account_key":hex(&format!("account-{i}")),"windows":{"seven_day":stamp(now - 400 + i * 10)}}))
+        .collect();
+    let refused: Vec<Value> = (0..4u64)
+        .map(|i| json!({"session":hex(&format!("refused-{i}")),"account_key":null,"at":(now - 3000 + i) as f64}))
+        .collect();
+    let attributed: Vec<Value> = (0..28u64)
+        .map(|i| json!({"session":hex(&format!("attributed-{i}")),"account_key":hex("account-1"),"at":(now - 2000 + i) as f64}))
+        .collect();
+    let sessions = [refused.clone(), attributed.clone()].concat();
+    let seeded = json!({"version":1,"accounts":accounts,"sessions":sessions});
+    write(&f.account_path(), seeded.to_string(), 0o600);
+    let first = report();
+    let state = f.account_state().unwrap();
+    let keys: Vec<_> = state["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["account_key"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        keys,
+        [
+            hex("account-1"),
+            hex("account-2"),
+            hex("account-3"),
+            key.clone()
+        ]
+    );
+    let mut expected = [refused.clone(), attributed[1..].to_vec()].concat();
+    expected.push(json!({"session":session,"account_key":key,"at":first as f64 / 1e6}));
+    assert_eq!(state["sessions"], json!(expected));
+    // A session older than 24 hours is dropped on the next report.
+    let expired =
+        json!({"session":hex("expired"),"account_key":hex("account-1"),"at":(now - 90_000) as f64});
+    let recent = json!({"session":hex("recent"),"account_key":null,"at":(now - 1000) as f64});
+    write(
+        &f.account_path(),
+        json!({"version":1,"accounts":[],"sessions":[expired, recent]}).to_string(),
+        0o600,
+    );
+    let second = report();
+    assert_eq!(
+        f.account_state().unwrap()["sessions"],
+        json!([recent, {"session":session,"account_key":key,"at":second as f64 / 1e6}])
+    );
+    // Owned private files that are malformed, oversized, of another
+    // version or with an unknown key are replaced.
+    for body in [
+        "PRIVATE{".to_owned(),
+        format!(r#"{{"pad":"{}"}}"#, "x".repeat(16_384)),
+        r#"{"version":2,"accounts":[],"sessions":[]}"#.to_owned(),
+        r#"{"version":1,"accounts":[],"sessions":[],"extra":"PRIVATE"}"#.to_owned(),
+    ] {
+        write(&f.account_path(), &body, 0o600);
+        let seq = report();
+        let state = f.account_state().unwrap();
+        assert_eq!(state["accounts"][0]["account_key"], key);
+        assert_eq!(
+            state["sessions"],
+            json!([{"session":session,"account_key":key,"at":seq as f64 / 1e6}])
+        );
+    }
+    // A link or a loose mode refuses the write and is left as it was.
+    fs::remove_file(f.account_path()).unwrap();
+    write(&f.dir.join("state-target.json"), "{}", 0o600);
+    std::os::unix::fs::symlink(f.dir.join("state-target.json"), f.account_path()).unwrap();
+    report();
+    assert!(fs::symlink_metadata(f.account_path()).unwrap().is_symlink());
+    assert_eq!(fs::read(f.dir.join("state-target.json")).unwrap(), b"{}");
+    fs::remove_file(f.account_path()).unwrap();
+    let loose = json!({"version":1,"accounts":[],"sessions":[]}).to_string();
+    write(&f.account_path(), &loose, 0o644);
+    report();
+    assert_eq!(fs::read(f.account_path()).unwrap(), loose.as_bytes());
+}
+
+/// D4: when the metadata write fails the reporter exits 1 and writes no
+/// account state; the same report once the write succeeds records it.
+#[test]
+fn claude_report_failed_metadata_write_writes_no_account_state() {
+    let f = Reporter::new();
+    f.provider(&provider_body(CLAUDE_UUID, ""));
+    let mut pane = claude_pane(CLAUDE_ID);
+    pane["fixture_reject"] = json!(true);
+    f.pane("w1:p1", pane);
+    let seq = (common::now() as u64 - 10) * 1_000_000;
+    let report = tail_report(
+        "w1:p1",
+        CLAUDE_ID,
+        seq,
+        200_000,
+        &[("five_hour", "12.5", 60)],
+    );
+    assert_eq!(f.account_report(&report, &[]), Some(1));
+    assert_eq!(f.methods(), ["pane.get", "pane.report_metadata"]);
+    assert!(!f.account_path().exists());
+    f.pane("w1:p1", claude_pane(CLAUDE_ID));
+    assert_eq!(f.account_report(&report, &[]), Some(0));
+    assert_eq!(
+        f.account_state().unwrap()["accounts"][0]["account_key"],
+        claude_account_key(CLAUDE_UUID)
+    );
+}
+
+/// D4: a ten-value report reading a provider state file at its 4 MiB
+/// bound holds `hook.lock` briefly enough that a Pi report on the same
+/// state directory, started while the Claude run holds the lock (its
+/// metadata reply is delayed by 100 ms, then the account step runs),
+/// completes within its 400 ms lock wait.
+#[test]
+fn claude_report_with_large_provider_state_lets_a_pi_report_through() {
+    let f = Reporter::new();
+    let small = provider_body(CLAUDE_UUID, r#","pad":"""#);
+    let pad = "x".repeat(4 * 1_048_576 - small.len());
+    f.provider(&provider_body(CLAUDE_UUID, &format!(r#","pad":"{pad}""#)));
+    assert_eq!(
+        fs::metadata(f.home.join(".claude.json")).unwrap().len(),
+        4 * 1_048_576
+    );
+    let mut pane = claude_pane(CLAUDE_ID);
+    pane["fixture_delay_ms"] = json!(100);
+    f.pane("w1:p1", pane);
+    f.pane(
+        "w1:p2",
+        json!({"pane_id":"w1:p2","agent":"pi","agent_session":{"agent":"pi","source":"herdr:pi","kind":"path","value":"/synthetic/session"},"tokens":{}}),
+    );
+    for round in 0..3u64 {
+        let seq = (common::now() as u64 - 30 + round * 5) * 1_000_000;
+        let report = tail_report(
+            "w1:p1",
+            CLAUDE_ID,
+            seq,
+            200_000 + round,
+            &[("five_hour", "12.5", 60), ("seven_day", "40", 3600)],
+        );
+        let report: Vec<&str> = report.iter().map(String::as_str).collect();
+        f.calls.lock().unwrap().clear();
+        let mut claude = f.command(&report).spawn().unwrap();
+        // Wait until the Claude run is inside `hook.lock`: its metadata
+        // write has reached the socket and its reply is being delayed.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !f.methods().contains(&"pane.report_metadata".to_owned()) {
+            assert!(Instant::now() < deadline, "{round}");
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(claude.try_wait().unwrap().is_none(), "{round}");
+        let mut pi = Command::new(BIN)
+            .env_clear()
+            .env("HOME", &f.home)
+            .current_dir(f.dir.join("cwd"))
+            .args(["--report", "pi", "w1:p2", &seq.to_string()])
+            .args([
+                "--root",
+                f.root.to_str().unwrap(),
+                "--state",
+                f.state.to_str().unwrap(),
+            ])
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let event = json!({"session_path":"/synthetic/session","event":"turn","phase":"working"});
+        pi.stdin
+            .take()
+            .unwrap()
+            .write_all(event.to_string().as_bytes())
+            .unwrap();
+        assert!(claude.wait().unwrap().success(), "{round}");
+        assert!(pi.wait().unwrap().success(), "{round}");
+        // Pi read its pane only after the Claude run released the lock.
+        let calls = f.calls.lock().unwrap().clone();
+        let order: Vec<_> = calls
+            .iter()
+            .map(|(method, params)| (method.as_str(), params["pane_id"].as_str().unwrap_or("")))
+            .collect();
+        assert_eq!(
+            order,
+            [
+                ("pane.get", "w1:p1"),
+                ("pane.report_metadata", "w1:p1"),
+                ("pane.get", "w1:p2"),
+                ("pane.report_metadata", "w1:p2")
+            ],
+            "{round}"
+        );
+        let state = f.account_state().unwrap();
+        assert_eq!(
+            state["accounts"][0]["windows"]["five_hour"]["sampled_at"],
+            json!(seq as f64 / 1e6)
+        );
+    }
 }
 
 /// Regression guard: `--report pi` still parses options after its values
