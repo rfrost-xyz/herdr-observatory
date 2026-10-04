@@ -459,7 +459,10 @@ settings remain residual risks (Risks).
   would exceed the byte bound is refused.
 - **Merge, newest stamp wins:** for each window in the tail, the stored window
   for that account and kind is replaced only when the new `sampled_at` is
-  greater. A window absent from the tail keeps its stored value and stamp.
+  greater, or when the stored stamp is more than 1 s ahead of now (the clock
+  stepped back), so a future stamp cannot block every later report until the
+  clock catches up. A window absent from the tail keeps its stored value and
+  stamp.
   Every window in a fresh tail gets the same stamp, because all come from the
   same last response; this departs from D11's per-window value-change rule, as
   the user accepted (G5).
@@ -521,7 +524,10 @@ settings remain residual risks (Risks).
   not finite and positive is dropped. Session entries are not read by the
   collector.
 - **Row.** Per window, the newer of the reporter state and the cache wins by
-  stamp, whichever source has it. `five_hour` becomes `{kind:"five_hour", label:"5-hour",
+  stamp, whichever source has it. A reporter window stamped more than 1 s
+  ahead of now loses to a fresh cache window, so after the clock steps back
+  the cache can still supply the window; without a cache window it still makes
+  the row unavailable. `five_hour` becomes `{kind:"five_hour", label:"5-hour",
   duration_s:18000, pacing:false}` and `seven_day` becomes
   `{kind:"seven_day", label:"7-day", duration_s:604800, pacing:true}`. A window
   whose reset has passed keeps its stamp with `used_percent` and `resets_at`

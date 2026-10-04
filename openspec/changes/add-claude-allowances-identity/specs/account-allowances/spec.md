@@ -118,7 +118,7 @@ The local runtime SHALL build a mapped Claude account's observation from the rep
 - **THEN** the Codex allowance cache and the `--allowances-probe` output keep their existing shape and contain no Claude rows.
 
 ### Requirement: Claude allowance window stamps
-Each Claude window SHALL carry its own source stamp. The local account state SHALL keep, per account and window, the observation with the newest stamp and ignore an older or equal one. A row's source time SHALL be the oldest stamp among its windows, so a row with any window older than ten minutes is stale. A window whose reset time has passed SHALL keep its stamp and lose its values.
+Each Claude window SHALL carry its own source stamp. The local account state SHALL keep, per account and window, the observation with the newest stamp and ignore an older or equal one, except that a stored stamp more than one second ahead of local time SHALL be replaced and a reporter window stamped that far ahead SHALL NOT be preferred over a fresh cache window. A row's source time SHALL be the oldest stamp among its windows, so a row with any window older than ten minutes is stale. A window whose reset time has passed SHALL keep its stamp and lose its values.
 
 #### Scenario: One fresh and one stale window
 - **WHEN** a mapped Claude account's `five_hour` window was stamped one minute ago and its `seven_day` window eleven minutes ago
@@ -127,6 +127,10 @@ Each Claude window SHALL carry its own source stamp. The local account state SHA
 #### Scenario: Older report arrives late
 - **WHEN** a report with an older stamp for a window arrives after a newer one for the same account
 - **THEN** the newer window values and stamp remain.
+
+#### Scenario: Clock steps back
+- **WHEN** the local clock steps back so that a stored window's stamp lies more than one second in the future, and a new report for that window arrives
+- **THEN** the new report replaces it, and until then a fresh cache window for the same account is shown instead of the future one.
 
 #### Scenario: Reset passes without a new sample
 - **WHEN** a fresh window's reset time passes and no new report arrives

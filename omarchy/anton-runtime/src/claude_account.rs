@@ -648,7 +648,10 @@ impl StateFile {
             let stored = &mut self.accounts[index].windows;
             for window in windows {
                 let slot = stored.slot(window.kind);
-                if slot.is_none_or(|old| at > old.sampled_at) {
+                // A stored stamp more than 1 s ahead of `now` (the clock
+                // stepped back) counts as absent, so it cannot block every
+                // newer report until the clock catches up.
+                if slot.is_none_or(|old| at > old.sampled_at || old.sampled_at - now > 1.0) {
                     *slot = Some(StoredWindow {
                         used_percent: Percent(window.tenths),
                         resets_at: window.resets,
@@ -920,7 +923,14 @@ pub fn row(
     .enumerate()
     {
         let chosen = match (state[index], cache[index]) {
-            (Some(reported), Some(cached)) if cached.at > reported.at => Some(cached),
+            // A reporter window stamped more than 1 s ahead (the clock
+            // stepped back) loses to a fresh cache window; alone it still
+            // makes the row unavailable.
+            (Some(reported), Some(cached))
+                if cached.at > reported.at || reported.at - now > 1.0 =>
+            {
+                Some(cached)
+            }
             (Some(reported), _) => Some(reported),
             (None, cached) => cached,
         };
@@ -1503,6 +1513,79 @@ mod tests {
         for bad in ["-1", "100.1", "12.25", "\"5\"", "null"] {
             assert!(serde_json::from_str::<Percent>(bad).is_err(), "{bad}");
         }
+    }
+
+    /// D6 and D7 after the clock steps back: a stored stamp more than 1 s
+    /// ahead of now is replaced by the next report, and a reporter window
+    /// stamped that far ahead gives way to a fresh cache in the row.
+    #[test]
+    fn stamps_ahead_of_a_stepped_back_clock_do_not_block_new_samples() {
+        let now = 1_800_000_000.0;
+        let account = account_key("account");
+        let window = |tenths| RateWindow {
+            kind: RateKind::FiveHour,
+            tenths,
+            resets: 1_800_018_000,
+        };
+        let mut file = StateFile::empty();
+        file.apply(
+            &account,
+            &session_key("before"),
+            &[window(500)],
+            now + 100.0,
+            now + 100.0,
+        );
+        file.apply(
+            &account,
+            &session_key("after"),
+            &[window(125)],
+            now - 0.5,
+            now,
+        );
+        let stored = file.accounts[0].windows.five_hour.unwrap();
+        assert_eq!(
+            (stored.used_percent, stored.sampled_at),
+            (Percent(125), now - 0.5)
+        );
+        // Within 1 s ahead the newest stamp still wins.
+        file.apply(
+            &account,
+            &session_key("near"),
+            &[window(130)],
+            now + 1.0,
+            now + 1.0,
+        );
+        file.apply(&account, &session_key("late"), &[window(140)], now, now);
+        assert_eq!(
+            file.accounts[0].windows.five_hour.unwrap().used_percent,
+            Percent(130)
+        );
+
+        let mapping = serde_json::json!({"id":"claude","label":"Claude"});
+        let ahead = Observed {
+            tenths: Some(500),
+            resets_at: 1_800_018_000,
+            at: now + 100.0,
+        };
+        let reading = (
+            account.clone(),
+            Some(Cache {
+                fetched_at_ms: (now - 5.0) * 1000.0,
+                five_hour: Some(CacheWindow {
+                    utilization: Some(12.5),
+                    resets_at: 1_800_018_000,
+                }),
+                seven_day: None,
+            }),
+        );
+        let state = [Some(ahead), None];
+        let shown = row(&mapping, &account, Some(&state), Some(&reading), now).unwrap();
+        assert_eq!(shown.status, crate::model::AllowanceStatus::Available);
+        assert_eq!(shown.sampled_at, Some(now - 5.0));
+        assert_eq!(shown.windows[0].used_percent, Some(12.5));
+        // Without a cache the row is unavailable, as before.
+        let shown = row(&mapping, &account, Some(&state), None, now).unwrap();
+        assert_eq!(shown.status, crate::model::AllowanceStatus::Unavailable);
     }
 
     /// D6: with 32 refused entries, a new session's entry survives its own
