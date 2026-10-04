@@ -136,7 +136,9 @@ To add a Claude account, get its key with:
 ```
 
 It prints only the 64-character account key and exits 0, or prints nothing and
-exits 3 when the key cannot be read for one of the reasons below. Add the key
+exits 3 when `CLAUDE_CONFIG_DIR` is set, a legacy `~/.claude/.config.json`
+exists, or `~/.claude.json` is missing or unsafe, has `primaryApiKey` or has no
+valid account id. Add the key
 under `allowances.accounts` in the private configuration with
 `"provider":"claude"` (the key and labels here are synthetic):
 

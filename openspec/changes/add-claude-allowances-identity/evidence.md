@@ -888,8 +888,12 @@ records this entry (3.3).
   `MISE_SYSTEM_CONFIG_DIR`) exit 0, the installed `register.js` differs
   from the source only in the substituted runtime path, and a second
   `--install-claude-mod` exits 0 with the receipt bytes and the file inode
-  unchanged. No uuid, email or `PRIVATE` marker appears in any output,
-  snapshot, stderr or file under the plugin root or state directory.
+  unchanged. No uuid or `PRIVATE` marker appears in any command output or
+  in any file under the plugin root or state directory; the fixture email
+  appears only in `.accounts.json`, by design, and neither the email nor
+  the uuid appears in the collector snapshot or its stderr. The README's
+  exit-3 conditions for `--claude-account-key` are D8's (location checks
+  and the provider-state file), not the attribution refusals.
 - Documentation only: no test is added, so no fail-on-old proof applies.
   `node --test tests/test_native_distribution.mjs` 5 passed (README.md is
   still in the installed file list).
