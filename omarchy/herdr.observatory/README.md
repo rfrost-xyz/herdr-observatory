@@ -177,7 +177,8 @@ it, when any of these holds:
 - `~/.claude.json` has `primaryApiKey`, has no valid account id, or is not a
   regular file owned by you, private to you and at most 4 MiB;
 - the session was earlier attributed to another account, for example after a
-  `/login` elsewhere; it stays refused for the rest of the session;
+  `/login` elsewhere; it stays refused while the account state remembers the
+  session (up to 24 hours after its last report);
 - the session reported a `spend_limit` window; no rate limits are sent until the
   session ends.
 
@@ -200,7 +201,9 @@ It prints `ok` (exit 0) or the first refusing step (exit 3): `environment`,
 `config-dir`, `legacy-config`, `api-key-helper` or `provider-state`. After the
 first line it lists the matching environment variable names, sorted, with an
 exempt one marked `exempt`. It never prints a value, id, key or email, and
-writes nothing.
+writes nothing. It does not see the session-memory or `spend_limit` refusals:
+`ok` means only that the environment, configuration and provider-state steps
+pass.
 
 After updating the plugin, rerun `--install-claude-mod` so the mod sends rate
 limits; a session picks up the refreshed mod after `/reload-plugins` or at its

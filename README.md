@@ -28,7 +28,7 @@ context dial can show a percentage, and, from fresh evidence, the session's
 records those windows privately for the account `~/.claude.json` names, and a
 mapped local Claude account then shows an allowance row beside the Codex ones.
 Claude allowances are local-only and need an active Claude Code session in a
-Herdr pane.
+Herdr pane or Claude Code's own fresh usage cache for the same account.
 
 See [installation, configuration and complete removal](omarchy/herdr.observatory/README.md).
 Canonical behaviour is in `openspec/specs`; historical decisions are retained
