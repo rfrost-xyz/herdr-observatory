@@ -320,6 +320,18 @@ pub fn claude_paths(
     };
     Some((home, state))
 }
+/// The reporter's home (design D3): an absolute `HOME`, else the password
+/// database. `--claude-attribution-check` resolves its home the same way.
+pub fn claude_home() -> Option<PathBuf> {
+    claude_paths(
+        Some(Path::new("/")),
+        std::env::var_os("HOME").as_deref(),
+        None,
+        passwd_home,
+        "",
+    )
+    .map(|(home, _)| home)
+}
 /// `--report claude <pane> <seq> <session-id> <window> [<kind> <used>
 /// <resets-at> [<kind> <used> <resets-at>]]` (design D3): exit
 /// status 0 when the pane's metadata holds this bound window, 2 for invalid

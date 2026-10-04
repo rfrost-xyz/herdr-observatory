@@ -4365,3 +4365,320 @@ fn claude_mappings_share_the_account_cap_and_ids_through_the_cli() {
         json!([])
     );
 }
+
+/// A fixture `codex` answering the identity requests for the synthetic
+/// Codex account with `codex@example.invalid`.
+fn identity_codex(f: &Fixture) {
+    let script = "#!/bin/sh\nwhile IFS= read -r line; do\n case $line in\n *'\"method\":\"initialize\"'*) printf '%s\\n' '{\"id\":1,\"result\":{}}';;\n *'account/rateLimits/read'*) printf '%s\\n' '{\"id\":2,\"result\":{\"accountId\":\"synthetic-account\",\"rateLimits\":{}}}';;\n *'account/read'*) printf '%s\\n' '{\"id\":3,\"result\":{\"account\":{\"type\":\"chatgpt\",\"email\":\"codex@example.invalid\"}}}';;\n esac\ndone\n";
+    write(&f.dir.join("bin/codex"), script, 0o755);
+}
+/// Runs a Claude command with `args` and `env`, stdin closed.
+fn claude_run(f: &Fixture, args: &[&str], env: &[(&str, &str)]) -> std::process::Output {
+    claude_command(f, env)
+        .args(args)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap()
+}
+
+/// D8: `--claude-account-key` prints only the 64-character key and a
+/// newline (65 bytes, exit 0), also with `ANTHROPIC_BASE_URL` set (G1), and
+/// nothing with exit 3 for `primaryApiKey`, a missing file, an invalid id,
+/// `CLAUDE_CONFIG_DIR`, a legacy file or a relative `HOME`, each beside the
+/// accepted run.
+#[test]
+fn claude_account_key_prints_only_the_key() {
+    let f = Fixture::new();
+    let provider = f.dir.join("home/.claude.json");
+    let key = claude_account_key(CLAUDE_UUID);
+    let accepted = |env: &[(&str, &str)]| {
+        write(&provider, provider_body(CLAUDE_UUID, ""), 0o600);
+        let output = claude_run(&f, &["--claude-account-key"], env);
+        assert_eq!(output.status.code(), Some(0));
+        assert_eq!(output.stdout, format!("{key}\n").into_bytes());
+        assert_eq!(output.stdout.len(), 65);
+        assert!(output.stderr.is_empty());
+    };
+    accepted(&[]);
+    accepted(&[("ANTHROPIC_BASE_URL", "https://PRIVATE.invalid")]);
+    let refused = |name: &str, env: &[(&str, &str)]| {
+        let output = claude_run(&f, &["--claude-account-key"], env);
+        assert_eq!(output.status.code(), Some(3), "{name}");
+        assert!(output.stdout.is_empty(), "{name}");
+        assert!(output.stderr.is_empty(), "{name}");
+    };
+    for (name, body) in [
+        (
+            "primaryApiKey",
+            provider_body(CLAUDE_UUID, r#","primaryApiKey":"PRIVATE""#),
+        ),
+        (
+            "primaryApiKey null",
+            provider_body(CLAUDE_UUID, r#","primaryApiKey":null"#),
+        ),
+        ("invalid id", provider_body("", "")),
+    ] {
+        write(&provider, body, 0o600);
+        refused(name, &[]);
+        accepted(&[]);
+    }
+    fs::remove_file(&provider).unwrap();
+    refused("missing", &[]);
+    accepted(&[]);
+    refused("CLAUDE_CONFIG_DIR", &[("CLAUDE_CONFIG_DIR", "")]);
+    refused("relative HOME", &[("HOME", "home")]);
+    accepted(&[]);
+    fs::create_dir_all(f.dir.join("home/.claude")).unwrap();
+    write(&f.dir.join("home/.claude/.config.json"), "{}", 0o600);
+    refused("legacy", &[]);
+}
+
+/// D8: `--claude-attribution-check` prints the first refusing step's name
+/// or `ok`, then the matching variable names sorted with exempt ones
+/// marked (`ANTHROPIC_BASE_URL` by name only), exiting 0 for `ok` and 3
+/// otherwise, and never a value, uuid, key or email.
+#[test]
+fn claude_attribution_check_names_only_the_first_refusing_step() {
+    let f = Fixture::new();
+    let home = f.dir.join("home");
+    fs::create_dir_all(home.join(".claude")).unwrap();
+    let key = claude_account_key(CLAUDE_UUID);
+    let check = |env: &[(&str, &str)], expected: &str| {
+        let output = claude_run(&f, &["--claude-attribution-check"], env);
+        assert_eq!(String::from_utf8_lossy(&output.stdout), expected, "{env:?}");
+        let code = if expected.starts_with("ok\n") { 0 } else { 3 };
+        assert_eq!(output.status.code(), Some(code), "{env:?}");
+        assert!(output.stderr.is_empty(), "{env:?}");
+        assert_no_secret(&output.stdout);
+        assert!(!String::from_utf8_lossy(&output.stdout).contains(&key));
+    };
+    write(
+        &home.join(".claude.json"),
+        provider_body(CLAUDE_UUID, ""),
+        0o600,
+    );
+    check(&[], "ok\n");
+    check(
+        &[("CLAUDE_CODE_MESSAGING_TOKEN", "PRIVATE")],
+        "ok\nCLAUDE_CODE_MESSAGING_TOKEN exempt\n",
+    );
+    check(
+        &[("ANTHROPIC_BASE_URL", "https://PRIVATE.invalid")],
+        "environment\nANTHROPIC_BASE_URL\n",
+    );
+    check(
+        &[("ANTHROPIC_BASE_URL", "")],
+        "environment\nANTHROPIC_BASE_URL\n",
+    );
+    check(&[("ANTHROPIC_BASE_URL_X", "PRIVATE")], "ok\n");
+    check(
+        &[
+            ("CLAUDE_CODE_MESSAGING_TOKEN", "PRIVATE"),
+            ("CLAUDE_CODE_OAUTH_TOKEN", "PRIVATE"),
+            ("ANTHROPIC_API_KEY", "PRIVATE"),
+        ],
+        "environment\nANTHROPIC_API_KEY\nCLAUDE_CODE_MESSAGING_TOKEN exempt\nCLAUDE_CODE_OAUTH_TOKEN\n",
+    );
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let output = claude_command(&f, &[])
+            .env(std::ffi::OsStr::from_bytes(b"PRIVATE\xff"), "PRIVATE")
+            .arg("--claude-attribution-check")
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert_eq!(output.stdout, b"environment\nnon-utf8-name\n");
+        assert_eq!(output.status.code(), Some(3));
+    }
+    check(&[("CLAUDE_CONFIG_DIR", "PRIVATE")], "config-dir\n");
+    check(&[], "ok\n");
+    write(
+        &home.join(".claude/settings.json"),
+        r#"{"apiKeyHelper":"PRIVATE"}"#,
+        0o644,
+    );
+    check(&[], "api-key-helper\n");
+    write(
+        &home.join(".claude/settings.json"),
+        r#"{"env":{"PRIVATE":"PRIVATE"}}"#,
+        0o644,
+    );
+    check(&[], "ok\n");
+    write(
+        &home.join(".claude.json"),
+        provider_body(CLAUDE_UUID, r#","primaryApiKey":"PRIVATE""#),
+        0o600,
+    );
+    check(&[], "provider-state\n");
+    fs::remove_file(home.join(".claude.json")).unwrap();
+    check(&[], "provider-state\n");
+    write(&home.join(".claude/.config.json"), "{}", 0o600);
+    check(&[], "legacy-config\n");
+}
+
+/// D8: `--refresh-identities` adds the local Claude email for a mapped
+/// Claude key beside the Codex email, also with `ANTHROPIC_BASE_URL` set,
+/// and only the Codex email for an unmapped profile, `primaryApiKey`, an
+/// invalid email, a missing file, `CLAUDE_CONFIG_DIR`, a legacy file or a
+/// configuration without a Claude mapping.
+#[test]
+fn claude_identity_refresh_stores_the_local_email_for_a_mapped_key() {
+    let f = Fixture::new();
+    identity_codex(&f);
+    let home = f.dir.join("home");
+    fs::create_dir_all(home.join(".claude")).unwrap();
+    let both = json!({"codex":"codex@example.invalid","claude":CLAUDE_EMAIL});
+    let codex = json!({"codex":"codex@example.invalid"});
+    let refresh = |name: &str, env: &[(&str, &str)], expected: &Value| {
+        let _ = fs::remove_file(f.root.join(".accounts.json"));
+        let output = claude_run(&f, &["--refresh-identities"], env);
+        assert!(
+            output.status.success(),
+            "{name}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stored: Value =
+            serde_json::from_slice(&fs::read(f.root.join(".accounts.json")).unwrap()).unwrap();
+        assert_eq!(stored, *expected, "{name}");
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            format!(
+                "Saved {} verified account labels locally.\n",
+                expected.as_object().unwrap().len()
+            ),
+            "{name}"
+        );
+        assert_no_secret(&output.stderr);
+        let text = serde_json::to_string(&stored).unwrap();
+        assert!(
+            !text.contains("PRIVATE") && !text.contains(CLAUDE_UUID),
+            "{name}"
+        );
+    };
+    let provider = home.join(".claude.json");
+    let good = provider_body(CLAUDE_UUID, "");
+    claude_config(&f, mixed_accounts(), None);
+    for (name, body) in [
+        (
+            "unmapped",
+            provider_body("00000000-0000-4000-8000-0000000000ff", ""),
+        ),
+        (
+            "primaryApiKey",
+            provider_body(CLAUDE_UUID, r#","primaryApiKey":null"#),
+        ),
+        ("invalid email", good.replace(CLAUDE_EMAIL, "not-an-email")),
+    ] {
+        write(&provider, &good, 0o600);
+        refresh("mapped", &[], &both);
+        write(&provider, body, 0o600);
+        refresh(name, &[], &codex);
+    }
+    fs::remove_file(&provider).unwrap();
+    refresh("missing", &[], &codex);
+    write(&provider, &good, 0o600);
+    refresh(
+        "ANTHROPIC_BASE_URL",
+        &[("ANTHROPIC_BASE_URL", "https://PRIVATE.invalid")],
+        &both,
+    );
+    refresh("CLAUDE_CONFIG_DIR", &[("CLAUDE_CONFIG_DIR", "")], &codex);
+    write(&home.join(".claude/.config.json"), "{}", 0o600);
+    refresh("legacy", &[], &codex);
+    fs::remove_file(home.join(".claude/.config.json")).unwrap();
+    refresh("mapped", &[], &both);
+    claude_config(
+        &f,
+        json!({codex_key():{"id":"codex","label":"Codex","category":"Work"}}),
+        None,
+    );
+    refresh("no Claude mapping", &[], &codex);
+}
+
+/// D8: identity rows from the Codex RPC and from peers match Codex mappings
+/// only: a peer row carrying the Claude key and the Codex RPC row whose key
+/// a Claude mapping names store nothing, while a peer's Codex email and the
+/// local Claude email are stored. `--identity-probe` with a Claude mapping
+/// beside the Codex one answers with the Codex identity only, and refuses
+/// when the Codex key is mapped as Claude.
+#[test]
+fn claude_identity_rows_from_codex_sources_never_fill_claude_mappings() {
+    let f = Fixture::new();
+    identity_codex(&f);
+    let claude_key = claude_account_key(CLAUDE_UUID);
+    let peer_key = "e".repeat(64);
+    write(
+        &f.dir.join("home/.claude.json"),
+        provider_body(CLAUDE_UUID, ""),
+        0o600,
+    );
+    write(
+        &f.dir.join("peer-1.json"),
+        json!({"account_key":peer_key,"email":"codex-peer@example.invalid"}).to_string(),
+        0o600,
+    );
+    write(
+        &f.dir.join("peer-2.json"),
+        json!({"account_key":claude_key,"email":"peer@example.invalid"}).to_string(),
+        0o600,
+    );
+    write(&f.dir.join("bin/ssh"), b"#!/bin/sh\nfor arg do case $arg in peer-[12]) target=$arg;; esac; done\ncat \"$ANTON_TEST_PEER/../$target.json\"\n", 0o755);
+    claude_config(
+        &f,
+        json!({peer_key.clone():{"id":"codex-peer","label":"Peer","category":"Work"},
+            claude_key.clone():{"id":"claude-a","label":"Claude A","category":"Personal","provider":"claude"},
+            codex_key():{"id":"claude-b","label":"Claude B","category":"Personal","provider":"claude"}}),
+        Some(json!([{"target":"peer-1"},{"target":"peer-2"}])),
+    );
+    let output = claude_run(&f, &["--refresh-identities"], &[]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stored: Value =
+        serde_json::from_slice(&fs::read(f.root.join(".accounts.json")).unwrap()).unwrap();
+    assert_eq!(
+        stored,
+        json!({"codex-peer":"codex-peer@example.invalid","claude-a":CLAUDE_EMAIL})
+    );
+    // Without the local profile, the peer row carrying the Claude key still
+    // stores nothing.
+    fs::remove_file(f.dir.join("home/.claude.json")).unwrap();
+    let output = claude_run(&f, &["--refresh-identities"], &[]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stored: Value =
+        serde_json::from_slice(&fs::read(f.root.join(".accounts.json")).unwrap()).unwrap();
+    assert_eq!(stored, json!({"codex-peer":"codex-peer@example.invalid"}));
+    write(
+        &f.dir.join("home/.claude.json"),
+        provider_body(CLAUDE_UUID, ""),
+        0o600,
+    );
+    // `--identity-probe` with a Claude mapping beside the Codex one.
+    claude_config(&f, mixed_accounts(), None);
+    let probe = claude_run(&f, &["--identity-probe"], &[]);
+    assert!(
+        probe.status.success(),
+        "{}",
+        String::from_utf8_lossy(&probe.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&probe.stdout).unwrap(),
+        json!({"account_key":codex_key(),"email":"codex@example.invalid"})
+    );
+    assert_no_secret(&probe.stdout);
+    assert!(!String::from_utf8_lossy(&probe.stdout).contains(&claude_key));
+    claude_config(
+        &f,
+        json!({codex_key():{"id":"claude-b","label":"Claude B","category":"Personal","provider":"claude"}}),
+        None,
+    );
+    let probe = claude_run(&f, &["--identity-probe"], &[]);
+    assert!(!probe.status.success());
+    assert!(probe.stdout.is_empty());
+}

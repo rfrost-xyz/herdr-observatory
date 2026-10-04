@@ -566,6 +566,77 @@ Readings of the plan, recorded here:
 - On the change: `cargo test --locked --offline` 289 + 22 + 6 + 57 passed,
   0 failed; fmt and clippy (`-D warnings`) clean.
 
+### Task 2.5: identity refresh and the Claude commands
+
+`identity::mapped` matches the Codex RPC row and peer `--identity-probe`
+rows to Codex mappings only (`allowances::mapped`), and `--identity-probe`
+filters the same way. `identity::refresh` then adds the local Claude email
+through `claude_email`, which calls the provider-state reader only when a
+Claude mapping exists, `HOME` is absolute and D4 steps 2 and 3 pass, and
+keeps the email only for a key a Claude mapping names and only when it
+passes the existing email check. No peer is asked for Claude identity.
+`--claude-account-key` prints only the key and a newline (exit 0) or
+nothing (exit 3) after D4 steps 2 and 3, with no owner guard or
+configuration. `--claude-attribution-check` runs D4 steps 1 to 5 against
+its own environment and the reporter's home resolution (new
+`reporter::claude_home`) and prints `claude_account::attribution_check`'s
+text, exit 0 for `ok` and 3 otherwise.
+
+- Planning fix (design D8, validated with `openspec validate --strict`):
+  D8 left the check's output format open. It now states that the matching
+  names follow the first line whatever the outcome (so an `ok` run shows an
+  exempt name, which task 5.3 needs), sorted, an exempt one as
+  `<name> exempt`; a non-UTF-8 name adds one `non-utf8-name` line; and
+  without a home the step after steps 1 and 2 is `provider-state`.
+- Unit tests: `identity::tests::claude_email_reads_only_behind_its_gate`
+  (the reader is never called without a Claude mapping, without a home,
+  with `CLAUDE_CONFIG_DIR` or with a legacy file; `ANTHROPIC_BASE_URL` does
+  not stop it; an unmapped or Codex-mapped key, an invalid or absent email
+  or a read error store nothing, beside the mapped case),
+  `identity::tests::codex_identity_rows_match_codex_mappings_only` and
+  `claude_account::tests::attribution_check_prints_only_step_and_names`.
+- Process fixtures (`native_process.rs`, cleared environment):
+  `claude_account_key_prints_only_the_key` (65 bytes and exit 0, also with
+  `ANTHROPIC_BASE_URL` set; exit 3 with empty stdout and stderr for
+  `primaryApiKey` as a string and `null`, an invalid id, a missing file,
+  `CLAUDE_CONFIG_DIR`, a relative `HOME` and a legacy file, each beside an
+  accepted run),
+  `claude_attribution_check_names_only_the_first_refusing_step` (`ok`,
+  `ok` with the exempt name, `ANTHROPIC_BASE_URL` set to a URL and set
+  empty printed by name, `ANTHROPIC_BASE_URL_X` not matching, several
+  names sorted with the exempt one marked, a non-UTF-8 name, `config-dir`,
+  `api-key-helper` beside settings without it, `provider-state` for
+  `primaryApiKey` and a missing file, `legacy-config`; no `PRIVATE`
+  marker, uuid, email or key in any output),
+  `claude_identity_refresh_stores_the_local_email_for_a_mapped_key` (the
+  Claude email beside the Codex email for a mapped key, also with
+  `ANTHROPIC_BASE_URL` set; only the Codex email for an unmapped profile,
+  `primaryApiKey`, an invalid email, a missing file, `CLAUDE_CONFIG_DIR`,
+  a legacy file and a configuration without a Claude mapping, each beside
+  the mapped run) and
+  `claude_identity_rows_from_codex_sources_never_fill_claude_mappings`
+  (a peer row carrying the Claude key and the Codex RPC row whose key a
+  Claude mapping names store nothing, while the peer's Codex email and the
+  local Claude email are stored; without the local profile the peer row
+  still stores nothing; `--identity-probe` with a Claude mapping beside the
+  Codex one answers with the Codex identity only and no Claude key, uuid
+  or email, and fails when the Codex key is mapped as Claude).
+- Task 2.2's deferred identity (email) extraction coverage is closed by the
+  identity refresh fixtures above.
+- On `7a9fefb` (the same extract, new `native_process.rs` copied in): all
+  four fixtures fail: the key command and the check exit 1 as unknown
+  commands (`left: Some(1)`, `right: Some(0)`; `left: ""`,
+  `right: "ok\n"`), and both identity fixtures fail at their first refresh,
+  where the Claude mapping makes the configuration invalid. The three unit
+  tests cannot compile there.
+- Mutation checks on the change: matching identity rows to any provider's
+  mapping fails `claude_identity_rows_from_codex_sources_never_fill_claude_mappings`
+  (the Codex RPC email stored under the Claude mapping, and, with that case
+  masked, the peer's email stored under it once the local profile is
+  removed); reverted.
+- On the change: `cargo test --locked --offline` 292 + 22 + 6 + 61 passed,
+  0 failed; fmt and clippy (`-D warnings`) clean.
+
 ## After
 
 _Pending (task 5.1)._

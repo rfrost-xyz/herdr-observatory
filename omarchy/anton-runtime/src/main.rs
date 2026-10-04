@@ -1097,6 +1097,38 @@ fn cli() -> Result<()> {
         // Before any stdin read; the status carries the outcome (D3).
         std::process::exit(reporter::claude(&root, state.as_deref(), &values, leaf));
     }
+    // D8: private local commands with no owner guard or configuration.
+    // Each prints only what it states and exits 3, printing nothing more,
+    // when it does not apply.
+    match commands.first().map(String::as_str) {
+        Some("--claude-account-key") if commands.len() == 1 => {
+            let key = claude_account::absolute_home()
+                .filter(|home| {
+                    claude_account::location_refusal(&claude_account::environment_names(), home)
+                        .is_none()
+                })
+                .and_then(|home| claude_account::account(&home).ok());
+            let Some(key) = key else {
+                std::process::exit(3);
+            };
+            println!("{key}");
+            return Ok(());
+        }
+        Some("--claude-attribution-check") if commands.len() == 1 => {
+            let (ok, text) = claude_account::attribution_check(
+                &claude_account::environment_names(),
+                reporter::claude_home().as_deref(),
+            );
+            let mut stdout = io::stdout();
+            let _ = std::io::Write::write_all(&mut stdout, text.as_bytes());
+            let _ = std::io::Write::flush(&mut stdout);
+            if !ok {
+                std::process::exit(3);
+            }
+            return Ok(());
+        }
+        _ => {}
+    }
     if !root.is_absolute() {
         return Err("Absolute plugin root required".into());
     }
@@ -1225,10 +1257,9 @@ fn cli() -> Result<()> {
             let _owner = common::owner_guard(&owner)?;
             let config = load(&root)?;
             let value = identity::probe(Some(&SIGNAL_STOP))?;
-            if value["account_key"]
-                .as_str()
-                .is_none_or(|key| config["allowances"]["accounts"].get(key).is_none())
-            {
+            if value["account_key"].as_str().is_none_or(|key| {
+                allowances::mapped(&config["allowances"]["accounts"], key, "codex").is_none()
+            }) {
                 return Err("Account identity is not configured on this peer".into());
             }
             output(&value)

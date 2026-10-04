@@ -396,6 +396,42 @@ pub fn attribution<S: AsRef<OsStr>>(names: &[S], home: &Path) -> Result<String, 
     account(home).map_err(|_| Refusal::ProviderState)
 }
 
+/// The `--claude-attribution-check` report (D8) for `names` and `home`:
+/// whether attribution would proceed, and the text to print. The first
+/// line is the first refusing D4 step's name (steps 1 to 5) or `ok`; then
+/// every name matching a step 1 pattern, sorted, one per line, an exempt
+/// one followed by ` exempt`, whatever the outcome, and `non-utf8-name`
+/// once when a name is not valid UTF-8. No value, id, key or email is ever
+/// part of it. Without a home the provider state cannot be located, so
+/// after steps 1 and 2 the step is `provider-state`.
+pub fn attribution_check<S: AsRef<OsStr>>(names: &[S], home: Option<&Path>) -> (bool, String) {
+    let found = environment(names);
+    let outcome = match home {
+        Some(home) => attribution(names, home).map(drop),
+        None if found.refuses() => Err(Refusal::Environment),
+        None if names.iter().any(|name| name.as_ref() == CONFIG_DIR) => Err(Refusal::ConfigDir),
+        None => Err(Refusal::ProviderState),
+    };
+    let mut text = match outcome {
+        Ok(()) => "ok".to_owned(),
+        Err(refusal) => refusal.name().to_owned(),
+    };
+    text.push('\n');
+    let mut matches = found.matches;
+    matches.sort();
+    for (name, exempt) in matches {
+        text.push_str(&name);
+        if exempt {
+            text.push_str(" exempt");
+        }
+        text.push('\n');
+    }
+    if found.invalid {
+        text.push_str("non-utf8-name\n");
+    }
+    (outcome.is_ok(), text)
+}
+
 /// The private per-account state file in the reporter's state directory
 /// (design D6).
 pub const STATE_FILE: &str = "claude-allowances.json";
@@ -1504,5 +1540,69 @@ mod tests {
         ] {
             assert_eq!(iso_seconds(value), None, "{value}");
         }
+    }
+
+    /// D8: the check names the first refusing step or `ok`, then every
+    /// matching name sorted with exempt ones marked, never a value, id,
+    /// key or email.
+    #[test]
+    fn attribution_check_prints_only_step_and_names() {
+        let home = Home::new();
+        home.provider(&provider_json(""));
+        let check = |names: &[&str], home: Option<&Path>| attribution_check(names, home);
+        assert_eq!(check(&["PATH"], Some(&home.0)), (true, "ok\n".to_owned()));
+        assert_eq!(
+            check(&["CLAUDE_CODE_MESSAGING_TOKEN", "PATH"], Some(&home.0)),
+            (true, "ok\nCLAUDE_CODE_MESSAGING_TOKEN exempt\n".to_owned())
+        );
+        assert_eq!(
+            check(
+                &["CLAUDE_CODE_MESSAGING_TOKEN", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY"],
+                Some(&home.0)
+            ),
+            (
+                false,
+                "environment\nANTHROPIC_API_KEY\nANTHROPIC_BASE_URL\nCLAUDE_CODE_MESSAGING_TOKEN exempt\n"
+                    .to_owned()
+            )
+        );
+        use std::os::unix::ffi::OsStrExt;
+        assert_eq!(
+            attribution_check(&[OsStr::from_bytes(b"X\xff")], Some(&home.0)),
+            (false, "environment\nnon-utf8-name\n".to_owned())
+        );
+        assert_eq!(
+            check(&["CLAUDE_CONFIG_DIR"], Some(&home.0)),
+            (false, "config-dir\n".to_owned())
+        );
+        // Without a home: steps 1 and 2, then `provider-state`.
+        assert_eq!(
+            check(&["PATH"], None),
+            (false, "provider-state\n".to_owned())
+        );
+        assert_eq!(
+            check(&["CLAUDE_CONFIG_DIR"], None),
+            (false, "config-dir\n".to_owned())
+        );
+        assert_eq!(
+            check(&["ANTHROPIC_API_KEY"], None),
+            (false, "environment\nANTHROPIC_API_KEY\n".to_owned())
+        );
+        home.settings(r#"{"apiKeyHelper":"PRIVATE"}"#);
+        assert_eq!(
+            check(&["PATH"], Some(&home.0)),
+            (false, "api-key-helper\n".to_owned())
+        );
+        home.settings("{}");
+        home.provider(&provider_json(r#","primaryApiKey":"PRIVATE""#));
+        assert_eq!(
+            check(&["PATH"], Some(&home.0)),
+            (false, "provider-state\n".to_owned())
+        );
+        home.write(".claude/.config.json", b"{}", 0o600);
+        let (_, text) = check(&["PATH"], Some(&home.0));
+        assert_eq!(text, "legacy-config\n");
+        clean(&text);
+        assert!(!text.contains(KEY));
     }
 }
