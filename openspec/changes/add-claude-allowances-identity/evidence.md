@@ -685,6 +685,49 @@ New-behaviour tests shown failing on `7a9fefb` (details under each task):
   and peer fixtures, and the identity and snapshot tests in `main.rs` and
   `identity.rs`.
 
+### Task 3.1: mod freshness and the rate-limit tail
+
+`register.js` keeps one baseline per module load (`{session, used, costUsd}`)
+and a sticky `spendLimit` flag. On `session.measure` only, right after the
+session-id step and before the window guard, dedupe, clock check and
+in-flight skip, `observe` sets the flag from any `spend_limit` window,
+evaluates D2 rules 1 and 2 with path A (`'rateLimits'` in `changed` and a
+`five_hour` or `seven_day` finite used value that differs from the baseline
+or is new) or path B (`'cost'` in `changed`, both totals finite and
+non-negative, the new one strictly greater), then replaces the baseline. A
+non-finite or non-number used value counts as absent, so `NaN` never makes
+a measurement fresh. After `lastSeq = seq`, a fresh measurement appends
+`rateTail(e, seq)`: integer-tenths percent text, the ISO pattern with
+month, day (leap years), hour, minute, second and offset checks, integer
+days-from-civil conversion with the fraction truncated, the exact
+`S < r <= S + D + 3600` bound from that `seq`, `five_hour` first, a
+repeated kind dropping the tail; the tail goes into the same
+`$.process.run` argv. `session.end` also clears the baseline and the flag.
+The cost total is held only in the baseline. The header comment states
+the rule. No seq, in-flight or confirmed-key logic changed.
+
+- Builder fix in `tests/test_claude_mod.mjs`: `measure(window, fields)`
+  builds `rateLimits: []`, `changed: ['context']` and `cost: {usd: 3.217}`
+  (a value no used or reset text can contain), so every existing test's
+  argv stays at four values; a `step` helper settles each run so the
+  in-flight skip does not hide a measurement.
+- New tests: `a window that moved a whole point sends both windows after
+  the window (path A)` (also an appearing `seven_day` window, an unchanged
+  one sending no tail, the exact ten-value argv and the timeout) and
+  `a strictly grown cost total sends the unchanged windows (path B)` (an
+  equal total named as changed sends no tail).
+- On `7a9fefb` (its `register.js`, sha256
+  `2226a688f9958101a69210267ff1fc203b03464759bae2ca64a44da4a3b5d346`, unchanged
+  up to `ee3a1a6`, written to a scratch file and loaded by a copy of the
+  new test file): 24 passed, 2 failed, the two failures being exactly the
+  new tests. Every existing test passes there with the new builder.
+- On the change (`register.js` sha256
+  `4d437171ec50def56e91da772dc0078bb6226d18d81524e27b8ee6ae80a129eb`):
+  `node --test tests/test_claude_mod.mjs` 26 passed, 0 failed. The payload
+  is embedded with `include_str!`, so the crate was rerun:
+  `cargo test --locked --offline` 292 + 22 + 6 + 61 passed, 0 failed; fmt
+  and clippy (`-D warnings`) clean.
+
 ## After
 
 _Pending (task 5.1)._

@@ -67,7 +67,24 @@ function host() {
 }
 
 const turn = () => new Promise(setImmediate);
-const measure = (window) => ({ context: { tokens: 10, window, percent: 0 }, rateLimits: {}, cost: {}, changed: [] });
+// A session.measure event in the SessionMeasureInput shape. The defaults (no
+// rate-limit windows, only the context changed, a constant cost total) keep
+// every run at the four change 3 values.
+const cost = 3.217;
+const measure = (window, fields = {}) => ({
+  context: { tokens: 10, window, percent: 0 },
+  rateLimits: [],
+  cost: { usd: cost },
+  changed: ['context'],
+  ...fields,
+});
+// The whole second of `start` and ISO text for an epoch second.
+const S = start / 1000;
+const iso = (seconds) => new Date(seconds * 1000).toISOString();
+const limit = (kind, percentUsed, seconds) => ({ kind, percentUsed, resetsAt: iso(seconds) });
+const five = (percentUsed, seconds = S + 3600) => limit('five_hour', percentUsed, seconds);
+const seven = (percentUsed, seconds = S + 86400) => limit('seven_day', percentUsed, seconds);
+const head = (seq) => [runtime, '--report', 'claude', 'w1:p1', String(seq), 'session-a', '200000'];
 
 // Fires one hook and asserts it resolved to the value of next(e). An event
 // passed explicitly, including undefined, reaches the hook as given; only an
@@ -85,6 +102,19 @@ async function fire(hooks, name, $, ...event) {
 async function exit(run, exitCode) {
   run.resolve({ exitCode, stdout: '', stderr: '' });
   await turn();
+}
+
+// Fires one session.measure, settles the run it started with exit 0 and
+// returns that run's argv after the four change 3 values, or null when no run
+// started.
+async function step(hooks, $, state, fields = {}, window = 200000) {
+  const before = state.runs.length;
+  await fire(hooks, 'session.measure', $, measure(window, fields));
+  if (state.runs.length === before) return null;
+  assert.equal(state.runs.length, before + 1);
+  const run = state.runs.at(-1);
+  await exit(run, 0);
+  return run.argv.slice(7);
 }
 
 test('registers exactly the four events, each with a catch handler', async () => {
@@ -163,6 +193,33 @@ test('skips invalid windows and a measure event with no context', async () => {
     await exit(state.runs.at(-1), 0);
   }
   assert.deepEqual(state.runs.map((run) => run.argv[6]), ['1', '100000000']);
+});
+
+test('a window that moved a whole point sends both windows after the window (path A)', async () => {
+  const { hooks } = await load();
+  const { $, state } = host();
+  const changed = ['context', 'rateLimits'];
+  assert.deepEqual(await step(hooks, $, state, { rateLimits: [five(12), seven(40.5)], changed }), []);
+  const second = await step(hooks, $, state, { rateLimits: [seven(40.5), five(13)], changed });
+  assert.deepEqual(second, ['five_hour', '13', String(S + 3600), 'seven_day', '40.5', String(S + 86400)]);
+  assert.deepEqual(state.runs[1].argv, [...head(start * 1000 + 1), ...second]);
+  assert.deepEqual(state.runs[1].init, { timeoutMs: 2000 });
+  // A seven_day window that appears is fresh too; an unchanged one is not.
+  assert.deepEqual(await step(hooks, $, state, { rateLimits: [five(13)], changed }), []);
+  assert.deepEqual(await step(hooks, $, state, { rateLimits: [five(13), seven(41)], changed }), [
+    'five_hour', '13', String(S + 3600), 'seven_day', '41', String(S + 86400),
+  ]);
+});
+
+test('a strictly grown cost total sends the unchanged windows (path B)', async () => {
+  const { hooks } = await load();
+  const { $, state } = host();
+  const rateLimits = [five(23.5), seven(7)];
+  assert.deepEqual(await step(hooks, $, state, { rateLimits, cost: { usd: 1.5 } }), []);
+  const grown = await step(hooks, $, state, { rateLimits, cost: { usd: 1.75 }, changed: ['context', 'cost'] });
+  assert.deepEqual(grown, ['five_hour', '23.5', String(S + 3600), 'seven_day', '7', String(S + 86400)]);
+  // The same total named as changed is not fresh.
+  assert.deepEqual(await step(hooks, $, state, { rateLimits, cost: { usd: 1.75 }, changed: ['context', 'cost'] }), []);
 });
 
 test('start and classic skip a confirmed key while measure still reports', async () => {
