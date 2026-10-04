@@ -1019,7 +1019,97 @@ pair on the same machine state. Medians (windows in brackets):
 
 ## Review rounds
 
-_Pending (task 5.2)._
+### Review round 1 and remediation
+
+Five lenses on `268fd42`. Privacy and freshness-mod were clean. Attribution
+raised one non-blocking finding and three nits, reporter-state one nit, and
+the collector two non-blocking findings and two nits. None was blocking, and
+every finding was fixed; none was declined. Each code fix has a test that was
+run with the fix reverted or mutated in place (the file then restored from a
+copy and `git status` checked clean) and failed there. The review text is
+kept outside the repository.
+
+- **Repeated keys in the account state (reporter-state #1, nit).**
+  `StateFile::valid` now rejects a repeated `account_key` or `session`, so
+  `load` replaces such an owned file with an empty one instead of writing it
+  back, which had left the collector (which rejects repeated account keys)
+  showing no Claude row (`90edea5`). Two cases join the replacement loop in
+  `claude_report_account_state_bounds_and_replacement`. With the account
+  check reverted the test fails at the first account key (the fixture's
+  `account-9` key, not the reporter's); with only the session check reverted
+  it fails at the sessions comparison. D6 names the rule.
+- **Eviction of the session just applied (attribution #3, nit).** Session
+  eviction now skips the entry of the session being applied and stops when
+  no other candidate is left, so 32 live refused entries can no longer evict
+  a new session's entry in the same `apply` (`6a520f8`). Unit test
+  `a_new_session_keeps_its_memory_beside_32_refused_entries`: the new entry
+  survives, `refused-0` is evicted, and a later report under another account
+  marks the session refused. With the filter removed it fails at the
+  survival assertion. D6 bounds updated.
+- **`legacy-config` for a non-directory `~/.claude` (attribution #4,
+  nit).** D4 steps 3 and 4 now treat `ENOTDIR` like `ENOENT`, because no file
+  can exist under a non-directory; any other lookup error still refuses
+  (`e1b8c6f`). The reviewer's first option was taken, and step 4 was changed
+  too, since `settings.json` sits under the same path and would otherwise
+  have moved the refusal to `api-key-helper`. Tests: unit cases for both
+  steps (a `.claude` regular file passes; a `.claude` at mode 000 still
+  refuses when not run as root) and a process case in
+  `claude_attribution_check_names_only_the_first_refusing_step` expecting
+  `ok`. With `absent` reduced to `NotFound`, both unit tests fail and the
+  process test prints `legacy-config`; with only step 4 reverted,
+  `api_key_helper_presence_refuses` fails. D4 steps 3 and 4 updated.
+- **Clock stepped back (collector #3, nit).** In `apply`, a stored window
+  stamp more than 1 s ahead of now counts as absent, so the next report
+  replaces it; in `row`, a reporter window stamped more than 1 s ahead loses
+  to a fresh cache window, and alone still makes the row unavailable
+  (`05433de`). The reviewer suggested dropping such a window before the
+  choice. That turned a row with one future and one current window into a
+  partial available row and failed the existing
+  `claude_rows_come_from_the_account_state_file` case, which the spec's
+  future-offset rule requires, so only the choice against the cache changed.
+  Unit test `stamps_ahead_of_a_stepped_back_clock_do_not_block_new_samples`
+  fails with the `apply` half reverted (`(Percent(500), 1800000100.0)`
+  kept) and, separately, with the `row` half reverted (`Unavailable` instead
+  of `Available`). D6 merge, D7 row and the window-stamps requirement (with
+  a new "Clock steps back" scenario) updated.
+- **Identity file wiped when Codex does not answer (collector #2,
+  non-blocking).** When neither the Codex RPC nor a peer matched a Codex
+  mapping, a run that finds only the Claude email now keeps the existing
+  file's emails for current Codex mappings (private `read_owned`, 16 KiB,
+  valid emails only). Unmapped ids and the earlier Claude entry are not
+  carried, and "Saved N" counts fresh matches only (`56156fc`). Partial
+  peer answers behave as before. Process test
+  `claude_identity_refresh_keeps_codex_emails_when_codex_does_not_answer`
+  (a `codex` that exits 1, an earlier file with `codex`, `claude` and
+  `gone`) expects the earlier Codex email beside the fresh Claude one and
+  `Saved 1`, then the fresh Codex email once the RPC answers. With the carry
+  disabled it fails with only the Claude entry stored. D8 and the plugin
+  README updated.
+- **Balance rounding (collector #4, nit).** `AllowanceCard.qml` renders the
+  balance with `State.percentReading` (`49e2ca5`). `tst_popup.qml`
+  `test_12_provider_neutral_rows_render_generically` now checks Claude
+  `seven_day` used values 0.3, 99.6, 0 and 12.5 (`>99%`, `<1%`, `100%`,
+  `88%`). With `Math.round` restored it fails at 0.3 ("100%"). D9 records
+  the one provider-neutral QML change.
+- **README accuracy (attribution #1 non-blocking, attribution #2 nit,
+  collector #1 non-blocking).** The plugin README now says that
+  `--claude-attribution-check` does not see the session-memory or
+  `spend_limit` refusals, and that a switched session stays refused while
+  the account state remembers it (up to 24 hours after its last report).
+  The root README names the cache fallback (`cf92ff7`). `AGENTS.md` already
+  named it. Documents only, so no mutation applies.
+
+**Gates (HEAD after the fixes).** `cargo fmt --check` clean; `cargo clippy
+--all-targets --locked --offline -- -D warnings` clean (local clippy 0.1.96;
+no `Some(x).filter(|_| ..)` or argument-less `format!` added); `cargo test
+--locked --offline`: 294 + 22 + 6 + 63 passed. `node --test tests/test_*.cjs
+tests/test_*.mjs`: 129 passed. `tests/run-qml.sh`: 95 passed, no binding
+errors. `tests/run-qmllint.sh`: no warnings outside `Panel.qml`.
+`tests/run-shell-harness.sh`: 0 failures, 6 rows. `OPENSPEC_TELEMETRY=0
+openspec validate --all --strict`: 4 passed. Private `TMPDIR` under
+`/tmp/c4r-*`, removed afterwards. No write under the real `~/.claude`, no
+`claude` CLI run and no read of real provider state; every fixture is
+synthetic. The release-build measurements of task 5.1 were not rerun.
 
 ## Live installed check
 
