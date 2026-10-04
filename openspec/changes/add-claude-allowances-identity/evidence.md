@@ -675,6 +675,10 @@ New-behaviour tests shown failing on `7a9fefb` (details under each task):
   the thirteen `claude_account::tests::` tests of 2.2, 2.3 and 2.5; the six
   new `allowances::tests::` tests of 2.4; the two new `identity::tests::`
   tests of 2.5.
+- The whole process binary at `c1cca5d` (its `native_process.rs` and
+  `tests/support/` copied into a fresh `7a9fefb` extract, which includes the
+  `Stream::spawn` refactor of the existing `Stream::new`): 47 passed and 14
+  failed, the 14 being exactly the fixtures named above.
 - Regression guards (existing tests, unchanged by lane A except the two
   intentional D3 contract changes in 2.1) pass on both: the seven change 3
   `claude_report_*` fixtures, the Codex allowance contract, legacy cache
